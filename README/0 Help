@@ -1,0 +1,28 @@
+#!/var/centauri/tools/centaurisoho document
+# View this document with docviewer, see 'docviewer --format' for input syntax
+Browsing the HTML documentation
+===============================
+
+    Call:       docviewer --browse [<keyw>|<page>]
+
+    Arguments:  <keyw>      a keyword
+                <page>      a page number
+
+    Keyboard:   Some keys are pre-defined to simplify the navigation:
+
+                h           This page                   (0_Help.html)
+                c           Table of content            (0_Content.html)
+                w           The local web content       (index.html)
+
+                Backspace   (backspace key) Go back in history
+                p or ←      (arrow left)    Previous page
+                n or →      (arrow right)   Next page
+                q or <ESC>  (escape key)    Quit viewer (wan't quit a browser)
+
+    Viewer:     The browse mode uses 'centaurilauncher viewer' to run the Qt qml viewer.
+                If qml is not installed it tries to run a web browser. On a debian system
+                run the following command to install qml and it's browser component:
+
+                apt install qml libqt5webview5      # for a debian-like system
+
+# end

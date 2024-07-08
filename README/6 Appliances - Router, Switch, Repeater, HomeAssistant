@@ -1,0 +1,95 @@
+#!./docviewer
+# View this document with docviewer, see 'docviewer --format' for input syntax
+#
+.title
+.content
+
+
+. Appliances
+============
+
+A machine that boots into a state were it fullfills some special purpose, usually without
+human interaction is called an appliance. Centauri-Soho support the following:
+
+    Networking Boot Menu
+    --------------------
+
+        Allows to switch between Network modes at boot time. Can start a desktop session.
+        Nice for testing.
+
+    Router
+    ------
+
+        Connects two Networks using NAT. Provides DNS and DHCP services. The default
+        configuration joins ethernet and wireless into an internal network and uses
+        mobile phone tethering via USB to connect to the internet.
+
+    Repeater
+    --------
+
+        A router configuration where an external net is connected via wireless and an
+        internal net is provided by ethernet. This uses NAT, so from the internal net
+        one can reach the extern net but not the other way round.
+
+    Switch
+    ------
+
+    Extender
+    --------
+
+
+    Kiosk
+    -----
+
+
+    HomeAssistant
+    -------------
+
+. Router and Repeater
+=====================
+
+    Writing an Udev-Rule to handle a mobile phone
+    ---------------------------------------------
+
+
+. Switch and Extender
+=====================
+
+
+. Network Boot Menu and Kiosk
+=============================
+
+. HomeAssistant
+===============
+
+. Technical Details
+===================
+
+    Dialup
+    ------
+
+    Access Point
+    ------------
+
+    Arp Proxy and DHCP Relay
+    ------------------------
+
+    Autologin
+    ---------
+
+The 'Network Boot Menu', 'Kiosk' and 'HomeAssistant' appliances use the kernel command line
+parameter 'centaurilogin=<user>'. This causes the following to be run (abbreviated):
+
+        centaurautologin@<user>             # service triggered by 'centaurilogin=<user>'
+        centaurisession autoloin <user> 6   # called by centaurautologin
+        agetty --autologin <user> tty6      # login, run bash
+        /home/<user>/.autologin             # executed by bash profile
+        centauristartup menu                # see below ...
+
+The '.autologin' is optional but usually a symlink to 'centauristartup'
+
+
+    Configuration
+    -------------
+
+See '/etc/default/centauriswitch' and '/etc/default/centauriswitch'

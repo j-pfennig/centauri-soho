@@ -1,0 +1,643 @@
+#!./docviewer
+# View this document with docviewer, see 'docviewer --format' for input syntax
+#
+.title
+.content
+
+. Using the 'centaurisoho' tool - Overview
+==========================================
+
+The section documentations 'centaurisoho' in detail. The 'centaurisoho' tool is
+an umbrella for various tasks and integrates some helper tools. The basic goal
+is to provide the Setup service for Centauri-Soho:
+
+    - Repository integration
+    - Helper: installer
+    - Helper: setup
+    - Helper: docviewer
+
+Terminology
+-----------
+
+    distribution            - a Debian distribution like 'bookworm' or 'trixie'
+    configuration           - a set of config files, for customization
+    packed                  - state of workspace that needs no special filesystem
+                              ownerships
+    unpacked                - state of workspace where file ownerships do matter
+    tar files               - used by 'centaurisoho' to implement file handling
+
+Workspace (Development, Release)
+--------------------------------
+
+For development and to generate release files the tool uses a 'workspace' folder.
+This folder contains files fetched from the Centauri repository (if used) or extracted
+from tar archives. While the tool user should not be root, some files will have
+root (or other system user) ownership. This is why 'centaurisoho' for some actions
+runs 'sudo' internally. The default user 'local' can be used as it has 'sudo' rights.
+
+Workspace (Setup)
+-----------------
+
+While installing Centauri-Soho on a target machine a temporary workspace is created.
+This folder contains only a subset of the Development Workspace. It is completely
+ephemeral and should be deleted after installation.
+
+Tar File Overwiew
+-----------------
+
+    archive.tar             - contains a packed workspace (see Life Cycle below)
+    distributable-seed.tar  - seed for a single distribution+configuration
+    distribution-seed.tar   - seed of all configurations of a distribution
+    distributable.tar       - release data to install a single configuration
+    distribution.tar        - release data for multiple configurations
+
+The Workspace Life Cycle
+------------------------
+
+The following is just a summary, more detailed descriptions follow later in this
+documentation:
+
+    [1.1] workspace creation from archive.tar | repository | github
+    [1.2] unpack distribution seed tars (not if cloned from github)
+    [1.3] github only: fix file ownerships
+
+    [2.1] update from Centauri repository (if used at all)
+    [2.2] create a seed tar (intermedeate)
+    [2.3] create distributable tar
+
+    [3.1] pack distribution seed tars
+    [3.2] save data to archive.tar | repository | github
+
+. Setting up a Machine using a distributable tar - installer
+============================================================
+
+This is about having a minimal base installation and using a distributable tar
+or a distribution tar to install Centauri-Soho on a Machine.
+
+    - a distributable tar (like: centaurisoho-bookworm-worms.tgz) includes just
+      one configuration (here: worms) for a Debian distribution (here: bookworm)
+
+    - a distribution tar (like: centauri-bookworm.tgz) includes one or more
+      configurations for a Debian distribution (here: bookworm).
+
+At the beginning no Centauri-Tools are installed at the target. 1st the tar has
+to be extracted into a workspace. This step does not yet install tools, this happens
+using the 'installer' helper tool that unpacks a 'seed.tar'. This 'seed.tar' contains
+the Centauri-Tools and library and an initial Repository:
+
+        tar -xaf centaurisoho-bookworm-worms.tgz    # unpack distributable
+        centaurisoho-bookworm/installer install     # install the seed.tar
+
+Now the 'centaurisoho' tool is ready for use. The installation process was
+described earlier in this documentation.
+
+When using a distribution tar 'installer' wants to know distribution and
+configuration, for example:
+
+        centaurisoho-bookworm/installer install centaurisoho worms
+
+Installing from a distributable tar is not the recommended method for everyone.
+Using the tools 'installer prepare' and 'centaurisoho backup' an image tar should be
+created first. Then the installation via image tars becomes the recommanded method
+for less experienced users.
+
+The 'installer' tool
+--------------------
+
+TODO
+
+. Creating an Image Tar for easy Installation
+=============================================
+
+The top level command to create a backup image is:
+
+        centaurisoho backup ...
+
+This command should not be run against a running system. It uses 'centauribackup'
+to create filesystem tars.
+
+    PLEASE NOTE
+    -----------
+
+The 'centauribackup' tool does backup and restore system data but is not intended
+to include user data (although '/home' folders are included). Centauri-Soho is server
+centric, so users should be able to backup/restore their data using the server (see:
+'centaurimirror')
+
+See tag file: 'WARNING_FOLDER_NOT_ARCHIVED' for folders not to be backed up. More backup
+exclusions are specified in: '/etc/defaults/centauribackup'.
+    ***********
+    -----------
+
+Besides the filesystem tars the backup image tar contains the 'imagetool' and its
+archive. So 'centaurisoho backup' runs 'imagetool' to create the archive:
+
+        centaurisoho-bookworm/imagetool archive     # create 'imagetool.xz'
+
+The 'imagetool.xy' archive contains parts of 'Centauri Tools' and 'centauri-bash-lib'
+that are needed to restore a backup on a plain Linux system.
+
+After this the 'centauribackup' tool is used to create the filesystem tars:
+
+        centauribackup ... boot root usr home shared
+
+Finally the constituents are copied into the final tar archive:
+
+        tar -cf ...  <filesytem tars>.xy imagetool imagetool.xy volumes
+
+The 'volumes' file is used by the restore operation to recreate btrfs volumens that
+are not included as filesystem tars.
+
+. Installing from an Image Tar - imagetool
+==========================================
+
+The restore does not depend on 'centauri-bash-lib' being installed, an installed version
+is even ignored to avoid version conflicts. Instead the 'imagetool' must be extracted
+first:
+
+        tar -xaf <backup_image>.tar imagetool
+
+In a second step run the 'imagetool' which extracts and installs 'imagetool.xz' to a
+temporary folder and runs 'centaurisoho restore' from there:
+
+        ./imagetool install <target_disk> <backup_image>.tar
+
+The <target_disk> will be partitioned and the filesystem data gets installed. See
+'imagetool --help' for more command line options. After restore 'centaurisoho config'
+will be run to obtain some configuration parameters. This has been described earlier
+in this documentation.
+
+The 'imagetool' helper
+----------------------
+
+The 'imagetool install' command does not depend on 'centauri-bash-lib' being installed
+already, whereas other command do. Here a command summary:
+
+    install         # install the seed tar
+    remove          # remove all Centauri-Soho stuff (before running setup steps)
+
+    prepare         # pre-configuration: add labels to partitions, rename system,
+                    # configure network. This step is not required to run setup
+                    # step1. Instead is allows to create an image backup that can
+                    # install a minimal system (like: worm9) via 'imagetool'
+
+    keyboard        # arranges that the 1st boot of a machine enters a keyboard
+                    # configuration dialog. This works by modifying the kernel
+                    # command line (see: centaurilogin=root) and works only before
+                    # setup step2
+
+    links           # make symlinks into the workspace from config/repository data
+                    # (usually run by 'install')
+    unpack          # unpack a seed.tar (usually run by 'install')
+
+    pack            # crete a seed.tar (usually run by 'centaurisoho dist')
+    dist            # crete a distributable tar (usually run by 'centaurisoho dist')
+
+    archive         # create an archive tar ((usually run by 'centaurisoho archive')
+                    # This creates a 'workspace master' tar that can be used to
+                    # archive and restore the workspace (intended for developer use)
+
+. The workspace Layout - File Ownerships
+========================================
+
+The layout of a packed workspaces looks like:
+
+        .
+        ├── dists
+        │   ├── bookworm                            # a distribution
+        │   │   ├── @misc
+        │   │   │   ├── clone-dynamic               # tool to merge repository data
+        │   │   │   ├── messages                    # message catalogue for setup
+        │   │   │   └── update-template             # tool to update templates
+        │   │   ├── OWNERS                          # see centauriowners
+        │   │   └── @seed                           # seed tars go here ...
+        │   │       └── seed-bookworm.tgz           # distribution seed
+        │   ├── @tools
+        │   │   ├── grub.minimal                    # a simple grub.cfg for installer
+        │   │   ├── imagetool                       # see centaurisoho backup|restore
+        │   │   ├── imagetool.files                 # list of imagetool.xy content
+        │   │   ├── installer                       # bootstrap install centauri-tools
+        │   │   └── setup                           # plugin for centaurisoho
+        │   └── trixie                              # another distribution
+        │           └── ...
+        ├── OWNERS
+        ├── README                                  # documentation ...
+        │   ├── docviewer.dynamic                   # viewer using centauri-bash-lib
+        │   ├── docviewer.package                   # stand-alone viewer
+        │   └── ...
+        ├── README-first
+        ├── docviewer -> README/docviewer.package   # tool links ...
+        ├── imagetool -> dists/@tools/imagetool
+        ├── installer -> dists/@tools/installer
+        └── setup -> dists/@tools/setup
+
+
+    OWNERS  these files are used by 'centauriowners restore' to fix filesystem
+            permissions after fetching the workspace from something like github.
+            The file is not used automatically.
+
+. Archives
+==========
+
+. Repository integration
+========================
+
+. Helper: setup
+===============
+
+Most of the setup process is handled by the 'setup' plugin script. This plugin is
+loaded by 'centaurisoho' to execute setup steps. While 'centaurisoho' should not be
+distribution dependent, the 'setup' plugin could be (but currently is not).n
+
+The 'plugin' script is more or less human readable and can be examined to understand
+how the setup process works in detail.
+
+The 'setup' tool loads 'setup.conf' to get some global configuration parameters and
+'passwords' to configure initial passwords.
+
+How to customize a configuration
+--------------------------------
+
+In this text we use 'worms' as the base configuration, just as it is
+contained in the 'centaurisoho-bookworm-worms.tgz' distribution tar.
+The parameters in 'setup.conf' are:
+
+    SOHO_DISTRO=bookworm
+
+        This is the Debian release in should not be modified. Changing the
+        Debian release is non-trivial.
+
+    SOHO_DOMAIN=worms.home
+
+        The domain name affects various ssl certificates: host and openvpn.
+        the distribution tar contains (dummy) certs for 'worms.home'. After
+        changing SOHO_DOMAIN you should recreate these certs.
+
+    SOHO_SONAME=worms
+
+        The distributed repository data contains at least data for 'worm0'
+        which is the default server name
+
+. Helper: docviewer
+===================
+
+. Distributable Tar Files, centaurisoho-master
+----------------------------------------------
+
+The 'centaurisoho' tool can manage the 'centaurisoh-master' folder to create distributable
+tar files. The file names are made of distribution and configuration names or simply
+contain 'everything':
+
+        centaurisoho-<dist>-<conf>.tgz  # example: centaurisoho-bookworm-worms.tgz
+        centaurisoho-everything.tgz     # contain a whole centaurisoho-master folder
+
+The 'everything' file is intended for archiving and is created using the command:
+
+        centaurisoho distr              # creates everything archive file
+
+Real distributables are created using a configuration name:
+
+        centaurisoho distr worms        # use current distribution and config 'worms'
+        centaurisoho distr trixy worms  # create 'centaurisoho-trixy-worms.tgz'
+
+Distributable tars can be unpacked into a 'centaurisoho-master' folder using:
+
+        centaurisoho expand             # unpacks 'centaurisoho-everything.tgz'
+        centaurisoho expand trixy worms # unpacks 'centaurisoho-trixy-worms.tgz'
+
+
+Managing the workspace
+======================
+
+Expand:     use 'tar -xaf <file>' to create a workspace
+
+Unpack:     if starting with an 'archive' or a 'distribution' tar, the
+            next step should be:
+
+            <workspace>/installer unpack <dist>
+
+Bootstrap:  All tools use 'centauri-bash-lib' and 'centauri-tools'. These
+            are contained in the 'seed' tar and get installed by:
+
+            <workspace>/installer inst <dist> <conf>
+
+Removal:    If no 'centaurisoho seed' or later installation step was run
+            the workspace, 'centauri-bash-lib' and 'centauri-tools' can be
+            removed completely:
+
+            <workspace>/installer remove
+
+            After an installation step was run removal will be difficult
+            and only partially supported (config changes not undone):
+
+            centaurisoho --info uninstall
+            <workspace>/installer remove
+
+            After a complete installation 'centaurisoho' offers to remove
+            the workspace.
+
+After the bootstrap step the high-level 'centaurisoho' can be used to manage
+the workspace:
+
+            centaurisoho pack
+            centaurisoho unpack
+            centaurisoho distr
+            centaurisoho archive
+
+
+
+Cloning
+=======
+
+Bootable images are created by 'centaurisoho' by cloning a booted image to
+a new medium (virtual disk, hard-disk, usb-stick or SD-card). Then the new
+clone is booted and software and configuration are installed to it. This can
+take several steps:
+
+    step1 (worm9)   boot a minimal debian or raspberry image, install the
+                    centaurisoho distribution tar and clone ...
+
+    step2 (worm8)   On a PC this image does EFI boot (even secure boot). The
+                    filesystem is BRTFS now (even for Rasberry). Now you will
+                    install a 'base' system. This is already a heavily pre-
+                    configured debian. Optinally you may install a minimal
+                    GUI (XTerm) at this point. Keep this image safe.
+
+    step3           The step2 system can be clones into server, workstation
+                    or appliances. Preconfigured are 2 servers (worm0 worm1),
+                    3 workstations (worm2 worm3 worm4) and 3 appliances (worm5
+                    worm6 worm7).
+
+The pre-configurations can be altered, custom configuration is supported,
+computers can be renamed (at cloning time or later). Exception: because of
+Samba AD/DC a server cannot be renamed after without reprovisioning Samba.
+
+
+Raspi
+=====
+
+The recommended setup procedure is to install the target configurations
+to SD-Cards and to boot the seed system (worm9) from an SD-Card too. This
+means that you need 2 .. 4 SD-Cards (each 8GByte or better) and one USB
+Stick.
+
+Do not try to run the installation process on a Rasberry PI older than
+PI 4 or with less than 2GByte memory. Create bootable SD-Cards as described
+below. Use a 32-bit Rasberry OS only for PI 1/2 and a 64-bit OS for PI 3/4/5.
+
+If you already run a server it is recommended use your own WEB Proxy (squid
+does a good job, configure at least 500 MBytes of cache). THE PROXY IS NOT
+A REQUIREMENT but can make things more reliable and faster.
+
+Remark: Working with an external USB device is challenging for a Rasberry
+PI 3/4 (might become better with Pi 5) as power requirements of an external
+Device might temporarily exceed the available current. This typically causes
+an USB reset, which in turn usually causes an IO error. You will not notice
+this directly unless running 'journalctl -f' in an extra console session.
+
+Note on BTRFS: unless installing on a 32-bit Raspi centaurisoho uses BTRFS
+as filesystem. BTRFS is very good in detecting hardware errors like rotten
+bits or IO Problems (see above). Typically BTRFS changes to read-only mode
+for the whole filesystem after IO errors. DO NOT BLAME BTRFS for this!
+Make sure that your hardware works correctly. If 'journalctl -f' does not
+show an IO error (or USB reset) you might still have a memory problem.
+
+1   Install the seed system to an SD-Card (step 1)
+1.1 extract the mimimal Raspberry PI OS to an SD-Card
+1.2 boot that card, configure WLAN (if needed) and locales
+1.3 enable USB-Boot
+1.4 install centaurisoho
+1.5 perform centaurisoho setup step 1
+
+2   Install a base system to a USB-Stick (step 2)
+2.1 Boot the seed system from SD-Card
+2.2 perform centaurisoho setup step 2
+
+3   Optional: Install a client system to a SD-card (step 3)
+3.1 Install the destination SD-card and boot from base USB-Stick
+3.2 perform centaurisoho setup step 3/client
+
+4   Optional: Install a server system to a SD-card (step 3)
+4.1 Install the destination SD-card and boot from base USB-Stick
+4.2 perform centaurisoho setup step 3/server
+
+5   Optional: Install an appliance system to a SD-card (step 3)
+5.1 Install the destination SD-card and boot from base USB-Stick
+5.2 perform centaurisoho setup step 3/appliance
+
+
+Virtual Machine
+===============
+
+
+Bare Iron / Custom
+==================
+
+
+
+
+x) Boot worm9 ...
+x) Base: worm9 -> worm8 USB-Stick
+x) Client: worm8 Stick -> SD-Card
+x) Server:  worm8 Stick -> SD-Card
+x) Appliance:  worm8 Stick -> SD-Card
+
+Setup and Configuration
+=======================
+
+centauri-soho comes as a tar archive (see 'distribution tar'). To start
+an installation this tar must be unpacked. The result is a 'working folder'
+that contains the so called 'seed tar', some configuration data and the
+following tools:
+
+    setup           # the setup tool
+
+    seed-tool       # a maintenance tool, also used by setup usually you
+                    # will not run the seed-tool by yourself
+
+The 1st installation step is 'setup seed'. It uses 'seed-tool' to unpack
+'centauri-bash-lib', 'centauri-tools' and a 'repository' from 'seed.tgz'.
+
+After the 1st step the tool 'centaurisoho' can be used for configuration
+and further installation steps. For simple configuration things you can
+modify 'setup.conf' and 'passwords' as described below.
+
+For deeper configuration work, that includes repository changes. you start
+by unpacking the 'seed tar' into the 'working folder', which we then call
+'workspace'. Now the sub-folders 'dynamic' and 'static' contain most of the
+repository data.
+
+    seed-tool unpack        # unpack repository data to a workspace
+    seed-tool pack          # pack repository data into a new seed tar
+    seed-tool dist <file>   # create distribution tar from workspace
+
+The 'centaurisoho' contains similar functions but cannot be used before
+running 'setup seed'. In contrast 'seed-tool' is stand-alone and can be
+used at any time.
+
+
+The centauri-soho Debian configuration
+======================================
+
+centauri-soho is a client / server configuration for SOHO users. It comes
+with a setup tool that installs the software in 4 steps:
+
+    step 1  prepare a debian image
+    step 2  make an EFI bootable image with BTRFS filesystem
+    step 3  make base image, serve and client images
+    step 4  install a desktop like lxqt or kde
+
+
+Use Debian Installer to create a minimal installation
+=====================================================
+
+The starting point is always a fresh, minimal Debian installation. In the
+debian installer select nothing but language, keyboard and system tools
+(the last item in the list of software to be installed).
+
+Important: (1) use a virtual machine (VirtualBox would be fine)
+           (2) disable EFI before booting the installer image
+           (3) use 'local' as name of the user created by the installer
+
+
+Unpack the distribution tar
+===========================
+
+Boot the fresh image, login as root and copy a 'centaurisoho' distrubution tar
+to '/root' in the fresh image. Running 'tar -xaf centauri-soho-<name>.tgz'
+results in this directory tree:
+
+/root/
+    centauri-soho-worms/        # base folder
+        README/                 # documentation folder
+        README-first            # brief description of setup
+        packages/               # lists of packages to (de-)install
+        passwords               # initial passwords
+        seed.tgz                # repository, tools and library
+        setup                   # setup script
+        setup.conf              # configuration
+
+
+The centauri-soho setup - step 1
+================================
+
+The 'setup' script has two main purposes:
+
+    (1) install repository, centauritools and centauri-bash-lib
+    (2) perform setup steps (using 'centaurisoho')
+
+In step (1) you unpack the seed tar and install/deinstall a few
+debian packages, see 'packages/step1':
+
+    $ cd centauri-soho-<name>
+    $ ./setup seed.tar
+
+By this step the centauritools and centauri-bash-lib got installed.
+The centauri repository for <name> is located at:
+
+        /var/centauri/configs/<dist>/<name>
+
+For conveniency two symlinks into the repository are created:
+
+        centaurinetcfg              # network configuration
+        centauriusers               # user configuration
+
+Tip: it is possible to just extract the seed tar without installing
+any package:
+
+    $ ./setup --unpack seed.tar     # unpack only
+
+
+Customizing
+===========
+
+It is recommended not to customize the setup before a 1st test with
+the default settings, skip to step 2.
+
+Customizing takes the following steps:
+
+    (1) set reasonable passwords:            edit 'passwords'
+    (2) configure your network and machines: edit 'centaurinetcfg'
+    (3) configure your users and mailboxes : edit 'centauriusers'
+    (4) update 'setup.conf', centaurisoho does this for you
+
+DO NOT FORGET to run 'centaurisoho customize'. It checks your
+configuration and updates 'setup.conf':
+
+    $ centaurisoho customize
+
+After testing yor configuration you create a new <dist> tar:
+
+    $ centaurisoho distib <name>
+
+The 'setup.conf' update works like this:
+
+    (1) update domain name from centaurinetcfg
+    (2) if the generic server name did change, rename all
+        default hosts from <oldname><N> to <newname><N>
+    (3) check if default hosts are configured
+
+
+Creating an EFI bootable image with BTRF filesystem - step 2
+============================================================
+
+Attatch a second disk to your (virtual) machine and reboot into the
+image used in step 1. Find of the <disk> name of the second disk
+and run:
+
+    $ centaurisoho clone /dev/<disk>
+
+If you don't know better answer all questions with the default value
+(e.g. simply hit return). The result should be an EFI-bootable system.
+
+Now turn on EFI boot on your (virtual) machine and reboot. Usually the
+original Debian image from step 1 will be ignored by EFI (for being a
+bios boot image) and the cloned image should boot. Especially when
+using a virtual machine you may use this to switch between booting the
+step 1 image or an EFI image.
+
+
+Grub booting, EFI variables, secure boot
+========================================
+
+The media created by 'clone' are by default 'removable media', that is:
+without EFI boot variables the EFI will run a default boot loader.
+
+Step 2 dir install EFI Grub, but not in the debian way. If you have
+no EFI variables setup, usually Grub will boot. Let it do its job and
+and eventually run:
+
+    $ centauriefilinux menu grub -- menu systemd
+
+This creates two new EFI boot variables. Also check:
+
+    $ centauriefilinux menu delete <n>
+    $ centauriefilinux menu order <n>...
+
+For full support of EFI secure boot under Linux a so called MOK is used.
+The key must be registered in an EFI variable. So if you turn on secure
+boot you should get prompts asking you to register the MOK (we created
+one in step 2). If that fails you may try 'centauriefilinux':
+
+    $ centauriefilinux import       # let EFI import the MOK
+
+
+secure systemd-boot
+===================
+
+Debian bookworm does not yet support secure systemd-boot, but centauri-soho
+does and uses so called UKI images. These are generated by 'centauriefilinux'
+and are signed with the MOK key. Also the systemd boot menu is maintained.
+
+Debian systemd-boot and Grub configuration are incompatible with centauri-soho
+and are overridden:
+
+        grub-install            would do harm, disabled via centauridivert
+        systemd-boot-update     no secure boot support, service is disabled
+        <hook files>            there are some hook files used by kernel updates
+                                that are replaced by repository versions.
+
+The way centauri-soho handles systemd-boot (and Grub) makes kernel and system
+updates work without breaking Debian. UKIs get automatically updated and signed.
+
+

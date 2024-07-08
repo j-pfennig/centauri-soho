@@ -1,0 +1,268 @@
+════════════════════════════════════════════════════════════════════════════════
+README-first - General Information about Centauri-Soho
+════════════════════════════════════════════════════════════════════════════════
+
+More documentation about Centauri-Soho can be found in sub-folder 'README' of
+any workspace folder. There is a little documentation viewer, use it like:
+
+    # without installation ...
+
+    > tar -xaf centaurisoho-xxx-yyy.tar
+    > centaurisoho-xxx-yyy/docviewer
+
+    # after installation ...
+
+    > centaurisoho doc
+
+Things to know:
+
+    Centauri-Soho   is not a linux distribution, it is just an installation
+                    and configuration system.
+
+    centaurisoho    is a 'centauri-tool' to install debian systems that are
+                    pre-configured for a SOHO environment.
+
+    centauri-tools  is a collection of tools to manage a debian system.
+
+    centauri-bash-library   is a library written in bash script that powers all
+                    'centauri-tools'.
+
+    100% Debian     Obviously a lot of things have to be configured to make the
+                    AD/DC, NFSv4, IPv6 and other network stuff work. But at no
+                    point Debian gets really hacked. No custom binary tools are
+                    installed either.
+
+    passwords       The default 'root' password is 'pw..R'. See 'passwords' in
+                    the workspace folder for more.
+
+    booting         Centauri-Soho uses disk-labels for booting and mounting.
+                    The preferred boot loader is systemd. Before installation
+                    step2 grub is used. A 'grub.cfg' script that handles labels
+                    is installed and the 'update-grub' command is disabled via
+                    'dpkg-divert'.
+
+Supported platforms are pc-64bit and raspberry 32/64bit. The only supported OS
+is debian (aka Raspberry OS). You might have some success trying the debian
+edition of Linux-Mint or using another debian derivate. But Ubuntu, Suse or
+RedHat, just to mention some, will surely not work.
+
+
+────────────────────────────────────────────────────────────────────────────────
+Installation Targets
+────────────────────────────────────────────────────────────────────────────────
+
+Centauri-Soho generates bootable images for computers that are used as ...
+
+    servers         there can be a primary and optinally a secondary server.
+                    The two servers form a cluster, the secondary server can
+                    take over on failure of the primary server.
+
+                    The server(s) run Samba AD/DC to form a Domain that can
+                    be joined by linux and windows computers.
+
+    workstations    Mobile or stationary computers that are domain members.
+
+    appliances      Special pupose computers like router, switch, repeater
+                    kiosk or HomeAssistant.
+
+It is not a requirement to have a domain server. Workstations and appliances
+also can be used off-domain. The domain network should be behind a router. The
+network then supports IPv4 (router does NAT) and IPv6 (the server uses router
+advertisments to distribute an internal address prefix).
+
+
+────────────────────────────────────────────────────────────────────────────────
+Distribution, Development, Workspace and Tar Files
+────────────────────────────────────────────────────────────────────────────────
+
+Here a brief introduction to the data structure used by Centauri-Soho. Basically
+it is a 3-dimensional file space:
+
+        1   the debian distribution (currently 'bookworm' and 'trixie')
+        2   the configuration (example configs are 'worms' and 'trixies')
+        3   the data belonging to a <dist>_<conf> pair.
+
+This stuff is packed into various tar files that contribute to a so called
+workspace:
+
+        centaurisoho-master.tgz     - the entire development workspace
+        centaurisoho-<dist>.tgz     - workspace sub-set for a distribution
+        centaurisoho-<dist>-<conf>.tgz
+                                    - a 'distributable' tar used to install
+                                      a specific dist/config on a target
+
+Internally more tars are used, but at this point only 'seed' tars are of
+interrest. These are used as vehicles to update the file system of the
+target at installation time (e.g. tar is our low-low-level installer):
+
+        seed-<dist>-<conf>.tgz      - a 'seed' tar (inside the workspace)
+
+Only the three first mentioned tar types can be expanded to a workspace. The
+'seed' tars are for internal use only. There are two tools used to manage a
+workspace (and to perform an installation):
+
+        <workspace>/installer       - a low-level and bootstrap tool
+        /centauritools/centaurisoho - a high-level management tool that
+                                      becomes available after the 1st run
+                                      of installer.
+
+For most of the following documentation it is assumed that you have
+expanded a 'distributable' tar on your target machine. For example:
+
+        sudo -i
+        tar -xaf centaurisoho-bookworm-worms.tgz
+        centaurisoho-bookworm-worms/installer install
+        centaurisoho seed
+        ...
+
+
+────────────────────────────────────────────────────────────────────────────────
+Installation basics
+────────────────────────────────────────────────────────────────────────────────
+
+If not starting from scratch, your choices are:
+
+        (1) Download an OVA VM image
+        (2) Download a disk image tar
+        (3) Download a distributable tar [expert only]
+
+To get a first impression and for testing try (1). Otherwise use (2) to install
+a disk image tar. If you are using a 'debian-bookworm' or 'debian-trixie' image
+then install it with host-name 'worm9' or 'trixie9' and continue with the next
+section of this text. Other disk image tars are pre-installed. An installation
+from scratch uses method (3).
+
+────────────────────────────────────────────────────────────────────────────────
+Installing from a distributable 'centaurisoho-xxx-yyy.tgz' file
+────────────────────────────────────────────────────────────────────────────────
+
+Centauri-Soho is installed from a 'workspace' that is extracted from a tar file.
+If you already have a workspace and '/root/centaurisoho-xxx-yyy/setup' exists
+this documentation section and the next one are not relevant for you, skip over
+them if you like.
+
+In the tar file name 'xxx' stands for an operating system nick name and 'yyy' is
+a specific configuration. After extracting the tar file run:
+
+    > tar -xaf centaurisoho-xxx-yyy.tgz
+    > centaurisoho-xxx-yyy/installer install
+    > rm centaurisoho-xxx-yyy.tgz
+
+This unpacks a 'seed.tar' into your installed system so that you can use the
+'centauri-tools' namely 'centaurisoho'. When you are finished using the centauri
+things, enter the following the remove installed files from your system:
+
+    > centaurisoho-xxx-yyy/installer remove
+    > rm -r centaurisoho-xxx-yyy
+
+Remark: the 'remove' command does not undo any configuration changes that were
+applied to your system using 'centaurisoho' or other 'centauri-tools'.
+
+Usually a 'distributable' tar is installed on the target host. Alternate
+installation methods are 'image' tars and virtual machine images. These methods
+apply no changes to your host system.
+
+
+────────────────────────────────────────────────────────────────────────────────
+Disk Image Tar Files
+────────────────────────────────────────────────────────────────────────────────
+
+This kind of file contains the backup of a Centauri-Soho installation (e.g. the
+workspace is included in the backup data) and the 'imagetool' to extract the
+data to a block device that will become the target root disk (like a removable
+dis, USB stick or SD-card). Disk images can not easily be installed to the host
+system itself.
+
+In the following example we use a tar created from host 'worm8' with 'x86' HW
+architecture. As installation can run on a native linux, the 'imagetool' must
+be extracted first:
+
+        > tar -xaf worm8-disk-x86_2024-05-06.tar imagetool
+
+Next we run 'imagetool' and install to the '/dev/sdc' block device:
+
+        > ./imagetool install worm8-disk-x86_2024-05-06.tar /dev/sdc
+
+The tool will ask a few questings to configure the target system. See below.
+
+
+────────────────────────────────────────────────────────────────────────────────
+Virtual Machine Images
+────────────────────────────────────────────────────────────────────────────────
+
+You will probably import an '*.ova' file into VirtualBox. After boot login as
+user 'root' with password 'pw..R'. You may run a simple configuration menu:
+
+        > centaurisoho config query
+
+See below for details on configuration.
+
+
+────────────────────────────────────────────────────────────────────────────────
+Installing from scratch
+────────────────────────────────────────────────────────────────────────────────
+
+This is possible but beyond the scope of this text. See the full documentation
+for a description of this process.
+
+
+────────────────────────────────────────────────────────────────────────────────
+Configuration menu and files
+────────────────────────────────────────────────────────────────────────────────
+
+For a first try you should use the configuration menu (query). More complex
+things an can be configured be editing some files. Most configuration changes
+become only effective after the next boot.
+
+
+The menu (query)
+────────────────
+
+You will be prompted for a few parameters like:
+
+    centaurisoho: Domain name  (updates certs)            [worms.home]:
+                  External DNS (- for none)           [<please enter>]:
+                  Default machine name prefix                   [worm]:
+                  Primary server name                          [worm1]:
+                  Network IPv4 address and mask         [10.10.0.0/21]:
+                  Primary router name                         [router]:
+                  Primary router IPv4 address              [10.10.1.1]:
+                  WLAN client SSID  (- to disable)             [worms]:
+                  WLAN AP SSID      (- to disable)          [worms-ap]:
+                  WLAN password     (- for random)    [<please enter>]:
+    centaurisoho: Save parameters and update system configuration [Y/n]?
+
+Initially query reads 'setup.conf'. Later is uses '/etc/default/centaurisoho'.
+It will update 'setup.conf' and will recreate '/etc/default/centaurinetcfg'.
+
+
+File 'setup.conf'
+─────────────────
+
+Optionally edit this file in the workspace folder to set-up an initial config
+that is used be the menu and further installation steps. Remark: editing this
+file does not trigger any updates. The file is used by 'centaurisoho' when
+running installation steps.
+
+
+File 'passwords'
+────────────────
+
+Initial passwords are set by this workspace folder file (NOT /etc/passwords).
+At a late installation step your will be prompted to use 'centauriusers' to
+set permanent passwords.
+
+
+File 'centaurinetcfg'
+─────────────────────
+
+Very many things in Centauri-Soho are controlled by the network configuration
+in this file. The initial version created from a template when using the menu.
+After manual edits of 'setup.conf' run:
+
+    > centaurisoho config network
+
+BEWARE: any existing '/etc/default/centaurinetcfg' will be replaced! So edit
+'centaurinetcfg' only after the initial installantion steps.
+
+════════════════════════════════════════════════════════════════════════════════

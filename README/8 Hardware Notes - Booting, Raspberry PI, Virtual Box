@@ -1,0 +1,145 @@
+#!./docviewer
+# View this document with docviewer, see 'docviewer --format' for input syntax
+#
+.title
+.content
+
+. Booting via systemd, Grub or Firmware
+=======================================
+
+For PC systems the preferred boot method is systemd-boot which is simple to use
+and to configure. This method depends on an EFI installation. As a fallback (or
+for a non-EFI installation the Grub boot loader is intalled.
+
+For non-PC systems (Raspberry Pi) firmware boot is used, as there is neither a
+BIOS nor an EFI available at boot time.
+
+Centaurisoho can auto-configure systemd-boot and firmware-boot. For Grub there is
+an auto-generated 'grub.cfg' that should handle most situations by default. This
+Grub configuration has nothing in common with the way Debian or Ubuntu do it.
+
+For an EFI system the EFI partition gets mounted at '/mnt/boot' and is symlinked
+to '/boot/EFI'. The '/boot/grub' symlink points to the grub-EFI folder and for the
+systemd loader the '/boot/entries' symlink is provided, the actual boot entries
+are auto-generated, see below.
+
+IMPORTANT: centaurisoho uses disk volume labels to identify boot devices whereas
+most linux distros use partition UUIDs. The centaurisoho way has some disadvantages
+but makes the disk images more portable and allows a much simpler boot configuration
+management.
+
+The below mentioned tools modify the debian standard configuration in a way to run
+automatic automatic kernel updates as needed by Centauri-Soho.
+
+
+. Details of systemd-boot support, secure boot
+----------------------------------------------
+
+The central concepts is use are: UKI (unified kernel image) and the Loader Config.
+Centaurisoho does not use a Debian configuration, but has its own 'centauriefilinux'
+tool that handles all details, including secure boot. The later is achived by using
+an UKI and signing it with a MOK (Machine Owner Key). MOK and UKI are created, installed
+and updated by 'centauriefilinux'. The MOK is also installed for DKMS so that custom
+kernel modules get correctly signed.
+
+The systemd boot loader uses a simple menu system. These menu entries are also managed
+by 'centauriefilinux'.
+
+Secure boot using a MOK requires the MOK to be registers with the BIOS. The tool
+'centauriefilinux' tries to let the BIOS register the key at next boot time. When the
+MOK is not yet registered, the boot process should use Grub as a fallback loader.
+Often the automatic handling of secure boot simply works, at least the systemd boot
+loader is used after the second boot (Grub does register the MOK key at 1st boot).
+
+
+. Details of Grub support
+-------------------------
+
+IMPORTANT: in centaurisoho grub is not configured as most linux distros do. Instead
+there is only one 'grub.cfg' file that checks the system configuration at boot time
+to create a custom boot menu. See:
+
+        /etc/network/interfaces.router          # enable router mode appliance
+        /etc/network/interfaces.repeater        # enable repeater mode appliance
+        /etc/network/interfaces.switch          # enable switch mode appliance
+        /var/lib/centauri/centaurihass.enabled  # enable homeassistant appliance
+
+As centaurisoho prefers a btrfs filesystem the grub core images becomes quite large.
+This implies that a grub bios partition is present.
+
+
+. Details of firmware-boot support
+----------------------------------
+
+Currently the Raspberry has its own firmware based boot logic, EFI us not yet the
+default (although Ubuntu runs an EFI bios the run Grub).
+
+The firmware can boot the OS is using an initrd so that btrfs can be supported as
+root filesystem. The details are handled by the 'centauriraspi' tool, see below.
+
+
+. Working with a Raspberry PI
+=============================
+
+Centauri-Soho uses 32 and 64 bit 'Raspberry PI OS' which is based on Debian. Currently
+Raspberry offers more Wayland support, but this is not used by Centauri-Soho as it is
+not yet supported by Debian Bookworm. In general there is little difference between
+Raspberry and Debian, the Centauri Repository handles both flavours.
+
+Waning using 32 bit 'armhf': the Debian binaries are not compatible with 'Raspberry Pi Zero'
+hardware. Do not add Debian Repositories to your apt 'sources.list' when using such
+hardware.
+
+The Raspberry hardware is a bit shaky, in particular the power supply is important. When
+using an insufficient supply all sorts of trouble may happen. Centauri-Soho uses btrfs as
+its filesystem (except for a 32 bit install, where ext4 is used). Btrfs will detect write
+errors and complain harshly. This is not a bug, it is a great feature. Don't blame btrfs.
+Also recommended is the use of 'debsum -c' to verify md5 checksums of installed software
+(don't get confused by some diversions that are reported mistakingly as errors).
+
+The configuration of '/boot/firmware' is hndled automatically via 'centauriraspi'.
+Centauri-Soho prefers partion labels over partition uuids (which Raspberry prefers).
+Here we have a difference with the 32bit version that needs to use uuids for booting.
+
+Always set the Raspberry boot mode via 'centaurisysinit' which then runs 'centauriraspi':
+
+        centaurisysinit list            # list boot modes, create config
+        centaurisysinit default         # switch to a mode as boot default
+
+        centaurisysinit default menu    # example: use menu mode
+        centaurisysinit default 0       # example: become a workstation
+
+Finally one should know that the WLAN configuration needs an explicitly set country code.
+Most PCs do this by firmware, the Raspberry does not. No country code - not WLAN. The file
+'/etc/wpa_supplicant/wpa_supplicant.conf' should have 'country=xx' set. Centaurisoho does
+this for you, finding the country code using the configured time-zone.
+
+. Using VirtualBox and centaurivbox
+===================================
+
+VBox is the recommended VM for Centauri-Soho. The provided OVA images should run without
+problems. Anyhow, VBox has problems with Btrfs and with DHCP networking. Please note:
+
+        For virtual disks enable:  'Use Host I/O Cache' or Btrfs gets corrupted (this is
+                                   a known problem). Corruptions typically happen when
+                                   deleting Snapshots.
+
+        network bridging via WLAN: The VirtualBox kernel driver does miraculous things
+                                   to make this work, but is sometimes fails with DHCP.
+                                   It may take long (minutes) to assign an IP address
+                                   and in the worst case needs a host reboot to work.
+
+Beside these limitations the VBox version provided by Debian Bookworm (7.0) works fine.
+
+Centauri-Soho comes with 'centaurivbox' to run VirtualBox using a proxy user (vbox).
+So virtual maschines and virtual disks are shared among users. The tool is integrated
+into Centauri-Soho. Unfortunately it is quite complex but it is not a requirement:
+
+### TODO ###
+
+        centaurivbox setup              # wire up and create the 'VBox' Btrfs volume
+                                        # Note: you have to install the kernel modules
+                                        # used by Virtual Box via 'dkms' by yourself!
+
+        centaurivbox gui                # start the VBox GUI as user 'vbox'
+        centaurivbox cmd                # command line mode, user 'vbox'

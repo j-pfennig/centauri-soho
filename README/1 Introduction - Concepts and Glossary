@@ -1,0 +1,389 @@
+#!./docviewer
+# View this document with docviewer, see 'docviewer --format' for input syntax
+#
+.title
+.content
+
+1.1 Introduction to Centauri-Soho
+=================================
+
+Centauri-Soho is a solution to install and configure Debian Linux systems. It has
+various target types: server, client and appliances. Soho stands for small-office
+home-office, so there is a lot of stuff preconfigured for networking, file sharing
+and user management.
+
+Supported platforms are Intel/AMD x86 Raspberry 32bit and 64bit. The Debian Edition
+of Mint Linux may work too. Ubuntu based distributions do not work as Ubuntu tweaks
+Debian too much.
+
+The word 'small' before 'soho' implies that you should not expect to happily have more
+than 10 concurrent users, more than 20 active client workstations, more than 100
+configured machines or more than 40 user identities. These limits are not so much
+depending on machine power, rather than on the scaling behaviour of the implementation.
+
+The software is built upon a repository of configuration data, and a set of tools. All
+tools are bash-scripts and use a library written in bash. There are no binaries, nothing
+needs to be compiled.
+
+
+1.2 Concepts
+============
+
+The Centauri-Soho software is designed with some fundamental concepts in mind. A lot of
+this is based on the assumption that typical home user hardware and (Raspberry PIs) are
+less reliable than hardware designed for professional or industrial use. Bit-rot due to
+missing memory ECC is assumed to happen but should be recoverable.
+
+Centauri-Tools
+--------------
+
+A collection of tools to manage Centauri-Soho. The tools use a common library called
+'centauri-bash-lib'.
+
+Repository
+----------
+
+Configuration data, tools and library are stored in the 'Centauri Repository'. The
+master instance lives on tha primary server and is replicated (in parts) to clients.
+
+Primary and Secondary Server
+----------------------------
+
+It is server centric and there can be one primary server and one optional secodary backup
+server. Clients auto-detect the available server. The primary server mirrors data to the
+secondary server. Data on the Server is considered as safe, while client data is considered
+as volatile. Client hardware may be faulty or can be stolen.
+
+Clients
+-------
+
+As much as possible clients should be data-less, e.g. either data on the server is used
+via NFS/Samba or local data is replicated via 'unison'. Clients download secrets from the
+server and only keep them locally in volatile storage. At least notebooks should be
+configured to keep sensible data in encrypted folders, see 'encfs'. Ssh-keys and certificates
+are managed on the server, so they can be revoked if needed.
+
+Appliance
+---------
+
+A machine that boots into a state were it fullfills some special purpose, usually without
+human interaction is called an appliance. Centauri-Soho comes with: router, switch, kiosk
+and HomeAssistant support.
+
+Active Directory and User Management
+------------------------------------
+
+Windows support is a 'must have' in an office environment. So the server configuration uses
+Samba AD/DC. Even as you can use local user accounts the default are AD accounts. The local
+user accounts are shared between clients thanks to the repository. But local account cannot
+be used from Windows.
+
+Samba AD/DC comes with its own Kerberos implementation and tweaks DNS. Samba also implements
+windows file sharing. This is all supported via centauri-tools.
+
+To some extent user accounts can optionally be managed from windows. From the linux side
+samba-tool should be used. There exist high level centauri-tools like 'centaurikerberos' and
+'centauriusers' to simplify administration.
+
+Samba and NFSv4 File Sharing
+----------------------------
+
+Basic Samba run on client machines by default. User authorization is delegated to the AD/DC
+server if the client is connected to the home network. So windows clients see Linux file shares
+and the other way around Linux clients see Windows shares. On Linux there is even some sort
+of Network-Neighborhood, implemented by 'centaurimounter'.
+
+For linux to linux NFS is a better choice than Samba. Unfortunately NFS versions earlier than
+v4 are not acceptable due to security concerns and v4 is difficult to manage. This is why only
+the server has NFSv4 exports. Client-to-client file sharing should make use of Samba.
+
+Server-to-client NFSv4 is supported via Kerberos authentication. The kerberos implementation
+is provided by Samba. The 'centaurikerberos' tool knows to make this work.
+
+Networking
+----------
+
+Stationary networking via Ethernet and WLAN is supported with DNS, DHCP and a firewall. The
+configuration is shared by all clients and managed via 'centaurinetcfg'. There is a single
+text file that contains a declarative network description that gets implementated using the
+centauri-tools.
+
+Mobile networking via attachable routers or thethering phones is optional. See 'appliances'
+for details. Basically every client computer can be made a router the connects a local network
+over a mobile service provider to the internet.
+
+File System and Data Protection
+-------------------------------
+
+Using the Btrfs filesystem is strictly recommend. This includes automatic snapshots. Btrfs
+protects against hardware bit-rot or user mistakes. Backups are handled separately and can
+include automatic traditional backups or mirroring of data.
+
+Snapshots, Backups and Mirrors
+------------------------------
+
+Data can be harmed be human or program failure. Centauri-Soho strictly uses Btrfs as its
+filesystem and automatically manages snapshots to protect against this type of failures.
+
+Hardware failure and bit-rot can be detected by Btrfs but it needs a Backup for recovery.
+Centauri-Soho has the 'centauribackup' and 'centaurirestore' tools for this purpose. These
+are intended to backup/restore the operating system and a minimal user environment.
+
+For a full backup of user data the 'centaurimirror' tool is used to mirror a system to a
+backup disk. Multiple clients clients can share the same disk, data gets deduplicated. A
+mirror disk can be connected to any system and can be used across the network from all
+clients.
+
+A server can have a mirrot disk to automatically mirror data and additionally a secondary
+server can mirror the primary server.
+
+Automation
+----------
+
+Automation of updates, snapshots or backups is default. Also backup data (and snapshots)
+are arranged as time-lines: daily, weekly and monthly.
+
+
+1.3 Features
+============
+
+    Appliances
+    ----------
+
+    - router:       external network to internal net, mobile network tethering
+    - repeater:     connect a local subnet via NAT to another net via wlan
+    - extender:     bridge a local subnet via wlan (software level 3 bridge)
+    - switch:       like extender but uses WLAN WDS (4addr mode)
+    - kiosk:        simple GUI mode for appliances
+    - home assistant: run HA core
+
+    Network and Domain
+    ------------------
+
+    - server centric
+    - general services
+    - active directory
+    - E-mail
+    - NFSv4
+    - Samba
+    - location awareness
+    - ipv6
+    - firewall
+    - appliances
+
+    Administration
+    --------------
+
+    - repository
+    - centaurinetcfg
+    - centauriusers
+    - more ...
+
+    Security
+    --------
+
+    - centaurisecrets
+    - centauriencfs
+    - centauricerts
+    - staging repository
+    - more ...
+
+
+1.4 Glossary
+============
+
+centauri bash library
+---------------------
+
+centauri-bash-lib is a library for the bash shell written in bash. Over the years
+bash has become a powerful script language. A number of loadable built-ins
+makes it possible to avoid running external tools in many cases. So the resulting
+scripts run reasonably fast.
+
+The library is divided in modules that get dynamically loaded as needed. It contains
+a lot of debug support and is well documented. Documentation for library and tools
+is additionally available as HTML.
+
+centauri tools
+--------------
+
+Mostly system administration tools based on centauri-bash-lib. These tools have a GNU
+core binary like command line. Documentations is provided via option '--help'. The
+'centaurihelp' tool can be used as a documentation reader in (text mode) or can
+create HTML.
+
+centaurisoho-bookworm (or centaurisoho-trixie)
+----------------------------------------------
+
+A folder that results from the extraction of a distributable tar file.
+This folder contains a seed tar and the 'installer' program that is
+used to install the seed. Further installation steps use the tool
+'centaurisoho' which becomes available after installing the seed.
+
+centaurisoho-master
+-------------------
+
+A folder that contains the data to build 'distributable tar' files.
+The folder content includes configuration data and tools and is also
+called the 'workspace'. The tool used for management is 'centaurisoho'.
+
+centaurisoho domain
+-------------------
+
+Basically the Samba AD/DC domain of a local network. This network must not
+be exposed to directly to the internet. Use a router with port forewarding
+instead. The primary server of a centaurisoho domain handles AD/DC, DHCP,
+DNS, IPv6 router advertisments and other network services.
+
+centaurisoho setup
+------------------
+
+The procedure of creating a centaurisoho system. This either need a base
+system and a distributable tar or an image tar. Details are described later
+in this documentation.
+
+centaurisoho system
+-------------------
+
+A customized Debian system that was created using the centarisoho
+setup.
+
+centaurisoho tool
+-----------------
+
+The program used to perform a centaurisoho setup. Usually a distributable
+tar is extracted on a minimal Debian installation and the seed tar is
+installed. After these steps 'centaurisoho' can be run to continue the
+setup.
+
+clone
+-----
+
+Bootable media are created by cloning an existing system and then using
+'centauribackup' to rename the clone. Volume labels can be renamed using
+'centaurimedia'. A simple way of cloning a system is using 'centaurisoho'
+backup and restore.
+
+configuration
+-------------
+
+Systems created by 'centaurisoho' have an example default configuration
+(like 'worms' with debian bookworm). Any number of extra configurations
+can be customized but must properly added to 'centarisoho-master'.
+
+imagetool
+---------
+
+Tool to install an image tar to a disk medium. The 'imagetool' script is included
+in backups. If run after extracting it from the backup this tool also
+extracts the required components and starts the installition by running
+'centurisoho restore'. The installation process should run on any up to date
+Linux installation.
+
+distributable tar
+-----------------
+
+A tar file containing the centaurisoho software (including tools and library)
+and configuration data. The tar file can be unpacked on a minimal Debian system.
+After doing so the centaurisoho installtion can be started.
+
+distribution
+------------
+
+In this context the term refers to a Debian distribution like 'bookworm' or
+'trixie'.
+
+distribution tar
+----------------
+
+A distributiable tar contains only one 'seed.tar' and thus only one configuration.
+In contrast a distribution tar is a multi-configuration seed tar, usually for archiving
+purpuses.
+
+diversion
+---------
+
+A debian 'dpkg' specific mechanism that provides a method for persistently
+replacing files installed by 'dpkg'. These replacements survive updates.
+See 'man dpkg-divert'. Centarusoho does not patch debian but it uses diversions
+and systemd customizations.
+
+image tar
+---------
+
+A physical or virtual disk image can be backed up as image tar. Such tars can be
+distributed and can be restored to physical disk media. Virtual machines should
+be distrubuted as 'ova files'. Image tars contain 'imagetool' that is used to
+run the installation.
+
+installer
+---------
+
+A little tool the unpack a seed tar. After unpacking a distributable tar the installer
+can be used to install the centarisoho software. After this step 'centaurisoho' can
+be run to make the system a centaurisoho system.
+
+master repository
+-----------------
+
+Located on the primary server this repository is the global archive for all configuration
+data, the library and the tools of a centaurisoho domain.
+
+mirroring
+---------
+
+The process of creating a mirror (e.g. a deep data copy). This is handled by 'centaurimirror'.
+In contrast the 'centauribackup' tool is used to make shallow copies used for operation
+system restore or cloning.
+
+ova files
+---------
+
+Virtual machine images can be saved as an 'ova' file. Such 'ova' files can be archived or
+distributed and can be imported by a VM. This is a multi-vendor standard.
+
+primary server
+--------------
+
+Centauri-Soho supports a primary and an optional secondary server. Usually the primary
+server takes the 'MASTER' role and the secondary serves is 'SLAVE'. When the primary
+server becomes unavaillable the secondary server can take over the 'MASTER' role.
+
+repository
+----------
+
+A server side folder where all centauri stuff and configuration data are kept. This
+master repository gets automatically replicated in parts to all clients. The 'rsync'
+tool is used for replication and is run via cron. See 'centauricopy' which is a high
+level wrapper for 'rsync' and 'centauriconfig' which is the repository management tool.
+
+secondary server
+----------------
+
+The optional secondary server mirrors the primary server and can become 'MASTER' if the
+primary server fails.
+
+seed.tar
+--------
+
+These are used by 'centaurisoho' to patch a target system in order to become a 'Centauri'
+system.
+
+setup
+-----
+
+staging repository
+------------------
+
+Clients usually do not access the master repository (for security reasons). Instead the
+server creates a per client copy in a statiging area. Client side changes to the repository
+must be merged back manually to the master. See 'centaurimachines' for managing the staging
+repository and 'centaurisecrets register' for registering a client.
+
+template
+--------
+
+volume labels
+-------------
+
+### END

@@ -1,0 +1,155 @@
+
+A Note on Bash
+==============
+
+Bash is not a shame ...
+
+At the time when centaurisoho started (20 years ago) python 3 was
+not yet the default. At that time simple bash scripts got their
+work done before an equivalent python script even started. Early
+experimental versions of centauri-bash-lib ... 
+
+Most bash examples in the net ...
+
+Bash evolution ...
+
+
+The centauri repository concept
+===============================
+
+A <centauri> server keeps a central repository for Linux
+configuration files (and some other stuff). This data
+is automatically synchronized between server and clients,
+see 'centauricron', 'centauriconfig'  and 'centaurimachines'.
+
+Clients must be registered at the server to be admitted.
+Ordinary clients do not write back to the central repository
+but to a staging area. Synchonizing such client side changes
+must be done manually, see 'centaurimachines'.
+
+There is modest security, to register a client the command
+'centaurisecrets register' is used. It passes a secret to
+the server that the client must present to get access. 
+Clients can see only the part of the repository that is
+relevant.
+
+The repository is organized along these axes:
+
+    - distribution        like: bullseye, bookworm, trixy
+    - domain              like: worms
+    - machine             like: bookworm4
+      @shared             data shared by all machines
+
+
+Synchronizing
+=============
+
+The 'centauriconfig' tool synchronizes between:
+
+    server and local repository:    centauriconfig rget|rput
+    local repository and system:    centauriconfig get|put
+    autoupdates by timers:          centauriconfig cron
+    interactive biderectional:      centauriconfig sync
+
+The 'centauriconfig sync' command is quite interactive and
+prompts before doing something. Type 'help' at the command
+prompt for details.
+
+The 'centauriconfig cron' command is a batch thing, no questions
+asked. But it does not so much, to get a list of affected files:
+
+    centauriconfig list @
+
+
+The server side
+===============
+
+As outlined before the server holds a master version of the
+repository:
+
+    /var/centauri/configs       master version
+                 /archived      lists of backups
+                 /machines      staging area
+
+The path '/var/centauri' is used here for the "$CEN_ROOT" folder. 
+The 'configs' sub folder contains Debian release specific folders:
+
+    config/bookworm
+          /trixie
+
+The Debian release folders contain:
+
+    @admin      centauri-bash-lib, centauritools and friends
+    @soho       centaurisoho distributable tar files
+    worms       configuration data for domain worms
+    ...         more domains
+
+Each domain data folder holds per-computer and shared data:
+
+    @shared     configuration data shared by all members
+    worm0       private data for machine worm0 
+    ...         more machines
+
+
+The data folders contain no sub folders.  A trivial file path name
+encoding used for config files:
+
+    a_etc_default_dnsmasq       for: /etc/default/dnsmasq
+    ...
+    OPTIONS                     used by centauriconfig
+    PACKAGES                    used by centauripackages
+
+Example of a full repository path:
+
+    /var/centauri/configs/bookworm/worms/worm0/PACKAGES
+
+
+Client side repositories
+========================
+
+The server exports repository branches via 'rsyncd' and the 'machines'
+sub folder. On a client the 'centauriconfig' tool is used to maintain
+a local repository branch and to synchonize is with the server.
+
+By default 'centauriconfig' synchronizes only data belonging to the
+local machine. The option '--global' of 'centauriconfig' is used to 
+make let it synchonize a whole repository branch (but only if the
+setup of the staging area allows this). The OPTIONS file contains
+default settings, for example:
+
+    CEN_GLOBAL=1
+
+
+Repository staging (machines folder)
+====================================
+
+The staging folder is a security construct designed to protect the master
+repository from being manipulated by clients.
+
+
+Typical 'centauriconfig' usage
+==============================
+
+
+3.1 Repository Concepts
+3.x ...
+3.y Implementation
+
+3.9 Timers and Cron
+
+The Repository
+==============
+
+3.1 Repository Concepts
+3.2 Staging Area
+3.2 Tools
+
+3.y Implementation
+
+Timers and Cron
+===============
+
+3.8 Cron
+3.9 Timers
+
+*** 

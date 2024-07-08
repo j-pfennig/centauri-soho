@@ -1,0 +1,648 @@
+#!/var/centauri/tools/centaurisoho document
+# View this document with docviewer, see 'docviewer --format' for input syntax
+.title
+.content
+
+. Network Location Awareness, network startup, network mode
+===========================================================
+
+NLA (Network Location Awareness) is usually missing under Linux. Only Network-Manager
+can bind a Firewall-Daemon setup to a specific network connection. In contrast
+Centauri-Soho knows some szenarios that cause a computer to enter a specific mode when
+connecting to a network:
+
+        mode            network szenario
+        ──────────────────────────────────────────────────────────
+        SINGLE          the host is isolated in an unknown network
+        GUEST           have a known network or router
+        CLIENT          connected to the home network
+        MASTER          the host runs as primary server
+        SLAVE           the host runs as secondary server
+        UNKNOWN         don't know (not initialized)
+        ──────────────────────────────────────────────────────────
+
+The network startup and configuration are handled by the following services:
+
+        centauriswitch      dispatcher and configuration switching
+        centauriroute       utilities and routing/dialup things
+        centaurisecrets     load secrets that are not persisted locally from MASTER
+        centaurifilter      firewall and masquerade (NATing)
+
+Static configuration data is generated from a network setup file that is shared
+by all machines (/etc/default/centaurinetcfg) using these tools:
+
+        centaurinetcfg      parse setup file, create network topology files
+        centaurinetgen      create interface related configuration files
+
+These services and tools will be described in more detail below.
+
+
+. Computers, Appliances, Machine Role
+=====================================
+
+In this context computers (workstations or servers) and appliances are called
+'machines'. Appliances are machines that have a  special purpose, like network
+switching or home automation.
+
+For Centauri-Soho all achines have roles (statically configured) and modes (boot
+dependent, see Network Location Awareness).
+
+        role            configuration
+        ───────────────────────────────────────────────────────
+        WORKSTATION     everything not being a server
+        PRIMARY         the preferred server
+        SECONDARY       the backup server
+        UNKNOWN         don't know (not configured)
+        ───────────────────────────────────────────────────────
+
+Appliances have no special role and are usually configured as WORKSTATION.
+Anyhow, all machines can run stand alone without being connected to a server.
+
+. Centauri-Soho has predefined network settings/configurations
+==============================================================
+
+Centaurisoho knows about some built-in network set-ups, called 'settings' in this
+context, which can further be customized by 'configurations'. The actual setting
+and configuration are usually passed as a kernel boot parameter. Syntax:
+
+        centauriswitch=<setting>[:<configuration>]
+
+Three closely interconnected service handle the run-time network set-up:
+
+        centauriswitch      the frontend and network event dispatcher
+        centauriroute       toolbox and handling of dialup connections
+        centaurisecrets     network location awareness
+
+### BUG: centauriroute.service: conditions via static.server and static.apoint
+### TODO: SysV centauriroute centaurisecrets: simulate conditions
+### TODO: centauriroute open does no ipv6 without bridge. should also set
+###       metrics and add generic address to best metric if.
+###
+Without a centauriswitch boot parameter the before mentioned services will not be
+started. The command 'centauriswitch enter <setting>[:<configuration>]' can be used
+at run-time to change the actual set-up.
+
+The <setting> value selects a hardware setup and <configuration> a software
+setup, see '/etc/default/centauriswitch'. Predefined values are:
+
+        disabled        do not care about networking, do not run centauriswitch,
+                        centauriroute or centaurisecrets
+
+        static          static IP addresses, run as a client (server role disabled)
+        static:server   static IP addresses, run as a server (server role only)
+        static:apoint   static IP addresses, WLAN Access Point, run as a server (...)
+
+        simple          dynamic IP addresses via DHCP, run as a client
+        simple:hass     configuration to run Home-Assistant core
+
+        smart           multiple interfaces, extra logical address, NetworkManager
+
+        switch          static IP addresses, multiple interfaces with bridge
+        switch:extender WLAN to ethernet repeater with software level 3 bridge
+
+        router          static IP addresses, NAT Routing via USB or ethernet
+        router:repeater WLAN to ethernet repeater with NAT
+
+For a mobile client the 'smart' setting should be used, it automatically falls back
+to 'simple' if needed. Only stationary computers or appliances should use 'simple'.
+
+It is possible to boot using 'centauriswitch=smart centaurilogin=<user>' for an
+autologin (kiosk mode). The 'centauristartup' tool can present a late boot time menu
+that allows to enter another setting via 'centauriswitch enter'.
+
+
+. Interface configuration (/etc/network/interfaces)
+===================================================
+
+This section applies only to interfaces that are not managed by NetworkManager.
+Usually only servers, some workstations or special machines have a non-empty
+interfaces file. In a Centauri-Soho installation the interface file is a symlink that
+points to the actual configuration. All machines have a '/etc/network/interfaces.simple'
+configuration as a fallback (see 'maintenance' in the boot menu).
+
+The centaurinetgen tool creates interface configurations at '/etc/network'
+depending on the network configuration data in '/etc/default/centaurinetcfg'.
+It uses suffixes to generate at least 'interfaces.simple' (as a fallback) and more
+configuration-specific 'interfaces.<suffix>' files. The actual one gets linked
+to '/etc/network/interfaces'. The <suffix> corresponds to the boot parameter
+'centauriswitch'. Supported values are:
+
+        <suffix>    Boot parameter
+        ───────────────────────────────────────────
+        static      centauriswitch=static
+        simple      centauriswitch=simple
+        smart       centauriswitch=smart
+        switch      centauriswitch=switch
+        router      centauriswitch=router
+        repeater    centauriswitch=router:repeater
+        extender    centauriswitch=switch:extender
+        server      centauriswitch=static:server
+        apoint      centauriswitch=static:apoint
+
+The above table also shows that <suffix> stands for a combination of mode
+and configuration.  The existence of specific 'interface.<suffix>' files
+is used by the grub boot script to populate the grub boot menu. So this
+menu gets created at boot time.
+
+For systemd boot the 'centauriefilinux' tool generates entries based on the
+network configuration at '/boot/efi/loader/entries'. So the systemd boot
+menu itself is static and does not depend on any <suffix>.
+
+At boot time the 'centauriswitch' tool check the boot parameter and searches
+a matching interface file, which gets linked to '/etc/network/interfaces'.
+If no match is made, the existing interface file (which should be a symlink)
+is used.
+
+    Try 1st if we are a server ...
+
+        mode \ file   static   simple  smart  server  apoint
+        ----------------------------------------------------
+        ────────────────────────────────────────────────────
+        static        1 [*]                   2       3
+        server        3 [*]                   1       2
+        apoint        3 [*]                   2       1
+        ────────────────────────────────────────────────────
+        [*] set 'server' config
+
+    Other fallbacks ...
+
+        mode \ file   static   simple  smart  server  apoint
+        ----------------------------------------------------
+        ────────────────────────────────────────────────────
+        static        1        2       3
+        simple        2        1       3
+        smart         3        2       1
+        switch
+        router
+        repeater
+        ────────────────────────────────────────────────────
+
+. Networking configuration details
+==================================
+
+The network configuration is selected by boot parameter 'centauriswitch'.
+The value can be either '<mode>' (then configuration is set to mode) or
+'<mode>:<configuration>'. The configuration name is arbitrary (but some
+are built-in, see above) and may appear as as section in the ini-style
+file '/etc/default/centauriswitch'. See there for more details.
+
+    'static' configuration
+
+        Uses static IP addresses for eth0, eth1, wlan0 and wlan1. No extra
+        configuration section in '/etc/default/centauriswitch'.
+
+    'simple' configuration
+
+        Uses DHCP addresses for eth0, eth1, wlan0 and wlan1. No extra
+        configuration section in '/etc/default/centauriswitch'. Does not
+        depend on NetworkManager.
+
+    'smart' configuration
+
+        Uses NetworkManager assigns a logical address (smart address) to
+        to connection with best metric. This should be the default for
+        Mobile Computers and most Workstations. No extra configuration
+        section in '/etc/default/centauriswitch'.
+
+    'server' configuration
+
+        Needs '[server]' section in '/etc/default/centauriswitch'. Used
+        for a server without wlan access point.
+
+    'apoint' configuration
+
+        Needs '[apoint]' section in '/etc/default/centauriswitch'. Used
+        for a server with walan access point.
+
+    'switch' configuration
+
+        Needs '[switch]' section in '/etc/default/centauriswitch'. Used
+        to build a software switch. This mode adds eth0, eth1, wlan0 and
+        wlan1 to a bridge interface. Most wlan adapter cannot be added
+        to a brigda (except as an access point). It works for most intel
+        notebook chipsets but does not work raspberry pi.
+
+    'repeater' configuration
+
+        Needs '[repeater]' section in '/etc/default/centauriswitch'. Used
+        to bridge (a wlan connection) to a NAT network with DCHP (via
+        Ethernet for example). This is a nice way to use a 'Raspberry Pi
+        2 zero W' to connect an ethernet only device via wlan to a local
+        network.
+
+    'router' configuration
+
+        Needs '[router]' section in '/etc/default/centauriswitch'. Used
+        to tether an LTE modem or similar to a local network with NAT,
+        DHCP and Proxy. Works fine modem sticks and Android phones. For
+        Android phone you may need to add some custom udev rules (every
+        manufacturer uses different usb ids). Examples are provided for
+        a few Sony, Motorola or Samsung phones.
+
+    Custom configuration
+
+        Needs '[<configuration>]' section in '/etc/default/centauriswitch'.
+        Configuration files and boot configuration are not created automa-
+        tically.
+
+
+Note on DHCP and per-Interface Hostnames
+----------------------------------------
+
+Centauro-Soho uses dnsmasq
+
+Most machines have multiple network interfaces. This is when 'smart' mode
+becomes helpful. The dnsmasq configuration of static ipv4 addresses is based
+in mac-address and client-id. When the client sends an id this overrides the
+mac-addresse.
+
+
+. Basic services: DHCP, DNS, Avahi, ssh, ftp, vnc, x11, web and mail
+====================================================================
+
+All centauri configurations support ssh, ftp, vnc and web. To start ssh, ftp
+and vnc the 'inetd' daemon is used by default. 'inetd' must be intalled for
+centaurisecrets and some others anyhow.
+
+    On a Server:    DHCP        is implemented via dnsmasq
+                    DNS         is provided by Samba AD/DC and dnsmasq
+                    mail        transport: exim4/fetchmail   storage: cyrus-imapd
+
+    On a Client:    DHCP        uses dhclient (or NetworkManager built-in)
+                    mail        transport: exim4   agent: thunderbird (kmail)
+
+    Everywhere:     avahi       helpful for Android, prerequisite for centaurimounter
+                    web         lighttp is used as a server (limited web-dav support)
+                    vnc         kde's krdc works fine for display
+                    x11         uses lightdm for xdmcp. Kde's krdc for display
+
+
+. What about NetworkManager and systemd.networkd?
+=================================================
+
+NM is supported but not required in all configurations. Typically mobile computers
+use it. Servers never use it. For machines whith multiple network interfaces (see
+'smart' mode) dhcp client ids should be used.
+
+A very important point are shutdown or suspend when remote file systems are mounted
+in conjunction with centaurimounter. NM sends a DBus message before dropping any
+network connections. This must be handled by all tools that hold remote mounts or
+the shutdown/suspend will hang. As all centauri-soho tools are written in bash,
+the DBus event handling is a non-trival problem. Fortunately NM provides a non-DBus
+way that can be used to notify centaurimounter, see nm-dispatcher.
+
+As (network) mounts are handled by "centaurimounter" this can be handled using the
+"nm-dispatcher" which lets NM forward the relavant "disconnect" event.
+
+Currently Centauri-Soho used the traditional "ifup/ifdown" tools to control network
+interfaces. Future versions could use "systemd.networkd", but this is not yet
+suppoerted.
+
+. Support for IPv6, router advertisments, connectivity
+======================================================
+
+IPv6 is a 1st class citizen, but centauri-soho networks must not be exposed to the
+internet. So there has to be a router between the internet and the internal net.
+This router must handle IPv4 NAT and for IPv6 router advertisments. Also it should
+do DNS forwarding but it MUST NOT broadcast it's DNS server address. Not to mention
+that DHCP must be off.
+
+    Internal IPv6:  The implementation uses the 'fc01:' prefix to embed IPv4 addresses.
+                    This is handled automatically via centauriswitch/centauriroute and
+                    can not be altered. Whenever a managed interface receives an IPv4
+                    address the corresponding IPv6 address gets added.
+
+                    The centaurifilter firewall derives IPv6 filter rules from IPv4, so
+                    there is nothing to configure. Metrics are set via centauriroute,
+                    which is important for 'smart' mode with multiple network connec-
+                    tions.
+
+    External IPv6:  As the router must send prefixes, there is not problem for linux
+                    and android. Remember: internally these router prefixes are not
+                    used.
+
+    Androids:       The server runs a router advertisment deamon (radvd) to broadcast
+                    the DNS server and thereby the 'fc01:' prefix. This works fine for
+                    android devices.
+
+    Apples:         Delicious fruits, sometimes difficult to digest.
+
+    Windows:        No known problems for clients. But samba causes trouble: DNS updates
+                    must be disabled as some providers daily change IPv6 router prefixes.
+                    Not disabling DNS updates would cause samba to remember invalid
+                    prefixes en masse, and so break internal IPv6 DNS host look-ups.
+
+    OpenVPN:        Working.
+
+
+Checking IPv6 connectivity, turning IPv6 on or off
+--------------------------------------------------
+
+The "/etc/hosts" files used by Centauri-Soho contains IPv6 addresses of known hosts if the
+machine is configured with "option ipv6". This is intentional and should not be changed. On
+the other hand IPv6 may have to be disabled in some szenarios, for example if a machine is
+connected via a "router" or "extender" appliance. This is handled by "centauriroute ipv6":
+
+        centauriroute ipv6              # print status
+        centauriroute ipv6 on           # enable IPv6
+        centauriroute ipv6 off          # disable IPv6
+        centauriroute ipv6 auto         # check connectivity and enable or disable
+
+When the 1st network connection is detected (see "centauriswitch") the one-shot service
+"centauri-netconf" is run to check for missing IPv6 connectivity and to disable IPv6. This
+cannot be done directly by "centauriswitch" as the IPv6 connection is in state "tentative"
+until the neighbor detection protocol has completed its work (it takes much longer than
+arp for IPv4).
+
+. Interface settings, see /etc/default/centaurinetcfg
+=====================================================
+
+Except for the simple setting the configuration of available interfaces, their mac
+and ipv4 addresses and priority (metric) must be declared in centaurinetcfg. Only
+the simple setting needs no declarations. The 'centaurinetcfg' tool processes
+these declarations and generates various software related config files, including
+the firewall rules. It then calls 'centaurinetgen' which generates interface related
+config files:
+
+        centaurinetcfg setup <host>     # configure networking for <host> and run ...
+        centaurinetgen create           # ... to create interface related files
+
+Centauri-soho uses 'ifup/ifdown', so interface configurations are generated in
+
+        /etc/network/interface.<setting>
+
+Special cases are (see grub below):
+
+        /etc/network/interface.server   # for 'router.server'
+        /etc/network/interface.apoint   # for 'router.apoint'
+
+Typically multiple interface configuration are generated, and 'interface.simple'
+should always be there as a fallback. The 'centauriswitch' tool will symlink one
+of these files to '/etc/network/interfaces' at boot time.
+
+The grub boot loader configuration that comes with centauri-soho adjusts the boot
+menu according to availlable interface configurations. For systemd boot the tool
+'centauriefilinux menu ...' generates boot menu entries. Finally for the raspberrry
+pi 'centauriraspi menu ...' creates cmdline.txt files.
+
+
+. Centauri-Soho Firewall and firewalld
+======================================
+
+First thing to know: centauri-soho comes with a built-in firewall that will be automatically
+activated. Anyhow it can be disabled, so that you can run firewalld or another firewall
+of your choice.
+
+In all cases your soho network should sit behind a router that prevents uncontrolled access
+to your devices from the internet. The router might allow port forwarding, for example
+for ssh or vpn access.
+
+Software running on internal devices can dig holes into any firewall, typically to
+connect to a cloud service. Examples are citrix or teamviewer. The centauri-soho
+firewall cannot prevent such behaviour.
+
+The firewall configuration is part of the network setup in '/etc/default/centaurinetcfg'.
+The 'centaurinetcfg setup' command (which is run automatically on updates) creates
+pre-parsed data which is saved in the persistent cache ('/var/centauri/persistent').
+
+The 'centaurifilter' service (which is managed by 'centauriswitch') generates and loads
+the actual run-time configuration (which is also saved in the presistent cache). To see
+firewall statistics use these commands:
+
+        centaurifilter counts                   # traffic by filter rules ...
+        centaurifilter counts --verbose
+        centaurifilter logger today             # run journald to show log messages
+
+        journalctl -b -g centaurifilter         # show discarded package information
+
+
+What it is good for
+-------------------
+
+In a network you may have rogue or malicious devices. Such devices can collect information
+and send it across the internet or may run brute force attacks against your machines. Any
+firewall should try to mitigate such threats.
+
+Centaurisoho's firewall handles just the IP protocol family and nothing else. It does not
+care about lower levels like ARP or link layer. It cares only about incoming data and does
+not restrict outgoing traffic to other devices or to the internet.
+
+For doing it's job it needs information about machines. In a soho network the following is
+easily available:
+
+        network interface           # example: modems, hotplug USB dongles
+        host name                   # threat: hosts can choose arbitrary names
+        mac address                 # threat: hosts modify their mac addresses
+        ip address                  # threat: hosts can choose arbitrary addresses
+        protocol/port               # example: ftp ipp http
+
+The firewall is not an intrusion detection system. It is based on best effort to discourage
+attackers. At least is generates log messages for dropped packages. You can check this log
+or even redirect the output or a file (or pipe) to run your own intrusion detection.
+
+Concept of Centauri-Soho's Firewall
+-----------------------------------
+
+Usually the built-in firewall uses connection tracking which you may
+want to disable manually (a rare case). See /etc/network/centaurinetcfg:
+
+        # disable firewall or select connection-tracking/simple mode
+
+        # option tracking   <host>...   # set connection-tracking
+        # option simple     <host>...   # simple mode (port filtering only)
+        # option nomac      <host>      # do not check mac addresses
+        # option nofirewall <host>...   # turn firewall off
+
+        # <host> can be * to select the option as default setting
+
+        option  tracking      *         # default: use built-in tracking fw
+        option  simple        raspi*    # some hosts may disable tracking
+        option  nofirewall    test?     # some hosts override the default
+
+If you disable the built-in firewall make sure to enable firewalld or whatever you want.
+
+Chains in trusted network (see 'network location awareness'):
+
+        alien               minimal rights             (option alien)
+        player              media source/renderer      (option player)
+        home                elevated rights            (option trusted)
+        trash               throw away with logging    (built-in)
+        discard             silently throw away        (built-in)
+
+Chains in a non-trusted network:
+    wild
+    trash
+
+
+
+
+Details of centauri-soho's Firewall
+-----------------------------------
+
+The base is nftables, so the nftables package has to remain installed. For some
+appliance configurations the firewall is invoked to run nftable commands even if
+not enabled on a global scale.
+
+Currently 'centaurifilter' (the firewall daemon) still depends on the iptables
+package (translation of iptables to nftables). Full migration to nftables is work
+in progress.
+
+The 'centaurifilter' daemon knows about two states:
+
+        home        # permissive, used inside a trusted network
+        wild        # restrictive, used in unkwnown enveironments
+
+These states are automatically activated via 'centauriswitch' depending on your
+network environment. To override this manually use:
+
+        centaurifilter --force stop     # disable
+        centaurifilter --force home     # enter home mode
+        centaurifilter --force wild     # enter wild mode
+
+
+Configuration (/etc/default/centaurinetcg)
+------------------------------------------
+
+    statements:
+    -----------
+
+        option nofirewall|simple|tracking   <host>... (default: tracking)
+        option nomac                        <host>...
+
+        filter bypass|deny                  <interface>...
+        filter accept|drop                  <network>/<host>...
+        filter trusted|player|alien         <host>
+
+        filter tdp|upd                      <portspec>...
+
+        filter logfile                      <file>|<pipe>
+
+#TODO: continue firewall description
+
+. HTTP Proxy support: "squid" and "tinyproxy"
+=============================================
+
+On the server side Centauri-Soho proposes using "squid" for caching and ad-filtering. On
+the client side Centauri-Soho offers proxy support via a local instance of "tinyproxy" and
+automated configuration of this tool. If the server "squid" instance can be reached, it
+is used as upstream proxy by "tinyproxy". Otherwise "tinyproxy" will not use an upstream
+proxy. For a HTTP web-server a "wpad.dat" file for proxy auto configuration generated.
+
+How proxy detection works
+-------------------------
+
+When the 1st network connection becomes ready, "centauriswitch" checks if it can reach a
+configured server and then creates the proxy configuration. The one-shot "centauri-netconf"
+service can be run to update the proxy configuration and to reload "tinyproxy".
+
+The logic for this functionality is implemented in library function "netproxy" and the
+command "centauriroute proxy".
+
+How to configure a client browser
+---------------------------------
+
+If a local HTTP web-server (like "httplight") is running, is might be the best choice to
+use PAC via "wpad.dat". See the output of "centauriroute --tool proxy" for its URL.
+
+Otherwise load the file "$CEN_ROOT/transient/network_proxy" which contains variables that
+can be used to configure your browser. The output of "centauriroute --tool proxy" prints
+the variables names and settings. This solution does not automatically update when the
+actual proxy changes. In its default configuration Centauri-Soho uses a shell login profile
+that loads the "network_proxy" file at login time.
+
+. Samba AD/DC, Samba member server and Samba basic
+==================================================
+
+Samba on a Centauri-Soho server runs in AD/DC mode and does:
+
+        - run a DNS forwarder to "dnsmasq" (needed by MS-Windows to find the DC)
+        - handle NS-Windows and Linux domain membership (computer accounts)
+        - handle domain user accounts (via Kerberos)
+        - runs as file server and print spooler
+
+To manage AD/DC and client domain memberships use "centaurikerberos" which is uses samba-tool
+and others as a backend.
+
+On a Centauri-Soho client samba typically runs as a "member server", where the authorizations
+are forwarded to the AD/DC and only "file server" functionality is handled locally.
+
+Whithout an available AD/DC "basic mode" is used so that at least a simple "file server" is
+running. Authorization is handled via tool "smbpasswd" and the "/etc/samba/smbpasswd" file.
+
+The "wsdd2" tool is run to make samba servers visible as "nmbd" is disabled nowadays.
+
+. NFSv4 for Linux, anonymous or trusted Samba access
+====================================================
+
+The often used NFSv3 implementation does not provide sufficient security, so Centauri-Soho
+has to use NFSv4. Samba is difficult to use in a Linux world, see below. Unfortunately NFSv4
+is difficult to configure. It depends on "Kerberos service principals and machine accounts"
+and the GSS security services of NFS. The "centaurikerberos" tool knows about the kerberos
+things and sends a correct "/etc/krb5.keytab" to clients at registration time.
+
+Users that have no domain account like "local" or "root" can use the "smbworld" and "smbtrust"
+account to get a kerberos ticket, see samba discussion below. Tickets are automatically renewed
+when service "centauricron" is running.
+
+Anonymous access
+----------------
+
+Nowadays samba (and even Windows) can mount a share multiple times for different accounts. This
+would be difficult to implement in a convenient way, so on Linux clients NFS is preferred. To
+allow minimal access to samba shares, Centauri-Soho provides the local accounts "smbworld" (which
+grants only read access) and "smbtrust" (which grant write access to members of group "smbtrust").
+But even working with "smbtrust" rights allows only limited file operations.
+
+The passwords for "smbworld" and "smbtrust" are provided by the service "centaurisecrets", so at
+least the "smbtrust" passwords is not persistently stored on client machines.
+
+. DHCP and DNS, dnsmasq, resolv.conf
+====================================
+
+Although fixed IP addresses are preferred in the local network, DHCP is supported. Usually IOT
+and devices brought in by visitors use DHCP. The default firewall configuration assigns DHCP
+addresses to class 'friend', e.g. without further configuration they get limited access to
+network services.
+
+If not NetworkManager is in charge, the ISC 'dhclient' tool is used. To get fixed IP addresses
+over DHCP (see 'simple mode') the client's hostname is used as DHCP client identifier. The
+'dhclient-script' is unmodified, but DHCP events are hooked and forwarded to 'centauriswitch'.
+The later is also responsible to start DHCP when an interface is brought up (ethernet ports that
+are not connected and thus have no carrier need some care).
+
+Note: for dialup connections 'centauriroute' starts/stops other 'dhclient' instances by itself.
+
+As DHCP and DNS server 'dnsmasq' is used. The '/etc/dnsmasq.d' configuration folder is usually
+a symlink to instance 'local' (or to 'slave' on a server running as slave). The configurations
+are generated by 'centaurinetgen' (and in some parts by 'centaurinetcfg'). These are more or
+less static and only depend on '/etc/default/centaurinetcfg'. The '/etc/resolv.conf' file is
+modified to use the local 'dnsmasq' instance as DNS server.
+
+    Local Network + internet
+    ------------------------
+
+        client               local      server      internet   upstream
+        ──────────────────────────────────────────────────────────────────
+        <application>
+            /etc/resolv.conf ────────── samba AD/DC
+                                            dnsmasq ────────── <provider>
+
+For dialup connections 'centauriroute' puts the upstream DNS server (obtained via DHCP) into
+'/etc/dnsmasq.d/centauri_dnsserv' rewrites '/etc/resolv.conf' to direct local DNS to itself
+and restarts 'dnsmasq' after dialing.
+
+    Router Appliance + Mobile Tethering
+    -----------------------------------
+
+        client               local      router      mobile     upstream
+        ──────────────────────────────────────────────────────────────────
+        <application>
+            /etc/resolv.conf ────────── dnsmasq
+                                            <phone> ────────── <provider>
+
+To summarize things: client machines inside a 'Centauri-Soho' network do DNS via a local or
+server side instance of 'dnsmasq' wich forwards the requests to upstream DNS. For a server
+that is running Samba AD/DC the internal DNS is 1st passed to Samba which forwards most requests
+to 'dnsmasq'.
+
+# end

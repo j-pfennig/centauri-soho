@@ -1,0 +1,827 @@
+#!./docviewer
+# View this document with docviewer, see 'docviewer --format' for input syntax
+.title
+.content
+
+. Installation Overview
+=======================
+
+There are three principal itenaries to start a tour around Centauri-Soho, plus
+one path for nerds and experts:
+
+    1.  Walk around and have a look: download and run prebuilt VM images
+    2.  Plant a tree: download/install an 'image tar', like HomeAssistant
+    3.  Grow a forest: start creating images from the base 'image tar'
+    4.  Expert path: download a 'distribution tar' and build from scratch
+
+    The tar/ova download location is:       j-pfennig.de/centauri-soho
+    The sources can be found at github:     github.com/j-pfennig/centauri-soho
+
+Installation is done by running 'installation steps' from a 'starting point' to
+reach an 'installation target'. The process can run on a virtual machine or can
+use physical media.
+
+Centauri-Soho wants to make it easy to copy installations between physical media.
+This is why booting and mounting are handled by disk labels (and not by partition
+UUIDs).
+
+A default machine naming sheme is used (see 'Installation targets'). You can
+choose your own names, but the default host names are made of a word followed by
+a digit: <name>N. Example: worm4 (with 'worm9' being a minimalistic machine and
+'worm0' being the server).
+
+Steps to Install from Scratch (Summary)
+---------------------------------------
+
+    1.  Get a minmal system (debian installer or RaspberryPI download). This
+        is described in more detail later in this text.
+
+    2.  Run 'installer prepare' to use disk labels and centauri networking.
+        Optionally 'centauisoho seed' can be run explicitly to install the
+        'centauri-tools' now.
+
+    3.  Run 'centaurisoho clone' to copy to another disk and the change the
+        filesystem to 'btrfs' (on a 32bit Raspi 'ext4' will be used). This
+        implicitly runs the 'seed' step mentioned before.
+
+    4.  Optional intermediate step: 'centaurisoho base' to create a system
+        that can be used as a base for creating multiple targets. To do so
+        run 'centaurisoho clone' to create '<name>7'.
+
+    5.  Use 'centaurisoho client' to install the usual client software (for
+        an appliance you do not need to do this unless you want to use it
+        in a server environment). Clone it to '<name>4' if you like.
+
+    6.  Your server would then be the 'cent0' clone. Run 'centauisoho server'
+        to upgrade to a AD/DC, NFSv4, Samba, Mail and network server.
+
+Machine Names and Disk Labels
+-----------------------------
+
+    1.  'debian' or 'raspberry' will be to hostname after step 1. At this
+        point you will not have disk-labels (grub uses partition UUIDs).
+
+    2.  '<name>9' (example 'worm9') after 'prepare'. The disk partitions
+        are now labeled like 'worm9_root' and 'worm9_swap'. Grub now uses
+        labels, the filesystem is still ext4.
+
+    3.  '<name>8' (example 'worm8') after 'clone'. Now the filesystem is
+        btrfs on a GPT disk with EFI paratition (a RaspberryPI uses a
+        different boot mechanism):
+
+            worm8_boot          # boot partition (FAT)
+            worm8_swap          # swap partition
+            worm8_vol0          # system partition using BTRFS
+            worm8_root          # EXT4 root (only 32bit Raspi)
+
+        On a PC-system can now boot using EFI systemd-boot and even
+        secure boot may work now.
+
+    4.  '<name>7' (or still '<name>8' if you did not clone it) is your
+        base system to create targets. You can now discard '<name>9', it is
+        not needed any more (same for '<name>8' if you cloned).
+
+    5.  '<name>4' (if you cloned the base system). Later you will be joining
+        the client to your domain server. Your disk labels might now look
+        like this:
+
+            worm4_boot          # boot partition (FAT)
+            worm4_swap          # swap partition
+            worm4_vol0          # system partition using BTRFS
+
+    6.   The 'primary server' should be '<name>0', an optional 'secondary
+         server' could be '<name1>'. The generic name used for the current
+         master might then be simply '<name>'. Here a real world example:
+
+            worm                # the current master server (alias name)
+            worm0               # primary server
+            worm1               # secondary server
+            worm2               # a PC
+            worm3               # a Notebook
+            worm4               # another Notebook
+            raspi1              # a raspberry desktop
+            hass                # a HomeAssistant raspi
+            heating             # a WLAN/Ethernet extender appliance
+            worm7               # portable cell-network to WLAN router
+            kiosk               # a kiosk mode appliance
+
+Maschine Names and Installation Targets
+---------------------------------------
+
+A few default targets have predefind configurations:
+
+    Base System                 like '<name>8' (example 'worm8')
+
+    Client #1                   like '<name>4' (example 'worm4')
+    ------------------------------------------------------------
+    Client #2                   like '<name>3' (example 'worm3')
+    ------------------------------------------------------------
+    Client #3                   like '<name>2' (example 'worm2')
+    ------------------------------------------------------------
+
+    Network Appliance           like '<name>7' (example 'worm7')
+
+    Kiosk Appliance             like '<name>6' (example 'worm6')
+
+    HomeAssistant Appliance     like '<name>5' (example 'worm5')
+
+    Server secondary            like '<name>1' (example 'worm1')
+    Server primary              like '<name>0' (example 'worm0')
+    ------------------------------------------------------------
+
+Starting points, downloadable Images
+------------------------------------
+
+    The expample images are preconfigured to work together as a SOHO network.
+    A few things like machine and network names or IP addresses can be set
+    at installation time using the 'Query Configuration Dialog', see below.
+    Detailled reconfiguration is supported (see repository) but needs more
+    work, see below.
+
+    Minimal Debian      <name>9 (example 'worm9')
+                        Nothing changed from a minimal debian installation.
+                        Filesystem is 'ext4' boot via grub partition UUIDs.
+                        This image is intended for VM use, has no WIFI fw,
+                        and has systemd interfaces names (eth0 -> enp0s3).
+
+                        The corresponding RaspberryPI image supports WIFI
+                        and uses bios, classic interface names (eth0, wlan0).
+
+    Seed Image          <name>9 (example 'worm9')
+                        The root filesystem is now 'btrfs' and boot is via
+                        systemd-boot, EFI-grub or bios-grub. Booting and
+                        mounting use partition label. WIFI fw is installed,
+                        interface names are bios (eth0 and wlan0). Secure
+                        boot uses a MOK key, DKMS with MOK and automatic
+                        signing are supported.
+
+    Base Image          <name>8 (example 'worm8')
+    ---------------------------------------------
+                        This add a lot of software including a minimalistic
+                        gui (just a full-screen xterm). Networking is on see
+                        ssh and vnc. This image is a good starting point for
+                        generating custom images.
+
+    HomeAssistant       Appliance with pre-installed HomeAssistant
+    --------------------------------------------------------------
+                        Greatly simplifies setting-up the HA 'core' version.
+                        Fine for RaspberryPI, but unfortunately need at least
+                        1MByte of memory, so it is not usable on a Pi Zero 2W.
+
+    Client Image        <name>4 (example 'worm7')
+    ---------------------------------------------
+                        Has samba AD/DC, NFSv4, WebServer and much more. This
+                        image can be made a domain member. Is is part of the
+                        Centauri-Soho configuration and tool repositiory. An
+                        appliance does not need to be a client, especially
+                        if you install a desktop (lxqt or kde) on youe client.
+
+    Server Image        <name>0 (example 'worm0')
+    ---------------------------------------------
+                        The server.
+
+
+. Minimal Configuration, Passwords
+==================================
+
+Keyboard, Locales and 'localepurge'
+-----------------------------------
+
+When using a VM image you should see a keyboard configuration dialog at 1st boot.
+This is because the preconfigured images or tar files have not configured their
+locale settings. Unless you run the locale configuration the 'centaurisoho' tool
+will prompt you on each installation step to do so.
+
+When installing from an 'image tar' the 'imagetool' prompts for the keyboard country
+code, more specific configuration is made during locale settings.
+
+Enable the debian 'localepurge' mechanism to remove unused locales, which can save tens
+of MBytes disk space.
+
+The query Configuration dialog
+------------------------------
+
+A simple configuration system that runs at installation time. It wants to know
+the following things (example):
+
+    centaurisoho: Update configuration of 'emil4'                  [Y/n]? y
+                  Domain name  (updates certs)           [centauri.home]: hello.home
+                  External DNS (- for none)             [<please enter>]: my-ip.hello.net
+                  Default machine name prefix                 [computer]: engine
+                  Primary server name                          [engine0]:
+                  Network IPv4 address and mask           [10.10.0.0/21]:
+                  Primary router name                           [router]:
+                  Primary router IPv4 address                [10.10.1.1]:
+                  WLAN client SSID  (- to disable)               [hello]:
+                  WLAN AP SSID      (- to disable)            [hello-ap]:
+                  WLAN password     (- for random)      [<please enter>]: my-secret
+    centaurisoho: Apply configuration                              [y/N]? y
+
+When installing a base image (like 'worm8') the dialog will run once. If you
+create a client/appliance/server machine via cloning no questions will be
+asked. It is possible to run this dialog explicitly, even for a running system,
+by 'centauisoho config query'.
+
+One of the main Centauri-Soho features is a repositiory that stores configuration
+files and that is replicatated among all domain-members. This system is described
+in chapter TODO 'N. xxxx xx xxxx xxxxxx xxxx xxxx'.
+
+Passwords
+---------
+
+Some default user passwords are (see '/root/centaurisoho-<dist>/passwords'):
+
+        root        pw..R
+        local       pw..L
+
+These are initial passwords uses in all VM images and 'image tars'. Please change
+the passwords of user 'root' and 'local' soon. User 'local' has full sudo permissions.
+
+Only local users (like 'root' or 'local') can change their password using the linux
+'password' programm.  TODO centaurusers
+
+The 'passwords' file contains more entries that are used during setup and should be
+changed as soon as possible:
+
+        domain      pw..D               # example domain user
+
+        mokkey      pw..Mok             # secure boot: machine owner key
+        wlanpsk     soho                # wlan password (client and AP)
+        repository  pw..Rep             # centauri repositiory
+        rsync       hallo               # public rsync
+        cyrus       pw..C               # cyrus mail administrator
+        smbadmin    pw..Adm             # basic samba administrator
+        smbworld    pw..W               # public samba
+        smbtrust    pw..T               # trusted user samba
+        Administrator pw..Adm           # AD/DC domain administrator
+
+For AD/DC, mail, repository ... the 'centauriuser' tool must be used. In client
+or server image the linux 'password' is diverted to 'centauriuser'. Most system
+passwords are automatically pushed from the server to clients (once a day by
+default).
+
+AD/DC user passwords get distributed via kerberos in a timely maner. The 'sssd'
+tool is used for kerberos based user authorization, supported by 'centaurikerberos'
+with does administration of AD/DC objects including kerberos. AD/DC only supports
+the 'heimdal' kerberos flavour, but this is not of greater importance. Sssd does
+password caching, so domain users can logon locally without network connection.
+
+. Certificates and SSH-Keys
+===========================
+
+Certificates
+------------
+
+X509 Certificates are used by most internet services to identify clients and servers.
+This sort if certificates is global. OpenVPN has its own way of handling certificates
+and SSH prefers its own keys over certificates.
+
+Debian generates its 'snakeoil' certificates at installation time. These are
+self-signed and of limited use. Real certificates need a CA (centificate authority)
+which Debian does not provide.
+
+Centauri-Soho installs a CA root certificate and dummy client certificates that are
+signed by a CA generated for the particular <dist>/<conf>, see below. These replace
+the Debian certificates. On the server Centauri-Soho installs that also are signed
+by this CA and the CA itself. So in 1st oder clients and server should be happy.
+
+OpenVPN has its own CA, which Centauri-Soho provides for each <dist>/<conf>. On the
+client a certificate signed by this CA is installed.
+
+To generate and customize certificates the 'centauricerts' tool is used. It is based
+itself on 'easy-rsa'. You can create your own CA, and generate or revoke certificates
+without need for deeper knowledge using this tool. Keys can be exported for android
+and OpenVPN on android using a tar file.
+
+SSH Keys
+--------
+
+Debian creates per-client ssh keys at installation time. In Centauri-Soho you can do
+the same or you can generate keys by 'classes'. The later allow sharing the same key
+by multiple computers, which can simplify key revokation and management. The ssh keys
+are generated at the server using the 'centaurikeys' tool.
+
+
+. Networking, DHCP, DNS and IPv6
+================================
+
+In the default network configuration systemd interface names are disabled, so
+classic bios names like 'eth0' or 'wlan0' are used. This is probably the best way
+for SOHO use, here ironically bios names are more stable. You may enable systemd
+naming at any time thrugh editing 'centaurinetcfg' option 'sysdnames'.
+
+When running a Centauri-Soho server things should be fine by default. The server
+does:
+
+    1.  Run DHCP to assign IPv4 addresses to clients
+    2.  Caching/filtered DNS (uing router as upstream DNS)
+    3.  IPv6 router advertisments (DNS server and a local prefix)
+
+    On your router these services must be disabled. Enable IPv6 but disable
+    Router advertisments for DNS which is ***VERY IMPORTANT***.
+
+    Note: AD/DC depends on its own DNS to locate the AD/DC server.
+
+When running no server the router must:
+
+    1.  Run DHCP
+    2.  Provide DNS
+    3.  Handle IPv6 (enable router advertisments)
+
+. Preconfigured images
+======================
+
+Distribution and Configuration, the 'worms' Example
+---------------------------------------------------
+
+    distribution
+    ------------
+
+The platform is always Debian. Supported releases are currently 'bookworm' and
+'trixie'. The combination of centauri-soho, a debian release and a configuration
+is called a distribution.
+
+    configuration
+    -------------
+
+Each installation site has a least one configuration. The root of a configuration
+is a 'setup.conf' file with the most important parameters. These parameters are
+used to generated more detailed configuration files from templates. The most
+important of these 'centaurinetcfg' (network configuration of a site) and
+'centauriusers' for identity management of user accounts, e-mail etc. All
+configuration date is kept in a repository on the server that gets replicated
+to clients.
+
+    the 'worms' example
+    -------------------
+
+An example configuration for documentation and testing. All downloadable images
+are based on 'worms'. The example configuration can be altered to reach a custom
+site configuration.
+
+Installation Targets in Detail
+------------------------------
+
+The installation process is incremental and is based on cloning system images. If
+finally yields in any number of the following targets:
+
+    base
+    ----
+
+A simple debian Linux with some network or GUI tools. A base system is typically
+an intermediate installation step. For each distribution/configuration a base
+image should be archived.
+
+    appliance
+    ---------
+
+Can be a software defined router, repeater or switch. Can be a kiosk system or
+can run HomeAssistant. All these configurations are supported by the setup tool.
+
+    client
+    ------
+
+Used for a workstation or notebook. Typically client of a server using Samba AD/DC,
+NFSv4 or other server-based services.
+
+    server
+    ------
+
+
+Installation Options
+--------------------
+
+The easiest way to get started 'virtual machine images'. Alternatively
+to run on real hardware, 'disk image tar files' should be considered.
+Finally 'installation from scratch' is supported.
+
+
+. Pre-Installed VM Images
+=========================
+
+These are x86/pc OVA files that can be imported by Virtual Box. Debian
+Bookworm comes with 'VirtualBox 7.6' and only this version was used for
+testing and for creating the OVA files.
+
+Login as user 'local', the password is 'pw..L'. User local has full sudo
+permission.  The 'root' user password is 'pw..R'. The centauisoho workspace
+folder is '/root/centauisoho-master'. See file 'passwords' in this folder.
+
+
+. Disk Image Tar Files
+======================
+
+To install on physical block devices 'image tar' files are used. The naming
+convention for this kind of file is:
+
+        <host>-disk-<arch>_<date>.tar
+
+            <host>          host name
+            <arch>          architecture like: x86      (Intel)
+                                               r32 r64  (Raspberry)
+            <date>          creation ISO date
+
+Some example file names:
+
+        cent8-disk-x86_2024-04-19.tar       # intel image tar
+        cent8-disk-r32_2024-04-19.tar       # Raspberry 32 bit
+        cent8-disk-r64_2024-04-19.tar       # Raspberry 64 bit
+
+IMPORTANT: image tars do not include data from volumes like '/export' or '/shared'. Such
+data must be backed-up or restored seperately.
+
+Installing a Disk Image Tar from a native Linux
+-----------------------------------------------
+
+These tars are self-contained and can be used on any up-to-date Linux
+installation. The tars contain an installer named 'imagetool' that must be
+extracted first, see below.
+
+An 'image tar' is always installed onto a block device (ssd, hard disk,
+sd-card or USB-stick). Assuming that '/dev/sda' is the installation destination
+do the following:
+
+        $ tar -xaf <host>-disk-<arch>_<date>.tar imagetool
+        $ ./imagetool install <host>-disk-<arch>_<date>.tar /dev/sda
+
+You will be prompted for a host name, the swap partition size and some network
+related parameters. For an unattended install with 'imagetool' specify the swap
+size and add a '-' like this:
+
+        $ ./imagetool install <host>-disk-<arch>_<date>.tar /dev/sda 8G -
+
+The install a tar, 'imagetool' runs 'centauisoho°restore' passing all arguments.
+The built-in help functions may provide some more details:
+
+        $ ./imagetool -h
+        $ centauisoho -h
+
+After booting the installation target, login as user 'local', the password is
+'pw..L' (unless you changed it). User 'local' has full sudo permission.  The 'root'
+user password is 'pw..R'. The centauisoho workspace folder is '/root/centauisoho-<dist>'.
+See file 'passwords' in this folder for more passwords.
+
+Installing a Disk Image Tar using 'centaurisoho'
+------------------------------------------------
+
+As the installation process installs data from an image created by 'centaurisoho°backup'
+the action to be run is called 'restore'. Here a simple example:
+
+        centaurisoho restore /dev/mmcblk0 worm8-disk-x86_2024-01-19.tar
+
+The formal syntax is:
+
+        centauisoho restore <file> <disk> [ext4|btrfs] [<name>] [<swap>] [<para>]
+
+            <file>      a disk image tar
+            <disk>      target block device
+
+            ext4        create an ext4 root filesystem   (default on 32bit Raspi)
+            btrfs       force the creation of a btrfs fs (default for 64bit HW)
+            <name>      rename the installed system
+            <swap>      swap partition size like '512M'  (default is '8G')
+            <para>      a parameter file, for example 'param.conf' or '-' for
+                        an unattended installation.
+
+            The order of optional arguments does not matter.
+
+
+How imagetool works (installation)
+----------------------------------
+
+The script has a bootstrap section that tries to extract 'imagetool.xy' from the tar
+file into a temporary folder. That archive contains parts of centauri-bash-lib and
+centauritools. The following tools (from the temporary folder) are used at installation
+time:
+
+        centaurisoho                    # the backend
+            centauridisk                # setup the disk image
+                centaurisnapshot        # handle btrfs things
+                centaurirestore         # copy data tars to target
+                centauriefilinux        # handle efi secure boot things
+
+Common linux tools like 'parted' and the gnu core utilities must be installed on the
+host system (usually they are). If a tool is missing on the host you will be told and
+can install it.
+
+The 'imagetool' does not like to use any centauri thing already installed on the host.
+It preferres it's 'imagetool.xy' unless you interdict this using option '--force'.
+
+After 'centauridisk' has created the target image, the network related parameters are
+applied using the 'centaurinetcfg.TEMPLATE'. Now the new network configuration can be
+generated on the target.
+
+
+. Installation from Scratch
+===========================
+
+This process start with a 'Debian Net Install' image. Run the following steps.
+
+    1) Get the required software
+
+           get VirtualBox running (Bookworm comes with version 7.6)
+           download image from:   https://www.debian.org/CD/netinst
+           get centauri-xxx-yyy distribution tar (not disk image tar)
+
+    2) Create the 'worm9' vbox machine, 10GB disk, no efi, 4 GByte, 2 Cpu
+
+           Skip automatic installation !!!!
+
+    3) Start 'worm9', boot into 'Graphical Installation'
+
+           If not noted otherwise do your own choice on config questions:
+
+           Host name         : worm9
+           Domain name       : worms.home
+           Root password     : pw..R
+           User name         : local
+           local's password  : pw..T
+           Partition disk    : All files in one partition
+           Popularity contest: No
+           Software selection: 'standard system utilities' only !!!
+
+    4) Reboot, check system, make a backup
+
+    5) Recommended: apt install localepurge
+
+           do not enable 'dpkg --path-exclude' !!
+
+    6) copy centaurisoho-xxx-yyy distribution tar and extract seed tar
+
+            $ sudo -i
+            $ cd /root
+            $ scp -p centaurisoho-xxx-yyy.tar .
+            $ tar -xaf  centaurisoho-xxx-yyy.tar
+            $ ./centaurisoho-xxx-yyy/intaller install
+
+     7) create a clone and make it a base image
+
+            attach a second disk to the VM (say /dev/sdb)
+
+            $ sudo -i
+            $ centaurisoho clone /dev/sdb
+
+            shutdown detach disk, make a new VM (worm8), attach the clone
+            disk and boot. Then run:
+
+            $ sudo -i
+            $ centaurisoho base
+
+
+
+IMPORTANT VBOX NOTE: enable 'use Host cache' for all drives you use!
+    see 'VBOX Tips' in README
+
+. How to create a Disk Image Tar File
+=====================================
+
+WARNING: only system data, /boot and /home are included
+-------------------------------------------------------
+
+The image will not contain data from '/backup', '/shared' or '/export'. Btrfs volumes
+other than '<host>_root' and '<host>_home' will not be included in the image, but will
+be created again (as empty volumes) at install time.
+
+Data from folders containing the tag file 'WARNING_FOLDER_NOT_ARCHIVED' and cache-dir
+folders also will not be contained. See the documentation of 'centauribackup'.
+
+From inside a running VM
+------------------------
+
+Boot into 'Maintenance Mode' if you can, otherwise run as few background processes
+as possible.
+
+If your <conf> is 'worm' the initial 'worm9' machine has no boot partition and an ext4
+filesystem. Use these commands for an initial machine (like 'worm9' only):
+
+            $ sudo -i
+            $ cd /tmp
+            $ centaurisoho backup $HOSTNAME - /
+
+For other machines using a btrfs filesystem and having a boot partition use:
+
+            $ sudo -i
+            $ cd /tmp
+            $ centaurisoho backup $HOSTNAME /mnt/boot /mnt/vol0
+
+The architecture is auto-detected either as 'r64' or 'x86' only. For a 32bit RaspberryPI
+you should specify this architecture. Example:
+
+            $ centaurisoho backup $HOSTNAME /mnt/boot /mnt/vol0 r32
+
+The resulting '<host>_disk_<arch>_<date>.tar' file should be moved to a save place outside
+the VM.
+
+From a VirtualBox disk image
+----------------------------
+
+The bad news first: VirtualBox has issues with btrfs, so the following will sometimes
+fail on the 1st try (virtual disk not yet in linux cache) and succeed on the second try.
+
+Good news: You can mount VirtualBox images and run 'centauisoho' like described in the
+next section.
+
+The 'centaurivbox' tool can be used to handle mounting, but only if you have installed
+your VM inside a 'centaurivbox' environment:
+
+        centaurivbox gui                    # launch VirtualBox gui in vbox environment
+                                            # import an OVA or so ...
+        sudo -i
+            mkdir fldr                      # mount-points will go here
+
+            # Example for 'cent8' partition #1 and #4 (#2 and #3 are ignored).
+            # Partition #3 (which is btrfs formatted) mounted using 'subvol=/':
+
+            centaurivbox mount cent8 fldr + - - /
+
+            ls fldr/cent8_vol3/Volumes      # list sub-volumes of partition #3
+            centaurisoho backup cent8 + +   # do the actual backup
+            centaurivbox unmount cent8      # don't forget to unmount
+
+From a physical block device
+----------------------------
+
+Use the automatic mount-by-label feature of 'centaurisoho':
+
+            $ centaurisoho backup <host> - <host>_root              # worm9 only
+
+            $ centaurisoho backup <host> <host>_boot <host>_vol0    # any other
+
+If the volume label are '<host>_boot' and '<host>_vol0' you can use a short form:
+
+            $ centaurisoho backup <host> + +                        # defaults
+
+
+How imagetool works (image tar creation)
+----------------------------------------
+
+Most things are handled by 'centauisoho backup'. It runs 'centauribackup' to create
+data tars and 'imagetool archive' to create 'imagetool.xy'. Finally all constituents
+are added to the resulting 'image tar':
+
+        centauisoho backup ...          # the frontend
+            centauribackup              # make data tars
+            imagetool archive           # create imagetool.xy
+            tar ...                     # make image tar
+
+
+. How to customize a configuration
+==================================
+
+In this text we use 'worms' as the base configuration, just as it is
+contained in the distribution tar.
+
+Parameters in 'setup.conf'
+--------------------------
+
+SOHO_DISTRO=bookworm
+
+    This is the Debian release in should not be modified. Changing the
+    Debian release is non-trivial.
+
+SOHO_DOMAIN=worms.home
+
+    The domain name affects various ssl certificates: host and openvpn.
+    the distribution tar contains (dummy) certs for 'worms.home'. After
+    changing SOHO_DOMAIN you should recreate these certs.
+
+SOHO_SONAME=worms
+
+    The distributed repository data contains at least data for 'worm0'
+    which is the default server name
+
+
+Booting a PC system
+-------------------
+
+A PC has a BIOS or UEFI as early boot stage. Linux uses either grub or
+systemd-boot as second boot stage (boot manager). So it comes to the
+following choices:
+
+        classical BIOS              UEFI enabled
+
+        grub-pc                     grub-pc (CSM on)
+                                    grub-efi
+                                    systemd-boot
+
+The worm9 image is non-efi and uses only grub-pc (thus it will not boot
+under UEFI unless CSM is on). The main purpose of setup 'step 2' is to
+make it an UEFI system. By default grub-pc is not installed as boot
+manager in worm8 ... worm0 (but it can be selected in 'step 2'). The
+prefered boot method is 'systemd-boot'.
+
+
+Secure boot
+
+xxxxxxx
+
+
+Installing grub-pc (BIOS boot or UEFI with CSM on)
+
+Your host system will typically have grub2-common and grub-efi-amd64...
+preinstalled. The grub 'i386-pc' target (BIOS boot) becomes availlable
+whith:
+
+    apt install grub-pc-bin
+
+The 'i386-pc' is used by disktool (which invokes centautidisk) solely to
+install the worm9 image. To install BIOS boot manually run:
+
+    mount /dev/sda1 /mnt/xxx
+    grub-install --boot-directory=/mnt/xxx --target=i386-pc /dev/sda
+
+
+Centaurisoho 'grub.cfg'
+
+(1) Distros typically use an auto-generated 'grub.cfg' that binds grub (even
+non-BIOS) to the disk it is installed on. This makes it more difficult to
+clone systems and is not really needed for UEFI systems.
+
+(2) In contrast centaurisoho uses a completely different 'grub.cfg' that is
+based on volume labels. The only relavant parameter in this file is the hostname.
+The centaurirestore tool updates this accordingly. To avoid that any kernel
+update causes 'grub.cfg' to be overridden centauisoho modifies these files:
+
+              .... zz-grub-update
+
+Both methods have disadvantages: while (1) make cloning more complicated (2)
+does not allow multiple media on the same pc to have equal volume labels.
+
+
+Booting the Raspberry PI
+------------------------
+
+xxxxx
+
+
+. The 'centaurisoho' Tool and Data
+==================================
+
+Distribution Tar Files
+----------------------
+
+These files depend on <dist> (the Debian distribution) and <conf> (a configuration)
+and contain everything needed to make a 'centauri' system from a minimal Debian
+installation. File name examples:
+
+        centaurisoho-bookworm-worms.tgz         # dist=bookworm   conf=worms
+        centaurisoho-bookworm-myconf.tgz        # ...             conf=myconf
+        centaurisoho-trixy-trix.tgz             # dist=trixy      ...
+
+The <conf> name 'everything' is special in the sense that it contains all configurations
+contained in a workspece. See below for more information about 'workspace'.
+
+        centaurisoho-<dist>-everything.tgz      # dist=<dist> workspace backup
+
+
+'centaurisoho' Workspace
+------------------------
+
+A distrubution tar expands into a 'workspace' folder. This folder contains data
+that is needed to install a 'centauri' system. At least one configuration is
+included, see 'seed.tgz' and 'Seed Tar Files' below.
+
+The 'setup' tool is used to install the 'centauri' software to the booted system so
+that the high-level 'centaurisoho' tool becomes available. Usually one will do something
+like:
+
+        sudo -i                                 # needing root permissions
+        tar -xaf centaurisoho-trixy-trix.tgz    # extract distribution tar
+        centaurisoho-trixy/setup seed           # install 'centauri' software
+
+The 'installer' tool is of special importance. It can be used manipulate configurations
+and their seed tar files. It is rarely run by users, mostly the 'setup' tool is calling
+'installer' to get some low level things done.
+
+When not used explicitly to configure the booted systemn the 'centauri' software
+can be removed completely by using:
+
+        sudo -i
+        centaurisoho-trixy/install remove       # uninstall 'centauri' software
+
+
+Seed Tar Files
+--------------
+
+A seed tar is a simple way of installing 'centauri' library, tools and repositiory. All
+files are put in place by tar, but the system configuration is not altered and no services
+are (re-)configured. After installing a seed tar the 'centauri' stuff can be remove using
+the 'install' tool as described before.
+
+After a seed tar has been installed most 'centauri' tools can be used, notably 'centaurisoho'.
+
+
+'centaurisoho' Repository Data
+------------------------------
+
+To make 'centaurisoho' work without having to handle a distribution tar, some
+data is kept in the repository below: '<root>/configs/<dist>/@soho'. Example:
+
+        $CEN_ROOT/configs/trixy/@soho
+            centaurisoho-bookworm-worms.tgz     # bookworm distirbution tar
+            centaurisoho-trixy-trix.tgz         # trixy ...
+            centaurisoho-trixy-test.tgz         # another trixy config
+            imagetool                           # for 'centaurisoho backup'
+            imagetool.xy                        # ...
+
+###
