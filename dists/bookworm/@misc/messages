@@ -1,0 +1,308 @@
+# This file is used by centaurisoho/setup
+
+# ------------------------------------------------------------------------------
+[local1]
+# ------------------------------------------------------------------------------
+
+Found no user 'local' but centauri-soho depends on it as local administrator.
+The user should have 'uid=1000' and 'gid=1000'. It will be added to the sudoers
+so that it can use 'sudo' without a password. Command to create the user:
+
+    adduser local --uid=1000
+
+Make sure that user/group 1000 ... 1009 are not currently in use.
+
+# ------------------------------------------------------------------------------
+[local2]
+# ------------------------------------------------------------------------------
+
+User 'local' exists but either 'uid' or 'gid' are not 1000. As centauri-soho
+depends on this user as a local administrator it is strongly recommended to
+modify your password/group settings before continuing the installation.
+
+# ------------------------------------------------------------------------------
+[efi]
+# ------------------------------------------------------------------------------
+
+Now enable EFI (secure) boot and try it. You might have to enroll your MOK key
+on 1st boot if secure boot is on. Also your EFI may select grub as bootloader.
+Consider creating EFI boot variables. See:
+
+    centauriefilinux efi menu grub          # optional
+    centauriefilinux efi menu systemd       # make systemd the preferred loader
+    centauriefilinux efi delete <n>         # set boot order
+    centauriefilinux efi order <n>...       # set boot order
+
+# ------------------------------------------------------------------------------
+[raspi]
+# ------------------------------------------------------------------------------
+
+Your Raspberry Pi should now boot using an initrd. This '/boot/initrd.img' will
+be automatically updated as needed.  Use 'centauriraspi' to switch between boot
+modes and firmware configurations:
+
+    centauriraspi config apoint      # boot into server mode with WLAN-AP
+    centauriraspi config bootmenu    # show a mode/configuration menu after boot
+    centauriraspi config extender    # connect to WLAN, run arp-proxy+dns-relay
+    centauriraspi config minimal     # don't start network, maintenance mode
+    centauriraspi config router      # run as a router with NAT and DHCP
+    centauriraspi config repeater    # connect to WLAN, do NAT and DHCP via eth0
+    centauriraspi config server      # boot into server mode (WLAN as client)
+    centauriraspi config switch      # brigde interfaces (WLAN needs WDS)
+    centauriraspi config workstation # boot to workstation mode ('default' mode)
+
+# ------------------------------------------------------------------------------
+[client]
+# ------------------------------------------------------------------------------
+
+If your client was registered successfully with your server the 'klist' tool
+should show your current kerberos tickets. Otherwise try to register the client
+manually. Registration affects three areas:
+
+    (1) ssh-ids for root  (2) samba ad/dc and NFS  (3) master repository ...
+
+    # (ssh-ids) allow root access from server without a password:
+
+        centaurissh import
+
+    # (samba and NFS only, not recommended) run:
+
+        centaurikerberos join
+
+    # (samba, NFS and repository, answer yes to prompts) run:
+
+        centaurikerberos [--force] client
+
+        The --force option might be needed if your machine-id was changed
+
+# ------------------------------------------------------------------------------
+[server]
+# ------------------------------------------------------------------------------
+
+To start a centauri server the kernel command line must contain:
+    centauriswitch=static:server        # network without WLAN AP  -or-
+    centauriswitch=static:apoint        # server with additional WLAN AP
+
+This will happen if '/etc/default/centaurinetcfg' is properly configured
+and after running:
+    centaurinetcfg set -                # generate network configuration
+    centauriefilinux menu               # for systemd boot (grub autodetects)
+# ------------------------------------------------------------------------------
+[step0purge]
+# ------------------------------------------------------------------------------
+
+
+To save space localepurge was installed and all locales but en_* and de_* are
+purged. To change the current locale to german try:
+
+    localectl set-locale de_DE.utf-8
+    dpkg-reconfigure keyboard-configuration
+    dpkg-reconfigure tzdata
+
+
+# ------------------------------------------------------------------------------
+[step0]
+# ------------------------------------------------------------------------------
+
+This is a bootstrap Debian 12 (bookworm) last updated at %1%
+
+Except for some kernel boot parameters, grub config and /etc/network/interfaces
+it is an unmodified minimal Debian system. The centauri-soho distribution tar is
+installed at /root/centaurisoho-bookworm-<conf>. Also installed are the centauri
+tools and library.
+
+Currently no locales are generated to save space, but will be configured automa-
+tically in the next installation step (see 'centaurisoho seed'). To change things
+manually now use:
+
+        system dpkg-reconfigure locales             # not recommended now ...
+        system dpkg-reconfigure tzdata              # ... see 'centaurisoho seed'
+        system dpkg-reconfigure keyboard-configuration
+
+Your next steps to setup centauri-soho should be:
+
+    edit centaurisoho-bookworm-<conf>/passwords     # customize passwords
+    edit centaurisoho-bookworm-<conf>/setup.conf    # customize configuration
+    centaurisoho config                             # optional, allows to edit
+                                                    # centaurinetcfg manually
+    centaurisoho seed                               # become a 'centauri' system
+
+# ------------------------------------------------------------------------------
+[step1]
+# ------------------------------------------------------------------------------
+
+Your next steps to setup centauri-soho should be:
+
+    edit centaurisoho-bookworm-<conf>/passwords     # customize passwords
+    edit centaurisoho-bookworm-<conf>/setup.conf    # customize configuration
+
+Only if you want to customize the network configuration further run:
+
+    centaurisoho config                             # optional ...
+    edit centaurisoho-bookworm-<conf>/centaurinetcfg
+
+Continue to set locales and update/install more software using:
+
+    centaurisoho seed                               # become a 'centauri' system
+
+After this, the recommended step is to clone the system to another boot medium:
+
+    cenaurisoho clone <device>                      # make a copy
+
+# ------------------------------------------------------------------------------
+[stepN]
+# ------------------------------------------------------------------------------
+
+    This is centauri-soho after setup %1%
+
+    For help on centauri-tools type:
+        cth                 # get tool index
+        cth <name>          # get help for tools matching the pattern
+    Other useful aliases are:
+        ccd                 # list path short names
+        ccd <short>         # change directory to short name path
+        cid [all]           # show disk partitions
+        cim                 # show mounted disk partitions
+
+# ------------------------------------------------------------------------------
+[hass]
+# ------------------------------------------------------------------------------
+
+The home assistant core is now installed, but at 1st start a lot of python code
+will have to be downloaded and compiled. This can take several minutes (or much
+longer on a slow computer). For this reason home assistant is currently not set
+to auto start at boot time. The following steps are recommended:
+
+    1. Start 'centaurihass --verbose run' in a console window. Watch the
+       progress and enter ^C after it did its compilation work.
+
+    2. Run 'centaurihass auto on' to enable auto start at boot time.
+
+    3. Reboot your computer
+
+# ------------------------------------------------------------------------------
+[passwords]
+# ------------------------------------------------------------------------------
+
+We are now in local network mode and can set local passwords. At least you
+should run the following commands:
+
+    # These passwords are set once and then distributed via repository
+
+    centauriusers passwd root       # the root user
+    centauriusers passwd local      # a non-root local user
+    centauriusers passwd cyrus      # cyrus imap administrator
+
+    # These local samba passwords must be set equal on all machines. In client
+    # mode the AD/DC server handles authentication and these settings are not
+    # relevant.
+
+    centauriusers passwd smbworld   # not shared, set equal on all machines
+    centauriusers passwd smbtrust   # ...
+
+Now enter commands as needed and type 'exit' when done ...
+
+# ------------------------------------------------------------------------------
+[fstab]
+# ------------------------------------------------------------------------------
+/etc/fstab (or /etc/fstab.static)
+
+This file contains static mounts for most partitions of the system disk.
+When using centaurimounter all entries except '/' and '/home' should be
+commented out or removed (resulting in automounting of these partitions).
+
+The 'swap' entry is not mandatory, systemd can automount swap partitions,
+or otherwise centauriswap can be used to manage swap files/partitions.
+
+# ------------------------------------------------------------------------------
+[renclient]
+# ------------------------------------------------------------------------------
+This system has been configured as a client and was renamed. This breaks some
+important relations with the server:
+
+    AD/DC (samba)       # see 'samba-tool computers' (machine account)
+    NFS                 # some entries in kerberos, local keytab
+    repository          # repository staging and security
+
+    Most of these can be fixed by running: centaurikerberos --force client
+
+Additional care might be needed by the following:
+
+    ssh keys            # reimport using: centaurissh import
+    certificates        # certificates can be managed by: centauricerts
+
+A simple way to apply these changes is to repeat the client setup:
+
+    centaurisoho --force client
+
+# ------------------------------------------------------------------------------
+[renserver]
+# ------------------------------------------------------------------------------
+This system has been configured as a server and was renamed of changed its IP
+address. This causes breakage of some services:
+
+    AD/DC (samba)       # samba cannot rename a server
+    NFS                 # some entries in kerberos, local keytab
+    openvpn             #
+
+    certificates
+
+A easiest way to apply all of these changes is to repeat the server setup:
+
+    centaurisoho --force server
+
+# ------------------------------------------------------------------------------
+[template]                  # help text for centaurisoho template
+# ------------------------------------------------------------------------------
+
+Template patterns for simple names:
+    %A%     wlan AP ssid                    default:  %N% (short domain name)
+    %B%     soho network base addr          example:  '10.10.0.0/22'
+    %C%     computer name prefix            ...       'computer'
+    %D%     domain name                     ...       'worms.home'
+    %G%     generic server name             ...       'worm'
+    %H%     host name                       ...       'worm8'
+    %I%     public internet server name     ...       'myself.mydyndns.org'
+    %M%     machine name prefix             ...       'machine'
+    %N%     short domain name               ...       'worms'
+    %P%     primary server                  ...       'worm0'
+    %R%     router                          ...       'router'
+    %S%     secondary server                ...       'worm1'
+    %W%     wlan client ssid                default:   %N% (short domain name)
+    %Z%     distribution name               ...       'bookworm'
+
+Machine alias names (from 'setup.conf') by machine index:
+
+    %M<n>%  <n> suffix 0...9                get alias of %H%<n>
+
+Network IP:
+
+    %D4%    domain network                  example:  '10.10.2.0' (22 bits)
+    %V4%    VPN network                     ...       '10.10.4.0' (23 bits)
+    %X4%    repeater network                ...       '10.10.5.0' (23 bits)
+
+suffix: instead of '4' also 3, 2, 1 and 0 are supported, see below
+
+Network bitmask (no IPv6 versions)
+    %B4%    netmask bits                    example:  '22'
+    %N4%    netmask                         ...       '255.255.252.0'
+
+Special hosts
+    %G4%    generic server                  example:  '10.10.2.10'
+    %H4%    host ip                         ...       '10.10.2.180'
+    %P4%    primary server                  ...       '10.10.2.11'
+    %R4%    router                          ...       '10.10.1.1'
+    %S4%    secondary server                ...       '10.10.2.12'
+
+Suffixes
+    ^       1st letter uppercase
+    ^^      uppercase
+    6       get IPv6 address including mask length
+    5       get IPv6 address (no mask length)
+    4       get IPv4 address, 4 tuples                'xx.xx.xx.xx'
+    3       get IPv4 address, 3 tuples                'xx.xx.xx'
+    2       get IPv4 address, 2 tuples                'xx.xx'
+    1       get IPv4 address, 1 tuple                 'xx'
+    0       get IPv4 address including mask length    'xx.xx.xx.xx/xx'
+
+# end

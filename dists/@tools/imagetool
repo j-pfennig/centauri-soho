@@ -1,0 +1,221 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Dr. Jürgen Pfennig (c) 2023-2024; BSD license"
+CEN_TITLE="A disk image installer for centauri-soho"
+
+# is there an installed library version?
+CEN_REAL="${CEN_ROOT:-.}"
+[ "$CEN_REAL" = '.' ] && CEN_REAL='/var/centauri'
+
+CEN_NAME="${0##*/}"                 # the name of this script
+                                    # temporary folder, see extract
+DAT_TEMP="${TMP:-/tmp}/centaurisoho-$CEN_NAME"
+
+# remove outdated tools/library
+[ -e "$DAT_TEMP" ] && [ "$BASH_SOURCE" -nt "$DAT_TEMP" ] && rm -rf "$DAT_TEMP"
+
+die() {
+    [ $# = 0 ] && set -- "Cannot continue"
+    echo "$CEN_NAME: ***ERROR***" "$@" 1>&2 ; exit 1
+}
+
+# change to the installation folder if not run as './<name>"'
+if [ "$BASH_SOURCE" != "./$CEN_NAME" ] && [ ! -L "$BASH_SOURCE" ] ; then
+    cd "${BASH_SOURCE%/*}/../.." || die "Failed to enter working folder"
+fi
+
+# ------------------------------------------------------------------------------
+# extract private tools/library from tar into a temporary folder
+# ------------------------------------------------------------------------------
+
+# we do not want to use any installed version of the library or tools
+if [ -e "dynamic/var/centauri/tools" ] ; then
+    CEN_ROOT="$PWD/dynamic/var/centauri"
+else
+    CEN_ROOT="$DAT_TEMP"
+fi
+
+for DAT_TARF in "$@" '-' ; do
+    if [ "$DAT_TARF" = '+' ] ; then
+        DAT_TARF=centaurisoho-*.tar
+        [ -s "$DAT_TARF" ] || DAT_TARF='-'
+        break
+    fi
+    [[ "$DAT_TARF" == *.tar ]] && break
+done
+
+if [ -e "$CEN_ROOT/tools/_centauri_bash_lib" ] ; then
+    :
+elif [ "${1::8}" = '--embed=' -o "$1" = '-f'  -o "$1" = '-h' -o "$1" = '--help' ] &&
+     [ -d "$CEN_REAL/tools" ] ; then
+    CEN_ROOT="$CEN_REAL"
+else
+    if [ "${1::3}" != 'ext' ] ; then
+        echo "$CEN_NAME: To run this tool some components must be extracted from a centaurisoho"
+        echo "${CEN_NAME//?/ }  image tar into a temporary folder ($DAT_TEMP)."
+        echo
+    fi
+
+    DAT_TSUB="$CEN_NAME.xz"
+    if [ "${DAT_TARF::1}" = '-' ] ; then
+        if [ "${1:--h}" != '-h' -a "$1" != '--help' ] ; then
+            echo "$CEN_NAME: No image tar file found"
+        fi
+        echo "${CEN_NAME//?/ }  Please run: $CEN_NAME extract <path-of-tar>"
+        echo "${CEN_NAME//?/ }  Then try  : $CEN_NAME --help"
+        echo
+        exit 1
+    fi
+
+    [ -e "$DAT_TARF" ] || die "File not found:" "$DAT_TARF"
+    mkdir -p -- "$DAT_TEMP" || die "Cannot continue"
+    tar -C "$DAT_TEMP" -xaf "$DAT_TARF" "$DAT_TSUB" || die
+    tar -C "$DAT_TEMP" -xaf "$DAT_TEMP/$DAT_TSUB" || die
+    echo "$CEN_NAME: Archive extracted:" "$DAT_TEMP"
+fi
+
+# Import the private copy of  bash library
+. $CEN_ROOT/tools/_centauri_bash_lib -a -d -f - '0.10:2' || exit 2
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+actionExtract() {
+    trace "$CEN_ACTION is currently a NOOP"
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+actionInfo() {
+    message    -c "Image tar file"  "$DAT_TARF"
+    message -a -c "Installed root"  "${CEN_REAL:--none-}"
+    message -a -c "Temporary root"  "$CEN_ROOT"
+}
+
+# ------------------------------------------------------------------------------
+# install image tar: <disk> <tar>
+# ------------------------------------------------------------------------------
+actionInstall() {
+    embed -v -z centaurisoho restore --- "$@"
+}
+
+# ------------------------------------------------------------------------------
+# remove tool and temporary library
+# ------------------------------------------------------------------------------
+actionRemove() {
+    [ -d "$DAT_TEMP" ] && remove -d -- "$DAT_TEMP"
+    resolve -f -x -p || return
+    case "$CEN_RESOLVE" in
+        */configs/*/@soho)
+            message -c "Not removing" "${CEN_RESOLVE#$PWD/}/$CEN_NAME" ;;
+        *)  remove -- "$BASH_SOURCE"
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# update tools/library archive tar: <dest>
+#
+#   The 'imagetool' sources are located at: configs/<dist>/@soho.
+#
+#   For all actions but 'archive' a temporary library installation is created
+#   via tar from 'imagetool.xy' in a temporary folder.
+#
+#       $DAT_TEMP/library
+#       $DAT_TEMP/tools
+#
+#   The 'imagetool.xy' tar is created on demand, e.g. it is not included in the
+#   distributable tars. So this action gets invoked by centaurisoho if 'backup'
+#   can't locate imagetool.
+#
+#   'backup' always calls 'update' and passes a path where to store 'imagetool'
+#   and its 'imagetool.xy'.
+#
+#   The backup depends on 'centauritools' being installed, so the 'imagetool'
+#   location should be a repository folder: $CEN_TOOLS/../../@soho/imagetool
+# ------------------------------------------------------------------------------
+actionArchive() {
+    local real="$CEN_REAL" dest="${1:-.}"
+    [ "$dest" = '.' ] && dest="$PWD/$CEN_NAME.xz" || dest="$1/$CEN_NAME.xz"
+    if [ ! -d "$real" ] ; then
+        invoke -e "No 'centauritools' installation found" ; return
+    fi
+
+    # change to the installation folder if not run as './<name>"'
+    resolve -f -x -p && message -c "Config folder" "${CEN_RESOLVE#$PWD/}"
+    folder -c -f -- "$CEN_RESOLVE"
+
+    local list="$CEN_NAME.files"
+    if [ ! -r "$list" ] ; then
+        invoke -e "File list not found:" "$list" ; return
+    fi
+    system -e -p tar -caf "$dest" -C "$real" --files-from="$list" &&
+        message -a -c "Created archive" "$dest"
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <verb> <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$1" in
+    arc*)
+        invoke 'archive' -          0 1 ;;
+    ext*)
+        invoke 'extract' -          1   ;;
+    inf*)
+        invoke 'info'    -          0 1 ;;
+    ins*)
+        invoke 'install' -          2 5 ;;
+    rem*)
+        invoke 'remove'  -          0   ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -a "••• maintenance actions •••" \
+        -a 'extract <tar>'    "extract $CEN_NAME dependencies from image tar" \
+        -a 'archive [<dest>]' "create the '$CEN_NAME.xz' archive" \
+        -a - \
+        -a "••• deployment actions •••" \
+        -a 'info    [<tar>]'  "output some information about $CEN_NAME and tar file" \
+        -a "install <dev> <tar>|+ [ext4|btrfs] [<swap>] [<param>]" \
+        -a -                  "install to disk block device from image tar" \
+        -a "remove"           "remove this tool and it's temporary data" \
+
+    usageset \
+        -p  '<tar>'           "a tar file containing an installable image" \
+        -p  '<dev>'           "disk device path        (example: /dev/sdb)" \
+        -p  '<swap>'          "swap size in [M] or [G] (example: 2000M)" \
+        -p  '<param>'         "parameter file or '-' unattended install" \
+
+    usageset \
+        -t "This tool will partition and format a disk block device and install the" \
+        -t "image data onto it. By default you will be prompted for some configura-" \
+        -t "tion parameters." \
+        -t - \
+        -t "Parameter defaults are read from a file. Unless you pass a custom params" \
+        -t "file, the one that is included in the image tar will be used. Specify '-'" \
+        -t "if you want to run a batch install using the included params file." \
+
+    usageset \
+        -e "# extract '$CEN_NAME' from an image tar" \
+        -e "tar -xaf centaurisoho-*.tar imagetool" \
+        -e '' \
+        -e "# interactive install of 'centaurisoho-*.tgz' to '/dev/sdb" \
+        -e "./$CEN_NAME /dev/sdb +" \
+        -e '' \
+        -e "# batch install of 'centaurisoho-*.tgz' to '/dev/mmcblk0" \
+        -e "./$CEN_NAME /dev/mmcblk0 + 8G ./params.conf" \
+
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

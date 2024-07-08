@@ -1,0 +1,51 @@
+#!/usr/bin/bash
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r - '0.00:2' 4 4 || exit 2
+
+CEN_TITLE="Update dynamic folder <dest> from repository by reference <orig>"
+CEN_USE_HEADER="Usage: $CEN_NAME <dist> <what> <orig> <dest>"
+
+run() {
+
+dist="$1"           # distribution like 'bookworm'
+what="$2"           # host like 'alpha1' or '@shared'
+onam="$3"           # reference     like 'centauri'
+dnam="$4"           # clone config  like 'worms'
+
+# example - update worms from repository be reference centauri
+#
+#           dynamic-clone bookworm @shared centauri worms
+
+base="/home/local/centaurisoho-master/dynamic/var/centauri/configs"
+folder -c -f -- "$base"
+
+from="$dist/$onam/$what"
+dest="$dist/$dnam/$what"
+repo="/var/centauri/configs/$dest"
+message -a -c "Master repos." "$repo"
+
+[ -d "$repo" ] || quit -e "Repository not found:" "$repo"
+
+for item in "$from"/* ; do
+    case "${item##*/}" in
+    *BreezeCentauri*)
+        ;;
+    *)  item="${item/$onam/$dnam}"
+        item="${item/${onam^}/${dnam^}}"
+    esac
+    [ -e "$item" ] && continue
+
+    if [ -e "$repo/${item##*/}" ] ; then
+        message -a -c "copy" "$item"
+        dryrun || copy -a -- "$repo/${item##*/}" "$item"
+    else
+        message -a -c "not in repos." "$item"
+    fi
+done
+
+}
+
+main "$@" ; quit
+
+# end

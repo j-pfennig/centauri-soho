@@ -1,0 +1,26 @@
+#!/usr/bin/bash
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r - '0.00:2' 3 3 || exit 2
+
+CEN_TITLE="Update file in template folder from repository"
+CEN_USE_HEADER="Usage: $CEN_NAME <dist> <conf> <file>"
+
+run() {
+    local dist conf file repo deco
+    dist="$1"           # distribution like 'bookworm'
+    conf="$2"           # config       like 'centauri'
+    file="$3"           # file         like '/etc/alias'
+
+    resolve -f -x -p
+    folder -f -c -- "$CEN_RESOLVE/../../$dist/configs/@shared/templates"
+
+    repository locate repo "$file" || fatal "Not found:" "$file"
+    deco="${repo##*/}.TEMPLATE"
+    [ -f "$deco" ] || fatal "No template:" "$deco"
+    system -e -z -- kompare "$repo" "$deco"
+}
+
+main "$@" ; quit
+
+# end
