@@ -1,0 +1,27 @@
+# This file is input for 'centauripackage --apt --install' and will
+# (de)install the listed packages via debian's apt package manager ...
+
+virtualenv              install
+
+# see: https://www.home-assistant.io/installation/linux
+
+python3                 install
+python3-dev             install
+python3-pip             install
+bluez                   install
+libffi-dev              install
+libssl-dev              install
+libjpeg-dev             install
+zlib1g-dev              install
+autoconf                install
+build-essential         install
+libopenjp2-7            install
+libtiff6                install
+libturbojpeg0-dev       install
+tzdata                  install
+ffmpeg                  install
+liblapack3              install
+liblapack-dev           install
+libatlas-base-dev       install
+
+# end

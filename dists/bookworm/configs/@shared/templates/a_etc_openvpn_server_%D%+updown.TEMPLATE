@@ -1,0 +1,34 @@
+#!/bin/bash
+export PATH="/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin"
+
+# OpenVPN passes various env variables:
+#
+# script_type           # "up" or "down"
+# route_network_1       # network ip
+# route_netmask_1       # network mask
+
+# OpenVPN also passes args: <tun>
+
+case "$route_netmask_1" in
+    255.0.0.0)   osh_ip="$route_network_1/8" ;;
+    255.255.0.0) osh_ip="$route_network_1/16" ;;
+                 # if we get no matching netmask, use this ...
+    *)           osh_ip="$route_network_1/24" ;;
+esac
+
+# do we use a brigde?
+
+osh_ifout='eth0'
+[ -e '/sys/class/net/br0' ] && osh_ifout='br0'
+
+
+logger -t ovpn "updown env $script_type $route_network_1 $route_netmask1"
+logger -t ovpn "updown     $osh_ip $1 -> $osh_ifout"
+
+if [ "$script_type" = 'up' ] ; then
+    centaurifilter route "$osh_ifout" "$osh_ip" $1
+elif [ "$script_type" = 'down' ] ; then
+    sudo centaurifilter noroute "$osh_ifout" $1
+fi 
+
+#end

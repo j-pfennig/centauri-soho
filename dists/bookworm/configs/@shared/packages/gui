@@ -1,0 +1,18 @@
+# This file is input for 'centauripackage --apt --install <file>' and will
+# (de)install the listed packages via debian's apt package manager ...
+
+# we also need lightdm for vnc (see xdmcp) 
+lightdm                       install
+lightdm-gtk-greeter           install
+lightdm-gtk-greeter-settings  install
+
+tigervnc-standalone-server    install
+
+synaptic        install
+wmctrl          install
+xfwm4           install
+xorg            install
+xterm           install
+
+# need this for centauristartup (kiosk mode)
+xserver-xorg-legacy install

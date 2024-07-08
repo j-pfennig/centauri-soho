@@ -1,0 +1,41 @@
+dbhome /var/lib/squidguard/db
+logdir /var/log/squid
+
+time workhours {
+ weekly mtwhf 08:00 - 16:30
+ date *-*-01  08:00 - 16:30
+}
+
+dest good {
+}
+
+dest local {
+}
+
+dest ads {
+   urllist adv/urls
+   domainlist adv/domains
+}
+
+dest costtraps {
+   urllist costtraps/urls
+   domainlist costtraps/domains
+}
+
+dest spyware {
+   urllist spyware/urls
+   domainlist spyware/domains
+}
+
+dest tracker {
+   urllist tracker/urls
+   domainlist tracker/domains
+}
+
+acl {
+ default {
+  pass   !ads !costtraps !spyware !tracker
+  redirect http://%G%.%D%/blocked_by_squid.html
+ }
+}
+

@@ -1,0 +1,22 @@
+# This file is input for 'centauripackage --apt --install server' and will
+# (de)install the listed packages via debian's apt package manager ...
+
+# we need lightdm for vnc (see xdmcp) 
+lightdm                       install
+lightdm-gtk-greeter           install
+lightdm-gtk-greeter-settings  install
+
+cyrus-imapd         install
+easy-rsa            install
+fetchmail           install
+nfs-kernel-server   install
+ntpsec              install
+qdbus               install
+radvd               install
+samba-ad-provision  install
+samba-dsdb-modules  install
+samba-vfs-modules   install
+sasl2-bin           install
+squid               install 
+squidguard          install
+winbind             install

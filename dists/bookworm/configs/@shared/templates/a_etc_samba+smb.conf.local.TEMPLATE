@@ -1,0 +1,70 @@
+# jpf@centauri: smb.conf.local for centauri: 2014-02-12
+
+# Global parameters
+
+[global]
+    ### server attributes
+
+    server string = %N^^% Local Server, Samba %v
+    workgroup = %N^^%
+    os level = 45
+
+    # use lower case host name, avoid double display in windows
+    mdns name = mdns
+
+    ### make it a stand alone Server
+
+    wins support = yes
+    time server = no
+    dns proxy = no
+
+    preferred master = no
+    domain master = yes
+
+    ### access restrictions
+
+    include = /etc/samba/networks.conf
+
+    # must use local authentication
+    invalid users = root
+    guest account = smbworld
+    guest ok = yes
+    map to guest = bad user
+    security = user
+    include = /etc/samba/smbpass.conf
+
+    ### other ...
+
+    logging = file@1
+
+    # files
+    allow insecure widelinks = Yes
+    unix extensions = Yes
+    follow symlinks = Yes
+    wide links = Yes
+    hide unreadable = Yes
+    directory mask = 0775
+    create mask = 0775
+    usershare allow guests = No
+    usershare owner only = No
+
+    # printing
+    printcap name = cups
+    printing = cups
+    load printers = Yes
+    show add printer wizard = No
+    cups server = "localhost"
+
+    # this is for win2003
+    client ipc signing = auto
+    ntlm auth = yes
+    allow nt4 crypto = yes
+    disable netbios = no
+
+    # this is for windows 10 and Samba 4
+    server min protocol = NT1
+
+    # service definitions for shares
+    include = /etc/samba/services.conf
+
+#end

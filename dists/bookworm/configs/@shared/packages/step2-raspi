@@ -1,0 +1,15 @@
+# This file is input for 'centauripackage --apt --install' and will
+# (de)install the listed packages via debian's apt package manager ...
+
+binutils            install
+btrfs-progs         install
+dc                  deinstall
+dosfstools          install
+dhcpcd5             deinstall
+dphys-swapfile      deinstall
+netcat-traditional  install
+openssh-server      install
+parted              install
+rsync               install
+rsyslog             deinstall
+tnftp               install

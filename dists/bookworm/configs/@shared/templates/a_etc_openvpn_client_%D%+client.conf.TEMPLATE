@@ -1,0 +1,32 @@
+# client.conf - centauri openvpn config - (c) J.Pfennig 2014-2023
+
+cd          /etc/openvpn/client/%N%
+
+# make this a client
+client
+
+# server things
+dev         tun
+proto       udp6
+tun-mtu     1400 
+nobind
+remote      %I% 1194 udp4
+
+# validate server cert
+remote-cert-tls server
+cipher      AES-256-GCM
+
+# get certs and keys
+ca          ca.crt
+cert        client.crt
+key         client.key
+tls-auth    ta.key
+
+# miscellaneous
+comp-lzo
+verb        1
+
+# routing (pushed by server)
+#redirect-gateway def1 ipv6
+
+# end

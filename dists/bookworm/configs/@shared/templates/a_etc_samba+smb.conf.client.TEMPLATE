@@ -1,0 +1,70 @@
+# Global parameters
+[global]
+    ### make it a Member Server
+    workgroup = %N^^%
+    realm = %D^^%
+    server role = member server
+    time server = no
+    dns proxy = no
+
+    # use lower case host name, avoid double display in windows
+    mdns name = mdns
+
+    # don't override machine passwords !!!
+    machine password timeout = 0
+    kerberos method = secrets and keytab
+ 
+    ### access restrictions
+
+    include = /etc/samba/networks.conf
+
+    invalid users = root
+    guest account = smbworld
+    guest ok = yes
+    map to guest = bad user
+
+    ### other ...
+
+    logging = file@1
+
+    # files
+    allow insecure widelinks = Yes
+    unix extensions = Yes
+    follow symlinks = Yes
+    wide links = Yes
+    hide unreadable = Yes
+    directory mask = 0775
+    create mask = 0775
+    usershare allow guests = No
+    usershare owner only = No
+
+    # printing
+    printcap name = cups
+    printing = cups
+    load printers = Yes
+    show add printer wizard = No
+    #cups server = "localhost"
+
+    # this is for win2003
+    client ipc signing = auto
+    ntlm auth = yes
+    allow nt4 crypto = yes
+    domain logons = yes
+    disable netbios = no
+
+    # this is for windows 10 and Samba 4
+    server min protocol = NT1
+
+    ### service definitions for shares
+
+    include = /etc/samba/services.conf
+
+[netlogon]
+    path = /var/lib/samba/sysvol/%D%/scripts
+    read only = No
+
+[sysvol]
+    path = /var/lib/samba/sysvol
+    read only = No
+
+### END

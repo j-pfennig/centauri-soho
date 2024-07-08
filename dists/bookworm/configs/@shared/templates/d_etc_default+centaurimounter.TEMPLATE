@@ -1,0 +1,248 @@
+# configuration file for centaurimounter
+
+###################################
+### Variables and Substitutions ###
+###################################
+
+# The configurable (BASH) variables all start with prefix 'DAT_', other variables
+# should not be set. Not all shell defined variables are valid inside a services.
+# Known to be safe:
+
+# ${HOSTNAME}      the host's name
+
+# Substitutions can be used for <values> of  maps (things like xxxx[<key>]=<value>)
+#   %k     the complete map-key
+#   %f     folder (leading path elements trimmed)
+#   %l     lowercase folder
+#   %b     folder base (last path element trimmed, leading '/' removed)
+#   %n     name (leading '*_' sequence trimmed)
+#   %%     a single % character
+
+# This file gets sourced and must follow BASH syntax rules. It is possible to put
+# BASH code inside, for example to reimplement external tools via their DAT_xxx
+# variables.
+
+###########################################
+### Naming of hosts, shares and exports ###
+###########################################
+
+# Host names are either NetBIOS or DNS both case insensitive. Traditionally
+# linux host names had to be lowercase a..z or -. This tool internally uses upper
+# case for NetBIOS names (must contain at least one letter) or lower case for
+# DNS names. NetBIOS implies a SAMBA shared (although NetBIOS is only a naming
+# convention, not the protocol in use). Otherwise DNS implies NFS. This is hard
+# coded and cannot be changed.
+
+# Valid share Names (SAMBA): \\<host>\{<prefix>}<name>
+#                            //<host>/{<prefix>}<name>
+# Valid exports Names (NFS): <host>:/{<prefix>}<name>
+
+# <host> can be of any case and gets converted to upper/lower case as needed.
+# The backslash characters are converted to slashes. <prefix> can be a lower
+# case host name followed by a separator (default: _). If the prefix does not
+# matches the (remote) host name, the prefix is generated. Prefixed names are
+# used internally, in the network neighborhood view and for auto generated
+# symlinks the prefix is stripped. Under NFS <name> cannot contain spaces.
+
+###############
+### Folders ###
+###############
+
+# Folder to contain a dynamic network tree (empty to disable). Each active host
+# creates a subfolder. From the subfolders links point to a DAT_FOLDER_IMPORT
+# subfolder where the actual mounts are made. The DAT_FOLDER_IMPORT subfolder
+# is also symlinked to '.mount'.
+
+#DAT_FOLDER_TREE="/network"
+
+# Folder for local mounts (empty to disable). Automatically populated with symlinks
+# to mounted local volumes (if not mounted here).
+
+#DAT_FOLDER_LOCAL="/mnt"
+
+# Folder for network exports (empty to disable). This folder is used to populate
+# the local host's folder in the network tree. Also the .mount link points to this
+# location. Symlinks to exports are automatically created for local volumes that
+# use the EXPORT option.
+
+#DAT_FOLDER_EXPORT="/var/lib/centauri/export"
+
+# Folder for network imports (empty to disable). This folders will contain a subfolder
+# for each active host found in the network. Imported volumes will by mounted in these
+# subfolders.
+
+#DAT_FOLDER_IMPORT="/var/lib/centauri/import"
+
+# Special handling for network home export (emtpy to disable). The master's home
+# export will be symlinked to DAT_FOLDER_TREE instead of the server folder. If
+# DAT_FOLDER_SAMBA is defined, that folder will be symlinked to DAT_FOLDER_HOME.
+
+#DAT_FOLDER_HOME="home"
+
+# Samba user home folder mount (empty to disable). This folder overrides the
+# location used by DAT_FOLDER_HOME. If should not be set if home folders are
+# exported via NFS. With SAMBA the path could be: "/network/.samba".
+
+#DAT_FOLDER_SAMBA=
+
+########################
+### Domain Server(s) ###
+########################
+
+# This data is optional and is mainly used to create symlinks for a server nick name
+# and for a special handling of server-exported home folders.  If a tool 'centaurinames'
+# is found, it will override this data:
+
+# DAT_MASTER[0]="my-server"           # server nick name
+# DAT_MASTER[1]="my-server-1"         # [1] primary server
+# DAT_MASTER[2]="my-server-2"         # [2] secondary server (if any)
+# DAT_MASTER[3]="my-server-1"         # [3] currently active server (master)
+
+####################
+### Local mounts ###
+####################
+
+# The following mount definitions allow pseudo-mount-options that are used internally
+# and are not passed to the mount programm (local mounts only):
+#
+# HAS_VOLUMES (devices only)    search this device for volumes.
+# MOUNT_BASE="<path">           overrides DAT_FOLDER_IMPORT
+# MOUNT_NAME="<name>"           mount device or volume as <name>.
+# MOUNT_POINT="<path>"          mount at <path> instead of the default mount point,
+#                               a symlink from default to <path> will be made.
+# IS_STATIC                     do a static mount (no automount).
+# NO_DEFAULTS                   don't add default mount options (see DAT_OPT_DEFAULT).
+# NO_FSCK                       don't run fsck on local mounts.
+# NO_IDLE                       don't use DAT_IDLE_TIMEOUT.
+# NO_UNMOUNT                    don't unmount when centaurimounter service stops.
+# EXPORT                        this volumes is symlinked to DAT_FOLDER_EXPORT
+
+# Default options for local mounts (not used for NFS/SAMBA):
+
+# DAT_OPT_DEFAULT="rw,nofail,noatime,defaults"
+
+# Devices are typically disk partitions and get mounted first. The device definitions
+# can be prefixed with label= uuid= partuid= and so on. If no prefix is given label=
+# is used. A check is made against /dev/disk/by-<prefix>/<key>.  If no device is found,
+# the entry is ignored.
+
+DAT_DEVICES["${HOSTNAME}_vol0"]="NO_FSCK,HAS_VOLUMES,type=btrfs,subvol=/"
+DAT_DEVICES["${HOSTNAME}_vol1"]="NO_FSCK,HAS_VOLUMES,type=btrfs,subvol=/"
+DAT_DEVICES["${HOSTNAME}_mirror"]="type=btrfs,subvol=/"
+
+DAT_DEVICES["${HOSTNAME}_boot"]=""
+DAT_DEVICES["${HOSTNAME}_backup"]=""
+DAT_DEVICES["${HOSTNAME}_vfat"]="MOUNT_NAME=scratch,type=vfat"
+DAT_DEVICES["${HOSTNAME}_windows"]="NO_DEFAULTS,type=ntfs-3g,gid=wheel,umask=007,nls=utf8"
+
+# Volumes (which might be btrfs subvolumes) are mounted after devices. Relative paths are
+# searched in devices with pseudo-mount-option 'HAS_VOLUMES" and are ignored if not found.
+
+DAT_VOLUMES["Volumes/Archive"]="EXPORT,NO_FSCK,MOUNT_POINT=/archive,type=btrfs,subvol=%k"
+DAT_VOLUMES["Volumes/Backup"]="NO_FSCK,MOUNT_NAME=/backup,type=btrfs,subvol=%k"
+DAT_VOLUMES["Volumes/Export"]="EXPORT,NO_FSCK,NO_UNMOUNT,IS_STATIC,MOUNT_POINT=/export,type=btrfs,subvol=%k"
+DAT_VOLUMES["Volumes/Shared"]="EXPORT,NO_FSCK,NO_UNMOUNT,IS_STATIC,MOUNT_POINT=/shared,type=btrfs,subvol=%k"
+
+################
+### Symlinks ###
+################
+
+# centaurimounter can create and remove arbitrary symlinks. Either a absolute path names are
+# used or paths are relative to DAT_FOLDER_LOCAL. Links are only created if the link
+# location does not yet exists and if the target exists. If no link name is given, the
+# last element of the target is used. Symlinks are removed at termination if the link
+# is prefixed with a minus sign.
+
+# create/remove symlink '/mydata' to '$DAT_FOLDER_LOCAL/mydata'
+#DAT_SYMLINKS["/mydata"]="-"
+
+# create/remove symlink '$DAT_FOLDER_LOCAL/mydata' to '/mydata'
+#DAT_SYMLINKS["mydata"]="-/mydata"
+
+# create symlink '/boot/efi' to '$DAT_FOLDER_LOCAL/boot/efi'
+DAT_SYMLINKS["/boot/efi"]="%b/%f"
+DAT_SYMLINKS["/boot/grub"]="%b/%f"
+
+# create symlink '/root/Backup' to '$DAT_FOLDER_LOCAL/backup/Backup'
+#DAT_SYMLINKS["/root/Backup"]="backup/Backup"
+
+######################
+### Network mounts ###
+######################
+
+# Autodetected hosts can be ignored and hosts can forced event if not autodetected:
+
+#DAT_HOSTS[XX-312.12]="i"           # never use this host
+#DAT_HOSTS[TV-X512-a]="i"
+#DAT_HOSTS[server1]="f"             # force (always check) this server
+
+# It is also possible to ignore hosts by a regular expression (not shell globbing!):
+
+#DAT_FILTER="(^LG-)|(SAMSUNG)"
+
+# Netbios hostnames can be mapped to DNS names if they are not resolved to ip. The
+# mapped DNS names are used internally to ping the host. Remember: DNS names are
+# always upper-case, but here case is ignored. The matches use regular expressions
+# (not shell globbing) and the longest match is used:
+
+#DAT_DNSMAP["^ALPHA|^PETER"]="-"    # no mapping
+#DAT_DNSMAP[FRITZ-NAS]=router0      # use DNS 'router0'
+#DAT_DNSMAP["^BETA"]="@"            # try addresses from nmlookup
+#DAT_DNSMAP[DELTA0]="#-0 #-1"       # try DNS 'delta0-0' 1st then 'delta0-1'
+DAT_DNSMAP[".*"]="#-0 #-1 # @"      # try DNS before nmlookup
+
+# NFS an SAMBA mounts might need credentials and other export/share dependent options.
+# Multiple option set can be specified and are found when matching a host name. This
+# uses bash globbing (not regular expressions!). If multiple matches occur, the ones
+# with the longest glob expressions are used. Unlike for local mounts, there are no
+# pseudo-mount-options:
+
+    # nfs4 needs 'proto=tcp' unless started with a ipv4 address. This is a difference
+    # to the old SUN automounter which resolves to hostname to an ipv4 address ...
+
+#DAT_MOUNT_NFS["*"]="vers=4,proto=tcp,sloppy,noatime,soft,intr,fsc,timeo=100,retry=0"
+
+#DAT_MOUNT_SAMBA["*"]="vers=1.0,iocharset=utf8"
+DAT_MOUNT_SAMBA["%N%*"]="vers=1.0,domain=centauri,credentials=/.secrets/samba_trusted,iocharset=utf8"
+
+######################
+### External Tools ###
+######################
+
+# tools used to browse/list avahi
+#DAT_AVAHI_BROWSE="avahi-browse -v -k -p -a"
+#DAT_AVAHI_LIST="avahi-browse -v -k -p -a -t"
+
+# tools used to list samba servers/shares
+#DAT_SAMBA_TREE="true"
+#DAT_SAMBA_SHOW="smbclient -g -N -L"
+
+# tool used to list nfs exports
+#DAT_NFS_SHOW="showmount --exports"
+
+# program to (auto-)mount network shares. Options (see DAT_MOUNT_xxx) will be
+# added using "--options". For unmounting the tool is called with "--unmount"
+#DAT_MOUNTER="systemd-mount"
+
+##############
+### Timers ###
+##############
+
+# Time for host checks not triggered by avahi [seconds]
+#DAT_PING_TIME=900
+
+# Shorten check time after an avahi event [seconds] (empty to disable)
+#DAT_PING_SHORT=10
+
+# Time before an automount exipires [seconds] (empty to disable)
+#DAT_IDLE_TIMEOUT=600
+
+# Force unmount if DAT_IDLE_TIMEOUT does not work [seconds] (empty to disable)
+# Use only for older versions of systemd (before 2021 or Debian bullseye)!
+#DAT_UNMOUNT_TIME=900
+
+# Spindown rotational disk if idle for given time [seconds] (empty to disable)
+# Multiple entries are allowed, key uses bash globbing (not regular expression!)
+#DAT_SPINDOWN["/dev/sd?"]=900
+
+# End

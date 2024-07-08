@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!DOCTYPE pam_mount SYSTEM "pam_mount.conf.xml.dtd">
+<!--
+	See pam_mount.conf(5) for a description.
+-->
+
+<pam_mount>
+
+		<!-- debug should come before everything else,
+		since this file is still processed in a single pass
+		from top-to-bottom -->
+
+<debug enable="0" />
+
+		<!-- Volume definitions -->
+
+<!-- doesn't work: sgrp="roaming"  -->
+<!-- volume uid="30000-39999" fstype="cifs" server="%G%"
+        path="homes" mountpoint="/data/.samba/%(USER)"
+        options="nosuid,nodev,iocharset=utf8" / -->
+ 
+<!-- volume uid="1000-39999" fstype="fuse"
+        path="encfs#/home/%(USER)/.encfs_Private"
+        mountpoint="/run/user/%(USERUID)/Private"
+        options="allow_other" / --> 
+
+		<!-- pam_mount parameters: General tunables -->
+
+<logout wait="500000" hup="no" term="yes" kill="yes" />
+
+<!--
+<luserconf name=".pam_mount.conf.xml" />
+-->
+<luserconf name=".pam_mount.conf.xml.client" />
+
+<!-- Note that commenting out mntoptions will give you the defaults.
+     You will need to explicitly initialize it with the empty string
+     to reset the defaults to nothing. -->
+<mntoptions allow="nosuid,nodev,loop,encryption,fsck,allow_root,allow_other,iocharset=utf8" />
+<!--
+<mntoptions deny="suid,dev" />
+<mntoptions allow="*" />
+<mntoptions deny="*" />
+-->
+<mntoptions require="nosuid,nodev" />
+
+		<!-- pam_mount parameters: Volume-related -->
+
+<mkmountpoint enable="1" remove="true" />
+
+<!-- jpf@centauri avoid sudo -i error message -->
+<pmvarrun>/usr/sbin/pmvarrun -u %(USER)</pmvarrun>
+
+</pam_mount>

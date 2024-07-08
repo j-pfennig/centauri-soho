@@ -1,0 +1,452 @@
+# common grub.cfg - jpf@centauri for debian (c) 2024-05-18
+
+### ### configuration section ### ### 
+
+set myname=%H%
+set distro=%Z%
+set resume=auto
+set repair=yes
+
+# ifnames=0 disables systemd names (deprecated, see /etc/systemd/network)
+set ifnames=   
+
+# <empty>: verbose boot, nosplash: fancy, splash: plymouth
+set splash="splash loglevel=3"
+#set splash="splash"
+
+# as we do not run public/shared servers relax security ...
+set params="mitigations=off security="
+
+# tell systemd-fsck.service that initrd checks the root fs
+if [ -n "$repair" ] ; then set params="$params fsck.repair=$repair" ; fi
+
+# disable systemd interface names (ifnames is patched by centaurirestore)
+if [ "$ifnames" = 0 ] ; then set params="$params net.ifnames=0" ; fi
+
+# hardware quirks ...
+#set params="$params mce=dont_log_ce"
+#set params="$params mce=off mce=dont_log_ce"
+#set params="$params acpi_osi="
+#set params="$params libata.force=3:3.0G"
+#set params="$params drm_kms_helper.edid_firmware=HDMI-1:edid/1280x1024.bin"
+#set params="$params nopti"
+
+# extra params for maintenance mode
+set runlevel2="systemd.unit=runlevel2.target"
+set runlevel3="systemd.unit=runlevel3.target"
+set maintenance="resume= systemd.show_status=1 $runlevel2"
+
+# video mode
+
+# "gfxmode=auto" and "gfxpayload=keep" are preferred settings. Later during boot
+# the  kernel by default switches to the modesetting driver. If it does not work
+# use the kernel parameter "nomodeset" and grub "gfxpayload=text" if required.
+
+set gfxmode=auto
+#set gfxmode=800x600
+#set gfxmode=1024x768
+#set gfxmode=1366x768
+set gfxpayload=keep
+#set gfxpayload=text
+
+# language (see /admin/utilities/grub-keybd-de), leave kblang empty if the keyboard
+# hangs. Usually kblang does not work and hangs with notebooks ...
+set lang=de
+#set kblang=${lang}
+
+# OS selection: empty=auto, 0=BIOS (ctl/alt keys), 1=EFI (esc key), 2=no prompt
+set osmenu=1
+
+### ### implementation section ### ### 
+insmod part_msdos
+insmod part_gpt
+insmod ext2
+insmod btrfs
+
+# default menu entries (entries start with 0)
+#
+#   1   maintenance
+#   2   workstation/server/...
+#   3   menu mode / kiosk / homeassistant
+#   4   other OS (mentest, windows, local)
+set default=2 
+set default_men=1
+set default_win=4
+set timeout=0
+
+set pager=1
+set rootdir=
+set rootlbl=
+set rootkey=LABEL
+set efiboot=
+set grubdir="${root}"
+set part=
+set disk=
+set netmen=
+
+# search swap by label
+if [ "$resume" = "auto" ] ; then
+    if   search --no-floppy --label ${myname}_swap ; then
+        set resume="resume=LABEL=${myname}_swap"
+    else
+        set resume=
+    fi
+fi
+
+# search boot volume by label
+if   search --no-floppy --label --set root ${myname}_vol0 ; then
+    set rootlbl=${myname}_vol0  ; set rootdir="/Volumes/Root"
+    if [ -e "(${root})/${rootdir}-${distro}" ] ; then
+        set rootdir="${rootdir}-${distro}"
+    fi
+elif search --no-floppy --label --set root ${myname}_root ; then
+    set rootlbl=${myname}_root
+elif search --no-floppy --label --set root ${myname}_mirror ; then
+    set rootlbl=${myname}_mirror ; set rootdir="/Volumes/Root"
+elif search --no-floppy --label --set root ${distro}_vol0 ; then
+    set myname="$distro" ; set rootdir="/Volumes/Root"
+elif search --no-floppy --label --set root ${distro}_root ; then
+    set myname="$distro"
+# search fails for unsupported file-system, kernel should be in grub partition
+else
+    set root="$grubdir" 
+    if   [ "$root" = "hd0,msdos4" -o "$root" = "hd0,gpt4" ] ; then set part=4 ; set disk=hd0
+    elif [ "$root" = "hd0,msdos3" -o "$root" = "hd0,gpt3" ] ; then set part=3 ; set disk=hd0
+    elif [ "$root" = "hd0,msdos2" -o "$root" = "hd0,gpt2" ] ; then set part=2 ; set disk=hd0
+    elif [ "$root" = "hd0,msdos1" -o "$root" = "hd0,gpt1" ] ; then set part=1 ; set disk=hd0
+    elif [ "$root" = "hd1,msdos4" -o "$root" = "hd1,gpt4" ] ; then set part=4 ; set disk=hd1
+    elif [ "$root" = "hd1,msdos3" -o "$root" = "hd1,gpt3" ] ; then set part=3 ; set disk=hd1
+    elif [ "$root" = "hd1,msdos2" -o "$root" = "hd1,gpt2" ] ; then set part=2 ; set disk=hd1
+    elif [ "$root" = "hd1,msdos1" -o "$root" = "hd1,gpt1" ] ; then set part=1 ; set disk=hd1
+    fi
+    # set root via UUID
+    if   [ -e ($disk,4)/Volumes/Root/boot ] ; then set root="$disk,4" ; set rootdir="/Volumes/Root"
+    elif [ -e ($disk,3)/Volumes/Root/boot ] ; then set root="$disk,3" ; set rootdir="/Volumes/Root"
+    elif [ -e ($disk,2)/Volumes/Root/boot ] ; then set root="$disk,2" ; set rootdir="/Volumes/Root"
+    elif [ -e ($disk,1)/Volumes/Root/boot ] ; then set root="$disk,1" ; set rootdir="/Volumes/Root"
+    elif [ -e ($disk,4)/boot ] ; then set root="$disk,4"
+    elif [ -e ($disk,3)/boot ] ; then set root="$disk,3"
+    elif [ -e ($disk,2)/boot ] ; then set root="$disk,2"
+    elif [ -e ($disk,1)/boot ] ; then set root="$disk,1"
+    fi
+    probe -u "$root" --set=rootlbl ; set rootkey=UUID ; set resume=
+fi
+
+# need grub directory for locale, font, image
+if   test -e (${grubdir})/grub/grub.cfg ; then
+    set grubdir="($grubdir)/grub"
+elif test -e (${grubdir})/boot/grub/grub.cfg ; then
+    set grubdir="($grubdir)/boot/grub"
+else
+    set grubdir="$rootdir/boot/grub"
+fi
+
+# implied settings
+if test -n "${rootdir}" ; then set rootvol="rootflags=subvol=${rootdir}" ; fi
+if test -z "${rootlbl}" ; then set rootlbl="${myname}_root" ; fi
+if test -z "${splash}"  ; then set splash="systemd.show_status=1" ; fi
+if test -z "${resume}"  ; then set resume="resume=" ; fi
+
+if [ -z "$efiboot" ] ; then
+    if [ "$grub_platform" = "efi" ] ; then set efiboot=1 ; fi
+fi
+
+# kernel/initd location 
+set kernel=${rootdir}/vmlinuz
+set initrd=${rootdir}/initrd.img
+if test -e ${rootdir}/boot/current ; then
+    set kernel=${rootdir}/boot/current
+    set initrd=${rootdir}/boot/current.img
+elif test -e ${rootdir}/boot/vmlinuz ; then
+    set kernel=${rootdir}/boot/vmlinuz
+    set initrd=${rootdir}/boot/initrd.img
+fi
+
+# kernel boot arguments
+set bootlx="$kernel root=${rootkey}=$rootlbl $rootvol ro"
+
+# boot message
+if [ "$efiboot" = "1" ] ; then
+    insmod efi_gop
+    insmod efi_uga
+else
+    insmod vbe
+fi
+insmod keystatus
+insmod gfxterm
+terminal_output gfxterm
+
+loadfont ${grubdir}/fonts/unicode.pf2
+loadfont unicode
+
+set color_normal=white/black
+echo
+echo "Booting: $myname ($root)$kernel LABEL=$rootlbl"
+echo
+echo
+
+# keystatus does not work with EFI
+if [ -z "$osmenu" ] ; then
+    if keystatus ; then osmenu=0 ; else osmenu=1 ; fi
+fi
+
+set color_normal=white/blue
+if [ "$osmenu" != "2" ] ; then
+    echo     "                                                             "
+    if [ "$osmenu" = "0" ] ; then
+        echo "   Hold down the 'ctrl' key to enter the GRUB boot menu or   "
+        echo "             the 'alt'  key to boot an alternate system...   "
+    else
+        echo "             Press ESC to display boot menu...               "
+    fi
+    echo     "                                                             "
+    echo
+fi
+
+set color_normal=white/black
+set menu_color_normal=cyan/blue
+set menu_color_highlight=white/blue
+
+set lvers="Linux"
+if   test $distro = "jessie"  ; then set lvers="Debian 8.x" 
+elif test $distro = "stretch" ; then set lvers="Debian 9.x"
+elif test $distro = "buster"  ; then set lvers="Debian 10.x"
+elif test $distro = "bullseye"; then set lvers="Debian 11.x"
+elif test $distro = "bookworm"; then set lvers="Debian 12.x"
+elif test $distro = "trixie";   then set lvers="Debian 13.x"
+elif test $distro = "forky";    then set lvers="Debian 14.x"
+fi
+
+# setup network mode
+set nmode="simple"
+if   test -e ${rootdir}/etc/network/interfaces.apoint ; then set nmode="apoint"
+elif test -e ${rootdir}/etc/network/interfaces.server ; then set nmode="server"
+elif test -e ${rootdir}/etc/network/interfaces.smart  ; then set nmode="smart"
+elif test -e ${rootdir}/etc/network/interfaces.simple ; then set nmode="simple"
+elif test -e ${rootdir}/etc/network/interfaces.static ; then set nmode="static"
+fi
+
+# load late, user can read menu
+set locale_dir=${grubdir}/locale
+insmod gettext
+insmod sleep
+
+# Check for pressed key (shift interrupts sleep)
+set show_menu=
+if [ "$osmenu" = "0" ] ; then
+    sleep --interruptible 3
+    clear
+    if keystatus --alt; then
+        set default=$default_win
+    elif keystatus --ctrl; then
+        set default=$default_men
+        set show_menu=1
+        set timeout=-1
+    fi
+elif [ "$osmenu" = "1" ] ; then
+    if sleep --interruptible 3 ; then
+        clear
+    else
+        set default=$default_men
+        set show_menu=1
+        set timeout=-1
+    fi
+else
+    set show_menu=1
+    set timeout=-1
+fi
+
+# Show menu
+if [ "$show_menu" = "1" ] ; then
+    # load image
+    echo "Loading menu - please wait ..."
+    insmod png
+    # btrfs boot makes abs symlinks broken, use private symlink
+    if background_image ${grubdir}/desktop-grub.png; then
+        set menu_color_normal=light-gray/black
+        set menu_color_highlight=white/black
+    elif background_image ${rootdir}/boot/grub/desktop-grub.png; then
+        set menu_color_normal=light-gray/black
+        set menu_color_highlight=white/black
+    elif background_image ${rootdir}/usr/share/images/desktop-base/desktop-grub.png; then
+        set menu_color_normal=light-gray/black
+        set menu_color_highlight=white/black
+    else
+        set color_normal=white/black
+    fi
+
+    # load keymap (non-secure boot only)
+    if test -e ${grubdir}/layouts/${kblang}.gkb ; then
+        insmod at_keyboard
+        insmod keylayouts
+        keymap ${kblang}
+        terminal_input at_keyboard
+    fi
+fi
+
+### ### The boot Menu section ### ###
+
+menuentry "$lvers ($distro) $myname ..." {
+    true
+}
+
+menuentry "+    Maintenance mode   (console)" {
+    linux $bootlx centauriswitch="$nmode" quiet $params $maintenance ; initrd $initrd
+}
+
+### normal mode: apoint, server, smart, static, simple [default]
+
+if test "$nmode" = "apoint" ; then
+    menuentry "+    Server mode        (WLAN access point)" {
+        linux $bootlx centauriswitch=static:apoint quiet $params $splash $resume ; initrd $initrd
+    }
+
+elif test "$nmode" = "server" ; then
+    menuentry "+    Server mode        (multiple network interfaces)" {
+        linux $bootlx centauriswitch=static:server quiet $params $splash $resume ; initrd $initrd
+    }
+
+elif test "$nmode" = "smart" ; then
+    menuentry "+    Notebook mode      (multiple network interfaces)" {
+    	linux $bootlx centauriswitch=smart quiet $params $splash $resume ; initrd $initrd
+    }
+
+elif test "$nmode" = "static" ; then
+    menuentry "+    Workstation mode   (static network configuration)" {
+        linux $bootlx centauriswitch=static quiet $params $splash $resume ; initrd $initrd
+    }
+
+else
+    menuentry "+    Workstation mode   (single network interface)" {
+        linux $bootlx centauriswitch=simple quiet $params $splash $resume ; initrd $initrd
+    }
+fi
+
+### extra modes: switch router repeater
+
+hassflg="${rootdir}/var/lib/centauri/centaurihass.enabled" 
+
+if   test -e ${rootdir}/etc/network/interfaces.switch   ; then set netmen=1
+elif test -e ${rootdir}/etc/network/interfaces.router   ; then set netmen=1
+elif test -e ${rootdir}/etc/network/interfaces.repeater ; then set netmen=1
+elif test -e ${hassflg}                                 ; then set netmen=1 ; fi
+    
+if test $netmen = 1 ; then
+    if   test $default = 8 ; then set default=9 
+    elif test $default = 7 ; then set default=8
+    elif test $default = 6 ; then set default=7
+    elif test $default = 5 ; then set default=6
+    elif test $default = 4 ; then set default=5
+    elif test $default = 3 ; then set default=4 ; fi
+    menuentry "Network Appliance Modes ..." {
+        true
+    }
+
+if test -e ${hassflg} ; then
+    if   test $default = 8 ; then set default=9 
+    elif test $default = 7 ; then set default=8
+    elif test $default = 6 ; then set default=7
+    elif test $default = 5 ; then set default=6 ; fi
+    menuentry "+    Homeassistant Appliance" {
+        linux   $bootlx centauriswitch=smart:hass quiet $params $splash $resume $runlevel2
+        initrd  $initrd
+    }
+fi
+
+if test -e ${rootdir}/etc/network/interfaces.switch ; then
+    if   test $default = 8 ; then set default=9 
+    elif test $default = 7 ; then set default=8
+    elif test $default = 6 ; then set default=7
+    elif test $default = 5 ; then set default=6 ; fi
+    menuentry "+    Switch mode        (network switch)" {
+        linux   $bootlx centauriswitch=switch quiet $params $splash $resume $runlevel3
+        initrd  $initrd
+    }
+fi
+
+if test -e ${rootdir}/etc/network/interfaces.repeater ; then
+    if   test $default = 8 ; then set default=9 
+    elif test $default = 7 ; then set default=8
+    elif test $default = 6 ; then set default=7
+    elif test $default = 5 ; then set default=6 ; fi
+    menuentry "+    Repeater mode      (wlan repeater, NAT and dhcp)" {
+        linux   $bootlx centauriswitch=router:repeater quiet $params $splash $resume $runlevel3
+        initrd  $initrd
+    }
+fi
+
+if test -e ${rootdir}/etc/network/interfaces.router ; then
+    if   test $default = 8 ; then set default=9 
+    elif test $default = 7 ; then set default=8
+    elif test $default = 6 ; then set default=7
+    elif test $default = 5 ; then set default=6 ; fi
+    menuentry "+    Router mode        (umts router, dhcp and proxy)" {
+        # start with display manager (no autologin)
+        # linux   $bootlx ro centauriswitch=router quiet $params $splash $resume
+        # pass control to centauristartup (no display manager)
+        linux   $bootlx centauriswitch=router quiet $params $splash $resume centaurilogin=local $runlevel3
+        initrd  $initrd
+    }
+fi
+
+    if   test $default = 8 ; then set default=9 
+    elif test $default = 7 ; then set default=8
+    elif test $default = 6 ; then set default=7
+    elif test $default = 5 ; then set default=6 ; fi
+    menuentry "+    Menu and Kiosk mode" {
+        # pass control to centaurikiosk (no display manager)
+        linux   $bootlx centauriswitch=router quiet $params $splash $resume centaurilogin=local $runlevel3
+        initrd  $initrd
+    }
+fi
+
+### other os: memtest windows
+
+menuentry "Other Operating Systems ..." {
+    if   test $default = 8 ; then set default=9 
+    elif test $default = 7 ; then set default=8
+    elif test $default = 6 ; then set default=7
+    elif test $default = 5 ; then set default=6
+    elif test $default = 4 ; then set default=5
+    elif test $default = 3 ; then set default=4 ; fi
+    true
+}
+
+# EFI mode windows
+if [ -n "$efiboot" -a -e (hd0,1)/EFI/Microsoft/Boot/bootmgfw.efi ] ; then
+    menuentry "+    MicroSoft Windows" {
+        insmod chain
+        set root="hd0,1"
+        chainloader /EFI/Microsoft/Boot/bootmgfw.efi
+   }
+
+# BIOS mode windows
+elif [ -e ${rootdir}/mnt/windows ] ; then
+    menuentry "+    MicroSoft Windows" {
+        insmod ntfs
+        insmod chain
+        set root="hd0,1"
+        chainloader +1
+    }
+fi
+
+# memtest is BIOS only
+if [ -z "$efiboot" -a -e ${rootdir}/boot/memtest86+.bin ] ; then
+    menuentry "+    Memory test        (memtest86+)" {
+        linux16 $rootdir/boot/memtest86+.bin
+    }
+fi
+
+### Local boot entries ###
+
+#if [ -e /Volumes/Root-bullseye ] ; then
+#    menuentry "+    Debian bullseye" {
+#        set     base=/Volumes/Root-bullseye/boot
+#        set     bootlx="$base/vmlinuz root=${rootkey}=$rootlbl rootflags=subvol=/Volumes/Root-bullseye ro"
+#        set     gfxpayload=keep
+#        linux   $bootlx $params centauriswitch=smart quiet $splash 
+#        initrd  $base/initrd.img
+#    }
+#fi
+
+### end ###

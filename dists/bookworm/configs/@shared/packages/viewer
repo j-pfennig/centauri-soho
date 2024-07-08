@@ -1,0 +1,11 @@
+# This file is input for 'centauripackage --apt --install <file>' and will
+# (de)install the listed packages via debian's apt package manager ...
+
+# the QT based falkon browser can be installed without qml
+falkon          install
+
+# qml is for 'centaurilauncher viewer' and has a lot of dependencies
+# for running an html window. Installing falkon is a simple way to
+# pull them in ...
+
+qml             install

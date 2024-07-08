@@ -1,0 +1,18 @@
+# /etc/exim4/update-exim4.conf.conf
+#
+# Edit this file and /etc/mailname by hand and execute update-exim4.conf
+# yourself or use 'dpkg-reconfigure exim4-config'
+
+dc_eximconfig_configtype='satellite'
+dc_other_hostnames=''
+dc_local_interfaces='127.0.0.1'
+dc_readhost='%G%.%D%'
+dc_relay_domains=''
+dc_minimaldns='true'
+dc_relay_nets=''
+dc_smarthost='%G%.%D%'
+CFILEMODE='644'
+dc_use_split_config='false'
+dc_hide_mailname='true'
+dc_mailname_in_oh='true'
+dc_localdelivery='mail_spool'

@@ -1,0 +1,27 @@
+# This file is input for 'centauripackage --apt --install packages/firmware' and will
+# (de)install the listed packages via debian's apt package manager ...
+
+# architectures 
+
+amd64-microcode     install
+intel-microcode     install
+
+# more firmware
+
+atmel-firmware      install
+firmware-amd-graphics install
+firmware-atheros    install
+firmware-bnx2       install
+firmware-bnx2x      install
+firmware-brcm80211  install
+firmware-iwlwifi    install
+firmware-libertas   install
+firmware-linux-free install
+firmware-linux-nonfree install
+firmware-misc-nonfree install
+firmware-realtek    install
+firmware-bnx2       install
+
+# needs license agreement ...
+
+#firmware-ipw2x00    install

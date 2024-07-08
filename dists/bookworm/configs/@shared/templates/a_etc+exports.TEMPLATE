@@ -1,0 +1,6 @@
+# /etc/exports for servers, jpf@centauri (c) 2023-08-20
+
+/home          %D4%/%B4%(sec=krb5i:krb5,insecure,rw,sync,no_subtree_check)
+/export        %D4%/%B4%(sec=krb5i:krb5,insecure,rw,sync,no_subtree_check)
+/archive       %D4%/%B4%(sec=krb5i:krb5,insecure,rw,sync,no_subtree_check)
+/shared        %D4%/%B4%(sec=krb5i:krb5,insecure,rw,sync,no_subtree_check)

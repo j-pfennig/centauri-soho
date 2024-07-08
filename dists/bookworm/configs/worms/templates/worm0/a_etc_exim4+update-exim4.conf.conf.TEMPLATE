@@ -1,0 +1,30 @@
+# /etc/exim4/update-exim4.conf.conf
+#
+# Edit this file and /etc/mailname by hand and execute update-exim4.conf
+# yourself or use 'dpkg-reconfigure exim4-config'
+
+dc_eximconfig_configtype='smarthost'
+dc_other_hostnames='%N%;%D%;*.%D%;%G%;%G%?'
+dc_local_interfaces=''
+dc_readhost='my-domain.home'
+
+# relay domains/nets require no authorization
+dc_relay_domains=''
+dc_minimaldns='true'
+dc_relay_nets='%D4%/%B4%;::1;fc01::/64'
+
+dc_smarthost='smtp.provider.home'
+CFILEMODE='644'
+dc_use_split_config='false'
+dc_hide_mailname='true'
+dc_localdelivery='cyrus_delivery'
+dc_mailname_in_oh='true'
+
+### *** THIS FILE REQUIRES: an insertion in exim4.conf.template:
+#
+#cyrus_delivery:
+#   driver = lmtp
+#   socket = /var/run/cyrus/socket/lmtp
+#   batch_max = 20
+#   user = mail
+### END

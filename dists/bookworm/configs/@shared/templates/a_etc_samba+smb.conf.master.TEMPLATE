@@ -1,0 +1,76 @@
+# Global parameters
+[global]
+    realm = %D^^%
+    server role = active directory domain controller
+    workgroup = %N^^%
+
+    # samba does not start if it binds to an interface in 'linkdown' state (e.g.
+    # an unplugged eth0). As a workaround bind to a bridge only and add eht0 to
+    # the bridge. Also add lo and wlan0 (which might be unable to joind br0):
+    # interfaces lo br0 wlan0
+    # bind interfaces only = yes
+
+    # ad/dc replication creates log spam. We can use a private /tmp folder (see
+    # /etc/tmpfile.d/) for logging or even a ringbuffer to keep syslog clean.
+    log level = 0
+    # log file = /tmp/samba/log.samba
+    logging = file@1 rpc_svr:0 rpc_cli:0
+
+    # use this to view messages: smbcontrol smbd ringbuf-log
+    # max log size = 1000
+    # logging = ringbuf@1 rpc_svr:0 rpc_cli:0
+
+    # a secondary server should replicate the domain 
+    # server services = -drepl
+
+    interfaces = lo br0
+    bind interfaces only = yes
+
+    # to make dnsmasq work, the centaurifilter script creates a port forwarding
+    # for 127.0.0.2:53 to port 5354 (centauriadns) and dnsmasq is configured to
+    # listen also on port 5354 ...
+    dns forwarder = 127.0.0.2
+
+    # unix user and group objects in LDAP 
+    idmap_ldb:use rfc2307 = yes
+
+    # make 'net ads dns unregister ...' work
+    allow dns updates = nonsecure
+
+    # change ticket lifetimes: https://wiki.samba.org/index.php/Samba_KDC_Settings
+    kdc:server ticket lifetime = 60
+    kdc:user ticket lifetime = 60
+    kdc:user renewal lifetime = 189
+
+    # this is for win2003
+    mangled names = no
+    ntlm auth = yes
+    server min protocol = NT1
+    allow nt4 crypto = yes
+    domain logons = yes
+    printing = CUPS
+
+    # access controll via allow/deny hosts
+    include = /etc/samba/networks.conf 
+
+    # we need netbios
+    netbios name = %H^^%
+    netbios aliases = %G^^%
+    disable netbios = no
+    ### winbind use default domain = yes
+
+    username map = /etc/samba/smbusers
+    guest account = smbworld
+    guest ok = yes
+    map to guest = bad user
+
+    # service definitions for shares
+    include = /etc/samba/services.conf
+
+[netlogon]
+    path = /var/lib/samba/sysvol/%D%/scripts
+    read only = No
+
+[sysvol]
+    path = /var/lib/samba/sysvol
+    read only = No

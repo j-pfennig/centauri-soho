@@ -1,0 +1,35 @@
+# jpf@centauri: smb.conf.local for %D^^%: 2014-02-12
+
+# Global parameters
+
+[global]
+    ### server attributes
+
+    server string = %N^^% Local Server, Samba %v
+    workgroup = %N^^%
+    os level = 99
+
+    time server = no
+    dns proxy = no
+
+    ### make it a stand alone Server
+
+    wins support = yes
+    #name resolve order = hosts bcast
+
+    preferred master = yes
+    domain master = yes
+
+    ### other ...
+
+    # ad/dc replication creates log spam. We use a private /tmp folder (see
+    # /etc/tmpfile.d/) for logging ...
+    log level = 0
+    log file = /tmp/samba/log.nmbd
+    max log size = 1000
+    logging = file@1 rpc_svr:0 rpc_cli:0
+
+    # access controll via allow/deny hosts
+    include = /etc/samba/networks.conf 
+
+#end
