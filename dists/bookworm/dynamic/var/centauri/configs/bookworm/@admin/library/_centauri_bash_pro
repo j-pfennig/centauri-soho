@@ -1,0 +1,292 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_pro = centauri-bash-lib: Progress display support
+#
+# Call:     . _centauri_bash_pro
+#
+#+This module implements the [[progress()]] function, which is a frontend of
+# two different implementations. One is in [[_centauri_bash_con]] and is used
+# in console mode, the other is in [[_centauri_bash_win]] and is used in
+# windows mode. These two modules cannot be loaded at the same time.
+#
+#+Console or windows mode are either enabled explicitly by calling [[console()]]
+# or [[windows()]] or by using a library feature option, see [[_centauri_bash_lib]].
+# Some functions implicitly load one of these modules. So the [[progress()]] function
+# will load [[_centauri_bash_con]] implicitly if not yet in windows mode.
+#
+# Copyright Dr. J. Pfennig (c) 2022-2024
+# ------------------------------------------------------------------------------
+
+CEN_MODULES['_centauri_bash_pro']='0.03:2'
+
+embed -c '_centauri_bash_utl'                       # import on demand, see timer()
+
+# CEN_CONSOLE           # imported ...
+# CEN_WINDOWS
+
+CEN_PROGRESS=           # 0:disabled  1:enbabled  2:active
+
+# ------------------------------------------------------------------------------
+# progress - progress bar or incremental progress reporting
+#
+# Call:     progress [-a|-i] [-e] [-l] [-s <step>]
+#                    [-d <delay>]                    # dryrun delay in [s]
+#                    [-c <prog> [-p|-t <args>...]]   # incremental output
+#           progress -p <fmt> [<args>...]            # line output (printf formatting)
+#           progress -s <step> [-p|-t <args>...]     # step by
+#           progress -t <args>...                    # line output
+#           progress <fmt> [<args>...]               # same as: -p <fmt> -t <args>...
+#           progress [-e]                            # -no args- clear progress output
+#           progress -w <work> -s <step>
+#                    -c <fmt> [<labl> [<done>|-]]    # progress iterator
+#
+#+          Progress reporting has two implementations (console and windows mode) that
+#           behave similar but are not identical. The progress implementation in
+#           [[_centauri_bash_svc]] is completely different, see [[progress (service)]].
+#
+# Options:  **••• console mode •••**
+#           -a  indent all but 1st invokation
+#           -c  incremental mode (ignored if arg is a number)
+#           -d  add delay in dryrun mode
+#           -e  end incremental/line mode (keep output)
+#           -i  indent (no program name)
+#           -l  line output (used also by -p and -c)
+#           -p  line output, like -t but with printf formatting
+#           -s  like "-c ." if <step> is a number
+#           -t  line output (no -c), rewrite progress text (with -c)
+#           -v  disable progress output in verbose/trace mode
+#           -w  progress iterator
+#
+#           **••• windows mode (options -a -i and -v are silently ignored) •••**
+#           -c  set/increment progess bar
+#           -d  add <delay> in dryrun mode
+#           -e  close window (same as progress without args)
+#           -l  notification message
+#           -p  set label (**printf** formatting)
+#           -s  step by n (use 'n:m' to set total to m)
+#           -t  set progress dialog label
+#           -w  progress iterator
+#
+# Arguments:<delay> --dryrun only: delay in [s] (example 0.3)
+#           <done>  final text, use "-" for no text and no delay
+#           <fmt>   a printf format string (example: "%s of %s")
+#           <labl>  label text to show
+#           <prog>  progress in percent
+#           <step>  usage dependent see examples (syntax: [n][:m])
+#           <work>  callback function, returns 0 to continue reporting
+#
+# Examples: **••• working in console and windows mode •••**
+#
+#     simple line output (notification messages for windows mode)...
+#.    progress -l "Breakfast at 7:00"         # notification for windows
+#.    timer -w 0.4
+#.    progress -p "%s at %s" "Lunch" "13:00"  # notification for windows
+#.    timer -w 0.4
+#.    progress -t "Dinner at 19:00"           # ignored for windows
+#.    timer -w 0.4
+#
+#     appending line output (shows a dialog in windows mode)...
+#.    progress "Meals:"                       # windows: creates dialog
+#.    timer -w 0.4
+#.    progress -c "Breakfast "                # windows: increment only
+#.    timer -w 0.4
+#.    progress -c "Lunch "
+#.    timer -w 0.4
+#.    progress -c "Dinner"
+#.    timer -w 0.4
+#.    progress                                # clear mesg., close dialog
+#
+#     show a list of steps (notification messages for windows mode)...
+#.    progress -l "Winter" "Jan - Mar"
+#.    timer -w 0.4
+#.    progress -l "Spring" "Apr - Jun"
+#.    timer -w 0.4
+#.    progress -l "Summer" "Jul - Sep"
+#.    timer -w 0.4
+#.    progress -l "Autumn" "Oct - Dec"
+#
+#     run an iterator (calling a worker **totl** times, progress report is made
+#     only if **totl** is at least **mini** ...
+#.    worker() { return 0 ; }
+#.    progress -w worker -d 0.1 -s "$totl:$mini" -c "Step %s of %s ..." \
+#.    °        "Progress Demo -" "Completed."
+#
+#     Show dots progress bar (compatible with windows mode) ...
+#.    progress "Running "
+#.    for item in 0 1 2 3 4 5 6 7 8 9 ; do
+#.    °   timer -w 1
+#.    °   progress -c "."
+#.    °   done
+#.    quit "Demo over"
+#
+#     ••• console mode only •••
+#
+#           Incremental progress reporting ...
+#.          progress -l "Wait for init ..."     # temporary message
+#.          timer -w 3
+#.          message "Init done"                 # replace temp msg
+#.
+#.          progress -a -l "Phase I"            # new temp msg
+#.          timer -w 3
+#.          progress -a -l "Phase II"           # replace tmp msg
+#.          timer -w 3
+#.          progress                            # remove tmp msg
+#.          timer -w 3
+#.          quit "Demo over"
+#
+#           ••• windows mode only •••
+#
+#.    progress "start"                   # show dialog, set label
+#.    progress -c "."                    # increment progress
+#.    progress "new label"               # set label
+#.    progress -t "another label"        # set label only
+#.    progress -c 40                     # set progress to 40%
+#.    progress -c 70 -t "hallo"          # set progress and label
+#.    progress                           # clear
+#
+#.    progress -s :3                     # set total steps (don't create dlg)
+#.    progress -s 2                      # add to current
+#.    progress -s 1:5 -t "Init"          # set total, show, add to current
+#.    progress -s 2 "Step"               # add to current
+#
+# ------------------------------------------------------------------------------
+progress() {
+    # default is -e (remove progress message/window)
+    [ $# = 0 ] && _fend=0
+
+    # parse options
+    local _prog _fdel _fend _flin _find _ftxt _step _work _stat=0 _aind="$CEN_AUTOIND"
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      -)    break ;;
+      --)   shift ; break ;;
+      -a)   _find="-a" ;;
+      -c)   shift ; _prog="$1" ;;
+      -d)   shift ; [ -n "$CEN_OPT_DRYRUN" ] && _fdel="$1" ;;
+      -e)   _fend=1 ;;
+      -i)   _find="-i" ;;
+      -l)   _flin=1 ;;
+      -p)   _ftxt=2 ;;
+      -s)   shift ; _step="$1" ;;
+      -t)   _ftxt=1 ;;
+      -v)   [ "$CEN_VERB" -gt 1 ] && CEN_PROGRESS=0 ;;
+      -w)   shift ; _work="$1" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # get console / windows status, init console mode
+
+    if [ -z "$CEN_PROGRESS" ] ; then            # not yet initialized
+        if [ -n "$CEN_PAGER" -o "$CEN_VERB" -lt 1 -o "$CEN_CONSOLE" = 0 ] ; then
+            # disable for --quiet or output not to console
+            CEN_PROGRESS=0                      # no error return!
+        elif [ "$CEN_OPT_GUI" = 0 ] ; then      # disables auto-init
+            _stat=1
+            trace -c ' disabled' "option --gui=0"
+        elif [ -z "${CEN_MODULES["_centauri_bash_win"]}" ] ; then
+            console || _stat=$?
+        elif [ -z "$CEN_WINDOWS" ] ; then       # _centauri_bash_win is loaded
+            windows || _stat=$?                 # must run windows()
+        fi
+
+        if [ "$_stat" != 0 ] ; then             # failed to init
+            CEN_PROGRESS=0
+            [ -z "$_work" ] && return $_stat    # worker must always run
+        fi
+    fi
+
+    # flag open progress message / window
+    if [ "$CEN_PROGRESS" != 0 ] ;then
+        [ -z "$_fend" ] && CEN_PROGRESS=2 || CEN_PROGRESS=1
+    fi
+    [ "$_fend" = 0 ] && _fend=
+
+    if [ -z "$_ftxt" ] && [ "${CEN_NOBREAK:-2}" = 2 ] && [ -z "$CEN_WINDOWS" ] ; then
+        local _text="$*" ; _cen_compactify _text ; set -- "$_text"
+    fi
+
+    # run worker (always) or progress implementation
+    if [ -n "$_work" ] ; then                   # worker mode
+        local _mini="${_step#*:}" ; [ "$_mini" = "$_step" ] && _mini=1
+        [ "$CEN_PROGRESS" = 0 ] && _mini=0
+        _cen_pro_work "$_work" "$_fdel" "${_step%:*}" "$_mini" "$_prog" "$_text" || _stat=$?
+    elif [ "$CEN_PROGRESS" != 0 ] ; then
+        if [ -n "$CEN_WINDOWS" ] ; then         # foreward to _centauri_bash_win
+            _cen_win_prog "$_prog" "$_fdel" "$_fend" "$_flin" "$_step" "$_ftxt" "$@" || _stat=$?
+        else
+            _cen_con_prog "$_prog" "$_fend" "$_flin" "$_find" "$_step" "$_ftxt" "$@" || _stat=$?
+            [ -n "$_fdel" ] && timer -w "$_fdel"
+        fi
+    fi
+    return "$_stat"
+}
+
+# ------------------------------------------------------------------------------
+# helper for progress: <work> <fdel> <totl> <mini> <frmt> <text> [<done>]
+#                      <work> <fdel> <totl>
+#
+#     <work>    (-w) worker function
+#     <fdel>    (-d) debug delay
+#     <totl>    (-s) total item count
+#     <mini>    (-s) treshold for progress to be shown
+#     <frmt>    (-c) printf format for n of m
+#     <text>    extra text (prefix)
+#     <done>    message
+#
+# called from progress() in _centauri_bash_pro
+# ------------------------------------------------------------------------------
+_cen_pro_work() {
+    local _work="$1" _fdel="$2" _totl="$3" _mini="${4:-0}" _frmt="$5" _text="$6" _done="$7"
+    [ "$_frmt" = '-' ] && _frmt=$"%s of %s"
+    [ "$_text" = '-' ] && _text=
+    isfunction -a -- "$_work"
+
+    # disable progress if _totl <= _mini or for _mini=0
+    local _perc _mesg _epoc _curr=0 _plst=0 _stat=0
+    [ "$_totl" -le "$_mini" -o "$_mini" = 0 ] && _plst=
+
+    [ -n "$CEN_CONSOLE" ] && context -t +       # register trap handler
+
+    while [ "$_curr" -lt "$_totl" ] ; do
+        _perc=$((_curr++ * 100 / _totl))
+        if [ -n "$_plst" -a "$_curr" -ge "$_mini" ] ; then               # only if progress is enabled ...
+            [ "$_perc" -gt "99" ] && _perc=99   # maximum 99%, see windows mode
+
+            # report if % value changed or once per second
+            if [ "$_perc" -gt "$_plst" -o "$EPOCHSECONDS" != "$_epoc" ] ; then
+                _epoc="$EPOCHSECONDS" ; _plst="$_perc"
+                printf -v _mesg -- "$_frmt" "$_curr" "$_totl"
+                progress -a -c "$_perc" -t "$_text" "$_mesg"
+            fi
+        fi
+
+        $_work "$_curr" || _stat=$?             # call worker
+        [ "$_stat" = 0 ] || break               # error stop
+        [ -n "$_fdel" ] && timer -w "$_fdel"
+    done
+
+    # clear progress, close dialog, flush worker
+    if [ -n "$_plst" ] ; then
+        if [ "${_done:--}" != '-' ] ; then
+            progress -a -c 100 -t "$_text" "$_done"
+            timer -w 0.5
+        else
+            progress -a -c 100
+        fi
+    fi
+    $_work 0 || _stat=$?                        # flush worker
+    [ -n "$_fdel" ] && timer -w "$_fdel"
+    [ -n "$CEN_CONSOLE" ] && context -t -       # reset trap handler
+    return "$_stat"
+}
+
+# ------------------------------------------------------------------------------
+# quit callback to cancel progress()
+# ------------------------------------------------------------------------------
+_cen_pro_quit() {
+    [ "${CEN_PROGRESS:-0}" -gt 1 ] && progress  # remove progress message/window
+}
+
+:
+# end

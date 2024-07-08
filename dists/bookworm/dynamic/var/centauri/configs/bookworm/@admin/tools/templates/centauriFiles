@@ -1,0 +1,247 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Dr. Jürgen Pfennig (c) 2020; BSD license"
+CEN_TITLE=$"Template for a file processor (no action syntax)"
+
+# Import the bash library, set name and version TODO
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -t "$0" "0.00:1" || exit 2
+
+# Data
+CEN_RUN_MIN_ARGS=1              # min arg count, see arguments()
+CEN_RUN_MAX_ARGS=+              # max arg count
+
+CEN_OPT_BEGIN=                  # see --begin --date
+CEN_OPT_END=                    # see --end --date
+CEN_OPT_KIND=                   # see --kind
+CEN_OPT_LIST=                   # see --list
+CEN_OPT_NOTITLE=                # see --notitle
+CEN_OPT_RECURSE=                # see --recurse
+CEN_OPT_SORT=                   # see --sort
+
+declare -A DAT_FILE_MAP         # duplicates filter
+DAT_FILES=()                    # list of files found
+
+# ------------------------------------------------------------------------------
+# Parse date option: <name> <vnam> <completion> <value>            TODO OPTIONAL
+# ------------------------------------------------------------------------------
+files_opt() {
+    local _optv="$4"
+    case "$_optv" in
+    [12][0-9][0-9][0-9])
+        optarg "$1" "$2" -t "$_optv-$3" ;;
+    [12][0-9][0-9][0-9]-[01][0-9])
+        optarg "$1" "$2" -t "$_optv-${3:3}" ;;
+    [12][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9])
+        optarg "$1" "$2" -t "$_optv" ;;
+    "")
+        optarg "$1" - -t ;;
+    *)
+        optarg "$1" "$_optv" -e $"Not a valid date"
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Check kind/date options: <path>                                  TODO OPTIONAL
+# ------------------------------------------------------------------------------
+files_chk() {
+    local _name="${1##*/}" _datb _date _kind
+
+    # parse path
+    case "$_name" in
+    [12][0-9][0-9][0-9]_*_*)
+        _kind="${_name:5}"
+        _datb="${_name::4}-01-01" ; _date="${_name::4}-12-31" ;;
+    [12][0-9][0-9][0-9]-[01][0-9]_*_*)
+        _kind="${_name:8}"
+        _datb="${_name::7}-01" ; _date="${_name::7}-31" ;;
+    [12][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]_*_*)
+        _kind="${_name:11}"
+        _datb="${_name::10}" ; _date="${_name::10}" ;;
+    *)
+        _datb='0000-00-00' ; _date='9999-99-99'
+    esac
+
+    if [ -n "$CEN_OPT_KIND" ] ; then
+        _kind="${_kind%%_*}"
+        [ "$CEN_OPT_KIND" = "${_kind,,}" ] || return 1
+    fi
+    if [ -n "$CEN_OPT_BEGIN" ] ; then
+        [ "$CEN_OPT_BEGIN" \> "$_datb" ] && return 1
+    fi
+    if [ -n "$CEN_OPT_END" ] ; then
+        [ "$CEN_OPT_END" \< "$_date" ] && return 1
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Get files: [<arg>...]
+#
+# Adds files to CEN_WALK_xxx variables when called with argument(s). Sets the
+# DAT_FILES array and clears CEN_WALK_xxx when called without argument.
+# ------------------------------------------------------------------------------
+files_get() {
+    # no arguments: set DAT_FILES, return 'false' if no file found
+    if [ $# = 0 ] ; then
+        DAT_FILES=() ; DAT_FILE_MAP=()
+        # sort by filename/path ...
+        if [ -n "$CEN_OPT_SORT" ] ; then
+            local item ainp=() asrt=() fdir ffil
+            for item in "${CEN_WALK_FILES[@]}" ; do
+                fdir="${item%/*}" ; ffil="${item##*/}"
+                [ "$fdir" = "$item" ] && fdir=
+                ainp+=("$ffil/$fdir")
+            done
+            txtsort -a asrt -i ainp
+            for item in "${asrt[@]}" ; do
+                fdir="${item#*/}" ; ffil="${item%%/*}"
+                [ "$fdir" = "$item" ] && fdir=
+                DAT_FILES+=("$fdir${fdir:+/}$ffil")
+            done
+        else
+            DAT_FILES=("${CEN_WALK_FILES[@]}")
+        fi
+        CEN_WALK_DIRS=() ; CEN_WALK_DIRS=()
+        [ -n "$DAT_FILES" ] ; return            # return status
+    fi
+
+    # walk callback, tries to eliminate duplicates, date filter
+    ___add_file() {
+        local _fabs="$1"
+        [ "${1::1}" = "/" ] || _fabs="$PWD/$1"
+        [ -n "${DAT_FILE_MAP["$_fabs"]}" ] && return 1
+        files_chk "$1" || return 1              # filter date/kind (optional)
+        DAT_FILE_MAP["$_fabs"]="$1" ; return 0
+    }
+
+    # search files, return status
+    local warg='-r -l 1'                        # expand given folder only
+    [ -n "$CEN_OPT_RECURSE" ] && warg='-r'      # expand tree
+    walk -a -c -f ___add_file -i $warg "$@"
+}
+
+# ------------------------------------------------------------------------------
+# Print file list: -no args-                                       TODO OPTIONAL
+# ------------------------------------------------------------------------------
+files_toc() {
+    if [ -z "$DAT_FILES" ] ; then               # prepare file list
+        files_get || return
+    fi
+    if [ -z "$CEN_OPT_LIST" ] ; then            # don't print toc
+        trace "Files found:" "${#DAT_FILES[@]}"
+        return 0
+    fi
+
+    local htoc item indx=0
+    if [ -z "$CEN_OPT_NOTITLE" ] ; then
+        htoc="__#  File____________________________________________________________________________"
+        output -i 4 -l -- "${htoc//_/ }"        # title text
+        output -i 4 -l -d one -- "$htoc"        # header line
+    fi
+    for item in "${DAT_FILES[@]}" ; do          # file loop...
+        (( indx += 1 ))
+        printf "%7s  %s\n" "$indx" "$item"
+    done
+    if [ -z "$CEN_OPT_NOTITLE" ] ; then
+        output -i 4 -l -d one -- "$htoc"        # header line
+        echo                                    # separator
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# call a worker for each file: <worker>...                         TODO OPTIONAL
+# ------------------------------------------------------------------------------
+files_run() {
+    if [ -z "$DAT_FILES" ] ; then               # prepare file list
+        files_get || return
+    fi
+
+    local item indx=0
+
+    [ $# = 0 ] && return
+    indx=0
+    for item in "${DAT_FILES[@]}" ; do
+        (( indx += 1 ))
+        "$@" "$item" "$indx" || return 1        # add <file> <index> to call
+    done
+}
+
+# ------------------------------------------------------------------------------
+# The one and only action
+# ------------------------------------------------------------------------------
+run() {
+    # check required tools, get input files
+    system -c -f sort
+
+    #files_get -e txt -e dat -- "$@"            # TODO files by extension(s)
+    files_get -- "$@"                           # all files
+
+    files_toc || quit $"No input files found"
+    files_run echo "Dummy worker"               # TODO replace by your worker
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> <argument>
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    # date options
+    -B|--beg*)
+        files_opt "begin" - '01-01' "$2" ;;
+    -D|--dat|--date)
+        files_opt "date" CEN_OPT_BEGIN '01-01' "$2"
+        files_opt "date" CEN_OPT_END   '12-31' "$2"
+        CEN_ARGS=1 ;;                       # we processed exactly one argument
+    -E|--end)
+        files_opt "end" - '12-31' "$2" ;;
+
+    # add date options to input completion
+    --help)
+        CEN_USE_ADDOPTS="--begin= --date= --end=" ;;
+
+    # kind filter
+    -K|--kin|--kind)
+        optarg "kind"    -  -t "${2,,}" ;;   # any text (lower case)
+
+    # other
+    -L|--lis|--list)
+        optarg "list"    -      -f      ;;   # simple flag
+    -N|--not)
+        optarg "notitle" -      -f      ;;   # simple flag
+    -R|--rec*)
+        optarg "recurse" -      -f      ;;   # simple flag
+    -S|--sor|--sort)
+        optarg "sort"    -      -f      ;;   # simple flag
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -o "" \
+        -o "-B --begin   <date>  "$"select files starting at date" \
+        -o "-E --date    <date>  "$"select files of a specific date" \
+        -o "-D --end     <date>  "$"select files ending at date" \
+        -o "-K --kind    <kind>  "$"select file of a kind (e.g. tag name)" \
+        -o "-L --list            "$"print table of input files" \
+        -o "-N --notitle         "$"print no title/footer (for csv export)" \
+        -o "-R --recurse         "$"recurse into folders" \
+        -o "-S --sort            "$"sort files by file name" \
+
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

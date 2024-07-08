@@ -1,0 +1,17 @@
+# centaurinmbd.service
+[Unit]
+Description=SMB Master Browser
+After=samba-ad-dc.service
+ConditionPathExists=/etc/samba/nmbd.conf
+
+[Service]
+Type=notify
+NotifyAccess=all
+PIDFile=/run/samba/nmbd.pid
+EnvironmentFile=-/etc/default/samba
+ExecStart=/usr/sbin/nmbd --foreground --no-process-group -s /etc/samba/nmbd.conf
+ExecReload=/bin/kill -HUP $MAINPID
+LimitCORE=infinity
+
+[Install]
+WantedBy=samba-ad-dc.service

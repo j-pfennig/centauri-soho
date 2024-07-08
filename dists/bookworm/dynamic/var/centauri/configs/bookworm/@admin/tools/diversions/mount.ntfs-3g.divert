@@ -1,0 +1,12 @@
+status=off
+target=/sbin/mount.ntfs-3g
+
+divert() {
+    local oarr=()
+    local oarg=
+    for oarg in "$@" ; do
+        [ "$oarg" = "-s" ] && continue
+        oarr+=("$oarg")
+    done
+    exec /sbin/mount.ntfs-3g.distrib "${oarr[@]}"
+}

@@ -1,0 +1,308 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2023; BSD License"
+CEN_TITLE="Apply file-system security settings"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d - "0.44:2" || exit 2
+
+# data
+CEN_DONE=0                  # imply --zombie
+
+# special users
+APP_USER_ROOT=~root
+APP_USER_VBOX=~vbox
+APP_USER_REMOTE=~remote
+
+# ------------------------------------------------------------------------------
+# helpers
+# ------------------------------------------------------------------------------
+
+_dirs=()
+getDirs() {
+    declare -A _dirs_map ; _dirs=()
+    local drun
+    for drun in "$@" ; do
+        [ -d "$drun" ] || continue
+        [ -n "${_dirs_map["$drun"]}" ] && continue
+        _dirs+=("$drun"); _dirs_map["$drun"]=1
+    done
+    unset _dirs_map
+}
+
+# set ownership and rights: <mode>|- <owner>|- <file>|<dir> ...
+setRights() {
+    [ -e "$3" ] || return 1
+    local mode="${1:--}" ; shift
+    local ownr="${1:--}" ; shift
+    [ "$mode" != "-" ] && system -e -p -n -- chmod "$mode" "$@"
+    [ "$ownr" != "-" ] && system -e -p -n -- chown "$ownr" "$@"
+}
+
+# check if folder is local: <fldr>
+isLocal() {
+
+#stat --file-system --format=%T /data/alpha/shared
+#df --output=source  -l   /data/alpha/shared/GeoData_Maps/ && echo ok
+    system -r -q -- df --output=source --local "$1"
+}
+
+# ------------------------------------------------------------------------------
+# Default security settings (home folder)
+# ------------------------------------------------------------------------------
+actionAuto() {
+    [ -n "$HOME" ] || fatal $"Variable '\$HOME' is not set"
+    folder -c -f "$HOME"
+
+    local item dirs priv=() shar=() publ=()
+    # real folders only (no links)
+    system -r -e -p -d '\n' -a dirs -- find . -maxdepth 1 -type d || return 1
+    for item in "${dirs[@]}" ; do
+        item="${item/.\//}"
+        [ "$item" -ef "$HOME" ] && continue
+
+    	case "${item##*/}" in
+        Shared|Geteilt)
+            shar+=("$item") ;;
+        Public|Öffentlich)
+            publ+=("$item") ;;
+        *)
+            priv+=("$item") ;;
+        esac
+    done
+
+    # find domain/primary group
+    local grps gdom gpri
+    system -q -r -s grps -- getent group 'centauri' 'staff' 'wheel'
+    gdom="${grps:-root}" ; gdom="${gdom%%:*}"
+    system -n -r -s gpri -- id -gn || return 1  # user's primary group
+    system -n -r -s grps -- id -Gn || return 1  # user's groups
+    # if user is not memeber of domain group then use primary group
+    grps=" $grps " ; [ "${grps/ $gdom //}" = "$grps" ] && gdom="$gpri"
+
+    trace -a $"Change directory ownerships/permissions ..."
+    if [ -n "$priv" ] ; then
+        trace -a "   Private: ${#priv[*]} folder(s)"
+        setRights "o-rwx,g-rwx" "$USER:$gpri" "${priv[@]}"
+    fi
+    if [ -n "$shar" ] ; then
+        trace -a "   Shared : '$shar'"
+        setRights "o-rwx,g+rx" "$USER:$gdom" "${shar[@]}"
+    fi
+    if [ -n "$publ" ] ; then
+        trace -a "   Public : '$publ'"
+        setRights "o-w,og+rx" "$USER:$gpri" "${publ[@]}"
+    fi
+
+    system -e -p -- chmod o-w .
+
+    system -n -r -e -p -d '\n' -a priv -- find . -maxdepth 1 -type f -name .\* || return 1
+    if [ -n "$priv" ] ; then
+       trace -a $"Change dot file ownerships/permissions ..."
+       setRights "og-rwx" "$USER:$gpri" "${priv[@]}"
+    fi
+    for item in "." "$publ" "$shar" ; do
+        [ -L "$item" ] && continue
+        item+="/.directory"
+        [ -f "$item" ] && system -e -p -- chmod 644 "$item"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Rights for export folder
+# ------------------------------------------------------------------------------
+actionExport() {
+    if ! folder -c -q "/export" ; then
+        message -a $"System has no '/export' folder." ; return
+    fi
+
+    # find domain group
+    local grps adom
+    system -q -r -s grps -- getent group 'centauri' 'staff' 'wheel'
+    adom="${grps:-root}" ; adom="${adom%%:*}"
+
+    # adjust export permissions
+    setRights 775 root:$adom .
+    for i in * ; do
+        [ -h "$i" ] && continue
+
+        # got a file ...
+        if [ ! -d "$i" ] ; then
+            [ -f "$i" ] && setRights o-w root:$adom "$i"
+            continue
+        fi
+
+        # got a folder ...
+        case "$i" in
+        Music|Musik|Audio|Video|AVData|Filme)
+            grp=audio
+            [ "$i" = "Video" ] && grp=video
+            [ "$i" = "Filme" ] && grp=video
+            embed -i -v centaurirights --silent trusted --group $grp "$i"
+            folder -c -f "$i"
+            # follow links to folders ...
+            for j in * ; do
+                [ -h "$j" -a -d "$j" ] || continue
+                if ! isLocal "$j" ; then
+                    message -a $"Not a local folder"": $j"
+                else
+                    embed -i -v centaurirights --silent trusted --group $grp "$j"
+                fi
+            done
+            cd ..
+            ;;
+        Shared)
+            folder -c -f "$i"
+            getDirs *
+            for j in "${_dirs[@]}" ; do
+                case "$j" in
+                [aA]udio*|[mM]usi*)
+                    embed -i -v centaurirights --silent trusted --group audio "$j"
+                    ;;
+                [vV]ide*|[fF]ilm*)
+                    embed -i -v centaurirights --silent trusted --group video "$j"
+                    ;;
+                *)
+                     embed -i -v centaurirights --silent trusted "$j"
+                esac
+            done
+            cd ..
+            ;;
+        *)
+            embed -i -v centaurirights --silent trusted "$i"
+        esac
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Action homes: -no args-
+# ------------------------------------------------------------------------------
+actionHomes() {
+
+    # homes
+    local dir cmd usr
+    getDirs "$APP_USER_ROOT" "$APP_USER_VBOX" "$APP_USER_REMOTE" /home/*
+    for dir in "${_dirs[@]}" ; do
+        message -a $"Homedir"": $dir"
+
+        if [ "$dir" = "$APP_USER_ROOT" ] ; then
+           system -e -p -n -- chmod 710 "$dir"
+        elif [ ! "$dir" -ef "/home" ] ; then
+           system -e -p -n -- chmod 751 "$dir"
+        fi
+
+        usr="${dir##*/}"
+        [ -d "$dir/.dbus" ] && attributes -s -o "$usr:" -- "$dir/.dbus"
+
+        cmd="$dir/.$CEN_NAME"
+        [ -x "$cmd" ] || cmd="$dir/.security"
+        [ -x "$cmd" ] || continue
+
+        folder -c "$dir" || continue
+        trace -i -p $"Running: '%s' (as user '%s')" "$cmd" "$usr"
+        system -v -u "$usr" "$cmd"
+    done
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+actionSystem() {
+
+    # system dirs
+    system -e -p -n -- mkdir -p         /data /export /home /mnt "$CEN_ROOT"
+
+    attributes -o root:root -m 775      / /data /home /mnt /var
+    attributes -o root:wheel -m 775     /archive /export /shared /var/backups
+    attributes -o root:root  -m 700 -d  "$APP_USER_ROOT"
+    attributes -o root:root  -m 644     /etc/ssh/ssh_known_hosts /etc/ssh/ssh*.pub
+
+    # level 2 - strict
+    attributes -o root:wheel -m 770 "$CEN_ROOT" "$CEN_ROOT"/*
+
+    local dbak
+    shortpath -a dbak -n ignore -q "backup"
+    if [ -n "$dbak" ] ; then
+         attributes -o root:wheel -m 771  -- "$dbak"
+         attributes -o root:wheel -m "o-rwx" -s -x "$dbak/vbox" -- "$dbak"/* "$dbak/../Deleted"
+         attributes -o vbox:wheel -m "o-rwx" -s -- "$dbak/vbox"
+    fi
+
+    # level 1 - repository (include repository)
+    attributes -o root:wheel -m 770 "$CEN_ROOT/configs"/*/[a-zA-Z]*
+    attributes -o root:wheel -m 775 "$CEN_ROOT/admin" "$CEN_ROOT/configs" \
+                                    "$CEN_ROOT/configs"/* "$CEN_ROOT/configs"/*/@admin
+
+    # level 0 - default (no repository)
+    attributes -o root:wheel -m 775 "$CEN_ROOT" "$CEN_TOOLS" "$CEN_LIBRARY" \
+                                    "$CEN_ROOT/default" "$CEN_ROOT/html" "$CEN_ROOT/locale" \
+                                    "$CEN_ROOT/persistent" "$CEN_ROOT/transient"
+
+    # misc
+    setRights 770 vbox:vboxusers "$APP_USER_VBOX"
+    setRights -   remote:nogroup "$APP_USER_REMOTE"
+    setRights 711 -              "$CEN_ROOT/secrets"
+    setRights 711 -              "$CEN_ROOT/secrets/data"
+    setRights 640 root:wheel     "/etc/krb5.keytab"
+
+    # fix apt permissions (same code as in centaurirestore)
+    if [ -d "/var/lib/apt" ] ; then
+        attributes -d -m 755 -o root:root -- "/var/lib/apt/lists"         "/var/cache/apt/archives"
+        attributes -d -m 700 -o _apt:root -- "/var/lib/apt/lists/partial" "/var/cache/apt/archives/partial"
+    fi
+
+    # fix at/batch permissions
+    if [ -d "/var/spool/cron/atjobs" ] ; then
+        folder -m -f "/var/spool/cron/atspool"
+        setRights 1770 daemon:daemon "/var/spool/cron/atjobs" "/var/spool/cron/atspool"
+        system -e -p touch "/var/spool/cron/atjobs/.SEQ"
+        setRights 600 daemon:daemon "/var/spool/cron/atjobs/.SEQ"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    # after option parsing -  check if tools are installed
+    "")
+        system -c -f mkdir chmod chown id find ;;
+
+    # actions go here...
+    aut*)
+        invoke    "auto"       -            0 ;;
+    cro*)
+        invoke -r "cron"       actionSystem ; CEN_AUTOIND=
+        invoke -r -            actionExport ; CEN_AUTOIND=
+        invoke -r -            actionHomes    ;;
+    exp*)
+        invoke -r "export"     -            0 ;;
+    hom*)
+        invoke -r "homes"      -            0 ;;
+    sys*)
+        invoke -r "system"     -            0 ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+       -a "auto           default user settings [default in .$CEN_NAME]"\
+       -a "export         security settings for /export"\
+       -a "homes          security settings for /home, run per-user .$CEN_NAME"\
+       -a "system         security setting for system files"\
+       -a - \
+       -a "cron           invoked via cron to run export/homes/system"
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

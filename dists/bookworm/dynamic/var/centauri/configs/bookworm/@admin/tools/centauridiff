@@ -1,0 +1,436 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Dr. Jürgen Pfennig (c) 2021-2023; BSD License"
+CEN_TITLE=$"Handle differences between text files"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r "$0" '0.02:2' 2 2 || exit 2
+
+# Data
+CEN_OPT_ACCEPT=             # see --accept
+CEN_OPT_DIFFERENCE=         # see --difference
+CEN_OPT_EDIT=               # see --edit
+CEN_OPT_FIX=                # see --fix
+CEN_OPT_KOMPARE=            # see --kompare
+CEN_OPT_PROMPT=             # see --prompt
+CEN_OPT_REVERT=             # see --revert
+CEN_OPT_SHELL=              # see --shell
+
+# ------------------------------------------------------------------------------
+# Find file in distro repository: <vnam> <path>
+# ------------------------------------------------------------------------------
+do_dist() {
+    ___do_dist_walk() {
+        [ "${1##*/}" = "$name" ] || return 1    # no match: ignore
+        file="$1" ;                 return 3    # match: stop walk
+    }
+
+    local -n vdis="$1" ; shift
+    local file name="${1##*/}"
+    if [ "$vdis" = '@' ] ; then                 # get current nick name
+        sysversion -u
+        vdis="$CEN_SYS_NICKNAME"
+        set -- "$CEN_ROOT/configs/$vdis"
+    else
+        set -- "$CEN_ROOT/configs/"*${vdis:1}*
+    fi
+    if ! [ $# = 1 -a -d "$1" ] ; then
+        error "No such repository:" "${vdis:1}"
+        return 1
+    fi
+    walk -r -f ___do_dist_walk -i "$1"
+    if [ -z "$file" ] ; then                        # not found
+        error -p "File '%s' not found in repository: %s" "$name" "$1"
+        return 1
+    else
+        vdis="$file"
+        return 0
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Fix ownership and mode: -b|-e <file> <tag>
+# ------------------------------------------------------------------------------
+do_fix() {
+    local _fflg _argl
+    folder -b 'transient' -t -s _fflg -- "_$3"
+    if [ "$1" = '-b' ] ; then
+        create -- "$_fflg"
+        _argl=(--reference "$2" "$_fflg")
+        system -e -p -- chmod "${_argl[@]}"
+        system -e -p -- chown "${_argl[@]}"
+    elif [ "$1" = '-e' ] ; then
+        if [ -e "$2" ] ; then                       # might be deleted!
+            _argl=(--reference "$_fflg" "$2")
+            system -e -p -- chmod "${_argl[@]}"
+            system -e -p -- chown "${_argl[@]}"
+        fi
+        remove -q -- "$_fflg"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# run diff tool: <left> <right>
+# ------------------------------------------------------------------------------
+run_diff() {
+    console -m 1 -c "${CEN_COLS:-0}"            # init to fancy mode
+    local fsrc="$1" fdes="$2"
+    local lsrc="${#1}" ldes="${#2}"
+    local lhlf cols="$CEN_COLS"
+    [ -z "$cols" ] && cols=100
+    lhlf="$((cols / 2 - 1))"
+    output "$CEN_DECO_BOLD"
+    output -l -d one -x "$cols" .
+    output "$CEN_DECO_BOLD"                     # repeat for pager
+    if [ "$lsrc" -lt "$lhlf" -a "$ldes" -lt "$lhlf" ] ; then
+        printf "%-${lhlf}s %s\n" "$fsrc" "$fdes"
+    else
+        printf "Left : %s\nRight: %s\n" "$fsrc" "$fdes"
+    fi
+    output "$CEN_DECO_BOLD"                     # repeat for pager
+    output -l -d one -x "$cols" .
+    output "$CEN_DECO_NORM"
+    system -r -- diff -y --suppress-common -W $cols "$fsrc" "$fdes"
+    output "$CEN_DECO_BOLD"
+    output -l -d one -x "$cols" .
+    output "$CEN_DECO_NORM"
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+run_edit() {
+    if [ -z "$CEN_OPT_EDIT" ] ; then
+        run_files -i "$@"
+        confirm -v "none left right both" -d "none" -p " [left|rigth|both]: " \
+                   "Which file(s) to edit"
+        case "$?" in
+            1) system editor "$1" ;;
+            2) system editor "$2" ;;
+            3) system editor "$1" "$2" ;;
+        esac
+    elif [ "${CEN_OPT_EDIT::1}" = 'l' ] ; then
+        system -r -- editor "$1"
+    elif [ "${CEN_OPT_EDIT::1}" = 'r' ] ; then
+        system -r -- editor "$2"
+    else
+        system -r -- editor "$1" "$2"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Move file, show status: -a|-r|-s <left> <right>
+# ------------------------------------------------------------------------------
+run_files() {
+    local fopt="$1" ; shift
+    if [ "$fopt" = '-s' ] ; then
+        message -a -n "Left file is  (\$L): $1" '\n' "Right file is (\$R): $2"
+    else
+        message -a -n "Left file is : $1" '\n' "Right file is: $2"
+    fi
+
+    case "$fopt" in
+        -a) confirm -a -y "Replace the right file (accept)" || return
+            ;;
+        -r) confirm -a -y "Replace the left file (revert)" || return
+            set -- "$2" "$1"
+            ;;
+        *)  return
+    esac
+
+    copy -a -f -- "$1" "$2" || return
+    if [ "$1" -nt "$2" ] ; then
+        system -q -- touch --reference "$1" "$2"
+    elif [ "$2" -nt "$1" ] ; then
+        system -q -- touch --reference "$2" "$1"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# run 'kompare' tool: <src> <dest>
+#
+# Kompare does not preserce file attributes, doing this by hand
+# ------------------------------------------------------------------------------
+run_kompare() {
+    system -e -c -- kompare && kompare "$1" "$2" &>/dev/null
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+run_merge() {
+    local ahlp=("ignore  -  do nothing" '\n'
+                "help    -  show this text" '\n'
+                "quit    -  termiate the program" '\n'
+                "shell   -  run the 'bash' shell")
+    local vcmd='ignore help quit shell'
+
+    if [ -f "$1" ] && [ -f "$2" -o ! -e "$2" ] ; then
+        vcmd+=' accept'
+        ahlp+=('\n' "accept  -  replace the right file")
+    fi
+    if [ -f "$2" ] && [ -f "$1" -o ! -e "$1" ] ; then
+        vcmd+=' revert'
+        ahlp+=('\n' "revert  -  replace the left file")
+    fi
+    if [ "${#ahlp[@]}" -ge 11 ] ; then
+        vcmd+=' diff kompare'
+        ahlp+=('\n' "diff    -  show differences between files")
+        ahlp+=('\n' "kompare -  run the 'kompare' program")
+    fi
+
+    CEN_YESNO='y' ; CEN_HISTORY='-'
+    while ! confirm -a -p " [ignore]: " -d "ignore" -v "$vcmd" "Enter merge command" ; do
+        case "$CEN_CONFIRM" in
+            help)   message -a -n "${ahlp[@]}" ;;
+            quit)   error -s 4 ; break ;;
+            shell)  run_shell "$1" "$2" ;;
+            accept) run_files -a "$1" "$2" ; break ;;
+            revert) run_files -r "$1" "$2" ; break ;;
+            diff)   run_diff "$1" "$2" ;;
+            komp*)  run_kompare "$1" "$2" ;;
+        esac
+        CEN_AUTOIND=
+     done
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+run_shell() {
+    console -m 1                                # init to fancy mode, no cols
+    run_files -s "$@"
+    export L="$1" R="$2"
+    export PS1="$CEN_DECO_MARK$CEN_NAME$CEN_DECO_NORM \w\$ "
+    system -r -- bash --norc
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+run_prompt() {
+    until confirm -d "help" -p ' [help]: ' \
+                  -v "quit accept diff edit help kompare revert shell" \
+                  "Enter command" ; do
+        case "$?" in
+        1)                                      # accept
+            run_files -a "$@" ; return ;;
+        2)                                      # diff
+            run_diff "$@" ;;
+        3)                                      # edit
+            run_edit "$@" ;;
+        4)                                      # help
+            message -m "quit    -  end this loop" \
+                       "accept  -  replace right file and quit" \
+                       "diff    -  show differences" \
+                       "edit    -  edit file(s)" \
+                       "help    -  show the text" \
+                       "kompare -  run the 'kompare' program" \
+                       "revert  -  replace left file and quit" \
+                       "shell   -  run the 'bash' shell"
+            ;;
+        5)                                      # kompare
+            run_kompare "$@" ;;
+        6)                                      # revert
+            run_files -r "$@" ; return ;;
+        7)                                      # shell
+            run_shell "$@" ;;
+        esac
+    done
+}
+
+DAT_TMPDIR=
+run_tree() {
+    local ddes dsrc orig="$PWD"
+    folder -c -f -- "$2" ; ddes="$PWD"
+    walk -i -r '.'
+    trace -a -p "Found %s destination files" "${#CEN_WALK_FILES}"
+    folder -m -s DAT_TMPDIR -t -- "+$$"
+
+    folder -c -f -- "$orig" ; folder -c -f -- "$1" ; dsrc="$PWD"
+    trace "Mirroring source folder:" "$1 ($DAT_TMPDIR)"
+    local item fldr curr
+    for item in "${CEN_WALK_FILES[@]}" ; do
+        item="${item:2}"
+        if [ ! -e "$dsrc/$item" ] ; then
+            trace -a -c "No such file" -- "$dsrc/$item"
+            continue
+        fi
+        fldr="${item%/*}"
+        if [ "$fldr" != "$item" ] ; then
+            [ "$fldr" != "$curr" ] && folder -f -m -- "$DAT_TMPDIR/$fldr"
+            curr="$fldr"
+        fi
+        symlink "$dsrc/$item" "$DAT_TMPDIR/$item"
+    done
+    system kompare "$DAT_TMPDIR" "$ddes"
+  }
+
+# ------------------------------------------------------------------------------
+# check if we got a real file: <vsav> <path> <mesg>
+# ------------------------------------------------------------------------------
+do_check() {
+    local info
+    prettypath -s "$1" -t "$PWD" -- "$2"
+
+    if [ ! -e "$2" ] ; then
+        info="does not exit"
+    elif [ ! -f "$2" ] ; then
+        info="is not a file"
+    elif [ ! -r "$2" ] ; then
+        info=" not readable"
+    elif [ ! -w "$2" ] ; then
+        info="not writeable"
+    else
+        return 0
+    fi
+
+    console -m 1                                # init to fancy mode, no cols
+    message -a -d bold "$3 $info:" "${2#$PWD/}" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# The one and only action: <src> @<dist>|<dest>
+# ------------------------------------------------------------------------------
+run() {
+    local ffix scmd fsrc="$1" fdes="$2" ferr=0
+
+    # using repository names?
+    if [ "${fsrc::1}" = '@' ] ; then
+        do_dist fsrc "$fdes" || return
+    elif [ "${fdes::1}" = '@' ] ; then
+        do_dist fdes "$fsrc" || return
+    fi
+
+    # using folders?
+    if   [ -d "$fdes" ] ; then
+        if [ -d "$fsrc" ] ; then
+            run_tree "$fsrc" "$fdes" ; remove -d -- "$DAT_TMPDIR" ; return
+        fi
+        [ -f "$fsrc" ] && fdes+="/${fsrc##*/}"
+    elif [ -d "$fsrc" -a -f "$fdes" ] ; then
+        fsrc+="/${fdes##*/}"
+    fi
+
+    if system -r -q -- cmp --quiet "$fsrc" "$fdes" ; then
+        [ -z "$difference" ] && message -a "Files are equal"
+        [ -z "$CEN_OPT_PROMPT" -a -z "$CEN_OPT_SHELL" ] && return
+    fi
+
+    do_check fsrc "$fsrc" "Left  side" || ((ferr |= 1))
+    do_check fdes "$fdes" "Right side" || ((ferr |= 2))
+
+    if [ -n "$CEN_OPT_ACCEPT" ] ; then
+        [ "$ferr" = 2 -a ! -e "$fdes" ] && ferr=
+        scmd='accept'
+    elif [ -n "$CEN_OPT_EDIT" ] ; then
+        ffix=1 ; scmd='edit'
+    elif [ -n "$CEN_OPT_KOMPARE" ] ; then
+        ffix=1 ; scmd='kompare'
+    elif [ -n "$CEN_OPT_MERGE" ] ; then
+        [ "${ferr:-0}" = 0 ] && ffix=1
+        scmd='merge' ; ferr=
+    elif [ -n "$CEN_OPT_PROMPT" ] ; then
+        ffix=1 ; scmd='prompt'
+    elif [ -n "$CEN_OPT_REVERT" ] ; then
+        [ "$ferr" = 1 -a ! -e "$fsrc" ] && ferr=
+        scmd='revert'
+    elif [ -n "$CEN_OPT_SHELL" ] ; then
+        [ "${ferr:-0}" = 0 ] && ffix=1
+        scmd='shell' ; ferr=
+    else
+        scmd='diff'
+    fi
+
+    if [ "${ferr:-0}" != 0 ] ; then
+        error "Cannot run command:" "$scmd" ; return
+    fi
+
+    [ "$scmd" = 'accept' ] && scmd='files -a'
+    [ "$scmd" = 'revert' ] && scmd='files -r'
+
+    [ -z "$CEN_OPT_FIX" ] && ffix=
+    if [ -n "$ffix" ] ; then
+        do_fix -b "$fsrc" 0 ; do_fix -b "$fdes" 1
+        run_$scmd "$fsrc" "$fdes"
+        do_fix -e "$fsrc" 0 ; do_fix -e "$fdes" 1
+    else
+        run_$scmd "$fsrc" "$fdes"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> <argument>
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    '')     local opts="$CEN_OPT_ACCEPT$CEN_OPT_REVERT"
+            optarg "$opts" - -m "--accept --revert"
+            opts+="$CEN_OPT_EDIT$CEN_OPT_KOMPARE$CEN_OPTMERGE$CEN_OPT_PROMPT$CEN_OPT_SHELL"
+            optarg "$opts" - -m "--edit --kompare --merge --prompt --shell --accept --revert"
+            [ -n "$CEN_OPT_FIX" ] && context -r
+            CEN_HISTORY='-' ;;
+
+    -A|--acc*)
+        optarg "accept"     -   ;;   # simple flag
+    -D|--dif*)
+        optarg "difference" -   ;;   # simple flag
+    -E|--edi|--edit)
+        optarg "edit"       - "l|lef|left|r|rig|righ|right|b|bot|both|-" ;;
+    -F|--fix)
+        optarg "fix"        -   ;;   # simple flag
+    -K|--kom*)
+        optarg "kompare"    -   ;;   # simple flag
+    -M|--mer*)
+        optarg "merge"      -   ;;   # simple flag
+    -P|--pro*)
+        optarg "prompt"     -   ;;   # simple flag
+    -R|--rev*)
+        optarg "revert"     -   ;;   # simple flag
+    -S|--she*)
+        optarg "shell"      -   ;;   # simple flag
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+
+    usageset \
+        -o - \
+        -o '-A --accept'         $"accept changes" \
+        -o '-D --difference'     $"do nothing if files are equal" \
+        -o '-R --revert'         $"revert changes" \
+        -o '-F --fix'            $"fix ownership, mode and timestamp" \
+        -o - \
+        -o '-E --edit    <what>' $"[*] edit left|right|both files" \
+        -o '-K --kompare'        $"[*] run 'kompare' gui tool" \
+        -o '-M --merge'          $"[*] smart interactive mode" \
+        -o '-P --prompt'         $"[*] simple interactive mode" \
+        -o '-S --shell'          $"[*] open a shell" \
+        -o - \
+        -o $"[*] these options are mutually exclusive"
+
+    usageset \
+        -e '°                       '$"# run diff tool (default) ..." \
+        -e ". somefile otherfile" \
+        -e '°                       '$"# run kompare (existing files only) ..." \
+        -e ". somedir otherdir" \
+        -e '°                       '$"# run kompare (gui only) ..." \
+        -e ". --kompare --fix $CEN_NAME.bak $CEN_NAME" \
+        -e '°                       '$"# merge dialog (centauriconfig)..." \
+        -e ". --merge somefile otherfile" \
+        -e '°                       '$"# repository argument ..." \
+        -e ". /admin/$CEN_NAME @bullseye" \
+        -e ". --edit @eye /admin/$CEN_NAME"
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

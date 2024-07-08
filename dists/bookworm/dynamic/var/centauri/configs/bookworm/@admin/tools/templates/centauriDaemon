@@ -1,0 +1,78 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Dr. Jürgen Pfennig; BSD License"
+CEN_TITLE="Example daemon or service"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -v "$0" "0.00:1" || exit 2
+
+# By default a service with a run() method becomes a simple service:
+# CEN_SVC_TYPE=simple
+# Make it a daemon (cannot be installed as service) with start/stop verbs:
+# CEN_SVC_TYPE=daemon
+
+# ------------------------------------------------------------------------------
+# action run - worker routine of a simple service: -no args-
+# ------------------------------------------------------------------------------
+run() {
+    # in the default case run() should run als long as CEN_SVC_RUNNING" has the
+    # value "running". Any SIGTERM from the service manager is caught by the
+    # library. Different behaviour can be implemented via actionStart and/or
+    # actionStop.
+
+    local nrun=100
+    while [ "$nrun" -gt 0 -a "$CEN_SVC_RUNNING" = "running" ] ; do
+        sleep 3 ; ((--nrun))
+        warning "TODO: implement 'run'"
+    done
+    warning "TODO: run stopped, nrun=$nrun, CEN_SVC_RUNNING=$CEN_SVC_RUNNING"
+}
+
+# ------------------------------------------------------------------------------
+# action start - called on service start: -no args-
+# ------------------------------------------------------------------------------
+actionStart() {
+    message "TODO: implement 'actionStart' or delete it"
+
+    # optionally continue with the default implementation (CEN_ARGS cleared)
+    CEN_ARGS=
+
+    # the default implementation registers a trap for SIGTERM so that on 'stop'
+    # CEN_SVC_RUNNING=stop is set and actionStop() gets called. If run() exists
+    # is gets called next.
+}
+
+# ------------------------------------------------------------------------------
+# action stop - called on service stop: -no args-
+# ------------------------------------------------------------------------------
+actionStop() {
+    # This action is called from a trap handler and is executed in the same
+    # process as actionStart or actionRun. The function should return soon.
+    message "TODO: implement 'actionStop' or delete it"
+
+    # optionally continue with the default implementation (CEN_ARGS cleared)
+    CEN_ARGS=
+
+    # the default implementation does nothing.
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <verb> <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$1" in
+        "")     [ "$(type -t actionStart)" = "function" -o \
+                  "$(type -t actionStop)"  = "function" ] ||
+                    message "TODO: delete 'actions' if not used"
+                ;;
+        start)  invoke - - ;;
+        stop)   invoke - - ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

@@ -1,0 +1,881 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Dr. J. Pfennig (c) 2022; BSD Lincense"
+CEN_TITLE=$"Tool to build packaged or portable applications"
+
+# Import the bash library
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t -y "$0" "0.10:1" || exit 2
+
+# Data
+CEN_OPT_DESCR=                  # see --descr
+CEN_OPT_EXTRA=()                # see --extra
+CEN_OPT_FLAVOUR='auto'          # see --flavour
+CEN_OPT_TEMPLATE=               # see --template
+
+DAT_WORK=
+DAT_PROJECT=                    # the current project
+DAT_CONFIG=
+DAT_CATALOGS=
+
+# DAT_CONF_xxxx                 # declared by config_file
+
+### TODO BUG import mit rel. pfad vs. embed
+
+# ------------------------------------------------------------------------------
+# check for update: <target> <depend>...
+# ------------------------------------------------------------------------------
+check_update() {
+    [ -n "$CEN_OPT_FORCE" ] && return 0
+    local targ="$1" ; shift
+    [ "$DAT_CONFIG" -nt "$targ" ] && return 0
+
+    while [ -n "$1" ] ; do
+        $CEN_TRACE2 -a "Check:" "$targ" "$1"
+        case "$1" in
+        /*) [ "$1" -nt "$targ" ] && return 0 ;;
+        *)  [ "$DAT_WORK/$1" -nt "$targ" ] && return 0
+        esac
+        shift
+    done
+    $CEN_TRACE2 -a "Check: no update"
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# read or create configuration file: [<file>]
+# ------------------------------------------------------------------------------
+config_file() {
+    DAT_CONF_FORMAT=
+
+    DAT_CONF_TEMPLATE=
+    DAT_CONF_DESCRIPT=
+    DAT_CONF_AUTHOR=
+    DAT_CONF_LICENSE=
+    DAT_CONF_SHELL=
+
+    DAT_CONF_MODULES=
+    DAT_CONF_LOCALES=
+    DAT_CONF_LANGUAGES=
+    DAT_CONF_EMBEDED=()
+    DAT_CONF_EXTRA=()
+
+    [ "${1:--}" = '-' ] && return 0
+
+    # create initial configuration
+    if [ ! -s "$1" ] ; then
+        local tmpl='#template     <required>'
+        local desc='#description  <required>'
+        [ -n "$2" ] && tmpl="template     $2"
+        [ -n "$3" ] && desc="description  '$3'"
+        create -c -- "$1" <<!EOF || quit
+### build configuration file. Commented lines cause defaults to be used.
+
+            # the project output format can be:
+            #
+            #   auto        # the default - autodetect packed/portable
+            #   packed      # simple packed file
+            #   portable    # self-extracting runtime
+            #   archive     # create a tar archive
+
+flavour     $CEN_OPT_FLAVOUR
+
+### step 1 - generating a script from template, see 'centauricreate':
+
+$tmpl
+$desc
+#author
+#license
+            # shell to be used (default is the current shell, using /usr/bin/env
+            # might be more portable)
+#shell      "/usr/bin/env bash"
+
+### step 2 - build package file and message catalogues (.mo files)
+
+            # list of modules that are not auto-detected (3 letter names are ok)
+#modules    <mod>...
+
+            # locales to be included (auto updated, comment out to disable l10n)
+locales
+
+            # select languages to support (comment out to select all)
+#languages  de fr
+
+### step 3 - generate/install a desktop file, <icon> can be a file or a name
+
+#desktop    [<icon>]
+
+### step 4 - extra files to add to self-extract data
+
+            # scripts used via 'embed' (auto updated)
+embeded
+
+            # extra files added to runtime (portable and runtime only)
+extra       ${CEN_OPT_EXTRA[@]@Q}
+
+#symlink    <file>...
+
+# end
+!EOF
+       # quit -p "Created '%s' config. Please edit and rerun" "$1"
+    fi
+
+    DAT_CONF_LOCALES=
+    configfile -a config_reader -n "$1"
+    if [ "${DAT_CONF_FORMAT:-auto}" = 'auto' ] ; then
+        [ -z "$DAT_CONF_LOCALES" ] && DAT_CONF_FORMAT='packed' || DAT_CONF_FORMAT='portable'
+    fi
+}
+
+config_reader() {
+    local   keyw="$1" ; shift
+    case "$keyw" in
+        format|flavour)
+                    listsearch -m DAT_CONF_FORMAT -u -- "$*" 'auto'  \
+                       'packed' 'portable' 'archive' || configfile -e ;;
+        template)   DAT_CONF_TEMPLATE="$*" ;;
+        descrip*)   DAT_CONF_DESCRIPT="$*" ;;
+        author)     DAT_CONF_AUTHOR="$*" ;;
+        license)    DAT_CONF_LICENSE="$*" ;;
+        shell)      DAT_CONF_SHELL="$*" ;;
+
+        modules)    DAT_CONF_MODULES="$*" ;;
+        locales)    DAT_CONF_LOCALES="$*" ;;
+        languag*)   DAT_CONF_LANGUAGES="$*" ;;
+        embeded)    DAT_CONF_EMBEDED=("$@") ;;
+
+        desktop)    true ;;
+        extra)      DAT_CONF_EXTRA=("$@") ;;
+        *)          configfile -e  ;;
+    esac
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+# This encoder produces printf format strings, that can easily be decoded
+# using printf. It parses 'xxd' output. Hex escapes are encoded as '.' to
+# be a shortcut for '\x'. That's all ...
+_dump_encode=
+dump_encode() {
+    local stxt="$1" offs=0 char sout ; shift
+    while [ -n "$1" ] ; do                  # loop over hex values
+        char="${stxt:offs:1}"               # get ASCII character
+        case "$char" in
+        .)      case "$1" in                # non-ASCII input byte
+                07)     sout+='\a' ;;       # known printf escapes...
+                0a)     sout+='\n' ;;
+                0d)     sout+='\r' ;;
+                1b)     sout+='\e' ;;
+                                            # can use single digit hex
+#                0?)     [ "${stxt:offs+1:1}" = '.' ] && sout+=".${1:1}" || sout+=".$1" ;;
+                0?)     [[ "${stxt:offs+1:1}" == [0-9a-fA-F\ ] ]] &&  sout+=".$1" || sout+=".${1:1}" ;;
+                *)      sout+=".$1"         # must use two digit hex
+                esac          ;;
+        %)      sout+='%%'    ;;            # transform for printf
+        \\)     sout+=".$1"   ;;            # transform ...
+        *)      sout+="$char" ;;            # add ASCII to output
+        esac
+        ((offs++)) ; shift
+    done
+    _dump_encode+="$sout"
+}
+
+# encode (binary) file: <file>
+file_encode() {
+    if [ ! -r "$1" ] ; then
+        error "Not a readable file:" "$1" ; return 1
+    fi
+    local file name mode line
+
+    # text or binary?
+    case "${1##*/}" in
+    *.txt|*.css|*.js|*.html|*.desktop)
+        mode=0 ;;
+    README*)
+        mode=0 ;;
+    *.mo|*.ico|*.bmp|*.png|*.jpg)
+        mode=1 ;;
+    *)
+        system -e -p -s line -- file -L -b -i -- "$1"
+        [[ "$line" == *charset=binary* ]] && mode=1 || mode=0
+    esac
+    name="${1#$DAT_WORK/}"
+
+    # copy text data
+    if [ "$mode" = 0 ] ; then
+        echo "t ${name@Q}"
+        while IFS= read -r line ; do
+            echo -E "$line"
+        done < "$1"
+        echo "!!!EOF!!!"
+        return 0
+    fi
+
+    # create dump for binary
+    tmpfile -s file
+    # run 'xxd' to produce a hex + ASCII dump (7-bit ASCII only!)
+    system -f -e -p -r -z -- xxd -g1 "$1" > "$file"
+    echo "f ${name@Q}"
+
+    # pass hex data and ASCII to the encoder, then create quoted output lines
+    local dumy shex stxt jhex jtxt bcnt=0
+    _dump_encode=
+    while read -r dumy line ; do
+        shex="${line::47}"                      # hex values
+        stxt="${line:49:16}                "    # ASCCI (padded)
+        jhex+="$shex " ; jtxt+="${stxt::16}"
+        ((bcnt++))                              # output blocking...
+        if [ "$bcnt" -gt 8 ] ; then
+            dump_encode "$jtxt" $jhex
+            echo -E "'$_dump_encode'"
+            _dump_encode= ; bcnt=0 ; jtxt= ; jhex=
+        fi
+    done < "$file"
+    dump_encode "$jtxt" $jhex
+    [ -n "$_dump_encode" ] && echo -E "'$_dump_encode'"
+}
+
+# ------------------------------------------------------------------------------
+# generate message catalogues: -u
+# ------------------------------------------------------------------------------
+lang_catalogues() {
+    local item locl="$CEN_ROOT/locale" locp="$DAT_WORK/locale"
+    local updt lang cata list=()
+    [ "$1" = '-u' ] && updt=1
+    DAT_CATALOGS=()
+
+    for lang in "$locl"/?? "$locl"/??-?? ; do   # library languages
+        [ -d "$lang" ] || continue
+        trace "Locales:" "$lang"
+
+        if [ -n "$DAT_CONF_LANGUAGES" ] ; then
+            [ -n "$updt" ] && trace -a $"Languages restricted to:" "$DAT_CONF_LANGUAGES"
+            listsearch "${lang##*/}" $DAT_CONF_LANGUAGES || continue
+        fi
+
+        if [ -z "$list" ] ; then                # build module list
+            list=("$DAT_PROJECT")
+            for item in $DAT_CONF_LOCALES ; do  # used modules ...
+                case "$item" in
+                ???)    item="_centauri_bash_$item.po" ;;
+                *.po)   ;;
+                *)      warning -a $"Ignoring 'locale' entry:" "$item"
+                esac
+                [ -e "$lang/$item" ] && list+=("$item")
+                #trace -a "Locales:" "$item"
+            done
+            [ "${#list[@]}" -le 1 ] && break
+        fi
+
+        lang="${lang##*/}" ; cata="$locp/$lang/LC_MESSAGES"
+        DAT_CATALOGS+=("$cata/$DAT_PROJECT.mo")
+        [ -z "$updt" ] && continue
+
+        if check_update "$cata/$DAT_PROJECT.mo" "$DAT_WORK/$DAT_PROJECT" \
+                        "$locp/$lang/$DAT_PROJECT.po" ; then
+            message $"Create message catalogue:" "$DAT_PROJECT ($lang)"
+            folder -f -m "$cata"                # create package lang dir
+            lang_l10n "$locl/$lang" "$locp/$lang" "${list[@]}" || break
+        fi
+    done
+    [ -z "$updt" ] && return
+    [ "${#list[@]}" -le 1 ] && warning $"Found no applicable language for l10n"
+}
+
+# ------------------------------------------------------------------------------
+# run l10n tools: <library> <work> <list>
+# ------------------------------------------------------------------------------
+lang_l10n() {
+    local curr="$PWD" l10x llib="$1" lwrk="$2" self="$3" stat=0 ; shift 3
+    sysfind -f -s l10x -- "${llib%/*}/l10n-tool"
+    trace -a "L10N: $*"
+
+    # update existing .po file
+    if [ -e "$lwrk/$self.po" ] ; then
+        embed -i -v -- "$l10x" -f --input="$DAT_WORK" --output="$lwrk" dump "$self"
+        [ -s "$lwrk/$self.po" ] || return 1
+
+    # create a new .po file
+    else
+        embed -i -v -- "$l10x" -f --input="$DAT_WORK" --output="$lwrk" prepare "$self"
+        [ -s "$lwrk/$self.po" ] || return 1
+        message -p $"Newly created '%s' needs translations!" "$lwrk/$self.po"
+    fi
+
+    # create .mo file (from self and library .po files)
+    folder -c -f -- "$llib"
+    embed -i -v -- "$l10x" -f --input="$DAT_WORK" --output="$lwrk" join "$self" "$@" || stat=1
+    folder -c -f -- "$curr"
+    return $stat
+}
+
+# ------------------------------------------------------------------------------
+# show content of xtr data
+# ------------------------------------------------------------------------------
+list_data() {
+    if : ; then
+        local kind arg1 arg2
+        message    "RUNTIME:" "$1"
+
+        # skip data until marker
+        while read kind arg1 ; do
+            [ "$kind" = '!!!DATA!!!' ] && break
+        done
+        if [ "$kind" != '!!!DATA!!!' ] ; then
+            message -a "No data section" ; return
+        fi
+
+        # process info lines
+        while read kind arg1 arg2 ; do
+            [ -z "$kind" ] && continue
+            eval arg1=$arg1 ; eval arg2=$arg2
+            case "$kind" in
+            \#*)  ;;
+            d)  message    "FOLDER :" "$arg1" ;;
+            l)  message    "LINK   :" "$arg1" "$arg2" ;;
+            f)  message -a "FILE   :" "$arg1"
+                while IFS= read -r kind ; do
+                    [ -z "$kind" ] && break
+                    [ "$CEN_VERB" -gt 1 ] || continue
+                    kind="${kind:1:${#kind}-2}"
+                    printf -- "${kind//./\\x}"
+                    #echo -E "${kind//./\\x}"
+                done
+                ;;
+            t)  message -a "TEXT   :" "$arg1"
+                while IFS= read -r kind ; do
+                    [ "$kind" = '!!!EOF!!!' ] && break
+                done
+                ;;
+            *)  fatal "Corrupted data:" "$kind" - "$arg1" - "$arg2"
+            esac
+        done
+    fi <"$1"
+}
+
+# ------------------------------------------------------------------------------
+# create/read project file and working folder: -a|-c|-o-|-l <work> <proj>
+# ------------------------------------------------------------------------------
+project_open() {
+    local crea dele list tmpl desc proj="$3"
+
+    # what to do?
+
+    case "$1" in
+    -a)     crea=2 ;;
+    -c)     crea=1 ; DAT_PROJECT= ; [ "${3:--}" = '-' ] && proj="$CEN_NAME" ;;
+    -d)     dele=1 ; DAT_PROJECT= ;;
+    -o)     ;;
+    *)      list=1 ;;
+    esac
+
+    # get the working folder
+
+    if [ "${2:--}" = '-' ] ; then
+        [ "${3:--}" = '-' -a -n "$DAT_PROJECT" ] && return 0
+        quit -e $"Missing working folder"
+    fi
+
+    DAT_PROJECT= ; DAT_CONFIG=
+    prettypath -s DAT_WORK -- "$2"
+    if [ ! -d "$DAT_WORK" ] ; then
+        [ -n "$crea" ] || quit -e $"No such folder:" "$DAT_WORK"
+        confirm -a $"Create working folder""'$DAT_WORK'" || return 1
+        folder -m -- "$DAT_WORK" || return 1
+    fi
+    trace -a $"Working folder is:" "$DAT_WORK"
+
+    # list existing projects
+
+    if [ -n "$list" ] ; then
+        for proj in "$DAT_WORK"/*.conf ; do
+            config_file "$proj" || continue
+            proj="${proj##*/}"
+            printf -v proj "%-20s %-10s %s" \
+                   "${proj%.*}" "${DAT_CONF_TEMPLATE:--}" "${DAT_CONF_DESCRIPT:--}"
+            message -a -- "$proj"
+        done
+        return 0
+    fi
+
+    # check if project exists
+
+    if [ -e "$DAT_WORK/${proj##*/}.conf" ] ; then
+        if [ -n "$crea" ] ; then
+            error $"Project already exists:" "${proj##*/}" ; return 1
+        fi
+    else
+        if [ -z "$crea" ] ; then
+            error $"No such project:" "${proj##*/}" ; return 1
+        fi
+    fi
+
+    # import: if <proj> is a path, option -a must be used
+
+    if [ "${proj##*/}" != "$proj" ] ; then
+        [ "$crea" = 2 ] || return 0
+        prettypath -c -s proj -- "$proj"
+        embed -a desc -- "$proj" --info detailed || return 1
+        tmpl='unknown'
+        local item dest loca="${proj%/*}/locale" name="${proj##*/}"
+        [ -d "$loca" ] || loca="${proj%/*/*}/locale"
+        for item in "$loca"/??/"$name.po" "$loca"/??_??/"$name.po" ; do
+            [ -f "$item" ] || continue
+            dest="${item##*/locale/}"
+            dest="$DAT_WORK/locale/$dest"
+            folder -f -m -- "${dest%/*}"
+            symlink -- "$item" "$dest"
+        done
+        symlink -- "$proj" "$DAT_WORK/$name"
+        proj="${proj##*/}"
+        message -- $"Imported project:" "$proj"
+    fi
+    DAT_CONFIG="$DAT_WORK/$proj.conf"
+    DAT_PROJECT="$proj"
+
+    # delete a project
+
+    if [ -n "$dele" ] ; then
+        confirm -n $"Really delete all files of project"" '$proj'" || return 1
+        remove -- "$DAT_CONFIG" "$DAT_WORK/$proj" "$DAT_WORK/$proj".* \
+                  "$DAT_WORK/locale"/*/"$proj".* "$DAT_WORK/locale"/*/LC_MESSAGES/"$proj".*
+        remove -d -- "$DAT_WORK/$proj-runtime"
+        DAT_PROJECT=
+        return 1
+    fi
+
+    # create config file
+
+    if [ "$proj" != "$CEN_NAME" ] ; then
+        config_file "$DAT_WORK/$CEN_NAME.conf" || return
+        if [ -z "$DAT_CONF_TEMPLATE" -o -z "$DAT_CONF_DESCRIPT" ] ; then
+            quit unhappy "$DAT_CONF_TEMPLATE - $DAT_CONF_DESCRIPT - $DAT_CONF_AUTHOR"
+        fi
+        [ -z "$CEN_OPT_TEMPLATE" ] && tmpl="$DAT_CONF_TEMPLATE"
+        [ -z "$CEN_OPT_DESCR" ] && desc="$DAT_CONF_DESCRIPT"
+    fi
+    config_file "$DAT_CONFIG" "${tmpl:-$CEN_OPT_TEMPLATE}" "${desc:-$CEN_OPT_DESCR}" || return 1
+    if [ -n "$DAT_CONF_TEMPLATE" ] ; then
+        [ -e "$DAT_WORK/$proj" ] || message $"Created project:" "$proj" ; return 0
+    fi
+
+    if [ -n "$crea" ] ; then
+        message -a $"Project created, please edit configuration:" "$DAT_WORK/$proj.conf"
+    else
+        message -a $"No 'template' set, please edit configuration:" "$DAT_WORK/$proj.conf"
+    fi
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# uglify script: <orgi> <dest>
+# ------------------------------------------------------------------------------
+uglify_script() {
+    local xopt what ugly orig="$1" dest="$2" ; shift ; shift
+    if [ "$DAT_CONF_FORMAT" = 'portable' ] ; then
+        xopt='-X' ; what=$"Create portable script:"
+    else
+        what=$"Create packaged script:"
+    fi
+    message -- "$what" "${dest##*/}"
+    sysfind -f -c -s ugly -- "$CEN_LIBRARY/uglify"
+    if [ -n "$DAT_CONFIG" ] ; then
+        embed -i -v -z -- "$ugly" $xopt -y -o "$dest" -C "$DAT_CONFIG" -- "$orig"
+        return
+    fi
+    embed -i -v -y -z -- "$ugly" $xopt -o "$dest" -- "$orig" "$@"
+    # return status
+}
+
+# ------------------------------------------------------------------------------
+# build: <work> [<name>]...
+# ------------------------------------------------------------------------------
+actionBuild() {
+    project_open -o "$1" "$2" || return
+    invoke 'package' -
+    invoke 'runtime' -
+    invoke 'join' -
+}
+
+# ------------------------------------------------------------------------------
+# create: <work> [<name>]...
+# ------------------------------------------------------------------------------
+actionCreate() {
+    local oopt='-a'
+    [ "$CEN_ACTION" = 'create' ] && oopt='-c'
+    [ "$CEN_ACTION" = 'remove' ] && oopt='-d'
+    project_open $oopt "$1" "$2" || return
+    if [ -z "$DAT_PROJECT" ] ; then
+        message -a $"To add a project run:" "$CEN_NAME add ${1@Q} <name>"
+        return
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# join: <work> <name>
+# ------------------------------------------------------------------------------
+actionJoin() {
+    project_open -o "$1" "$2" || return
+    local orig="$DAT_WORK/$DAT_PROJECT" dest what
+    [ -s "$orig.package" ] || error "Missing package:" "$orig"
+    [ -e "$orig.runtime" ] || error "Missing runtime:" "$orig"
+    error -t || return
+
+    # flavour packed, just delete unused stuff
+    if [ "$DAT_CONF_FORMAT" = 'packed' ] ; then
+        remove -d -- "$orig-runtime"
+        remove    -- "$orig.portable"
+        message -p $"Up to date %s: %s" $"packed" "$orig.package" ; return
+    fi
+
+    if [ "$DAT_CONF_FORMAT" = 'portable' ] ; then
+        dest="$orig.portable" ; what=$"portable"
+    else
+        dest="$orig.tgz" ; what=$"archive"
+    fi
+    if ! check_update "$dest" "$orig.package" "$orig.runtime" ; then
+        message -p $"Up to date %s: %s" "$what" "$dest" ; return
+
+    elif [ "$DAT_CONF_FORMAT" != 'portable' ] ; then
+        remove -- "$orig.portable"
+
+        system -t -e -p -- tar -caf "$dest" --directory="$DAT_WORK" "$DAT_PROJECT-runtime"
+
+    else
+        system -e -p -z -- cat -- "$orig.package" "$orig.runtime" > "$dest"
+        system -e -p -- chmod 775 -- "$dest"
+    fi
+
+    message -p $"Created %s: %s" "$what" "$dest"
+}
+
+# ------------------------------------------------------------------------------
+# list: (1) <work>                    # list projects in work folder
+#       (2) <work> <file>             # list runtime content of a project
+#       (3) <file>                      # list runtime content of a file
+# ------------------------------------------------------------------------------
+actionList() {
+    if [ $# != 1 ] ; then
+        project_open -o "$1" "$2" || return
+        list_data "$DAT_WORK/$DAT_PROJECT.runtime"
+    elif [ -d "$1" ] ; then
+        project_open -l "$1"
+    else
+        inpfile -e -l -- "$1" || return
+        list_data "$CEN_INPFILE"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# package: <work> [<name>]...
+# ------------------------------------------------------------------------------
+actionPackage() {
+
+    # package a single file
+
+    if [ ! -d "$1" ] && [ -s "$2" ] ; then
+        local dest="$1" orig="$2" ; shift ; shift
+        uglify_script "$orig" "${dest%.package}.package" "$@"
+        return
+    fi
+
+    project_open -o "$1" "$2" || return
+    local orig="$DAT_WORK/$DAT_PROJECT"
+    local dest="$orig.package" frmt="$DAT_CONF_FORMAT"
+
+    # step 1 -- create script from template
+
+    if [ ! -x "$orig" ] ; then
+        local opts=()
+        optmake -a opts -n 'author'  -v "$DAT_CONF_AUTHOR"
+        optmake -a opts -n 'descr'   -v "$DAT_CONF_DESCRIPT"
+        optmake -a opts -n 'license' -v "$DAT_CONF_LICENSE"
+        optmake -a opts -n 'shell'   -v "$DAT_CONF_SHELL"
+        optmake -a opts -n 'templ'   -v "$DAT_CONF_TEMPLATE"
+        embed -v -y -z centauricreate "${opts[@]}" "$orig"
+        [ -x "$orig" ] ||
+            quit -e $"Have no script, cannot continue:" "$orig"
+    fi
+
+    # step 2 -- package script
+
+    if check_update "$dest" "$orig" "$CEN_LIBRARY/_centauri_bash_dyn" ; then
+        uglify_script "$orig" "$dest" || return
+        # uglify updates the configuration, DAT_CONF_FORMAT may change (auto mode)
+        config_file "$DAT_CONFIG" || return
+        if [ "$frmt" != "$DAT_CONF_FORMAT" ] ; then
+            uglify_script "$orig" "$dest" || return
+        fi
+    fi
+
+    # step 3 -- get supported languages and generate .mo files
+
+    if [ -z "$DAT_CONF_LOCALES" ] ; then    # l10n disabled
+        remove -- "$DAT_WORK/locale"/*/LC_MESSAGES/"$DAT_PROJECT.mo"
+    else
+        lang_catalogues -u
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# runtime: (1) <work> <name>              # project build
+#          (2) <runt> <file>...             # create no-project runtime file
+# ------------------------------------------------------------------------------
+actionRuntime() {
+
+    # build project runtime
+
+    if [ "${1:--}" = '-' ] || [ -d "$1" ] ; then
+        project_open -o "$1" "$2" || return
+        local base="$DAT_WORK/$DAT_PROJECT"
+        local pack="$base.package"
+        if [ ! -s "$pack" ] ; then
+            error $"Missing package file:" "$pack" ; return
+        fi
+
+        # package flavour has no runtime dir, delete if present, timestamp
+        if [ "$DAT_CONF_FORMAT" = 'packed' ] ; then
+            create -t -- "$base.runtime"
+            remove -d -- "$base-runtime"
+            return
+        fi
+
+        # other flavours may use l10n
+        local list=("${DAT_CONF_EXTRA[@]}" "${DAT_CONF_EMBEDED[@]}")
+        if [ -n "$DAT_CONF_LOCALES" ] ; then
+            lang_catalogues ; list+=("${DAT_CATALOGS[@]}")
+        fi
+
+        # flavour archive uses a runtime folder, timestamp
+        if [ "$DAT_CONF_FORMAT" = 'archive' ] ; then
+            remove -- "$base.runtime"
+            local item dest lcpy=() runt="$base-runtime"
+            folder -f -m -- "$runt"
+            for item in "$pack" "${list[@]}" ; do
+               [ "${item::1}" = '/' ] && lcpy+=("$item") || lcpy+=("$DAT_WORK/$item")
+            done
+            check_update "$runt/$DAT_PROJECT.package" "${lcpy[@]}" || return
+            message $"Copying runtime data"
+
+            for item in "${lcpy[@]}" ; do
+                dest="$runt/${item#$DAT_WORK/}"
+                [ "$item" -nt "$dest" ] || continue
+                folder -m -- "${dest%/*}"
+                trace -a "copy $item $dest"
+                system -f -p -- cp -au --dereference --reflink=auto -- "$item" "$dest"
+            done
+            create -t -- "$base.runtime"
+            return
+        fi
+
+        # the portable flavour generates a runtime file for self-extract data
+        remove -d -- "$base-runtime"
+        local item fldr frst flst=() runt="$base.runtime"
+        if [ "${#list[@]}" -lt 1 ] ; then
+            message $"No runtime files"
+            create -t -- "$runt" ; return
+        fi
+
+        check_update "$runt" "${list[@]}" || return
+        message $"Generating runtime data"
+        dryrun && return
+        dryrun "(${#list[*]} file(s)) > ${runt@Q}" && return
+
+        for item in "${list[@]}" ; do
+            [ -z "$frst" ] && echo -e "!!!DATA!!!\n"
+            frst=1
+            item="${item#$DAT_WORK/}"
+            message -a $"Runtime:" "$item"
+            fldr="${item%/*}"
+            if [ "$fldr" != "$item" ] ; then
+                if ! listsearch -- "$fldr" "${flst[@]}" ; then
+                    flst+=("$fldr")
+                    echo "d ${fldr@Q}"
+                fi
+            fi
+            file_encode "$DAT_WORK/$item"
+            echo
+        done > "$runt"
+        return
+    fi
+
+    # build external runtime file
+
+    outfile -t -x 'runtime' -- "$1" || return
+    message "$CEN_OUTFILE"
+    shift
+
+    local item list=()
+    for item in "$@" ; do
+        prettypath -s item -t "$PWD" -- "$item"
+        list+=("$item")
+        if [ "${item::1}" = '/' ] ; then
+            error $"Not in base folder:" "$item"
+            continue
+        fi
+        [ -e "$item" ] && continue
+        error $"File not found:" "$PWD/$item"
+    done
+    error -t || return
+
+    dryrun "(${#list[*]} file(s)) > ${CEN_OUTFILE@Q}" && return
+
+    local frst
+    for item in "${list[@]}" ; do
+        [ -z "$frst" ] && echo -e "!!!DATA!!!\n"
+        frst=1
+        file_encode "$item"
+        echo
+    done > "$CEN_OUTFILE"
+}
+
+# ------------------------------------------------------------------------------
+# implement option parsing: <option> [<argument>]
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    -D|--des*)
+        optarg 'descr'      -       -t ;;          # text argument
+    -F|--fla*)
+        optarg 'flavour'    -       'auto|pack.*|port.*|arch.*' ;;
+    -T|--tem*)
+        optarg 'template'   -       -t ;;          # text argument
+    -X|--ext*)
+        optarg 'extra'      []      -t ;;          # text argument
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <verb> <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    if [ $# = 1 -a -n "$DAT_PROJECT" ] ; then
+        case "$1" in
+        bui*)
+            invoke 'build'      - ; return 0 ;;
+        joi|join)
+            invoke 'join'       - ; return 0 ;;
+        lis|list)
+            invoke 'list'       - - - "$DAT_WORK" ; return 0 ;;
+        pac*)
+            invoke 'package'    - ; return 0 ;;
+        run*)
+            invoke 'runtime'    - ; return 0 ;;
+        esac
+    fi
+
+    case "$1" in
+
+    add)
+        invoke -       actionCreate   2 ;;                  # 2 args
+
+    bui*)
+        invoke 'build'      -       1 + ;;                  # at least 1 arg
+
+    cre*)
+        invoke 'create'     -       1 2 ;;                  # 1..2 args
+
+    joi|join)
+        invoke 'join'       -       2 3 ;;                  # 3 args
+
+    lis|list)
+        invoke 'list'       -       1 2 ;;                  # 1..2 args
+
+    pac*)
+        invoke 'package'    -       2 + ;;                  # at least 2 args
+
+    rem*)
+        invoke 'remove' actionCreate  2 ;;                  # 2 args
+
+    run*)
+        invoke 'runtime'    -       2 + ;;                  # at least 2 args
+
+    # the 'build' action is implied
+    *)
+        [ "${1//\//}" = "$1" -a ! -d "$1" ] && return
+        invoke 'build'      -       1 + "$@" ;;             # at least 1 arg
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# TODO print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -o "" \
+        -o '-D --descr    <text> '$"add/create only: short description of the script" \
+        -o "-F --flavour  <flav> "$"add/create only: build flavour to use" \
+        -o "-T --template <tmpl> "$"add/create only: template to use" \
+        -o "-X --extra    <file> "$"add/create only: extra file, repeatable"
+
+    usageset \
+        -l $"Actions" \
+        -t '••• working with projects •••' \
+        -t 'create  <work> [<name>]         # '$"create new workspace [and project]" \
+        -t 'add     <work> <name>           # '$"add new project to workspace folder" \
+        -t 'add     <work> <path>           # '$"import script to workspace folder" \
+        -t 'remove  <work> <name>           # '$"remove tool from project folder" \
+        -t 'package [<work> <name>]         # '$"build package file " \
+        -t 'runtime [<work> <name>]         # '$"create a runtime file ..." \
+        -t 'join    [<work> <name>]         # '$"join package and runtime" \
+        -t 'list    [<work> [<name>]]       # '$"list runtime content" \
+        -t '[build] [<work> <name>]         # '$"build tool(s), shorthand for actions:" \
+        -t '                                # '$"package ... -- runtime ... -- join ..." \
+        -t '••• non-project use •••' \
+        -t 'package <pack> <tool> <modu>... # '$"create self-extracting script" \
+        -t 'runtime <runt> <file>...        # '$"create self-extracting runtime data" \
+        -t 'join    <outp> <pack> <runt>    # '$"join package and runtime" \
+        -t 'list    <outp>|<runt>           # '$"list runtime content" \
+
+    usageset \
+        -l $"Arguments" \
+        -t '<file>...            '$"extra file(s) to be added to runtime" \
+        -t '<flav>               '$"tool flavour: auto package portable archive" \
+        -t '<work>               '$"workspace folder for $CEN_NAME projects" \
+        -t '<modu>...            '$"list of (static) modules, passed to uglify" \
+        -t '<name>               '$"project name (no '.' characters please)" \
+        -t '<outp>               '$"file for joined script and runtime data" \
+        -t '<pack>               '$"packaged script file, see uglify tool" \
+        -t '<path>               '$"a centauri-bash-lib script path (with /)" \
+        -t '<runt>               '$"file with runtime self-extract data" \
+        -t '<tool>               '$"a centauri-bash-lib script" \
+
+    usageset \
+        -l $"General" \
+        -t $"This tool is a high-level build engine for stand-alone scripts. It runs" \
+        -t $"tools like centauricreate, uglify, l10n-tool and tar. It maintains a" \
+        -t $"work folder for imported or local projects. The projects are described" \
+        -t $"by configuration files. These *.conf files are created for new projects" \
+        -t $"and contain comments describing the configuration." \
+
+    usageset \
+        -l $"Examples"
+
+    usagecat <<!EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+$CEN_USE_OTHER
+       # create a project workspace
+       $CEN_NAME create standalone
+
+       # add a newly created script
+       $CEN_NAME -D "a new script" add standalone ./new-tool -- package
+
+       # import an existing script, build and run it
+       $CEN_NAME add standalone ./my-tool -- build
+       standalone/my-tool.package
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

@@ -1,0 +1,369 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2023; BSD License"
+CEN_TITLE="Cleanup caches and logfiles"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -y - "0.14:2" || exit 2
+
+# Data
+CEN_OPT_ALL=                    # see --all
+CEN_OPT_BASE=                   # see --base
+CEN_OPT_HOME=                   # see --home
+CEN_OPT_LOGS=                   # see --logfiles
+CEN_OPT_ROOT=                   # see --root
+CEN_OPT_SNAP=                   # see --snapshot
+CEN_OPT_USER=                   # see --user
+CEN_OPT_ZERO=                   # see --zero
+
+DAT_ROOT=                       # folder prefix
+DAT_HOME=
+
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+
+do_delete() {
+
+    # check for symlink or root folder
+    ___check() {
+        [ -h "$1" ] && return 1
+        [ -n "$CEN_OPT_DRYRUN" ] && trace -a "Removing files/folders: $*"
+        [ "$1" -ef "/" ] && fatal "Refusing to delete the root folder"
+        return 0
+    }
+
+    ___plain() {
+        [ -e "$1" ] || return                   # no file(s)
+        ___check "$1" || return
+        remove -d -o -- $1                      # one-file-system
+    }
+
+    ___fcont() {
+        [ -d "$1" ] || return
+        ___check "$1" || return
+        [ -z "$CEN_OPT_DRYRUN" ] && trace -a "Removing files/folders: $*"
+        system -e -p -- find -H "$1" -xdev -mindepth 1 -type d -depth -print
+        system -e -p -- find -H "$1" -xdev \
+            \( -name WARNING_FOLDER_NOT_ARCHIVED -o -name CACHEDIR.TAG \) -prune -o -exec rm {} \;
+    }
+
+    [ "$#" = 1 ] || fatal -t "Exactly 1 argument expected"
+    local sifs="$IFS" ; IFS= ; set -- $1 ; IFS="$sifs"
+    local fldr
+    for fldr in "$@" ; do
+        # select delete method
+        case "$fldr" in
+            */)     ___fcont "${fldr::-1}" ;;   # delete content of folder
+            *)      ___plain "$fldr" ;;         # delete glob result if fldr is not a symlink
+        esac
+    done
+    return 0
+}
+
+# shrink file to zero-size: <file>
+do_zero() {
+    [ -s "$1" ] || return               # empty file
+
+    [ "$PWD" = "$CEN_OPT_BASE/var/log" -a -z "$CEN_OPT_ALL" ] &&
+        case "$1" in                    # excluded files ...
+            ?tmp)           return ;;
+            faillog)        return ;;
+            lastlog)        return ;;
+        esac
+
+    if [ -n "$CEN_OPT_DRYRUN" ] ; then
+        case "$1" in                    # exclude 'deleted' files
+            *.old|*.gz)     return ;;
+            *.[0-9])        return ;;
+            *.[0-9].log)    return ;;
+            */journal/*)    return ;;
+        esac
+        trace -i "dryrun: >$1"
+    else
+        >"$1"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Workers
+# ------------------------------------------------------------------------------
+run_root() {
+    message -a "Cleaning system caches"": $PWD"
+
+    do_delete ".Trash-*"
+    do_delete "./tmp/"
+
+    if [ -d "./var" ] ; then
+        do_delete ".$CEN_ROOT/backup/"
+        do_delete "./var/adm/backup/"
+        do_delete "./var/backups/"
+        do_delete "./var/cache/*/"
+
+        do_delete "./var/cache/man/"
+        do_delete "./var/cache/minidlna/"
+        do_delete "./var/cache/samba/"
+        do_delete "./var/cache/squid*/"
+        do_delete "./var/cache/.security.db"
+        do_delete "./var/lib/apt/lists/"
+        do_delete "./var/lib/mlocate/"
+
+        do_delete "./var/spool/cups*/"
+        do_delete "./var/spool/squid*/"
+        do_delete "./var/tmp/"
+    fi
+}
+
+run_home() {
+    # clean a home folder: <folder>
+    ___home() {
+        joinpath -p -- "$PWD" "${1#./}"
+        message -a "Cleaning user caches  : $CEN_JOINPATH"
+        do_delete "$1/.xsession-errors*"
+        do_delete "$1/.audacity-data"
+        do_delete "$1/.davfs2/"
+        do_delete "$1/.dbus"
+        do_delete "$1/.java"
+        do_delete "$1/.marble"
+        do_delete "$1/.openjfx"
+        do_delete "$1/.thumbnails*"
+        do_delete "$1/.local/share/Trash"
+    ### TODO check ...
+        do_delete "$1/.local/share/akonadi/file_db_data/"
+        do_delete "$1/.local/share/baloo"
+        do_delete "$1/.local/share/flatpack"
+        do_delete "$1/.local/share/marble"
+        do_delete "$1/.local/share/upplay"
+        do_delete "$1/.mozilla/firefox/Crash Reports/"
+        do_delete "$1/.mozilla/firefox/*/urlclassifier*.sqlite"
+        do_delete "$1/.netbeans/*/var/cache"
+
+        # clean encrypted cache folders ...
+        local fenc farr
+        for fenc in "$1/.encfs_"* ; do
+            [ -d "$fenc" ] || continue
+            system -a farr -r -- \
+                find "$fenc" -xdev -mindepth 2 -maxdepth 2 \
+                     -name "WARNING_FOLDER_NOT_ARCHIVED" -printf "%h/\n" || continue
+            [ -n "$farr" ] || continue
+            trace -a -c "Cache" -- "${farr[@]}"
+            splitjoin -x do_delete -i farr
+        done
+    }
+
+    # clean sub folders: <folder>
+    ___walk() {
+        walk -r -l 1 -d "___home" "$1"
+    }
+
+    local path="/home"
+
+    # home subvolume
+    if [ -n "$CEN_OPT_HOME" ] ; then
+        confirm -a -n "Cleanup '$PWD' caches" || return
+        ___walk "."
+        [ -n "$1" ] && ___home "$1"
+
+    # given user name
+    elif [ "$CEN_OPT_USER" != "+" ] ; then
+        [ "$CEN_OPT_USER" = "-" ] && CEN_OPT_USER="$LOGNAME"
+        eval path=~$CEN_OPT_USER
+        [ "$PWD" = "/" ] || path="$PWD$path"
+        if [ -d "$path" ] ; then
+            confirm -a -n "Cleanup '$path' caches" || return
+            folder -r -c -f "$path/.."
+            ___home "./${path##*/}"
+        else
+            warning "User home folder not found" ": $path"
+        fi
+
+    # all users
+    else
+        [ "$PWD" = "/" ] || path="$PWD$path"
+        confirm -a -n "Cleanup '$path' caches" || return
+        [ -d "./home" ] && ___walk "home"
+        [ -d "./root" ] && ___home "./root"
+        [ -d ".$CEN_ROOT/vbox" ] && ___home ".$CEN_ROOT/vbox"
+    fi
+}
+
+run_logs() {
+    if [ ! -d "./var/log" ] ; then
+        warning -a "Found no system logs folder:" "$PWD/var/log"
+        return
+    fi
+    message -a "Cleaning system logs  : $PWD"
+    #do_delete ./var/log/calamaris
+    #do_delete ./var/log/journal/*
+    #do_delete ./var/log/lastlog
+    #do_delete ./var/log/squid3
+    #do_delete ./var/log/wtmp
+    do_delete "./var/log/*/"
+    do_delete "./var/log/*.gz"
+    do_delete "./var/log/*.[0-9]"
+    do_delete "./var/log/*.log"
+    do_delete "./var/log/*.old"
+
+    # some global removes
+    local fdir flis=()
+    resolve -a flis -e -m -p -q -- "./root/.synaptics/log" "./var/backups"/* "./var/log/samba/cores"/*
+    remove -d -- "${flis[@]}"
+
+    if [ -d "./var/log" ] ; then
+        local curr="$PWD"
+        folder -c -f "./var/log"
+
+        # using persistent systemd journal: remove legacy logs
+        if [ -d "journal" ] ; then
+            remove dmesg debug syslog messages daemon.log auth.log kern.log
+            [ "$CEN_OPT_ZERO" ] && remove -d journal/*
+        fi
+
+        # loop over folders to remove/zero files
+        walk -r -f false -d true .
+        for fdir in "${CEN_WALK_DIRS[@]}" ; do
+            [  -z "$CEN_OPT_ALL" -a "$fdir" -ef "unattended-upgrades" ] && continue
+            walk -- "$fdir"/*~ "$fdir"/*.gz "$fdir"/*.old "$fdir"/*.[0-9] "$fdir"/*.[0-9].log
+            remove -- "${CEN_WALK_FILES[@]}"
+            [ "$CEN_OPT_ZERO" ] && walk -r -f do_zero "$fdir"/*
+        done
+
+        folder -c "$curr"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# The one and only action
+# ------------------------------------------------------------------------------
+run() {
+    # option handling
+    if [ -n "$CEN_OPT_ALL" ] ; then
+        CEN_OPT_ROOT=1 ; CEN_OPT_USER="+" ; CEN_OPT_ZERO=1
+    fi
+    [ -n "$CEN_OPT_ZERO" ] && CEN_OPT_LOGS=1
+
+    [ -z "$CEN_OPT_USER" -a -z "$CEN_OPT_ROOT" -a -z "$CEN_OPT_LOGS" -a -z "$CEN_OPT_SNAP" ] && usage
+
+    if ! [ "$CEN_OPT_USER" = "-" -o "$CEN_OPT_USER" = "$LOGNAME" ] ; then
+        context -r
+    elif [ -n "$CEN_OPT_LOGS" -o -n "$CEN_OPT_HOME" -o -n "$CEN_OPT_ROOT" ] ; then
+        fatal "Option --user conflicts with --all|--root|--home|--log"
+    fi
+
+    # should not be a desktop session
+    if [ -z "$CEN_OPT_BASE" ] && [ -n "$KDE_SESSION_VERSION" -o -n "$XDG_CURRENT_DESKTOP" ] ; then
+        confirm -a -n "You should not call $CEN_NAME from a desktop session. Continue" || return
+    fi
+
+    # do it ...
+    folder -c "${CEN_OPT_BASE:-/}" || return
+
+    if [ -d "Volumes/Root" -o -d "Volumes/Home" ] ; then
+        message -a "Base folder is a BTRFS volume"
+        [ "${CEN_OPT_USER:-+}" = "+" ] || fatal "Cannot use '--user=<name>' in this context"
+        CEN_OPT_HOME=1 ; DAT_ROOT="Volumes/Root" ; DAT_HOME="Volumes/Home"
+        if [ ! -d "$DAT_ROOT" ] ; then
+            CEN_OPT_LOGS= ; CEN_OPT_ROOT=
+        fi
+        [ -d "$DAT_HOME" ] || CEN_OPT_USER=
+    fi
+    if [ -n "$CEN_OPT_SNAP" ] ; then
+        case "$PWD" in
+        */Root*.*)       CEN_OPT_HOME= ;;
+        */Home*.*)       CEN_OPT_HOME=1 ; CEN_OPT_LOGS= ; CEN_OPT_ROOT=
+                         [ -z "$CEN_OPT_USER" ] && CEN_OPT_USER="+" ;;
+        *)               return
+        esac
+    fi
+
+    local mlst
+    [ -n "$CEN_OPT_ROOT" ] && mlst+="root, "
+    [ -n "$CEN_OPT_USER" ] && mlst+="home, "
+    [ -n "$CEN_OPT_LOGS" ] && mlst+="logs, "
+    if [ -z "$mlst" ] ; then
+        message -a "Nothing to cleanup" ; return
+    elif [ -n "$CEN_OPT_LOGS" -o -n "$CEN_OPT_ROOT" ] ; then
+        confirm -a -n "Cleanup '${mlst::-2}' data at '$PWD'" || return
+    fi
+
+    local root curr=$PWD
+        if [ -n "$DAT_ROOT" ] ; then
+            folder -c -f "$DAT_ROOT"
+            [ -d "root" ] && root="$PWD/root"
+        fi
+        [ -n "$CEN_OPT_ROOT" ] && run_root
+        [ -n "$CEN_OPT_LOGS" ] && run_logs
+    [ -n "$DAT_ROOT" ] && folder -c -f "$curr"
+
+    [ -n "$DAT_HOME" ] && folder -c -f "$DAT_HOME"
+        [ -n "$CEN_OPT_USER" ] && run_home "$root"
+    [ -n "$DAT_HOME" ] && folder -c -f "$curr"
+}
+
+# ------------------------------------------------------------------------------
+# option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    -A|--all)
+        optarg "all"    CEN_OPT_ALL        ;;   # simple flag
+    -B|--bas|--base)
+        optarg "base"   CEN_OPT_BASE -d    ;;   # folder
+    -H|--hom|--home)
+        optarg "home"   CEN_OPT_HOME       ;;   # simple flag
+    -L|--log*)
+        optarg "logs"   CEN_OPT_LOGS       ;;   # simple flag
+    -S|--sna*)
+        optarg "snap"   CEN_OPT_SNAP       ;;   # simple flag
+    -R|--roo|--root)
+        optarg "root"   CEN_OPT_ROOT       ;;   # simple flag
+    -U|--use|--user)
+        optarg "user"   CEN_OPT_USER -t    ;;   # any text
+    -Z|--zer|--zero)
+        optarg "zero"   CEN_OPT_ZERO       ;;   # simple flag
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -A --all             cleanup everthing, short for: -U+ -R -Z
+       -B --base  <dir>     use <dir> as path prefix    (default: /)
+       -S --snapshot        given folder is a snapshot  (auto --home)
+
+       -H --home            given folder is a home volume
+       -R --root            cleanup root volume, e.g. system caches
+       -U --user <name>|-|+ cleanup user home folders   (+:all -:$LOGNAME)
+
+       -L --logfiles        delete system log files if possible
+       -Z --zero            run '--logfile' and zero-size remaining log files
+
+This tool should not be used to clean the host system in multi-user mode. Use
+'init 2' or a similar command to switch to single-user mode.
+
+All options except '--user=-' need root priviledges and '--user=-' must not
+be run from a desktop session.
+
+examples:
+       $CEN_NAME -A                          # cleanup the host system
+       $CEN_NAME -B /mnt/xxx -A              # cleanup mounted sys volume
+       $CEN_NAME -H -B /mnt/xxx/home         # cleanup home folders
+       $CEN_NAME -S -B Snapshots/Home.sav    # cleanup a snapshot
+       $CEN_NAME -U -                        # cleanup $LOGNAME's home
+       $CEN_NAME -Z                          # delete/zero-size logfiles
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

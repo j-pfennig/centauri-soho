@@ -1,0 +1,480 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2009-2023; BSD License"
+CEN_TITLE="Compare package lists, run apt update(install/remove"
+
+# Import the bash library, set name and version
+
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -s -t -y - '0.31:2' || exit 2
+
+# Data
+
+CEN_OPT_APT=            # see --apt option
+CEN_OPT_FILE=           # see --file ooption
+CEN_OPT_INST=           # see --install option
+CEN_OPT_DEINST=         # see --deinstall option
+CEN_OPT_LIBS=           # see --libs option
+CEN_OPT_NOSYNC=         # see --nosync option
+CEN_OPT_REVERSE=        # see --reverse option
+CEN_OPT_SETSEL=         # see --set option
+CEN_OPT_TOOL=           # see --tool option
+CEN_OPT_DEVEL=          # see --development option
+CEN_OPT_UPDATE=         # see --update
+CEN_OPT_UPGRADE=        # see --upgrade
+
+CEN_CONFIG_DIR="$CEN_ROOT/shared/.."
+DAT_EATMYDATA=          # set by option nosync
+                        # dpkg install package status ...
+DAT_STATUS='/var/lib/dpkg/info'
+
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+process_status() {
+    if [ -z "$CEN_OPT_LIBS" -a "${2::3}" = 'lib' ] ; then
+        [ "${2::11}" = 'libreoffice' ] || return
+    fi
+    [ -z "$CEN_OPT_DEVEL" -a "${2:${#2}-4}" = '-dev' ] && return
+
+    # status can be: hold, install, deinstall, purge
+    local inst
+    local deinst
+    case "$3" in
+    hold)       message $"ignore package with status 'hold': $2 ($1)"
+                return ;;
+    install)    inst="$3" ;;
+    purge|deinstall)
+                deinst="$3" ;;
+    *)          error $"unknown package status '$3': $2 ($1)"
+                return ;;
+    esac
+
+    if [ "$1" = '-' ] ; then
+        [ -n "$deinst" ] && inst="$deinst"
+        [ -n "$inst" ] || return
+        [ -n "$CEN_OPT_INST" ] || return
+    else
+        [ -n "$CEN_OPT_DEINST" ] || return
+        [ -z "$deinst" ] && deinst='deinstall'
+        inst="$deinst"
+    fi
+    while [ "$inst" = 'deinstall' ] ; do
+        [ -e "$DAT_STATUS/$2.list" ] && break
+        [ -e "$DAT_STATUS/$2.md5sums" ] && break
+        [ -e "$DAT_STATUS/$2:"*.md5sums ] && break
+        trace -a -c "No pkg info" "$DAT_STATUS/$2"
+        return
+    done
+    printf "%-40s %s\n" "$2" "$inst"
+}
+
+process_item() {
+    local nam1="${1%:*}"
+    local mod1="$2"
+    local kind="$3"
+    local nam2="${4%:*}"
+    local mod2="$5"
+    case "$kind" in
+            # no change - validate only
+    '-')    [ "$nam1" = "$nam2" -a "$mod1" = "$mod2" ] ||
+                error $"Bad 'diff' data:" "$*"
+            ;;
+
+            # added on right or left side
+    '>')    process_status '+' "$nam2" "$mod2"
+            ;;
+    '<')    process_status '-' "$nam1" "$mod1"
+            ;;
+
+            # two cases (1) change of state (2) two additions
+    '|')    [ "$nam1 $mod1" = "$nam2 $mod2" ] && return
+            process_status '-' "$nam1" "$mod1"
+            [ "$nam1" = "$nam2" ] || process_status '+' "$nam2" "$mod2"
+            ;;
+
+            # should never occur - bug
+    *)      fatal $"Bad 'diff' mode:" "$*" ;;
+    esac
+}
+
+# parse/reformat diff input to a five token representation
+process_diff() {
+    local nam1 mod1 kind nam2 mod2 oops
+    while read -r nam1 mod1 kind nam2 mod2 oops ; do
+        # right only
+        if [ "$nam1" == '>' ] ; then
+            process_item - - "$nam1" "$mod1" "$kind"
+        # left only
+        elif [ "$kind" == '<' -a -z "$nam2" ] ; then
+            process_item "$nam1" "$mod1" "$kind" - -
+        # left and right (no difference)
+        elif [ -n "$nam2" -a -z "$mod2" ] ; then
+            process_item "$nam1" "$mod1" - "$kind" "$nam2"
+        # left and right
+        elif [ -n "$mod2" -a -z "$oops" ] ; then
+            process_item "$nam1" "$mod1" "$kind" "$nam2" "$mod2"
+        # invalid line
+        else
+            error $"Bad 'diff' line:" "$nam1 $mod1 $kind $nam2 $mod2 $oops"
+        fi
+    done
+}
+
+# pass to apt: <handle>
+process_apt() {
+    ___aptmsg() {
+        if [ -n "$2" ] ; then
+            progress -a -l -- "$2"
+            progress -e
+        fi
+        [ -z "$1" ] && return
+        local text="$1" ; _cen_compactify text
+        message -a -- "$text"
+    }
+
+    ___aptgui() {
+        if [ -z "$CEN_OPT_SILENT" ] || [ "$CEN_VERB" -gt 1 ] ; then
+            system -e -p -z -- "$@" ; return
+        fi
+        [ -z "$COLUMNS" ] && system -q -s COLUMNS -- tput cols
+        local snam="${CEN_EMBED:-$CEN_NAME}" cols="${COLUMNS:-100}"
+        local cols=$((cols - ${#snam} - 2))
+
+        ___aptgui_orig() {
+            DEBIAN_FRONTEND='noninteractive' LC_MESSAGES=C DISPLAY= COLUMNS=$cols \
+            system -e "$@" --yes -o Dpkg::Options::='--force-confold' 2>&1 </dev/null ; echo STAT=$?
+        }
+
+        ___aptgui_dest() {
+            local poll last stat=0
+            while IFS= read -e poll ; do
+                # printf "%s\n" "$poll" >>/tmp/xxx
+                trimjoin -t -c -s poll -- "$poll"       # simplify text
+
+                case "$poll" in
+                Get:*)
+                    progress -a -l "$poll" ; last= ;;
+                Hit:*)
+                    last="$poll" ;;
+                Ign:*|Err:*)
+                    ___aptmsg "$poll" "$last" ; last= ;;
+
+                Unpacking\ *)           # <name> <vers> ...
+                    last="$poll" ; progress -a -l "$poll" ;;
+                Selecting\ previously\ unselected\ package\ *)
+                    last="$poll"         ;; # <name>.
+                Preparing\ to\ unpack\ *)
+                    last="$poll"        ;; # .../<name> <vers> ...
+                Setting\ up\ *)
+                    last="$poll" ; progress -a -l "$poll" ;;
+                Processing\ triggers\ for\ *)
+                    last="$poll" ; progress -a -l "$poll" ;;
+                localepurge:\ Disk\ space\ freed*)
+                    last="$poll" ;;
+                update-alternatives:\ using*)
+                    last="$poll" ;;
+
+                Created\ symlink*)
+                    last="$poll" ;;
+                '(Reading database ...'*)
+                    last= ;;
+                *...)
+                    last="$poll" ; progress -a -l "$poll" ;;
+                ''|WARNING:\ apt\ does*)
+                    last= ;;
+                STAT=*)
+                    stat="${poll#*=}" ;;
+                *)  ___aptmsg "$poll" "$last" ; last=
+                esac
+            done
+            [ "$stat" = 0 ] || error -p $"The 'apt' command failed (status %s)" "$stat"
+            return "$stat"
+        }
+
+        syspipe -b ___aptgui_orig -d ___aptgui_dest -- "$@"
+    }
+
+    ___aptyes() {
+        local mesg
+        pluralize -s mesg -p "$2 %s %s" "$1" "package"
+        confirm -n -y "$mesg" || quit
+    }
+
+    ___aptend() {
+        if [ -n "$lrem" ] ; then
+            ___aptyes "${#lrem[@]}" "Remove"
+            if [ -n "$CEN_OPT_DRYRUN" ] ; then
+                echo "apt-get remove --yes ${lrem[@]}"
+            elif [ -n "$CEN_OPT_FILE" ] ; then
+                echo "apt-get remove --yes ${lrem[@]}" >"$CEN_OPT_FILE"
+            else
+                ___aptgui $DAT_EATMYDATA apt-get remove --yes "${lrem[@]}"
+            fi
+        fi
+        if [ -n "$lins" ] ; then
+            ___aptyes "${#lins[@]}" "Install"
+            ___aptupd || quit                       # apt update
+            if [ -n "$CEN_OPT_DRYRUN" ] ; then
+                echo "apt-get install --yes ${lins[@]}"
+            elif [ -n "$CEN_OPT_FILE" ] ; then
+                echo "apt-get install --yes ${lins[@]}" >"$CEN_OPT_FILE"
+            else
+                ___aptgui $DAT_EATMYDATA apt-get install --yes "${lins[@]}"
+            fi
+        fi
+        quit
+    }
+
+    ___aptrun() {
+        [ -n "$lall" ] && return 0
+        local mesg
+        printf -v mesg "$1" "$3"
+        confirm -a -c ___aptend -p "[a/y/N/q]? " -v "all yes no quit" "$mesg"
+        case $? in
+        0)  lall=1 ;;
+        1)  return 0 ;;
+        *)  return 1 ;;
+        esac
+    }
+
+    # update package lists, upgrade
+    ___aptupd() {
+        case "$CEN_OPT_UPDATE" in
+        0)  ;;
+        1)  ___aptgui $DAT_EATMYDATA apt update || return 1 ;;
+        *)  if ! matchpath -e -o /var/lib/apt/lists/*_Packages ; then
+                ___aptgui $DAT_EATMYDATA apt update || return
+            fi
+        esac
+        if [ -n "$CEN_OPT_UPGRADE" ] ; then
+            ___aptgui $DAT_EATMYDATA apt upgrade -o Apt::Get::Assume-Yes=true || return
+        fi
+        return 0
+    }
+
+    if [ -z "$1" ] ; then
+        LANG= ___aptupd ; return              # return status
+    fi
+
+    local lpkg lmod lins=() lrem=() lall
+    while read -u "$1" lpkg lmod ; do
+        if [ "$lmod" = 'install' ] ; then
+            ___aptrun $"Install package: %-40s " "$lmod" "$lpkg" && lins+=("$lpkg")
+        elif [ "$lmod" = 'deinstall' ] ; then
+            ___aptrun $"Remove package: %-40s " "$lmod" "$lpkg" && lrem+=("$lpkg")
+        fi
+    done
+    ___aptend                           # apt install|remove
+}
+
+# resolve destination arguments: <arg>
+CEN_DIFF_ARG=
+check_diff() {
+    CEN_DIFF_ARG="${1:--}"
+    [ "$CEN_DIFF_ARG" = '-' ] && return
+    if [ "${1::1}" = "@" ] ; then
+        if [ "$1" = "@" ] ; then
+            CEN_DIFF_ARG="$CEN_CONFIG_DIR/@shared/PACKAGES"
+        else
+            CEN_DIFF_ARG="$CEN_CONFIG_DIR/${1:1}/PACKAGES"
+        fi
+    fi
+    prettypath -c -e -f -s CEN_DIFF_ARG -- "$CEN_DIFF_ARG"
+    [ -r "$CEN_DIFF_ARG" ] || fatal $"Cannot read:" "$CEN_DIFF_ARG"
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+list_filter() {
+    local -n _vflt="$1"
+    local item inam imod lout=()
+    for item in "${_vflt[@]}" ; do
+        item="${item//[[:cntrl:]]/ }"               # trimming ...
+        item="${item%"${item##*[![:space:]]}"}"
+        item="${item#"${item%%[![:space:]]*}"}"
+        [ "${item::1}" = '#' ] && continue          # skip comment
+        [ -z "$item" ] && continue                  # skip empty line
+        inam="${item%%[[:space:]]*}"
+        inam="${inam%:*}"                           # remove architecture
+
+        if [ -z "$CEN_OPT_LIBS" -a "${inam::3}" = 'lib' ] ; then
+            [ "${inam::11}" = 'libreoffice' ] || continue
+        fi
+        filter -i "$inam" || continue
+
+        imod="${item##*[[:space:]]}"                # get install/remove field
+        lout+=("$inam $imod")
+    done
+    _vflt=("${lout[@]}")
+}
+
+# ------------------------------------------------------------------------------
+# Compare package list: <src-list> <dest-list>|-
+# ------------------------------------------------------------------------------
+run() {
+    # build package list from command line
+    if [ -n "$CEN_OPT_TOOL" ] ; then
+        local tool mode list=()
+        for tool in "$@" ; do
+            [ "$tool" = '-' ] && continue
+            if [ -n "$CEN_OPT_INST" ] ; then
+                system -c -- "$tool" && continue
+                list+=("$tool install") #; CEN_OPT_DEINST=
+            else
+                system -c -- "$tool" || continue
+                list+=("$tool deinstall") #; CEN_OPT_INST=
+            fi
+        done
+        if [ -z "$list" ] ; then
+            trace $"Nothing to do" ; return
+        fi
+        tmpfile -f -s flst 'tool' ; create -f -a -r -v list -- "$flst"
+        set -- "$flst" ; CEN_OPT_APT=1 ; CEN_OPT_INST=1 ; CEN_OPT_DEINST=
+    fi
+
+    if [ "$#" = 0 ] && [ "$CEN_OPT_UPDATE" != 0 -o -n "$CEN_OPT_UPGRADE" ] ; then
+        process_apt ; return
+    fi
+    arguments 1 2 "$@" || return
+    check_diff "$2"
+    local dest="$CEN_DIFF_ARG"
+    check_diff "$1"
+    [ "$CEN_DIFF_ARG" = '-' ] && fatal $"1st arg must be <path>, @ or @<host>"
+    system -f -c diff dpkg apt
+
+    # get input data
+    local lsrc ldes hinp
+    splitjoin -s lsrc -d '\n' -i - <"$CEN_DIFF_ARG"
+    if [ "$dest" = '-' ] ; then
+        system -a ldes -d '\n' -e -n -p -r -- dpkg --get-selections
+    else
+        splitjoin -s ldes -d '\n' -i - <"$dest"
+    fi
+
+    # filter and create files for diff ...
+    list_filter lsrc ; extsort -a lsrc -i lsrc
+    list_filter ldes ; txtsort -a ldes -i ldes
+
+    local fsrc fdes fdif
+    tmpfile -n -r -s fsrc ; tmpfile -n -r -s fdes ; tmpfile -n -r -s fdif
+    create -r -v lsrc -- "$fsrc" ; create -r -v ldes -- "$fdes"
+
+    # run the diff tool to compare, save result
+    if [ "$CEN_OPT_REVERSE" = 1 ] ; then
+        system -r -z -- diff -b -y --suppress-common-lines "$fdes" "$fsrc"
+    else
+        system -r -z -- diff -b -y --suppress-common-lines "$fsrc" "$fdes"
+    fi >"$fdif"
+
+    # finally process diff result
+    if [ -n "$CEN_OPT_APT" ] ; then
+        process_diff <"$fdif" >"$fsrc"
+        redirect -v hinp -i "$fsrc"             # get handle for file
+        process_apt "$hinp"
+        redirect -v hinp                        # close handle
+    elif [ -n "$CEN_OPT_SETSEL" ] ; then
+        quit $"Not supported"
+        dpkg --set-selections <"$fdif"
+    else
+        $CEN_PAGER process_diff <"$fdif"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# implement option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    '')
+        if [ -z "$CEN_OPT_INST$CEN_OPT_DEINST" ] ; then
+            CEN_OPT_INST=1 ; CEN_OPT_DEINST=1
+        fi
+        if [ -n "$CEN_OPT_FILE" ] ; then
+            CEN_OPT_APT=1
+            prettypath -c -f -s CEN_OPT_FILE -- "$CEN_OPT_FILE"
+            create -f -t -- "$CEN_OPT_FILE"
+        fi
+        if [ -n "$CEN_OPT_NOSYNC" ] ; then
+            sysfind -s DAT_EATMYDATA -q 'eatmydata' ||
+                warning $"Option '--nosync' ignored: package 'eatmydata' is not installed"
+        fi
+        ;;
+
+    -A|--apt)
+        optarg 'apt'        -      ;;
+    -F|--fil|--file)
+        optarg 'file'       -   -t ;;
+    -G|--upg*)
+        optarg 'upgrade'    -      ;;
+    -R|--rev*)
+        optarg 'reverse'    -      ;;
+    -I|--ins*)
+        optarg 'install'    CEN_OPT_INST ;;
+    -D|--dei*)
+        optarg 'deinstall'  CEN_OPT_DEINST ;;
+    -L|--lib*)
+        optarg 'libs'       -      ;;
+    -N|--nos*)
+        optarg 'nosync'     -      ;;
+    -S|--set*)
+        optarg 'setsel'     -      ;;
+    -T|--too*)
+        optarg 'tool'       -      ;;
+    -U|--upd*)
+        optarg 'update'     -   -o ;;
+    -X|--dev*)
+        optarg 'devel'      -      ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+usage: (1) $CEN_NAME [options...] src-selection dest-selection
+       (2) $CEN_NAME [options...] src-selection
+       (3) $CEN_NAME -T [options...] package...
+
+       Form (1) compares sets of installed packages. The generated output uses
+       the "dpkg --get-selection" format and can be used as synaptics input.
+
+       Form (2) can install or remove packages interactively or as batch.
+
+       Form (3) allows simple package install/remove by command line arguments.
+
+$CEN_USE_OPTIONS
+
+       -D --deinstall       deinstall only
+       -I --install         install only
+       -L --libs            include libraries
+       -X --development     include packages with "-dev" suffix
+
+       -A --apt             run "apt install" and/or "apt uninstall"
+       -F --file    <file>  save apt command to file
+       -G --upgrade         run "apt upgrade"
+       -N --nosync          no sync calls from apt/dpkg (uses 'eatmydata')
+       -R --reverse         swap source and destination
+       -S --set             pipe output through "dpkg --set-selections"
+       -T --tool            simple install/remove packages
+       -U --update  <when>  run "apt update" (0:=ever  1:=always  2:=auto)
+
+       If none of -D and -I are given then -D and -I are implied and if none
+       of -D, -I, -L or -X are given -X is implied.  Libraries are usually
+       pulled in as package dependencies (-L is never implied).
+
+arguments:
+        src/dest-selection can be a "@hostname" or a path. If dest-selection
+        is misssing or '-' the "dpkg --get-selection" output is substituted.
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

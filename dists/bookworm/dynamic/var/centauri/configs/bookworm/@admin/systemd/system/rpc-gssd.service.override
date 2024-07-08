@@ -1,0 +1,6 @@
+[Service]
+
+# limit security context life-time
+
+ExecStart=
+ExecStart=/usr/sbin/rpc.gssd -t 30

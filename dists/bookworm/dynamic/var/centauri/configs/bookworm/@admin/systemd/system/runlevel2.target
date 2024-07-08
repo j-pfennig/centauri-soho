@@ -1,0 +1,8 @@
+[Unit]
+Description=Centauri Maintenance Mode
+#Conflicts=rescue.service rescue.target bluetooth.service multi-user.target runlevel3.target
+#Conflicts=ModemManager.service NetworkManager.service systemd-timesyncd.service networking.service
+#Conflicts=rpcbind.service rpcbind.socket rpc-gssd.service nfs-server.service cups.service wpa_supplicant.service centauri-network.service
+Requires=basic.target
+After=basic.target
+AllowIsolate=yes

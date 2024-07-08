@@ -1,0 +1,228 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_tra = centauri-bash-lib: Trash bin support
+#
+# Call:     . _centauri_bash_tra [-n]
+#
+# Options:  -n  no module init
+#
+#+This module adds the --trash option to a script, depending on the module options
+# described above.
+#
+# The module implements exactly one public function: [[trash()]]
+#
+#+Supported trash methods are: "rm" (no trash), "gio"/"kioclient" (trash:/) or move
+# to a folder. In the later case a folder named "[dD]Deleted" can be searched by
+# descending into the folder hierarchy.
+#
+# The script command line option "--trash" behaves as follows:
+#
+#,      --trash=0   force method "rm"
+#,      --trash=1   autodetect method, fatal if no trash folder is found
+#,      --trash=2   autodetect method, fall back to "rm"
+#
+# Copyright Dr. J. Pfennig (c) 2021-2024
+# ------------------------------------------------------------------------------
+
+CEN_MODULES['_centauri_bash_tra']='0.11:2'
+
+CEN_OPT_TRASH=                  # see --trash
+
+CEN_TRA_TRACE=':'               # trace command
+CEN_TRA_METHOD=                 # trash method
+CEN_TRA_LIST=()                 # items to be removed
+CEN_TRA_WARN=1                  # user to be warned (trash -w)
+
+# ------------------------------------------------------------------------------
+# trash - handle trash folder
+#
+# Call:     (1) trash -i [<meth>]
+#           (2) trash -w
+#           (3) trash [-f] [-p <pref>] [-s] [--] <item>...
+#
+# Options:  -f   flush queue (before adding new items)
+#           -i   exiplicitly initialize the trash method
+#           -p   flush (after adding items) using a prefix
+#           -s   silent, generate no [[trace()]] messages
+#           -w   warning if method is 'rm', allow user to quit
+#
+# Arguments:<meth>  one of: "rm" "gio" "kioclient" or a folder path
+#           <pref>  used with method "rm"
+#           <item>  file-system object to be removed
+#
+#+Trash items are not removed synchronously but added to a queue. The queue
+# gets flushed automatically at program exit or explicitly (see options -f
+# and -p).
+#
+#+The ''trash'' method can be set explicitly (-i option) or is determined
+# on 1st use. Method "kioclient" is used only if "gio" is not available
+# and if the "DISPLAY=<display>" or "XDG_SESSION_TYPE=wayland" variables are set.
+#
+#+When a folder is used to move deleted items into, a prefix can be specified
+# on flush. This is a minimalistic way to flag the origin of a deleted file.
+# Moving items to a folder will replace items with the same name.
+#
+#+The -w option has no effect if the script was called with option --trash.
+# ------------------------------------------------------------------------------
+trash() {
+    CEN_TRA_TRACE="$CEN_TRACE -a"
+    local _optf _opti _optw _pref _item
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -f)   _optf=1 ;;
+      -i)   shift ; _opti="$1" ; CEN_TRA_METHOD= ;;
+      -p)   shift ; _pref="$1" ;;
+      -s)   CEN_TRA_TRACE=':' ;;
+      -w)   _optw="$CEN_TRA_WARN" ;;
+       *)   _cen_abort - "$1"
+      esac ; shift
+    done
+
+    [ -z "$CEN_TRA_METHOD" ] && _cen_tra_init "$_opti"
+    if [ -n "$_optw" ] && [ "$CEN_TRA_METHOD" = 'rm' ] ; then
+        confirm -a -c quit -d $"quit" -w -p $" [c/Q]? " -v $"continue quit" \
+                $"No trash folder, deleted items cannot be restored"
+        CEN_TRA_WARN=
+    fi
+
+    [ -n "$_optf" ] && _cen_tra_flush
+
+    for _item in "$@" ; do
+        [ -e "$_item" ] || continue
+        prettypath -s _item "$_item"
+        $CEN_TRA_TRACE "Trash item:" "$_item"
+        CEN_TRA_LIST+=("$_item")
+    done
+
+    if [ "$_pref" = '-' ] ; then
+        _cen_tra_flush
+    elif [ -n "$_pref" ] ; then
+        _cen_tra_flush "${_pref}-"
+    fi
+}
+
+# try to find a [dD]deleted folder
+_cen_tra_folder() {
+    local _item _fldr
+    for _item in . .. ../.. ../../..  ../../../.. - ; do
+        [ -d "$_item" ] || return 1
+        if [ -d "$_item/Deleted" ] ; then
+            prettypath -f -s _fldr -- "$_item/Deleted" ; break
+        elif [ -d "$_item/deleted" ] ; then
+            prettypath -f -s _fldr -- "$_item/deleted" ; break
+        fi
+    done
+    [ -w "$_fldr" ] || return 1
+    CEN_TRA_METHOD="$_fldr" ; return 0
+}
+
+# check if we are in sub-folder of $HOME
+_cen_tra_home() {
+    local _stat _phyp _curr="$PWD"
+    folder -r -c -n -p -q -s _phyp -- "$PWD" || return -1
+    folder -r -c -f -- "$_curr"
+    [ "${_phyp#$HOME}" != "$_phyp" ]            # return status
+}
+
+# find trash method: [-|<meth>]
+_cen_tra_init() {
+    embed -c "_centauri_bash_ext"
+
+    # explicit init
+    if [ "${1:--}" != '-' ] ; then
+        CEN_TRA_METHOD="$1"
+        $CEN_TRA_TRACE $"Trash method:" "$CEN_TRA_METHOD"
+        return
+    fi
+
+    # use rm if trash is disabled and as default
+    CEN_TRA_METHOD='rm'
+    if [ "$CEN_OPT_TRASH" != 0 ] ; then
+        # are we a subfolder of $HOME? -> use trash:/
+        if _cen_tra_home ; then
+            if system -c 'gio' ; then
+                CEN_TRA_METHOD='gio'
+            elif [ -n "$CEN_DISPLAY" ] && system -c 'kioclient' ; then
+                CEN_TRA_METHOD='kioclient'
+            fi
+
+        # can we write into a Deleted folder? -> use it
+        else
+            _cen_tra_folder
+        fi
+    fi
+    [ "$CEN_OPT_TRASH" = 1 -a "$CEN_TRA_METHOD" = 'rm' ] &&
+        fatal $"Cannot find a usable trash folder"
+    $CEN_TRA_TRACE $"Trash method:" "$CEN_TRA_METHOD"
+}
+
+# execute trash method: [<prefix>]
+_cen_tra_flush() {
+    local _item _nlis="${#CEN_TRA_LIST[@]}"
+    [ $_nlis = 0 ] && return
+    if [ $_nlis = 1 ] ; then
+        $CEN_TRA_TRACE -p $"Trash remove: 1 item"
+    else
+        $CEN_TRA_TRACE -p $"Trash remove: %s items" $_nlis
+    fi
+
+    if [ "$CEN_TRA_METHOD" = 'rm' ] ; then
+        remove -s -- "${CEN_TRA_LIST[@]}"
+    elif [ "$CEN_TRA_METHOD" = 'gio' ] ; then
+        system -e -p -- gio trash "${CEN_TRA_LIST[@]}"
+    elif [ "$CEN_TRA_METHOD" = 'kioclient' ] ; then
+        system -e -p -- kioclient move "${CEN_TRA_LIST[@]}" trash:/
+    elif [ -n "$1" ] ; then
+        for _item in "${CEN_TRA_LIST[@]}" ; do
+            move -s -o -- "$_item" "$CEN_TRA_METHOD/$1${_item##*/}"
+        done
+    else
+        move -s -o -- "${CEN_TRA_LIST[@]}" "$CEN_TRA_METHOD"
+    fi
+    CEN_TRA_LIST=()
+}
+
+# ------------------------------------------------------------------------------
+# Hooks
+# ------------------------------------------------------------------------------
+
+# hook for options()
+_cen_tra_option() {
+    $CEN_TRA_HOOK_OPTIONS "$@"
+    case "$1" in
+
+    # pass option info to usage module
+
+    --help)
+        [ "$2" = "opts" ] || return                 # ignore unless _cen_usage()
+
+        _cen_use_option "-t" "--trash   <mode>" \
+                        $"trash folder mode (0:=off  1:=on  2:=auto)"
+        ;;
+
+    # options added by this module
+
+    -t|--tra|--tras|--trash)
+        CEN_TRA_WARN=                               # disable 'rm' warning
+        optarg "trash" - -o ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Startup: [-n]
+# ------------------------------------------------------------------------------
+
+# called by quit()
+_cen_tra_quit() {
+    [ -n "$CEN_TRA_LIST" ] && trash -f              # flush quue
+}
+
+[ "$1" = "-n" ] && return 0                         # do not init
+
+# register option hook
+CEN_TRA_HOOK_OPTIONS="$CEN_HOOK_OPTIONS"
+CEN_HOOK_OPTIONS="_cen_tra_option"
+
+:
+# end

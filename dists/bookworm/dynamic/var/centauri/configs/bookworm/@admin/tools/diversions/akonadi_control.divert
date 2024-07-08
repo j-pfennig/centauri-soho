@@ -1,0 +1,15 @@
+status=on
+target=/usr/bin/akonadi_control
+
+divert() {
+    # these unsets are not sufficient to run akonadi/imap (but shorten log output)
+    unset GTK_RC_FILES
+    unset GTK2_RC_FILES
+    unset LS_COLORS
+    logger -t centauridivert "Akonadi start $$: $(env)"
+
+    # run akonadi with a minimal environment
+    env -i DISPLAY=$DISPLAY XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR HOME=$HOME \
+           /usr/bin/akonadi_control.distrib "$@"
+    logger -t centauridivert "Akonadi start $$"
+}

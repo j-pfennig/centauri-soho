@@ -1,0 +1,21 @@
+# /etc/anacrontab: configuration file for anacron
+
+# See anacron(8) and anacrontab(5) for details.
+
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+HOME=/root
+LOGNAME=root
+
+# anacron is run via systemd, there is no need to run cron as a service
+
+# These replace cron's entries
+1         5 cron.daily        run-parts --report /etc/cron.daily
+7         6 cron.weekly       run-parts --report /etc/cron.weekly
+@monthly  7 cron.monthly      run-parts --report /etc/cron.monthly
+
+# Centauri: run scripts
+1	     10 centauri.daily    centauricron --append   daily
+7	     11 centauri.weekly   centauricron --logmax=5 weekly
+@monthly 12 centauri.monthly  centauricron --append   monthly
+1	     13 centauri.shutdown centauricron --append   shutdown

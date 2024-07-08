@@ -1,0 +1,1267 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2024; BSD License"
+CEN_TITLE="Samba-AD/Kerberos/NFS management tool"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -t -y - '0.23:2' || exit 2
+
+# Data
+DAT_RUN_INIT=           # for action init/fallback
+DAT_DIR_SECRETS="/$CEN_ROOT/secrets"
+DAT_SEED_LIST=          # see get_seed
+
+# data for extra options
+CEN_OPT_SEED=           # see --seed
+CEN_OPT_KERBEROS=       # see --kerberos
+CEN_OPT_OUTPUT=         # see --output
+CEN_OPT_PASSWORD=       # see --password
+CEN_OPT_SERVER=         # see --server
+
+# ------------------------------------------------------------------------------
+# helpers
+# ------------------------------------------------------------------------------
+
+# check if there is an --output file: -no args-
+check_output() {
+    if [ -z "$CEN_OPT_OUTPUT" ] ; then
+        invoke -e $"needs an output file, use '--output'" ; return 1
+    fi
+
+    if [ "${CEN_OPT_OUTPUT/ /}" != "$CEN_OPT_OUTPUT" ] ; then
+        error $"Cannot use spaces in output file name" ; return 1
+    fi
+
+    if [ -e "$CEN_OPT_OUTPUT" ] ; then
+        confirm -a -q $"Replace existing output file" "'$CEN_OPT_OUTPUT'" || return 1
+        remove -f -- "$CEN_OPT_OUTPUT"
+    fi
+    return 0
+}
+
+# check argument for verb (create|delete|list), set _verb and _args: <arg>...
+_verb=
+_args=
+check_verb() {
+    case "$1" in
+    cre*|add)   _verb='create' ; shift ;;
+    del*)       _verb='delete' ; shift ;;
+    lis|list)   _verb="list"   ; shift ;;
+    *)          invoke -e $"invalid verb '%s'" "$1"
+                return 1 ;;
+    esac
+    _args=("$@") ; return 0
+}
+
+# verify user: <princ>
+check_user() {
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+        local list line
+        system -a list -q -r -- kadmin.local -q "listprincs $1"
+        for line in "${list[@]}" ; do
+            line="${line%%@*}"
+            [ "$line" = "$1" ] && return 0
+        done
+    else
+        system -q -r -- samba-tool user setexpiry --noexpiry "$1" && return 0
+    fi
+    trace -a "No such account:" "$1"
+    return 1
+}
+
+# check access to kadmin.local: <tool>...
+check_tools() {
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+        system -c -e kadmin.local "$@"
+    else
+        system -c -e samba-tool net "$@"
+    fi
+}
+
+# check if runnung at MASTER
+check_master() {
+    netquery MASTER && return 0
+    invoke -e $"must be run at the MASTER server"; return 1
+}
+
+# get a password: [-c] <vnam> <user> (-c ignores smb* passwd files)
+get_paswd() {
+    local copt upwd
+    if [ "$1" = '-c' ] ; then
+        copt=1 ; shift
+    fi
+    local -n _vnam="$1" ; _vnam=
+    local user="${2:-smbadmin}"                         # default user
+    [ -z "$CEN_OPT_KERBEROS" ] && upwd="$user%"         # samba password syntax
+    if [ "${CEN_OPT_PASSWORD:--}" != '-' ] ; then
+        _vnam="$upwd$CEN_OPT_PASSWORD" ; return 0
+    fi
+
+    if [ -z "$copt" ] ; then
+        case "$user" in
+            smbadmin)   get_secret "$1" samba_admin || user="Administrator" ;;
+            smbtrust)   get_secret "$1" samba_trusted ;;
+            smbworld)   get_secret "$1" samba_public  ;;
+            -)          user='root' ;;
+        esac
+        if [ -n "$_vnam" ] ; then
+            _vnam="$upwd$pasw" ; return 0
+        fi
+    fi
+    if get_seed "$1" "$user" ; then
+        _vnam="$upwd$_vnam" ; return 0
+    fi
+    CEN_CONFIRM=
+    confirm -a -p + -u $"Enter password for '$user'  "
+    if [ -z "$copt" ] ; then
+        [ -n "$CEN_CONFIRM" ] || return 1;
+        _vnam="$upwd$CEN_CONFIRM" ; CEN_CONFIRM=
+        return 0
+    fi
+    [ -n "$CEN_CONFIRM" ] &&
+        confirm -a -p + -u -s pasw $"Confirm password for '$user'"
+    if [ -z "$CEN_CONFIRM" ] ; then
+        warning -a $"Password not changed" ; return 1
+    elif [ "$pasw" != "$CEN_CONFIRM" ] ; then
+        warning -a $"Passwords are different" ; return 1
+    fi
+    _vnam="$CEN_CONFIRM" ; CEN_CONFIRM= ; return 0
+}
+
+# get password from cifs style secrets file: <vsec> <file>
+get_secret() {
+    local -n _vsec="$1" ; _vsec=
+    [ -r "$DAT_DIR_SECRETS/$2" ] || return 1
+    while read pasw ; do
+        [ "${pasw::9}" = "password=" ] || continue
+        _vsec="${pasw:9}" ; return 0
+    done <"$DAT_DIR_SECRETS/$2" ; return 1
+}
+
+# get a password from seed file: <vsec> <user>
+get_seed() {
+    local -n _vsec="$1" ; _vsec=
+    [ -z "$CEN_OPT_SEED" ] && return 1
+    if [ -z "$DAT_SEED_LIST" ] ; then
+        configfile -v -r DAT_SEED_LIST -n "$CEN_OPT_SEED" || quitOnError
+    fi
+    local _item
+    for _item in "${DAT_SEED_LIST[@]}"  ; do
+        if [[ "$_item" == $2=* ]] ; then
+            _vsec="${_item#*=}" ; return 0
+        fi
+    done
+    trace -a "Name '$1' is not in seed file" ; return 1
+}
+
+# warning unless --silent is set
+invoke_warn() {
+    [ -z "$CEN_OPT_SILENT" ] && invoke -w "$@"
+}
+
+# list hosts: [-s] <pasw> [<glob>]
+list_hosts() {
+    local fsta
+    if [ "$1" = '-s' ] ; then
+        fsta=1 ; shift
+    fi
+    local pasw="$1" ; shift
+    local rslt item name glob="${1,,}" ; [ "$glob" = "-" ] && glob=
+    system -e -p -a rslt -r -- samba-tool dns query "$DAT_SERVER" "${DAT_SERVER[1]}" \
+                                          @ ALL --user "$pasw"
+    for item in "${rslt[@]}" ; do
+        trimjoin -l -s item -- "$item"
+        case "$item" in
+        Name=*) item="${item:5}" ; name="${item%%,*}" ; name="${name,,}"
+                [ -n "$glob" ] && [ "${name/$glob/}" = "$name" ] && name=
+                ;;
+        A:*)    [ -z "$name" ] && continue
+                item="${item#* }" ; item="${item%% *}"
+                [ -n "$fsta" ] && return 0
+                printf "%-12s %s\n" "$name" "$item"
+                ;;
+        AAAA:*) [ -z "$name" ] && continue
+                item="${item#* }" ; item="${item%% *}"
+                [ -n "$fsta" ] && return 0
+                printf "%-12s %s\n" "$name" "$item"
+                ;;
+        esac
+    done
+    [ -n "$fsta" ] && return 1 || return 0
+}
+
+# list users: [-m] [<glob>]
+list_users() {
+    local mach
+    if [ "$1" = '-m' ] ; then
+        shift ; mach=1
+    fi
+    local glob="$1" ; [ "$glob" = "-" ] && glob=
+
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+        local list line
+        system -a list -q -r -- kadmin.local -q "listprincs $glob"
+        for line in "${list[@]}" ; do
+            [ "${line/\//}" = "$line" ] || continue     # nor a user
+            line="${line%%@*}"
+            [ "${line:${#line}-1}" = "$" ] && continue  # ignore machine
+            echo "$line"
+        done
+    else
+        #system -r -z samba-tool user list
+        local ulst uout=() item
+        system -a ulst -e -p -r -- samba-tool user list
+        for item in "${ulst[@]}" ; do
+            if [ -n "$mach" ] ; then
+                if [ "${item/./}" = "$item" ] ; then        # not a machine
+                    [ "${item::5}" = 'root/' ] || continue  # older samba-tools
+                fi
+            else
+                [ "${item::5}" = 'root/' ] && continue      # older samba-tools
+                [ "${item/./}" = "$item" ] || continue      # machine ignored
+            fi
+            [ -n "$glob" ] && [ "${item/$glob/}" = "$item" ] && continue
+            uout+=("$item")
+        done
+        txtsort -a ulst -i uout
+        splitjoin -s - -l -i ulst
+    fi
+    return 0
+}
+
+
+DAT_SERVER=()
+# get active server name into DAT_SERVER(master domain)
+server_info() {
+    [ -n "$DAT_SERVER" ] && return
+    netquery -s DAT_SERVER    MASTER
+    netquery -s DAT_SERVER[1] domain
+    [ -z "$DAT_SERVER" ] && DAT_SERVER='-'
+}
+
+# ------------------------------------------------------------------------------
+# Make a computer a secure NFS client: [<admn>]
+# ------------------------------------------------------------------------------
+actionClient() {
+    # tool k5start is in debain package kstart ...
+    local gssm=('kinit' 'adcli') gpak=('krb5-user' 'adcli')
+    local opts ; [ -n "$CEN_OPT_FORCE" ] && opts='--force'
+
+    # -------------------------------- kerberos --------------------------------
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+        invoke -e $"Kerberos support not implemented"
+
+    # ---------------------------------- samba ---------------------------------
+    else
+        # use mit kerberos, adcli wants it, sasl/sssd need gssapi
+        if ! PATH+=':/usr/sbin' system -c -q -- "${gssm[@]}" ; then
+            confirm -a -q $"Install tools"" (${gssm[*]})" &&
+                embed -v -z centauripackage --silent --tool --update=2 --yes "${gpak[@]}"
+        fi
+
+        if netquery server ; then
+            message -a $"This computer is a server, nothing to join or register"
+            return
+        fi
+
+        # add server public key to authorized keys
+        [ -h ~/.ssh -a ! -e ~/.ssh/id_rsa ] && embed -r -- centauriencfs -q mount -
+        if   [ ! -e '/root/.ssh/authorized_keys' ] ; then
+            create -f -- '/root/.ssh/authorized_keys' 600
+        elif [ ! -w '/root/.ssh/authorized_keys' ] ; then
+            warning "Cannot access root's authorized_keys"
+        fi
+        if [ -e "$CEN_ROOT/secrets/ssh_server_key.pub" ] ; then
+            local pkey item
+            read -r pkey <"$CEN_ROOT/secrets/ssh_server_key.pub"
+            while read -r item ; do
+                [ "${item% *}" = "${pkey% *}" ] && break
+            done <'/root/.ssh/authorized_keys'
+            if [ -n "$item" ] ; then
+                trace -a -c "ssh_server_key" "already authorized"
+            else
+                create -a -v pkey '/root/.ssh/authorized_keys'
+            fi
+        else
+            warning $"Missing public SSH key of server"
+        fi
+
+        if [ -n "$1" ] ; then
+            if system -c samba-tool ; then
+                actionJoin "$1"
+            else
+                warning -c $"samba-tool not found" $"samba is not installed"
+            fi
+            embed -v centaurisecrets $opts register -- client ; sleep 2
+        elif confirm -n -y $"Register computer" ; then
+            embed -v centaurisecrets $opts register -- client ; sleep 2
+        fi
+
+        # clients don't export via nfs
+        system -e -p systemctl mask nfs-server rpc-svcgssd
+
+        message -a $"Restarting sssd service"
+        runservice stop sssd
+        remove /var/lib/sss/db/* /var/log/sssd/*
+        runservice start sssd
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Invalidate ticket: -no args-
+# ------------------------------------------------------------------------------
+actionDestroy() {
+    if ! system -c kdestroy ; then
+        message -a $"Missing kerberos tools - do nothing" ; return
+    fi
+    system -e -p -- kdestroy
+}
+
+# ------------------------------------------------------------------------------
+# Manage AD groups
+# ------------------------------------------------------------------------------
+actionGroup() {
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+        invoke -e $"kerberos does not manage groups" ; return
+    fi
+    check_verb "$@" || return
+    check_master || return
+    check_tools || return
+
+    local flds
+    splitjoin -s flds -d ":" -- "${_args[0]}"
+    local fnam="${flds[0]}"
+    local fgid="${flds[1]:-}"
+    local fgco="${flds[2]:-}"
+
+    # ------------------------------ pre-condition -----------------------------
+
+    if [ "$_verb" = 'create' ] ; then
+        if [ "$fgid" = '-' ] ; then
+            invoke -e $"missing unix gid" "$_verb ${_args[0]}" ; return
+        fi
+        # TODO error handling
+        server_info
+        local opts=(--gid-number "$fgid" --nis-domain "${DAT_SERVER[1]}")
+        [ "$fgco" != '-' ] && opts+=(--description "$fgco")
+        system -e -p -- samba-tool group add "$fnam" "${opts[@]}"
+    elif [ "$_verb" = 'delete' ] ; then
+        system -e -p -- samba-tool group delete "$fnam"
+    elif [ "$_verb" = "list" ] ; then
+        # TODO add filter (3rd arg)
+        system -e -p -z -- samba-tool group list
+    else
+        invoke -e $"verb '%s' not implemented" "$_verb"
+    fi
+
+    # ---------------------------------- samba ---------------------------------
+    #invoke -e $"samba support not implemented" ; return
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+actionHost() {
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+        invoke -e $"kerberos does not manage hosts" ; return
+    fi
+    check_verb "$@" || return
+    check_master || return
+    check_tools || return
+
+    local host pasw
+    splitjoin -s host -d ":" -- "${_args[0]}"
+    local add6 addr="${host[1]:--}"
+    if [ "$_verb" != 'list' ] ; then
+        if [ "$addr" = '-' ] ; then
+            nethost -- "${host,,}"
+            if [ -z "$_nethost_ip" ] ; then
+                invoke -e $"verb '%s' can't find an IPv4 address" "$_verb $host" ; return
+            fi
+            addr="$_nethost_ip"
+        fi
+        netoption 'ipv6' "${host,,}" &&                 # get ULA ipv6 address
+            netconv -u "$addr" && add6="$_netconv"
+    fi
+
+    # TODO error handling
+    server_info
+
+    if [ "$_verb" = 'create' ] ; then
+        get_paswd pasw 'smbadmin' || return
+        if list_hosts -s "$pasw" "$host" ; then
+            invoke_warn $"'%s' - host already existing" "$_verb $host"
+            [ -z "$CEN_OPT_FORCE" ] && return
+        fi
+        system -e -p -z -- samba-tool dns add "$DAT_SERVER" "${DAT_SERVER[1]}" \
+                                      "$host" A "$addr" --user "$pasw"
+        [ -n "$add6" ] &&
+            system -e -p -z -- samba-tool dns add "$DAT_SERVER" "${DAT_SERVER[1]}" \
+                                         "$host" AAAA "$add6" --user "$pasw"
+
+    elif [ "$_verb" = 'delete' ] ; then
+        get_paswd pasw 'smbadmin' || return
+        if ! list_hosts -s "$pasw" "$host" ; then
+            invoke_warn $"'%s' - host does not exist" "$_verb $host"
+            [ -z "$CEN_OPT_FORCE" ] && return
+        fi
+        system -e -p -z -- samba-tool dns delete "$DAT_SERVER" "${DAT_SERVER[1]}" \
+                                      "$host" A "$addr" --user "$pasw"
+        [ -n "$add6" ] &&
+            system -q -- samba-tool dns delete "$DAT_SERVER" "${DAT_SERVER[1]}" \
+                                    "$host" AAAA "$add6" --user "$pasw"
+
+    elif [ "$_verb" = "list" ] ; then
+        get_paswd pasw 'smbtrust' || return
+        list_hosts "$pasw" "$host"
+    else
+        invoke -e $"verb '%s' not implemented" "$_verb"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Get ticket for user (gui version): [<user>]
+# ------------------------------------------------------------------------------
+actionInit() {
+    [ "$CEN_ACTION" = "renew" ] && DAT_RUN_INIT=2 || DAT_RUN_INIT=1
+    embed -m _centauri_bash_win
+    windows -i 2
+    actionTicket "${1:-+}"
+    embed -i centaurisession roaming auto       # switch documents/roaming
+    DAT_RUN_INIT=
+}
+
+# ------------------------------------------------------------------------------
+# Add join a samba domain: [<user>]
+# ------------------------------------------------------------------------------
+actionJoin() {
+
+    # ------------------------------ pre-condition -----------------------------
+    check_tools || return
+    server_info
+    local pasw sdom="${DAT_SERVER[1]^^}" user="${1:--}"
+    [ "$user" = '-' ] && user='Administrator'
+    confirm -n -y $"Join samba domain" || return
+    get_paswd pasw "$user" || return
+
+    # -------------------------------- kerberos --------------------------------
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+        system -m -- net rpc join member --user "$pasw"
+
+    # ---------------------------------- samba ---------------------------------
+    else
+        # must use 'net ads join' to become a member server
+        system -m -- net ads join --no-dns-updates --user "$pasw"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Export a keytab
+# ------------------------------------------------------------------------------
+actionKeytab() {
+    local       hnam="$1" dnam
+    check_master || return
+    check_tools || return
+
+    [ "$CEN_OPT_OUTPUT" = '-' ] && CEN_OPT_OUTPUT="$CEN_ROOT/machines/$hnam/krb5.keytab"
+    check_output || return
+
+    netquery -f -s dnam domain
+    [ "$hnam" = '+' ] && hnam="$HOSTNAME"
+
+    # -------------------------------- kerberos --------------------------------
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+        system -c -e kadmin.local || return
+        local qstr="ktadd -k $CEN_OPT_OUTPUT -norandkey local -glob nfs/$hnam*"
+        system -q -- kadmin.local -q "$qstr"
+
+    # ---------------------------------- samba ---------------------------------
+    else
+        # This is for sssd to authenticate a (uppercase for adcli) user...
+        system -e -p -t samba-tool domain exportkeytab "$CEN_OPT_OUTPUT" --principal "${hnam^^}\$"
+        # This is for nfs old style ...
+        system -e -p -t samba-tool domain exportkeytab "$CEN_OPT_OUTPUT" --principal "root/${hnam}.${dnam}"
+        # This is for nfs ...
+        system -e -p -t samba-tool domain exportkeytab "$CEN_OPT_OUTPUT" --principal "${hnam}.${dnam}"
+        system -e -p -t samba-tool domain exportkeytab "$CEN_OPT_OUTPUT" --principal "nfs/${hnam}.${dnam}"
+        # ... and finally the user himself
+        system -e -p -t samba-tool domain exportkeytab "$CEN_OPT_OUTPUT" --principal "local"
+    fi
+
+    if [ -n "$CEN_OPT_DRYRUN" -o -s "$CEN_OPT_OUTPUT" ] ; then
+        system -e -p -t -- chmod g+r "$CEN_OPT_OUTPUT"
+        system -e -p -t -- chgrp staff "$CEN_OPT_OUTPUT"
+    else
+        invoke -e $"processing failed, got no output"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Add machine account: <host>
+# ------------------------------------------------------------------------------
+actionMachine() {
+    check_verb "$@" || return
+    check_master || return
+
+    # ------------------------------ pre-condition -----------------------------
+    check_tools || return
+    server_info
+    [ "${_args[0]}" = '+' ] && _args[0]="$HOSTNAME"
+    local hnam="${_args[0]}" pnfs="nfs/${_args[0]}.${DAT_SERVER[1]}" root
+    [ -n "$CEN_OPT_KERBEROS" ] && root="$pnfs" || root="${pnfs#nfs/}"
+
+    if [ "$_verb" = 'create' ] ; then
+        check_user "$root"
+        if [ "$?" = 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
+            invoke_warn "'%s' - machine account already existing" "$_verb $hnam"
+            [ -z "$CEN_OPT_FORCE" ] && return
+        fi
+    elif [ "$_verb" = 'delete' ] ; then
+        check_user "$root"
+        if [ "$?" != 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
+            invoke_warn $"'%s' - machine account does not exist" "$_verb $hnam"
+            [ -z "$CEN_OPT_FORCE" ] && return
+        fi
+    fi
+
+    # -------------------------------- kerberos --------------------------------
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+#        invoke -e "kerberos support not implemented" ; return
+        if [ "$_verb" = 'create' ] ; then
+            system -e -p -- kadmin.local -q  "add_principal -randkey $hnam $pnfs"
+        else
+            invoke -e $"verb '%s' not implemented" "$_verb" ; return
+        fi
+
+    # ---------------------------------- samba ---------------------------------
+    else
+        if [ "$_verb" = 'create' ] ; then
+            local pasw rcnt=0
+            get_paswd pasw || return            # wanted by 'net ads'
+
+            # samba heimdal kerberos needs a root user for SPNs
+            system -e -p -- samba-tool user create --random-password "$root"
+            system -t -q -- samba-tool user setexpiry --noexpiry "$root"
+            if error -t ; then                          # if no error ...
+                # set SPN encryption types (via root accout)
+                while ! system -q -- net --user "$pasw" ads enctypes set "$root" 31 ; do
+                    # sometimes it fails with status 255, wait and try again
+                    trace -a "Will retry 'net ads enctypes'" ; system -e sleep 1
+                    ((rcnt += 1)) ; [ "$rcnt" -lt 5 ] && continue
+                    system -e -p -- net --user "$pasw" ads enctypes set "$root" 31
+                    break
+                done
+                # create SPN for debian rpc.gssd
+                system -e -p -- samba-tool spn add "$pnfs" "$root"
+                # another old style SPN
+                system -e -p -- samba-tool spn add "${pnfs/nfs/root}" "$root"
+            fi
+
+        elif [ "$_verb" = 'delete' ] ; then
+            # delete (1) owner of SPNs (2) machine account
+            system -q -- samba-tool user delete "$root"
+            system -e -p -- samba-tool machine delete "$hnam"
+        else
+            list_users -m "$hnam" ; return
+        fi
+    fi
+
+    # ----------------------------- post-condition -----------------------------
+    check_user "$root"
+    if [ "$?" = 0 ] ; then
+        [ "$_verb" = 'delete' ] &&
+            invoke -e $"'%s' - machine could not be deleted" "$hnam"
+    else
+        [ -n "$CEN_OPT_DRYRUN" ] && return
+        [ "$_verb" = 'create' ] &&
+            invoke -e $"'%s' - machine account not created" "$hnam"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# change password: <user> [<pasw>]
+# ------------------------------------------------------------------------------
+actionPasswd() {
+    local user="$1" pasw="${2:--}" stat
+
+    # ------------------------------ pre-condition -----------------------------
+
+    check_master || return
+    check_tools || return
+    check_user "$user"
+    if [ "$?" != 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
+        invoke -e $"'%s' - user does not exist" "$user"
+        return
+    fi
+
+    if [ "$pasw" = "-" ] ; then             # get passwd via stdin ...
+        get_paswd -c pasw "$user" || return
+    fi
+
+    # -------------------------------- kerberos --------------------------------
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+        local opts=("$user")
+        [ "$pasw" != '-' ] && opts=(-pw '$pasw' "$user")
+        system -q -- kadmin.local -q "change_password ${opts[@]}"
+        stat=$?
+
+    # ---------------------------------- samba ---------------------------------
+    else
+        local opts=("$user")
+        [ "$pasw" != '-' ] && opts+=("--newpassword=$pasw")
+        system -q -- samba-tool user setpassword "${opts[@]}"
+        stat=$?
+    fi
+
+    # ----------------------------- post-condition -----------------------------
+    if [ "$stat" != 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
+        invoke -e $"'%s' - password change failed" "$user"
+        return
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Samba AD/DC provisioning: <passwd>|-
+# ------------------------------------------------------------------------------
+actionProvision() {
+    local dlis item sdel pasw="$1"
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+        invoke -e $"Must not use --kerberos" ; return
+    fi
+
+    [ -z "$pasw" ] && get_seed pasw 'Administrator'         # empty -> random pwd
+    if [ "$pasw" != '-' -a -z "$CEN_OPT_FORCE" ] ; then
+        check_master || return
+    fi
+    check_tools 'egrep' || return
+
+    # This implements: https://wiki.samba.org/index.php/Setting_up_Samba_as_an_Active_Directory_Domain_Controller
+
+    warning $"This command will reset all Samba AD/DC data!"
+    confirm -q -a $"No Samba tool must be running. Continue" || return
+
+    # -s don't report invalid service
+    runservice -s stop krb5-admin-server.service krb5-kdc.service samba smbd nmbd samba-ad-dc winbind
+
+    system -a dlis -q -r -- pgrep "samba|smbd|nmbd|winbindd"
+    if [ -n "$dlis" ] ; then
+        confirm -q -a "'pgrep \"samba|smbd|nmbd|winbindd\"'" \
+                      $"shows running tools. Ignore" || return
+    fi
+
+    system -a dlis -e -p -r -- eval 'smbd -b | egrep "CONFIGFILE|SMB_PASSWD_FILE|LOCKDIR|STATEDIR|CACHEDIR|PRIVATE_DIR"'
+    for item in '/etc/krb5.conf' "${dlis[@]}" ; do
+        item="${item#*: }"
+        [ -e "$item" ] || continue
+        if [ -d "$item" ] ; then
+            set -- "${item// /\\ }"/*
+            [ "${item// /\\ }/*" = "$1" ] && continue
+            item+='/*'
+        fi
+        message -a -c $"To be deleted" -- "$item"
+        item="${item// /\\ }"
+        sdel+=" $item"
+    done
+    sdel="${sdel:1}"
+    if [ -n "$sdel" ] ; then
+        confirm -q -n $"Delete the listed files/folder"
+        remove -d $sdel
+    fi
+
+    [ -h "/etc/samba/smb.conf" ] && remove "/etc/samba/smb.conf"
+    system -e -p -- systemctl unmask samba-ad-dc
+    if [ "$pasw" = '-' ] ; then
+        message $"Cleared samba config/state" ; return
+    fi
+
+    local sdom
+    netquery -f -s sdom domain ; sdom="${sdom^^}"   # get domain
+    netconv -u "$CEN_NET_ADDR_IPLIST"               # ipv6 generic address
+
+    local opts=(--use-rfc2307 --host-ip="$CEN_NET_ADDR_IPLIST" --host-ip6="$_netconv" \
+                --realm="$sdom" --domain="${sdom%%.*}" --quiet)
+    [ -n "$pasw" ] && opts+=(--adminpass "$pasw")
+    if ! dryrun "samba-tool domain provision ${opts[*]}" ; then
+        samba-tool domain provision "${opts[@]}" || return
+    fi
+    copy '/var/lib/samba/private/krb5.conf' '/etc/krb5.conf'
+
+    system -e -p -- samba-tool domain passwordsettings set --complexity=off
+    system -e -p -- samba-tool domain passwordsettings set --history-length=0
+    system -e -p -- samba-tool domain passwordsettings set --min-pwd-age=0
+    system -e -p -- samba-tool domain passwordsettings set --max-pwd-age=0
+    system -e -p -- samba-tool domain passwordsettings set --min-pwd-length=4
+
+    # policies (samba3 only)
+    #pdbedit -P "maximum password age" -C -1
+    #pdbedit -P "minimum password age" -C -1
+    #pdbedit -P "refuse machine password change" -C 1
+}
+
+# ------------------------------------------------------------------------------
+# Renew ticket: <user>|+
+# ------------------------------------------------------------------------------
+actionRenew() {
+    local user="${1:--}" item
+    if [ "$user" = '+' ] ; then             # renew all tickets via caches
+        system -e -c kinit krenew || return
+        context -r || return
+        for item in /tmp/krb5cc_* ; do
+            user="${item##*/krb5cc_}" ; user="${user%%_*}"
+            [ -z "$user" -o -n "${user//[0-9]/}" ] && continue
+            if system -q -- krenew -k "$item" ; then
+                message -a $"Renewed via ticket cache:" "$item"
+                system -q -- chown $user "$item"
+            else
+                message -a $"Deleted ticket cache:" "$item"
+                remove "$item"
+            fi
+        done
+    elif system -q -- krenew ; then         # renew current ticket
+        message $deco $"Renewed existing kerberos ticket" ; return
+    else                                    # init or renew
+        actionInit "$user"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Restore status fro, tar: <file>
+# ------------------------------------------------------------------------------
+actionRestore() {
+    inpfile -x 'tgz' -- "${1:--}" || return
+    check_tools 'tar' || return
+    actionProvision -
+    error -t || return
+    confirm -n -y "Overwrite existing SAMBA/krb5 configuration" || return
+    system -e -p -- tar --directory=/ -xaf "$CEN_INPFILE"
+}
+
+# ------------------------------------------------------------------------------
+# Save status to tar: <file> [<base>]
+# ------------------------------------------------------------------------------
+actionSave() {
+    local base="${2:--}" curr="$PWD" pref
+    if [ "$base" = '-' ] ; then
+        base='/'
+    else
+        base="${base%/}" ; curr="$PWD" ; pref="$curr"
+        folder -- "$base" || return
+    fi
+    outfile -c -x 'tgz' -- "${1:--}" || return
+    check_tools 'egrep' 'tar' || return
+
+    local dlis item star
+    system -a dlis -e -p -r -- eval 'smbd -b | egrep "CONFIGFILE|SMB_PASSWD_FILE|STATEDIR|PRIVATE_DIR"'
+
+    folder -c -f -- "$base"
+    for item in '/etc/krb5.conf' "${dlis[@]}" ; do
+        item="${item#*: }"
+        [ -e "$item" ] || continue
+        if [ -d "$item" ] ; then
+            set -- "${item// /\\ }"/*
+            [ "${item// /\\ }/*" = "$1" ] && continue
+            item+='/*'
+        elif [ "${item##*/}" = 'smb.conf' ] ; then
+            item="${item%/*}/*"
+        fi
+        message -a -c "To be saved" -- "$pref$item"
+        item="${item// /\\ }"
+        star+=" ${item#/}"
+    done
+    system -e -p -- tar -caf "$CEN_OUTFILE" $star
+    folder -c -f -- "$curr"
+}
+
+# ------------------------------------------------------------------------------
+# Send keytab to client: <host>
+# ------------------------------------------------------------------------------
+actionSend() {
+    local pmsg fdel host="${1:--}"
+    [ "$host" = "-" ] && host="$HOSTNAME"
+
+    if [ -z "$CEN_OPT_OUTPUT" ] ; then
+        folder -t ; fdel=1
+        CEN_OPT_OUTPUT="${CEN_FOLDER}-$host.keytab"
+    fi
+
+    actionKeytab "$host"
+    if ! error -t ; then
+        :
+    elif [ "$host" = "$HOSTNAME" ] ; then
+        printf -v pmsg $"Install '%s' on local host" "$CEN_OPT_OUTPUT"
+        # use quit to keep keytab without sending
+        confirm -a -q "$pmsg" &&
+            system -e -p -- cp -a "$CEN_OPT_OUTPUT" "/etc/krb5.keytab"
+    else
+        printf -v pmsg $"Send '%s' to host '%s'" "$CEN_OPT_OUTPUT" "$host"
+        # use quit to keep keytab without sending
+        confirm -a -q "$pmsg" &&
+            embed -v -i centaurissh copy "$CEN_OPT_OUTPUT" "$host:/etc/krb5.keytab"
+    fi
+    [ -n "$fdel" ] && remove -- "$CEN_OPT_OUTPUT"
+}
+
+# ------------------------------------------------------------------------------
+# Server (re)start: start|stop|restart
+# ------------------------------------------------------------------------------
+actionServer() {
+    local strt stop
+    case "$1" in
+    res*)       stop=1 ; strt=1 ;;
+    sta*)       strt=1 ;;
+    sto|stop)   stop=1 ;;
+    *)          invoke -e $"Invalid operation: %s" "$1"
+    esac
+    check_master || return
+    [ -n "$stop" ] && runservice stop  samba-ad-dc dnsmasq centauriwsdd
+    [ -n "$strt" ] && runservice start dnsmasq samba-ad-dc centauriwsdd
+}
+
+# ------------------------------------------------------------------------------
+# Seetup config files: <what>...
+# ------------------------------------------------------------------------------
+actionSetup() {
+    local fkrb fsss ferr ftru="${CEN_OPT_FORCE:+-t}"
+    while [ $# -gt 0 ] ; do
+        case "$1" in
+        krb*)   fkrb=1 ;;
+        sss*)   fsss=1 ;;
+        *)      invoke -e "Invalid configuration name:" "$1" ; ferr=1 ;;
+        esac
+        shift
+    done
+    [ -n "$ferr" ] && return
+
+    local kdom ; netquery -f -s kdom domain
+    local knam="${kdom%%.*}"
+    local kpri ; netquery -f -q -s kpri primary
+    local ksec ; netquery -f -q -s ksec secondary
+
+    # ---------------------------------- krb5 ----------------------------------
+
+    if [ -n "$fkrb" ] ; then
+        local skdc='# no secondary server' ; [ -n "$ksec" ] && skdc='kdc ='
+        create $ftru -c -- '/etc/krb5.conf' 644 <<!EOF
+# see: https://wiki.archlinux.org/title/Active_Directory_integration#Kerberos_Configuration
+# also: samba needs DNS names (not /etc/hosts) to locate a kdc
+
+[libdefaults]
+    default_keytab_name = FILE:/etc/krb5.keytab
+    default_realm = ${kdom^^}
+    dns_lookup_realm = false
+    dns_lookup_kdc = true
+    rdns = false
+    ticket_lifetime = 8d
+    renew_lifetime  = 20d
+
+[logging]
+    default = SYSLOG:NOTICE:DAEMON
+    kdc = FILE:/var/log/kdc.log
+    kadmind = FILE:/var/log/kadmind.log
+
+[realms]
+    ${kdom^^} = {
+        kdc = $kpri
+        $skdc $ksec
+        admin_server = $kpri
+        default_domain = ${kdom^^}
+    }
+    ${knam^^} = {
+        kdc = $kpri
+        $skdc $ksec
+        admin_server = $kpri
+        default_domain = ${kdom^^}
+    }
+
+[domain-realm]
+    .centauri.home = ${kdom^^}
+!EOF
+        if [ ! -e /etc/krb5.keytab ] && ! dryrun $"Create empty keytab" ; then
+            echo -e "\0005\0002\c" >'/etc/krb5.keytab'
+        fi
+    fi
+
+    # ---------------------------------- sssd ----------------------------------
+
+    if [ -n "$fsss" ] ; then
+        folder -f -m '/var/log/sssd' 640
+        folder -f -m '/etc/sssd' 711
+        create $ftru -c -- '/etc/sssd/sssd.conf' 600 <<!EOF
+[sssd]
+#debug_level = 5
+config_file_version = 2
+reconnection_retries = 3
+sbus_timeout = 30
+domains = $kdom
+
+[nss]
+#debug_level = 5
+filter_groups = root
+filter_users = root
+reconnection_retries = 3
+
+[pam]
+#debug_level = 5
+reconnection_retries = 3
+offline_credentials_expiration = 365
+offline_failed_login_attempts = 32
+offline_failed_login_delay = 5
+
+[domain/$kdom]
+#debug_level = 5
+enumerate = true
+id_provider = ad
+auth_provider = ad
+chpass_provider = ad
+access_provider = ad
+cache_credentials = true
+krb5_store_password_if_offline = True
+fallback_homedir = /home/%u
+default_shell = ${CEN_PATHS[1]}/bash
+
+# use real unix ids as stored in AD
+ldap_id_mapping = false
+
+# disable to avoid obscure dns problems
+dyndns_update = false
+
+# group policies (could be 'permissive')
+ad_gpo_access_control = permissive
+
+#ad_gpo_ignore_unreadable = True
+#ad_gpo_map_permit = +imap, +smtp
+
+# disable the automatic Kerberos host keytab renewal
+ad_maximum_machine_account_password_age = 0
+
+!EOF
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Get (fallback) ticket: [<user>|-|+]
+#
+# Steps: (1) do we already have a ticket?
+#        (2) try via keytab (for <user> or current user)
+#        (3) if <user> missing or '-' try smbtrust/smbworld (use $DAT_DIR_SECRETS pwd)
+#        (4) if <user> is given or '+' ask for password
+# ------------------------------------------------------------------------------
+actionTicket() {
+    local deco="-a" ; [ -n "$DAT_RUN_INIT" ] && windows && deco="-d +3"
+    if ! system -c kinit klist ; then
+        message -a $"Missing kerberos tools - do nothing" ; return
+    fi
+
+    # do we have a valid ticket
+    if [ "$DAT_RUN_INIT" = "2" ] && system -q -- krenew ; then
+        message $deco $"Renewed existing kerberos ticket" ; return
+    elif system -q -- klist -s ; then
+        if [ -n "$CEN_OPT_FORCE" ] ; then
+            message $deco $"Valid kerberos ticket found - will continue (see --force)"
+        else
+            message $deco $"Valid kerberos ticket found - do nothing" ; return
+        fi
+    fi
+
+    # check kerberos config
+    if [ ! -e "/etc/krb5.conf" ] ; then
+        message -a $"Missing kerberos configuration - do nothing" ; return
+    fi
+
+    case "$KRB5CCNAME" in                       # usually not set
+    '')     ;;
+    FILE:*) local file="${KRB5CCNAME#*:}"
+            if [ ! -r "$file" ] ; then
+                error -a $"Ignoring non-readable cache:" "$KRB5CCNAME"
+                unset KRB5CCNAME
+            fi
+            ;;
+    *)      warning -a $"Unknown cache type:" "$KRB5CCNAME"
+    esac
+
+    # check network mode
+    if ! netquery domain ; then
+        message -a $"Cannot get a kerberos ticket - no server available"
+        return
+    fi
+
+    # user might be in keytab
+    local kopt="-l 60h -r 8d"                   # options for kinit
+    local user="${1:--}"
+    [ "$user" = "-" -o  "$user" = "+" ] && user="${USER:-$LOGNAME}"
+    [ "$user" = "root" ] && user="local"
+    if system -q -- kinit $kopt -k "$user" ; then
+        message $deco -p $"Got kerberos ticket for '%s' via keytab" "$user" ; return
+    fi
+    local prin="$user" pasw
+
+    # try smbtrust/smbworld via $DAT_DIR_SECRETS data
+    if [ "$1" = "-" ] ; then
+        if get_secret pasw 'samba_trusted' ; then
+            prin='smbtrust'
+        elif get_secret pasw 'samba_public' ; then
+            prin='smbworld'
+        else
+            trace -a $"Cannot get a default kerberos ticket" ; return
+        fi
+    elif [ "$prin" = "smbtrust" ] ; then
+        get_secret pasw 'samba_trusted'
+    elif [ "$prin" = "smbworld" ] ; then
+        get_secret pasw 'samba_public'
+    else
+        prin="$user"
+    fi
+
+    # get ticket, ask for password
+    trace -a $"No valid kerberos ticket found - trying with principal" "'$prin'"
+    if [ -z "$pasw" ] ; then
+        confirm -a -s pasw -p + -u $"Please enter your kerberos password (user"" $prin)" || return
+    fi
+    system -q -- kinit $kopt "$prin" <<<"$pasw"
+    if [ "$?" = 0 ] ; then
+        message $deco -p $"Got kerberos ticket for '%s' via password" "$prin" ; return
+    else
+        error $"Failed to get kerberos ticket - tried principal" "'$prin'"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Add/delete samba AD or kerberos user: <verb> <spec> [<pasw>]
+# ------------------------------------------------------------------------------
+actionUser() {
+    check_verb "$@" || return
+    check_master || return
+    check_tools || return
+
+    local sget spec="${_args[0]}"
+    if [ "${spec/:/}" = "$spec" ] ; then            # got only user name
+        system -q -s sget -- getent passwd "$spec"
+        [ -n "$sget" ] && spec="$sget"              # use db info
+    fi
+    local flds sget
+    splitjoin -s flds -d ":" -- "$spec"
+    local fnam="${flds[0]}"
+    local fuid="${flds[2]:-65534}"
+    local fgid="${flds[3]:-100}"
+    local fgco="${flds[4]}"
+    local fdir="${flds[5]:-/home/$fnam}"
+    local frun="${flds[6]:-${CEN_PATHS[1]}/bash}"
+    [ "${fdir::1}" != "/" ] && fdir="/tmp"
+    [ "${frun::1}" != "/" ] && frun="/usr/sbin/nologin"
+
+    # ------------------------------ pre-condition -----------------------------
+    if [ "$_verb" = 'create' ] ; then
+        check_user "$fnam"
+        if [ "$?" = 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
+            invoke_warn $"'%s' - user already existing" "$_verb $fnam"
+            [ -z "$CEN_OPT_FORCE" ] && return
+        fi
+    elif [ "$_verb" = 'delete' ] ; then
+        check_user "$fnam"
+        if [ "$?" != 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
+            invoke_warn $"'%s' - user does not exist" "$_verb $fnam"
+            [ -z "$CEN_OPT_FORCE" ] && return
+        fi
+    elif [ "$_verb" = 'list' ] ; then
+        list_users "$fnam" ; return
+    else
+        invoke -e $"verb '%s' not implemented" "$_verb"
+    fi
+
+    # -------------------------------- kerberos --------------------------------
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+        if [ "$_verb" = 'create' ] ; then
+            local popt
+            [ "${_args[1]:--}" = '-' ] || popt="-pw '${_args[1]}'"
+            system -q -- kadmin.local -q "add_principal $popt $fnam"
+        elif [ "$_verb" = 'delete' ] ; then
+            system -q -- kadmin.local -q "delete_principal -force $fnam"
+        fi
+
+    # ---------------------------------- samba ---------------------------------
+    else
+        if [ "$_verb" = 'create' ] ; then
+            local opts pasw
+            [ -n "$fgco" ] && opts+="--gecos=$fgco"
+            case "${_args[1]}" in
+            '') if get_seed pasw "$fnam" ; then
+                    opts+=("$fnam" "$pasw")
+                else
+                    opts+=(--random-password "$fnam")
+                fi ;;
+            -)  opts+=(--random-password "$fnam") ;;
+            *)  opts+=("$fnam" "${_args[1]}")
+            esac
+            system -e -p -t -- samba-tool user create --uid-number="$fuid" --gid-number="$fgid" \
+                                          --unix-home="$fdir" --login-shell="$frun" "${opts[@]}"
+            system -e -p -t -- samba-tool user setexpiry --noexpiry "$fnam"
+        elif [ "$_verb" = 'delete' ] ; then
+            system -q -- samba-tool user delete "$fnam"
+        fi
+    fi
+
+    # ----------------------------- post-condition -----------------------------
+    if [ "$_verb" = 'create' ] ; then
+        check_user "$fnam"
+        if [ "$?" != 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
+            invoke -e $"'%s' - user not created" "$_verb $fnam"
+        fi
+
+    elif [ "$_verb" = 'delete' ] ; then
+        check_user "$fnam"
+        if [ "$?" = 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
+            invoke -e $"'%s' - user not deleted" "$_verb $fnam"
+        fi
+    fi
+}
+
+   # ldapsearch -Y GSSAPI -h buster0  -b "CN=Users,DC=centauri,DC=home" name=hugo -LL
+   # ldbsearch -H ldap://buster0 -k yes -b "CN=Users,DC=centauri,DC=home" -s sub name=hugo
+
+   # install: ldap-user libsasl-gss-heimdal (o.ä) sssd-ad (o.ä)
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> <argument>
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    -E|--seed)
+        optarg  'seed'      -              -r ;;        # path
+    -K|--kerberos)
+        optarg "kerberos"   -                 ;;        # flag
+    -O|--out*)
+        optarg "output"     -              -t ;;        # any text
+    -P|--pas*)
+        optarg "password"   -              -t ;;        # any text
+    -S)
+        optarg "server"     -                 ;;        # flag
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# implement action parsing: <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    # before 1st action: execute at master ...
+    '') if [ -n "$CEN_OPT_SERVER" ] && ! netquery MASTER ; then
+            local opts=() item
+            for item in "${CEN_CMDOPTS[@]}" ; do
+                case "$item" in
+                    --pager*)   ;;
+                    --server)   ;;
+                    *)          opts+=("$item")
+                esac
+            done
+            opts+=("${CEN_CMDARGS[@]}")
+            embed -r -x centaurissh -C -S0 exec --- "$CEN_NAME" "${opts[@]}"
+        fi
+        ;;
+
+    cli*)
+        invoke -r 'client'    -        0 1 ;;
+    des*)
+        invoke    'destroy'   -        0   ;;
+    fal*|tic*)
+        invoke    'ticket'    -        0 1 ;;
+    gro*)
+        invoke -r 'group'     -        2   ;;
+    hos*)
+        invoke -r 'host'      -        2   ;;
+    ini|init)
+        invoke    'init'      -        0 1 ;;
+    joi|join)
+        invoke -r 'join'      -        0 1 ;;
+    key*)
+        invoke -r 'keytab'    -        1   ;;
+    mac*)
+        invoke -r 'machine'   -        2 2 ;;
+    pas*)
+        invoke -r 'passwd'    -        1 2 ;;
+    pro*)
+        invoke -r 'provision' -        0 1 ;;
+    ren*)
+        invoke    'renew'     -        0 1 ;;
+    res*)
+        invoke -r 'restore'   -        1   ;;
+    sav|save)
+        invoke -r 'save'      -        1 2 ;;
+    sen|send)
+        invoke -r 'send'      -        1   ;;
+    ser*)
+        invoke -r 'server'    -        1   ;;
+    set*)
+        invoke -r 'setup'     -        1 + ;;
+    use|user)
+        invoke -r 'user'      -        2 3 ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -o - \
+        -o "-E --seed    <file>  "$"get passwords from seed file" \
+        -o "-K --kerberos        "$"use native Kerberos (default is Samba-AD)" \
+        -o "-O --output  <file>  "$"output file" \
+        -o "-P --passwd  <pasw>  "$"password for system/AD authorization" \
+        -o "-S --server          "$"run at MASTER server"
+
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+actions:
+       ••• ticket actions •••
+       destroy              destroy ticket cache
+       init     [<user>]    get Kerberos ticket   (GUI version of 'ticket')
+       keytab   <host>|+    (*) exort a keytab for host or local machine
+       send     <host>|+    send default keytab to host or local machine
+       ticket   [<user>]    get Kerberos ticket   (smbtrust/smbworld fallback)
+       renew    [<user>|+]  renew Kerberos ticket (runs 'init' if needed)
+
+       ••• directory actions •••
+       client    [<admn>]   (join AD/DC) make this computer a NFS client
+       join      [<admn>]   join this computer into a Samba-AD domain
+       provision <pasw>|-   samba (un-)provisioning as an AD/DC server
+                            use <pasw> '-' to unprovision
+       restore  <file>      restore saved samba stare from tar file
+       save     <file> [<base>]
+                            save samba state to a tar file
+
+       ••• database actions •••
+       group    <verb> <gnam>[:<gid>[:<info>]]
+                            create/list/delete a Samba-AD group
+       host     <verb> <host>[:<ipv4>]
+                            manage a machine DNS entry
+       machine  <verb> <host>
+                            manage a machine Kerberos/Samba-AD account
+       passwd   <user> [<pasw>]
+                            change password for Kerberos/Samba-AD user
+       setup    <conf>...   seed config files (krb5.conf, dummy keytab)
+       user     <verb> <spec> [<pasw>]
+                            create/list/delete a Kerberos/Samba-AD user
+
+arguments:
+       <admn>               samba domain admin or '-' (default: Administrator)
+       <conf>               config files to generate: krb5 sssd
+       <gnam>, <gid>        group name, unix group id
+       <host>               computer name
+       <pasw>               password      (will prompt if missing)
+       <user>               user name     (default: smbworld/smbtrust)
+       <spec>               user specification in /etc/passwd format
+       <verb>               sub-action: create|delete|list
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

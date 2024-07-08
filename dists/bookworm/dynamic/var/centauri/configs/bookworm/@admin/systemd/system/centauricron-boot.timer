@@ -1,0 +1,8 @@
+[Unit]
+Description=Run centauricron at boot time
+
+[Timer]
+OnBootSec=30
+
+[Install]
+WantedBy=timers.target

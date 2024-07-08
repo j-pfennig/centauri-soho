@@ -1,0 +1,9 @@
+# Will use --ignore-errors to keep systemd from killing started
+# service processes in case of an interface not being present.
+# Also exclude 'eth0' from ifup if no cable is connected ... 
+
+[Service]
+ExecStart=
+ExecStart=-/bin/sh -c '/sbin/ifup -a --ignore-errors --read-environment'
+ExecStart=-/bin/sh -c 'if [ -f /run/network/restart-hotplug ]; then /sbin/ifup -a --ignore-errors --read-environment --allow=hotplug; fi'
+

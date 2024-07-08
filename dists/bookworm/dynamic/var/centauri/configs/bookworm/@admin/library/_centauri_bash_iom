@@ -1,0 +1,1461 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_iom = centauri-bash-lib: Input/Output and caching support
+#
+# Call:     . _centauri_bash_iom [-e] [-i|-r] [-o|-w]
+#
+# Options:  -e  allow empty input file(s)
+#           -i  add command line option: -i --input   get input file
+#           -o  add command line option: -o --output  get output file
+#           -r  add command line option: -r --read    get input file
+#           -w  add command line option: -w --write   get output file
+#
+# General:  The following public functions are implemented in this module:
+#
+#           °°[[inpdata()]]    - Read from an input file into an array
+#           °°[[inpfile()]]    - Get an input file or folder
+#           °°[[outdata()]]    - Write a data array into an output file
+#           °°[[outfile()]]    - Get an output file or folder
+#           °°[[cachefile()]]  - Caching of global or local configuration files
+#           °°[[configfile()]] - Read and parse a configuration file
+#           °°[[serialize()]]  - Serialization support for bash variables
+#
+#+This module is loaded automatically by [[optarg()]] when optarg is used
+# with options -d, -r or -w. In this case no module options are set and the
+# optarg arguments specify the variable that will receive the file path.
+#
+#+When loaded explicitly the module can add command line options  to a script,
+# see module options above. The module options -i and -r provide the same
+# functionality but add different command line options. The same is true for -o
+# and -w. In this case paths will be stored in CEN_INPFILE and CEN_OUTFILE.
+#
+#+Prompting for a path and checking the path is done by [[inpfile()]]
+# and [[outfile()]]. By default empty input files are rejected, see
+# module option -e. An URL "file://" prefix will be stripped.
+#
+#+In order to add options to a script, the _centauri_bash_iom module
+# must be loaded before [[main()]] is called.
+#
+# Examples: Add command line option --input and allow an empty input file:
+#
+#.          embed -m _centauri_bash_iom -e -i
+#
+#           Add command line option --read and allow an empty input file:
+#
+#.          embed -m _centauri_bash_iom -e -r
+#
+#           The follwing calls can be made from inside [[options()]]:
+#
+#.          optarg "outdir"  -   -d     # get output folder (must exist)
+#.          optarg "inpdir"  -   -d     # get input folder (must exist)
+#
+#.          optarg "logfile" -   -a     # open to append (will create file)
+#.          optarg "inpfile" -   -r     # get input file (must exist)
+#.          optarg "outfile" -   -w     # get output file, prompt for overwrite
+#.                                      # unless --force option was seen
+#
+# Copyright Dr. J. Pfennig (c) 2019-2023
+# ------------------------------------------------------------------------------
+
+CEN_MODULES["_centauri_bash_iom"]="0.04:2"
+
+CEN_IOM_QUEUE=()        # see _cen_optarg_iom()
+
+CEN_IOM_OPT_E=          # allow empty files
+CEN_IOM_OPT_I=          # input ...
+CEN_IOM_OPT_R=
+CEN_IOM_OPT_O=          # output ...
+CEN_IOM_OPT_W=
+
+CEN_SERIALIZE=          # set by serialize()
+
+embed -c '_centauri_bash_ext'           # import on demand
+
+# ------------------------------------------------------------------------------
+# get library cache dir: [-r|-w] <vnam>
+# ------------------------------------------------------------------------------
+_cen_iom_cachedir() {
+    local _opts='-g' _fldr="centauri-bash-lib_${CEN_MODULES['_centauri_bash_lib']%%:*}"
+    if [ "$1" = '-r' ] ; then
+        shift
+    elif [ "$1" = '-w' ] ; then
+        shift ; _opts='-f -m -r'
+    fi
+    folder $_opts -s "$1" -u 'cache' -- "$_fldr"
+}
+
+# ------------------------------------------------------------------------------
+# optarg error reporting in inpfile and outfile: <func> <text>...
+# ------------------------------------------------------------------------------
+CEN_IOM_ERROR=
+_cen_iom_error() {
+    if [ -n "$CEN_IOM_ERROR" ] ; then       # save optarg error
+        shift                               # ignore error function
+        optarg "${CEN_IOM_ERROR%%=*}" "${CEN_IOM_ERROR#*=}" -e "$1"
+        #printf -v $CEN_IOM_ERROR "%s" "$1"
+    elif [ $# -le 2 ] ; then
+        $1 "$2"
+    else
+        $1 "$2:" "${@:3}"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# inpdata - Read from an input file into an array
+#
+# Call:     (1) inpdata [-a <dest>] [-c <func>] [-f|-q] [-r] -- <file>
+#           (2) inpdata [-a <dest>] [-c <func>] [-f|-q] [-r] -l [-x <ext>] -- <file>|+|-
+#           (3) inpdata [-a <dest>] [-c <func>] [-f|-q] [-r] -h <hndl>
+#
+# Options:  -a  data array to read into
+#           -c  reader call function
+#           -f  errors are fatal
+#           -h  use a handle for input, see [[redirect()]]
+#           -l  enable prompt mode, loop mode, see [[inpfile()]]
+#           -q  quiet, no error messages
+#           -r  ignore --dryrun
+#           -x  use <ext> argument as default for extension
+#
+# Arguments:<dest>  name of an array variable
+#           <ext>   an extension
+#           <file>  a file path
+#           <hndl>  a file handle used for input
+#           <func>  function called to each line read
+#
+#+Form (1) reads the given file, form (2) can prompt for a file, see [[inpfile()]].
+# Form (3) reads from a file handle, see [[redirect()]].
+#
+#+At least -a or -c must be specified. These two options can be used at the same
+# time. If <func> returns 0 the line is added to <dest>. Reading stops if <func>
+# returns 2, a return value of 1 is ignored.
+#
+# Return:   **true** at success or **false** otherwise.
+#
+# Examples: Read data into an array, prompt for input:
+#.          local data
+#.          inpdata -a data -l -x 'gpx' -- +
+#
+#           Call a reader function, save non-empty lines to array:
+#.          reader() {
+#.              [ "$1" = "END" ] && return 2    # stop reading
+#.              [ -n "$1" ]                     # return status
+#.          }
+#.          local data
+#.          inpdata -a data -c reader -- "my-file"
+#
+#           Read /dev/stdin into an array:
+#.          local data
+#.          inpdata -a data
+# ------------------------------------------------------------------------------
+inpdata() {
+    local _oerr='error -z' _anam _func _hndl _oinp _orun _stat=0 _file _coun
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -)    break ;;
+        -a)   shift ; _anam="$1" ;;
+        -c)   shift ; _func="$1" ;;
+        -f)   _oerr='fatal' ;;
+        -h)   shift ; _hndl="$1" ;;
+        -l)   _oinp+=('-l') ;;
+        -q)   _oerr="$CEN_TRACE" ;;
+        -r)   _orun='-r' ;;
+        -x)   shift ; _oinp+=('-x' "$1") ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+    if [ -n "$_func" ] ; then
+        isfunction -a -- "$_func"
+    elif [ -z "$_anam" ] ; then
+        _cen_abort + '-a | -r'
+    fi
+    [ -n "$_hndl" -a -n "$1" ] && _cen_abort - '-h'
+    [ -z "$_hndl" ] && _file="${1:--}"
+
+    if [ "$_file" = '-' ] ; then
+        _hndl=0
+    elif [ "$_file" = '+' -a -n "$_oinp" ] ; then
+        inpfile $_orun -s _file "${_oinp[@]}" + || return 1
+    fi
+
+    if [ -n "$_hndl" ] ; then
+        if ! dryrun $_orun "mapfile -u $_hndl $_anam" ; then
+            _cen_iom_reader "$_hndl" - "$_oerr" "$_anam" "$_func" || _stat=$?
+        fi
+    elif [ -r "$_file" ] ; then
+        if ! dryrun $_orun "mapfile $_anam <$_file" ; then
+            _cen_iom_reader - "$_file" "$_oerr" "$_anam" "$_func" <"$_file" || _stat=$?
+        fi
+    else
+        $_oerr $"Not a readable file:" "$_file" ; _stat=1
+    fi
+    return $_stat
+}
+
+# helper to read data: <hndl>|- <file>|- <oerr> <anam> <func>
+_cen_iom_reader() {
+    local _stat=0 _rarg _rmsg="$2" _oerr="$3" _anam="$4" _func="$5"
+    if [ -n "$_anam" ] ; then
+        local -n _vrdr="$_anam" ; _vrdr=()
+    fi
+    if [ "$1" != '-' ] ; then
+        _rarg="-u $1" ; _rmsg="#$1"
+    fi
+
+    if [ -n "$_func" ] ; then
+        local _line
+        while IFS= read $_rarg -r _line ; do
+            $_func "$_line"
+            case $? in
+            0)  [ -n "$_anam" ] && _vrdr+=("$_line") ;;
+            1)  ;;
+            2)  return 0 ;;
+            *)  return 3 ;;
+            esac
+        done
+        return 0
+
+    else
+        if mapfile -t $_rarg $_anam 2>/dev/null ; then
+            eval _coun=\${#$_anam[@]}
+            $CEN_TRACE -p $"Read %s line(s) from: %s" "$_coun" "$_rmsg"
+            return 0
+        fi
+        _stat=1
+    fi
+
+    $_oerr -p $"Failed to read from: %s" "$_rmsg" ; return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# inpfile - Get an input file or folder
+#
+# Call:     inpfile [-b] [-c] [-d] [-e] [-f|-q] [-l] [-o] [-s <var>] [-x <ext>] [--] <file>|-|**+**
+#
+# Options:  -b  expect a block-device as argument/input
+#           -c  canonicalize path (e.g return full path)
+#           -d  accept folder argument/input
+#           -e  accept empty input file
+#           -f  accept file argument (default if -b|-d not given)
+#           -l  loop until valid input is provided
+#           -o  allow empty/missing argument/input
+#           -q  quiet, no error messages
+#           -s  save path to variable (default is CEN_INPFILE)
+#           -x  use <ext> argument as default for extension
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#+This function can validate input passed via <file> or can optionally prompt
+# for input (GUI support via [[_centauri_bash_win]]).
+#
+#+The <file> argument has two special values: **-** gets replaced by "/dev/stdin"
+# and **+** will cause the user to be prompted. An URL "file://" prefix will
+# be stripped.
+#
+#+For option -b also files with **.iso** extension and samba shared files are
+# accepted (but cannot be probed for block-device).
+#
+# Examples: open file, error message if missing:
+#.          inpfile -c -s myfile -- "file-to-try" || quit
+#
+#           prompt for a GPX input file:
+#.          inpfile -l -s myfile -x 'gpx' + || quit
+# ------------------------------------------------------------------------------
+CEN_INPFILE=
+inpfile() {
+    local _fblk _fcan _fdir _femp _ffil _floo _fopt _fext _fset="CEN_INPFILE" _oerr='error -z' _stat
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -)    _break ;;
+        -b)   _fblk=1 ;;
+        -c)   _fcan=1 ;;
+        -d)   _fdir=1 ;;
+        -e)   _femp=1 ;;
+        -f)   _ffil=1 ;;
+        -l)   _floo=1 ;;
+        -o)   _fopt=1 ;;
+        -q)   _oerr="$CEN_TRACE" ;;
+        -s)   shift ; _fset="$1" ;;
+        -x)   shift ; _fext="$1" ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+    [ -z "$_fblk$_fdir" ] && _ffil=1            # file is default
+
+    _cen_inpfile() {
+        local -n _varg="$_fset" ; _varg="$1"
+        if [ "$_varg" = "+" ] ; then
+            if isfunction -c windows ; then
+                if [ -n "$_fdir" ] ; then
+                    windialog -k getexistingdirectory -t $"Select an input folder" "$PWD"
+                else
+                    local _xext ; [ "${_fext:--}" != '-' ] && printf -v _xext \
+                        "*.%s (*.%s);; %s (*.*)" "$_fext" "$_fext" $"All files"
+                    windialog -k getopenfilename -t $"Select an input file" "$PWD" "$_xext"
+                fi
+                if [ $? = 0 ] ; then
+                    _varg="$CEN_CONFIRM"
+                else
+                    _varg=
+                    [ -n "$_fopt" ] && return 1 ; return 2
+                fi
+            else
+                local _dext _mesg=$"Please enter an input path"
+                [ "$_fdir:$_ffil" = ":1" ] && _mesg=$"Please enter an input file name"
+                [ "$_fdir:$_ffil" = "1:" ] && _mesg=$"Please enter an input folder name"
+                [ -n "$_fblk" ] && _mesg=$"Please enter a device name"
+                [ -n "$_fext" ] && _dext=$"Default extension"": $_fext"
+                confirm -m -p - -s "$_fset" -u "$_mesg" "$_dext" \
+                        $"Current folder"": $PWD" || return 2
+            fi
+        fi
+
+        if [ -z "$_varg" ] ; then
+            [ -n "$_fopt" ] && return 0
+            _cen_iom_error "$_oerr" $"No input path specified" ; return 1
+        fi
+        if [ "$_varg" = "-" ] ; then
+            _varg="/dev/stdin" ; return 0
+        elif [ -n "$_fext" ] ; then
+            suffixpath -d -s "$_fset" -- "$_fext"
+        fi
+
+        [ "${_varg::7}" = "file://" ] && _varg="${_varg:7}"     # strip url
+        [ -n "$_fcan" -a "${_varg::2}" != "//" ] && prettypath -c -s "$_fset" -- "$_varg"
+
+        # check for block device
+        if [ -n "$_fblk" ] ; then
+            if [ ! -b "$_varg" ] ; then
+                [ "${_varg::2}" = "//" ] && return 0         # samba share is ok
+                if [ "${_varg%.iso}" != "$_varg" ] ; then    # iso image is ok
+                        [ -r "$_varg" ] && return 0
+                        _mesg=$"Input file not readable"
+                else
+                        _mesg=$"Input is not a device"
+                fi
+            else
+                [ -r "$_varg" ] && return 0
+                _mesg=$"Device is not readable"
+            fi
+
+        # check folder
+        elif [ -d "$_varg" ] ; then
+            [ "$_varg" = '/' ] || _varg="${_varg%/}"
+            [ -n "$_fdir" ] && return 0
+            _mesg=$"Input cannot be a folder"
+        elif [ -z "$_ffil" ] ; then
+            _mesg=$"Input must be an existing folder"
+
+        # check if file is redable and not empty
+        elif [ -r "$_varg" ] ; then
+            [ -n "$_femp" ] && return 0
+            [ -s "$_varg" ] && return 0
+            _mesg=$"Input file is empty"
+        elif [ -e "$_varg" ] ; then
+            _mesg=$"Input file not readable"
+        else
+            _mesg=$"Input file not found"
+        fi
+        _cen_iom_error "$_oerr" "$_mesg" "$_varg" ; return 1
+    }
+
+    [ "$1" = "+" ] || _floo=
+    while : ; do
+        _cen_inpfile "$1" ; _stat=$?
+        [ "$_stat" = 1 ] || return $_stat
+        [ -z "$_floo" ] && return 1
+    done
+}
+
+# ------------------------------------------------------------------------------
+# outdata - Write a data array into an output file
+#
+# Call:     (1) outdata -o <data> [-f|-q] [-r] [-t] -- <file>
+#           (2) outdata -o <data> [-f|-q] [-r] -l [-t] [-x <ext>] -- <file>|+|-
+#           (3) outdata [-a|-i] -o <data> [-f|-q] [-r] [-t] -h <hndl>
+#           (4) outdata [-a|-i] -o <data> [-f|-q] [-r]
+#
+# Options:  -a  auto-indent, see [[message()]]
+#           -f  errors are fatal
+#           -h  use a handle for output, see [[redirect()]]
+#           -i  indent output, see [[message()]]
+#           -l  enable prompt mode, loop mode, see [[outfile()]]
+#           -o  data array
+#           -q  quiet, no error messages
+#           -r  ignore --dryrun
+#           -t  truncate an exiting file
+#           -x  use <ext> argument as default for extension
+#
+# Arguments:<data>  name of an array variable
+#           <ext>   an extension
+#           <file>  a file path
+#           <hndl>  a file handle used for ouput
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#+Form (1) writes to a given file, whereas form (3) writes to a handle. Form (2)
+# will prompt the user for a file if <file> has a value of **+**. Form (4) simply
+# writes to "/dev/stderr". Form (3) also writes to "/dev/stderr" if <file> has a
+# value of **-**.
+#
+#+Although the -a and -i behave like their [[message()]] counterparts, this
+# function does not call message but writes output directly. Option -a and -i
+# are ignored for file output.
+#
+# Examples: Append to an existing file:
+#.          data=("ding" "dong")
+#.          outdata -o data -- "my-file"
+#
+#           Create or truncate before writing:
+#.          outdata -o data -t -- "my-file"
+#
+#           Ask for a file and create or truncate:
+#.          outdata -o data -t -l -- +
+#
+#           Write data line to stderr and indent like message:
+#.          outdata -o data -a
+# ------------------------------------------------------------------------------
+outdata() {
+    local _oerr='error -z' _anam _hndl _oind _oloo='-a' _oout _orun _stat=0 _file _line
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -)    break ;;
+        -a)   _oind=1 ; [ -z "$CEN_AUTOIND" ] && _oind=2 ;;
+        -f)   _oerr='fatal' ;;
+        -h)   shift ; _hndl="$1" ;;
+        -i)   _oind=1 ;;
+        -l)   _oloo+=' -l' ;;
+        -o)   shift ; _anam="$1" ;;
+        -q)   _oerr="$CEN_TRACE" ;;
+        -r)   _orun='-r' ;;
+        -t)   _oout+=('-t') ;;
+        -x)   shift ; _oout+=('-x' "$1") ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+    [ -z "$_anam" ] && _cen_abort + '-o'
+    [ -n "$_hndl" -a $# -gt 0 ] && _cen_abort - '-h'
+    _file="$1"
+    [ -z "$_hndl" -a -z "$_file" ] && _hndl=2
+
+    if [ "$_file" = '-' ] ; then                        # handle cannot truncate
+        _hndl=1
+
+    ### if file exist and not -t error message
+
+    elif [ -z "$_hndl" ] ; then                         # truncate file, no question
+        outfile $_orun -s _file $_oloo "${_oout[@]}" "$_file" || return 1
+    fi
+
+    dryrun -s $_orun "outdata:" "$_file" && return 0
+
+    local -n _vwrt="$_anam"
+    [ "${#_vwrt[@]}" -gt 0 ] || return 0                # empty data list
+
+    if [ -n "$_oind" ] ; then
+        CEN_AUTOIND=1
+        local _snam="${CEN_EMBED:-$CEN_NAME}: "
+        local _sind="${_snam//?/ }"
+        [ "$_oind" = 1 ] && _snam="$_sind"
+    fi
+
+    if [ -n "$_hndl" ] ; then
+        for _line in "${_vwrt[@]}" ; do
+            printf "%s\n" "$_snam$_line" || { _stat=1 ; break ; }
+            _snam="$_sind"
+        done >&$_hndl 2>/dev/null
+        _line="#$_hndl"
+    elif [ -w "$_file" ] ; then
+        for _line in "${_vwrt[@]}" ; do
+            printf "%s\n" "$_line" || { _stat=1 ; break ; }
+        done >>"$_file" 2>/dev/null
+        _line="$_file"
+    else
+        $_oerr $"Not a writable file:" "$_file" ; return 1
+    fi
+
+    if [ "$_stat" = 0 ] ; then
+        $CEN_TRACE -p $"Wrote %s line(s) to: %s" "${#_vwrt[@]}" "$_line"
+    else
+        $_oerr -p $"Failed to write to: %s" "$_line"
+    fi
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# outfile - Get an output file or folder
+#
+# Call:    outfile [-a] [-d] [-f] [-e] [-o] [-r] [-s <var>]  [-x <ext>] [--] <file>|-|**+**
+#
+# Options: -a  allow to overwrite or to append to an existing file
+#          -c  canonicalize path (e.g return full path)
+#          -d  accept a folder as argument/input
+#          -f  accept a file argument (default if -d not given)
+#          -e  the output file must exist
+#          -l  loop until valid input is provided by the user (for <file> arg **+**)
+#          -o  no error message for empty argument or input
+#          -q  quiet, no error messages at all
+#          -r  ignore --dryrun (effects -t option only)
+#          -s  save path to variable (default is CEN_OUTFILE)
+#          -t  create new file or truncate an existing file
+#          -x  use <ext> argument as default for extension
+#
+# Return:  **0** at success, **1** on error or **2** for no file.
+#
+#+This function can validate input passed via <file> or can optionally prompt
+# for input (GUI support via [[_centauri_bash_win]]).
+#
+#+The <file> argument has two special values: **-** gets replaced by "/dev/stdout"
+# and **+** will call [[confirm()]] to prompt the user. An URL "file://" prefix will
+# be stripped. The -x option calls [[suffixpath()]] to add a default suffix.
+#
+#+If <file> exists and option -e is not specified, confirm is called to prompt
+# for overwrite permission. If denied, the function returns with status **2**.
+# Unless option -t is used an existing file is not modified, so it can be used for
+# appending. Whereas -t will cause the file to be re-created (not only truncated).
+#
+# Examples: Create outputfile, ask before overwriting:
+#.          outfile -t -- "$1"
+#
+#           Create outputfile, overwrite without asking:
+#.          outfile -a -t -c -s file -- "$1"
+#
+#           Enter dialog loop mode for <file> argument '+':
+#.          outfile -l -t -x 'mp3' -- "${1:-+}"
+#
+#           Open an existing file for appending:
+#.          outfile -e -- "$1"
+# ------------------------------------------------------------------------------
+CEN_OUTFILE=
+outfile() {
+    local _fcan _fexi _ffil _fdir _floo _fopt _fext _fook _frun _ftru \
+          _fset="CEN_OUTFILE" _oerr='error -z' _stat
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -)    break ;;
+        -a)   _fook=1 ;;
+        -c)   _fcan=1 ;;
+        -d)   _fdir=1 ;;
+        -e)   _fexi=1 ;;
+        -f)   _ffil=1 ;;
+        -l)   _floo=1 ;;
+        -o)   _fopt=1 ;;
+        -q)   _oerr="$CEN_TRACE" ;;
+        -r)   _frun='-r' ;;
+        -s)   shift ; _fset="$1" ;;
+        -t)   _ftru=1 ;;
+        -x)   shift ; _fext="$1" ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+    [ -z "$_fdir" ] && _ffil=1                  # file is default
+
+    _cen_outfile() {
+        local -n _varg="$_fset" ; _varg="$1"
+
+        if [ "$_varg" = "+" ] ; then
+            if isfunction -c windows ; then
+                if [ -n "$_fdir" ] ; then
+                    windialog -k getexistingdirectory -t $"Select an output folder" "$PWD"
+                else
+                    local _xext ; [ "${_fext:--}" != '-' ] && printf -v _xext \
+                        "*.%s (*.%s);; %s (*.*)" "$_fext" "$_fext" $"All files"
+                    windialog -k getsavefilename -t $"Select an output file" "$PWD" "$_xext"
+                fi
+                if [ $? = 0 ] ; then
+                    _varg="$CEN_CONFIRM" ; _fook=1
+                else
+                    _varg=
+                    [ -n "$_fopt" ] && return 1 ; return 2
+                fi
+            else
+                local _dext _dtyp=$"Please enter an output path"
+                [ "$_fdir:$_ffil" = ":1" ] && _dtyp=$"Please enter an output file name"
+                [ "$_fdir:$_ffil" = "1:" ] && _dtyp=$"Please enter an output folder name"
+                [ -n "$_fext" ] && _dext=$"Default extension"": $_fext"
+                confirm -m -p - -s "$_fset" -u "$_dtyp" "$_dext" \
+                        $"Current folder"" '$PWD'" || return 2
+            fi
+        fi
+        if [ -z "$_varg" ] ; then
+            [ -n "$_fopt" ] && return 2
+            _cen_iom_error "$_oerr" $"No output path specified" ; return 2
+        fi
+        if [ "$_varg" = "-" ] ; then
+            _fexi=1 ; _varg="/dev/stdout" ; return 0
+        elif [ -n "$_fext" ] ; then
+            suffixpath -d -s "$_fset" -- "$_fext"
+        fi
+
+        [ "${_varg::7}" = "file://" ] && _varg="${_varg:7}"     # strip url
+        if [ -n "$_fcan" ] ; then
+            prettypath -c -s "$_fset" -- "$_varg"
+        fi
+
+        # handle folder
+        if [ -d "$_varg" ] ; then
+            [ -n "$_fdir" ] && return 0
+            _cen_iom_error "$_oerr" $"Output cannot be a folder" "$_varg" ; return 1
+        elif [ -z "$_ffil" -a -n "$_fexi" ] ; then
+            _cen_iom_error "$_oerr" $"Output must be an existing folder" "$_varg" ; return 1
+        fi
+
+        # handle file
+        if [ -s "$_varg" -a ! -c "$_varg" ] ; then
+            if ! [ -n "$_fexi" -o -n "$_fook" -o -n "$CEN_OPT_DRYRUN" ] ; then
+                confirm -n $"Overwrite existing output file" "'$_varg'" || return 2
+            fi
+        elif [ -n "$_fexi" ] ; then
+            _cen_iom_error "$_oerr" $"Output file does not exist" "$_varg" ; return 1
+        fi
+
+        # check if file/parent-dir is writable
+        local _ochk="$_varg"
+        if ! [ -e "$_varg" ] ; then
+            prettypath -b -s _ochk -- "$_varg" || return 1
+        fi
+        if [ -w "$_ochk" ] ; then
+            if [ -n "$_ftru" ] ; then
+                create $_frun -t -- "$_varg" || return 1
+            fi
+            _floo= ; return 0
+        fi
+        _cen_iom_error "$_oerr" $"Output not writable" "$_varg" ; return 1
+    }
+
+    [ "$1" = "+" ] || _floo=
+    while : ; do
+        _cen_outfile "$1" ; _stat="$?"
+        [ "$_stat" = 1 ] || return $_stat
+        [ -z "$_floo" ] && return 1
+    done || :
+}
+
+# ------------------------------------------------------------------------------
+# cachefile - Caching of global or local configuration files
+#
+# Call:     (1) # get cache path, check if cache exists
+#               cachefile [-f|-q] [-d] [-g|-p] [-r] [--] [<name>]
+#           (2) # return write path
+#               cachefile [-f|-q] [-d] [-g|-p] -w   [--] [<name>]
+#           (3) # check for up-to-date cache
+#               cachefile [-f|-q] [-d] [-g|-p] [-r] [--] <name> <conf>
+#
+# Options:  -d  use only the global config folder (see "$CEN_ROOT/default")
+#           -f  make errors fatal
+#           -g  try global cache folders only
+#           -p  try private cache folders only
+#           -q  quiet, no error messages
+#           -r  cache file must exist or return **false**
+#           -s  source (deserialize) cache file if it has non-zero size
+#           -w  get a writetable path if cache does not exist
+#
+# Arguments:<name>  name of the cache file, a full path or "-" for "$CEN_NAME.dat"
+#           <conf>  name of a configuration file or a full path
+#
+# Variables:CEN_CACHEFILE   set to the resulting cache file (empty on error)
+#           CEN_CONFIGFILE  set to the config file (form [3] only)
+#
+# Return:   **true** at success or **false** otherwise.
+#
+# Private cache folders are:   **~/.cache**, ***~/.config**, **~/.local** and **~**
+# The global cache folder is:  $CEN_ROOT/persistent
+#
+# Examples: (1) check cache and source (deserialize) it
+#.          cachefile -r -s -- 'my-cache' || message "missing:" "$CEN_CACHEFILE"
+#
+#           (2) check if an up-to-date cachefile exists (sets CEN_CONFIGFILE)
+#.          cachefile -- - "$CEN_NAME.conf"
+#
+#           (3) simple caching example
+#.          local data
+#.          if ! cachefile -s -w -- - 'centauri-bash-lib' ; then
+#.             configfile -r data -v -c -n "$CEN_CONFIGFILE" 'launcher' 'terminal'
+#.             serialize -w -- data
+#.          fi
+# ------------------------------------------------------------------------------
+CEN_CACHEFILE=
+cachefile() {
+    $CEN_DEBUG -c -- "$*"
+    local _fwri _ferr _fglo=1 _fpri=1 _fqui _fsrc _fdef _spri _scfg
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -)    break ;;
+        -d)   _fdef=1 ;;
+        -f)   _ferr='-f' ;;
+        -g)   _fpri= ; _spri='-g' ;;
+        -p)   _fglo= ; _spri='-p' ;;
+        -q)   _ferr='-q' ; _fqui='-q' ;;
+        -r)   _fwri= ;;
+        -s)   _fscr=1 ;;
+        -w)   _fwri=1 ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+    [ -z "$_fglo" -a -z "$_fpri" ] && _cen_abort - '-g -p'
+    CEN_CACHEFILE=
+    local _cfil="${1:--}" ; [ "$_cfil" = "-" ] && _cfil="$CEN_NAME.dat"
+
+    # validate a cache
+
+    if [ -n "$2" ] ; then                               # cache up-to-date?
+        [ -n "$_fpri" -a -z "$_fdef" ] && _scfg='-p'
+        configfile $_fqui $_scfg -i true -n "$2"        # get config path
+        if cachefile $_ferr $_spri -- "$_cfil" ; then   # get cache path
+            #$CEN_TRACE2 -c " check" -- "$CEN_CACHEFILE" "$CEN_CONFIGFILE"
+            if [ "$CEN_CACHEFILE" -nt "$CEN_CONFIGFILE" ] ; then
+                [ -n "$_fscr" ] && serialize $_ferr -r -n "$CEN_CACHEFILE"
+                return 0                                # valid cache
+            fi
+        fi
+        [ -z "$_fwri" ] && return 1                     # no write intention
+
+        # write intention may show a valid private cache
+
+        cachefile $_ferr $_spri -w -- "$_cfil"          # get write path
+        #$CEN_TRACE2 -c " write" -- "$CEN_CACHEFILE" "$CEN_CONFIGFILE"
+        if [ "$CEN_CACHEFILE" -nt "$CEN_CONFIGFILE" ] ; then
+            [ -n "$_fscr" ] && serialize $_ferr -r -n "$CEN_CACHEFILE"
+            return 0                                    # valid cache
+        fi
+        return 1                                        # not valid
+    fi || :
+
+    # only the <name> argument (or CEN_NAME is used by default
+
+    if [ "${_cfil/\//}" != "$_cfil" ] ; then            # <name> is a path
+        prettypath $_ferr -s CEN_CACHEFILE -- "$_cfil"
+        [ -n "$_fwri" ] && return 0                     # cache dir ok
+        [ -r "$CEN_CACHEFILE" ] ; return                # return status
+    fi
+
+    if [ -n "$_fglo" ] ; then                           # try global ...
+        folder $_ferr -s CEN_CACHEFILE -g -b persistent -- "$_cfil"
+        if [ -n "$_fwri" ] ; then
+            [ "$EUID" = 0 ] && return 0                 # global dir ok
+        elif [ -r "$CEN_CACHEFILE" ] ; then
+            return 0                                    # global file ok
+        fi
+    fi
+
+    if [ -n "$_fpri" ] ; then                           # try private ...
+        if [ -n "$_fwri" ] ; then
+            _cen_iom_cachedir -w CEN_CACHEFILE ; CEN_CACHEFILE+="/$_cfil"
+            return 0
+        fi
+        _cen_iom_cachedir CEN_CACHEFILE ; CEN_CACHEFILE+="/$_cfil"
+        [ -r "$CEN_CACHEFILE" ] && return 0             # cache file ok
+    fi || :
+    return 1                                            # error
+}
+
+# ------------------------------------------------------------------------------
+# configfile - Read and parse a configuration file
+#
+# Call:     (1) configfile [-q] [-i <init>] [-n <name>]           # get file path
+#
+#           (2) configfile [-q] -a|-r <reader> [-c|-x] [-i <init>] [-m] [-n <name>] [--] <sect>...
+#               configfile [-q] -l <reader> [-c|-x] [-i <init>] [-n <name>]
+#               configfile [-q] -l . [-i <init>] [-n <name>]
+#
+#           (3) configfile [-q] -v -r <array> [-c|-x] [-i <init>] [-m] [-n <name>] [--] <sect>...
+#               configfile [-q] -v -l <array> [-c|-x] [-i <init>] [-n <name>]
+#
+#           (4) configfile [-e|-f|-w] <origin> <min> <max> <argc> # arg count check
+#               configfile [-e|-f|-w] [<origin> [<mesg>...]]      # error reporting
+#
+# Options:  -a  multi argument callback (see below)
+#           -c  simplify white space
+#           -i  callback if config was not found
+#           -l  literal mode callback -or- source input file using '-l .'
+#           -m  call reader also for section lines (option -a -l and -r)
+#           -n  file name or a path containing "/", see remark below
+#           -p  try private file 1st in **~/.config**, **~/.local** then ***~.<name>**
+#           -q  quiet, no error messages
+#           -r  read callback
+#           -s  silent, no trace messages
+#           -v  save data to an array variable (no reader callback)
+#           -x  process lines by [[spliteval()]]
+#
+#           -e  generate error message    (from <reader> callback only)
+#           -f  generate fatal error      (from <reader> callback only)
+#           -w  generate warning message  (from <reader> callback only)
+#
+# Arguments:<name>    name or path of the configuration file to be parsed
+#           <init>    callback to catch missing file
+#           <reader>  data callback
+#           <sect>    section filter. Section is a line containing the name of
+#                     the section enclosed in [] braces. Example: **[hello]**.
+#                     Use "*" to read all sections, see CEN_CONFIGFILE[3].
+#           <origin>  describes to origin of an error (use - for "configfile")
+#           <min|max> minimum or maximum arg count (use -  for no check)
+#           <argc>    argument count (<min> <max> and <argc> must be numeric)
+#           <mesg>    extra error output (default: "Invalid statement:")
+#
+#+Return:   **true** on success or **false** otherwise. Returning a non-zero status from
+#           a callback will stop parsing and return the status. After a successfull
+#           open the variable CEN_CONFIGFILE contains the canonicalized file path.
+#
+#+General:  Form (1) is used to get a config file path into CEN_CONFIGFILE, form (2)
+#           reads a config file using a callback, form (3) saves data to an array and
+#           form (4) is used for error reporting.
+#
+#+          The <name> argument can be a file system path (containing a "/") or it
+#           can be a file name. Whithout option -p  a file name is searched at
+#           **$CEN_ROOT/default** (which may be a distribution specific symlink).
+#           With option -p the locations **~/.config**, **~/.local** then ***~.<name>**
+#           are checked before that.
+#
+#+          Form (2) and (3) report section lines only if option -m is used or with
+#           option -l (literal mode). If one or more section filters are specified
+#           only matching sections are processed.
+#
+#+Callbacks:The <init> function gets called when the file cannot not be found.
+#           Without an <init> function an error would be reported.
+#
+#+          The <reader> function is called with the read data as argument(s).
+#           These elements of the CEN_CONFIGFILE variable are set at callback:
+#
+#               CEN_CONFIGFILE[0]       # path of the configuration file
+#               CEN_CONFIGFILE[1]       # current data line (not parsed)
+#               CEN_CONFIGFILE[2]       # current line number
+#               CEN_CONFIGFILE[3]       # current section
+#
+#+          A special error handler can be called from the <reader>. The argument
+#           count check has the same logic as [[invoke()]]. Examples:
+#
+#.          configfile -e "MyName" 1 2 "$#"     # 1 or 2 args allowed
+#.          configfile -f - 3 - $#              # needs exactly 3 args
+#.          configfile -e "MyName" "Something is wrong:" "$*"
+#
+#+          When invoked with option -l (literal mode) the <reader> is called for
+#           each line, including white-space. Sections are not interpreted.
+#           Option -r (read mode) and -a (multiple argument mode) honor sections,
+#           trim each line and ignore empty lines and comments ("# ...").
+#
+#+          Option -a runs bash **eval** on each line seen (some bash replacements
+#           like variables, tilde expansion and line continuation do work). The line
+#           is split into words and the callback receives these as argument list.
+#
+#+          Here an example of parsing a line for option -r or -l. This is basically
+#           what option -a does:
+#
+#.          set -f ; eval set -- $1 ; set +f    # break into fields (no glob)
+#.          local _skey="$1" ; shift            # save keyword, shift it away
+#
+#+          When <reader> returns a non-zero value reading stops and the returned
+#           value becomes the return value of configfile itself.
+#
+# Examples: (1) Just source $CEN_ROOT/default/$CEN_NAME, call ___init if not present:
+#.          DAT_EXAMPLE=
+#.          ___init() {  DAT_EXAMPLE=42 ; return 0 ; }
+#.          configfile -i ___init -l .
+#
+#           (2) Use a reader callback for section "" (empty) and "test":
+#.          ___reader() { echo "Count $#, Args: $*" ; return 0 ; }
+#.          configfile -a ___reader -f "" -f "test"
+#
+#           (3) Read the "~/hello.world" file line-by-line, no error if missing:
+#.          ___reader() { echo "Line ${CEN_CONFIGFILE[2]}: $1"; return 0 ; }
+#.          configfile -l ___reader -c -i true -n ~/hello.world
+#
+#           (4) Read two sections into array and list:
+#.          local data
+#.          configfile -r data -v -c -- 'one' 'two' || quit
+#.          splitjoin -i data
+#
+#           (5) Get file, try private file 1st (before $CEN_ROOT/default):
+#.          configfile -p && message "Config file: $CEN_CONFIGFILE"
+# ------------------------------------------------------------------------------
+CEN_CONFIGFILE=
+configfile() {
+    $CEN_DEBUG -c -- "$*"
+    local _file _aflg _init _priv _rlin _read _ropt="-r" _sopt _sect=()
+    local _ocom _oerr _omul _oqui _ovar _orep='error -z' _otra="$CEN_TRACE"
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      -)    break ;;
+      --)   shift ; break ;;
+      -a)   shift ; _read="$1" ; _aflg=1 ; _ropt= ;;
+      -c)   _ocom=1 ;;
+      -e)   _oerr='error -z' ; shift ; _rlin="$1" ;;
+      -f)   _oerr='fatal' ; shift ; _rlin="$1" ;;
+      -i)   shift ; _init="$1" ;;
+      -l)   shift ; _read="$1" ; _rlin=1 ;;
+      -m)   _omul=1 ;;
+      -n)   shift ; _file="$1" ;;
+      -p)   _priv=1 ;;
+      -q)   _orep="$CEN_TRACE" ; _oqui='-q' ;;
+      -r)   shift ; _read="$1" ;;
+      -s)   _sopt="$1" ; _otra=":" ;;
+      -v)   _ovar=1 ;;
+      -x)   _ocom=2 ;;
+      -w)   _oerr='warning' ; shift ; _rlin="$1" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # check call options
+    if [ -n "$_oerr" ] ; then                       # no reader allowed
+        [ -n "$_read" ] && _cen_abort - '-a|-l|-r'
+    elif [ "$_read" = '.' ] ; then                  # only -l allowed
+        [ -z "$_rlin" -o -n "$_aflg" ] && _cen_abort - '-a|-r'
+        _rlin=
+    elif [ -n "$_ovar" ] ; then                     # -a not allowed
+        [ -n "$_aflg" ] && _cen_abort - '-a'
+        [ -z "$_read" ] && _cen_abort + '-l'
+        local -n _vvar="$_read" ; _vvar=()
+    elif [ -n "$_read" ] ; then                     # check function
+        isfunction -a -x "$_read"
+    fi || :
+
+    # error reporting
+    if [ -n "$_oerr" ] ; then
+        [ -z "${CEN_CONFIGFILE[2]}" ] && _cen_abort $"not in callback" '-e|-f|-w'
+        [ "${_rlin:--}" = '-' ] && _rlin=$"configfile"
+        if [ "$#" = 0 ] ; then
+            [ -z "$_oqui" ] && set -- $"invalid statement:" "${CEN_CONFIGFILE[1]}"
+        else
+            local _cen_configfile_mesg="$1$2$3"
+            if [ -z "${_cen_configfile_mesg//[-+0-9]/}" ] ; then
+                arguments -I _cen_configfile_mesg "${3:-0}" "${1:-0}" "${2:-+}" && return 0
+                set -- "$_cen_configfile_mesg:" "${CEN_CONFIGFILE[1]}"
+            fi
+        fi
+        if [ "${CEN_CONFIGFILE[2]:--}" = '-' ] ; then
+            $_oerr -n -p $"%s [file='%s']\n%s" "$_rlin" "${CEN_CONFIGFILE[0]}" "$*"
+        else
+            $_oerr -n -p $"%s [file='%s' line=%s]\n%s" "$_rlin" \
+                "${CEN_CONFIGFILE[0]}" "${CEN_CONFIGFILE[2]}" "$*"
+        fi
+        return 1
+    fi
+
+    # check list of filters
+    _cen_configfile_fltr() {
+        [ "${#_sect[@]}" = 0 ] && return 1
+        _line="${_line%% *}"
+        [ "${_line//[[:alnum:]_-]/}" = '[]' ] || return 1
+        local _item _snam="${_line:1:-1}"
+        for _item in "${_sect[@]}" ; do
+            [ "$_snam" = "$_item" -o "$_item" = "*" ] || continue
+            CEN_CONFIGFILE[3]="$_snam" ; _skip=
+            [ -z "$_omul" ] ; return                        # return status
+        done
+        CEN_CONFIGFILE[3]=
+        _skip=1 ; return 0
+    }
+
+    # callback <reader>
+    _cen_configfile_call() {
+        local _stat=0
+        CEN_CONFIGFILE[1]="$_line" ; CEN_CONFIGFILE[2]="$_lnum"
+
+        if [ "$_ocom" = 2 ] ; then
+            local _cen_config_lin
+            if ! spliteval -q -s _cen_config_lin -- "$_line" ; then
+                _stat=2
+                [ -z "$_oqui" ] && configfile -e - $"syntax error:" "$_line"
+            fi
+            _line="$_cen_config_lin"
+        elif [ -n "$_ocom" ] ; then
+            local _comp
+            _line="${_line//[[:space:]]/ }"
+            while [ "$_comp" != "$_line" ] ; do
+                _comp="$_line"
+                _line="${_line//   / }"
+                _line="${_line//  / }"
+            done
+        fi
+        if [ -n "$_aflg" ] ; then
+            local _args ; set -f
+            if ! eval _args=("$_line") &>/dev/null ; then   # handle vars and quotes
+                set +f ; _stat=2
+                [ -z "$_oqui" ] && configfile -e - $"syntax error:" "$_line"
+            else
+                set +f ; $_read "${_args[@]}" || _stat=$?
+            fi
+        elif [ -n "$_ovar" ] ; then
+            _vvar+=("$_line")
+        else
+            $_read "$_line" || _stat=$?
+        fi
+        CEN_CONFIGFILE[1]= ; CEN_CONFIGFILE[2]=
+        return $_stat
+    }
+
+    # callback <init>
+    _cen_configfile_init() {
+        if [ -z "$_init" ] ; then
+            $_orep $"Configuration file not found:" "$_file"
+            return 1
+        fi
+        isfunction -a -x -c $_init "$_file"     # call and return status
+    }
+
+    # do we have a config name or file path?
+    CEN_CONFIGFILE=() ; _sect=("$@")
+    [ "${_file:--}" = '-' ] && _file="$CEN_NAME"
+    if [ "$_file" = "${_file/\//}" ] ; then     # no slash: is a name
+        local _locf _loci _locs=()
+        # private configs (file in home dir would have a '.' prefix)
+        [ -n "$_priv" ] && _locs=( ~/.config/ ~/.local/ ~/. )
+        # always try config from default location
+        folder $_oqui -s _loci -b default && _locs+=("$_loci/")
+        for _loci in "${_locs[@]}" '' ; do
+            if [ -z "$_loci" ] ; then           # not found ...
+                _cen_configfile_init ; return   # return status
+            fi
+            _locf="$_loci$_file"                # name -> path
+            [ -e "$_locf" ] || continue
+            _file="$_locf" ; break
+        done
+    elif [ ! -e "$_file" ] ; then               # no file, try callback ...
+        _cen_configfile_init ; return           # return status
+    fi || :
+
+    if [ ! -r "$_file" ] ; then                 # must be readable ...
+        $_orep $"Configuration file not readable:" "$_file"
+        return 1
+    elif [ -d "$_file" ] ; then
+        $_orep $"Configuration path is a folder:" "$_file"
+        return 1
+    elif [ -z "$_read" ] ; then                 # no reader, return path
+        CEN_CONFIGFILE[0]="$_file" ; return 0
+    fi
+
+    # open file
+    local _fhan _join _line _lnum=0 _skip _stat=0
+    redirect $_oqui -s -v _fhan -i "$_file" || return 1
+    _file="$CEN_REDIRECT" ; CEN_CONFIGFILE[0]="$_file"
+
+    # call worker
+    if [ -n "$_rlin" -o "${_read:-.}" != '.' ] ; then
+        $_otra -a -c $" read" -- "$_file [$*]"
+        [ "${#_sect[@]}" = 0 ] || _skip=1
+        if [ -n "$_rlin" ] ; then
+            while IFS= read -r -u $_fhan _line ; do
+                ((_lnum += 1))
+                if [ "${#_sect[@]}" != 0 ] ; then
+                    if [ "${_line::1}" = '[' ] ; then       # section ...
+                        _cen_configfile_fltr && continue
+                    fi
+                    [ -n "$_skip" ] && continue
+                fi
+                _cen_configfile_call && continue
+                _stat=$? ; break
+            done
+        else
+            while read $_ropt -u $_fhan _line ; do
+                ((_lnum += 1))
+                if [ -n "$_join" ] ; then                   # line continuation
+                    _line="$_join$_line" ; _join=
+                fi
+                [ "${_line::1}" = "#" ] && continue         # things to ignore...
+                _line="${_line% #*}"
+                [ -z "${_line//[[:space:]]/}" ] && continue
+
+                if [ "${_line%\\}" != "$_line" ] ; then     # continuation ...
+                    _join="${_line%\\}" ; continue
+                fi
+                if [ "${_line::1}" = "[" ] ; then           # section ...
+                    _cen_configfile_fltr && continue
+                fi
+                [ -n "$_skip" ] && continue
+                _cen_configfile_call && continue
+                _stat=$? ; break
+            done
+        fi
+
+    # no worker, source file...
+    else
+        $_otra -a -c $" load" -- "$_file"
+        true ; . "$_file" ; _stat=$?
+        [ "$_stat" = 0 ] || error $"Invalid data in configuration file:" "$_file"
+    fi
+
+    redirect $_oqui -s -v _fhan                             # must close handle
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# serialize - Serialization support for bash variables
+#
+# Call:     serialize [-f|-q] [-n <name>] -w
+#                             [-m <mode>] [-x] [-z] <var>...  # serialize
+#           serialize [-f|-q] [-n <name>] -r [-d]             # deserialize
+#           serialize [-f|-q] [-n <name>] -d                  # delete file
+#           serialize [-f|-q] [-n <name>] -z <var>...         # zero data
+#           serialize [-f|-q] [-n <name>] -t <file> -w ...    # update
+#
+# Options:  -d  delete file (can be used with -r or stand-alone)
+#           -f  make errors fatal
+#           -m  specify file creation mode, otherwise umask is used
+#           -n  specify file to use, see below
+#           -q  quiet, no error messages
+#           -r  read data from file (deserialize)
+#           -s  do not generate trace messages
+#           -t  reference file, serialize if <file> is newer than <name>
+#           -w  write data to file (serialize)
+#           -x  also write **declare** statements, see below
+#           -z  zero data (can be used with -w or stand-alone)
+#
+# Arguments:<file>  a file path
+#           <mode>  octal file or folder mode, lower 9 bits only
+#           <name>  a path if it contains a **/** or a name in the cache folder
+#           <var>   name of a variable to be serialized
+#
+#+Return:   **true** at success or **false** otherwise. After a successfull open
+#           the variable CEN_SERIALIZE is set to the full path of <name>.
+#
+# Examples: (1) serialize some variables, zero data
+#.          DAT_VERSION=27
+#.          DAT_ARRAY=("north" "east" "south" "west")
+#.          serialize -w -m 664 -z DAT_VERSION DAT_ARRAY
+#
+#           (2) deserialize data from (1), delete file
+#.          serialize -r -d
+#
+#           (3) just get the path
+#.          serialize ; message "Path: $CEN_SERIALIZE"
+#
+#+The default for <name> is "$CEN_NAME.dat". If the path contains no "/" it
+# is prefixed with the 1st existing folder from: "~/.cache" "~/.config" "~".
+#
+#+By default the serialized data will not contain **declare** statements.
+# This allows the data to be deserialized by this function. This will not
+# work for dictionaries with **declare -A** statements (but in a typical
+# script data will be declared before deserialization). The -x option will
+# add **declare** statements to the serialized data, but as stated before
+# such data must be deserialized manually.
+# ------------------------------------------------------------------------------
+serialize() {
+    $CEN_DEBUG -c -- "$*"
+    local _fdel _fdec _fmod _fref _fzer _fqui _mode
+    local _ffil="$CEN_NAME.dat" _oerr='error -z' _otra="$CEN_TRACE -a"
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -f)   _oerr='fatal' ;;
+        -d)   _fdel=1 ;;
+        -m)   shift ; _mode="$1" ;;
+        -n)   shift ; _ffil="$1" ;;
+        -q)   _oerr="$CEN_TRACE" ; _fqui='-q' ;;
+        -r|-w)
+              _fmod="$1" ;;
+        -s)   _otra=":" ;;
+        -t)   shift ; _fref="$1" ;;
+        -z)   _fzer=1 ;;
+        -x)   _fdec=1 ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+
+    local _fhan _item
+    CEN_SERIALIZE=
+    if [ "${_ffil/\//}" = "$_ffil" ] ; then         # no / in name ...
+        _cen_iom_cachedir $_fmod _item ; _ffil="$_item/$_ffil"
+    else
+        prettypath -s _ffil -- "$_ffil"
+    fi
+    [ -n "$_fref " ] && [ "$_fref" -nt "$_ffil" ] && return 1
+    CEN_SERIALIZE="$_ffil"
+
+    # --- write ---
+
+    if [ "$_fmod" = '-w' ] ; then
+        local _sout _sser
+        for _item in "$@" ; do                      # create data ...
+            local -n _varg="$_item"                 # must be local
+            _sser="${_varg[@]@A}"
+            if [ -z "$_fdec" ] ; then               # strip declare
+                case "$_sser" in
+                    '') _item="$_item=" ;;          # since bash 5.2
+                    declare\ -?\ *=*)   _item="${_sser:11}" ;;
+                    declare\ -a\ *)     _item="${_sser:11}=()" ;;
+                    declare\ -?\ *)     _item="${_sser:11}=" ;;
+                    *=*)                _item="$_sser" ;;
+                    *)                  _item="$_sser="
+                esac
+            else
+                _item="${_sser:-$_item=}"
+            fi
+            _sout+="$_item" ; _sout+=$'\n'
+        done
+
+        dryrun "serialize: $_ffil" && return
+        create $_fqui -v _sout -h - -s -t -- "$_ffil" $_mode || return 1
+        $_otra -c $" write" -- "$_ffil"
+
+    # --- read ---
+
+    elif [ "$_fmod" = '-r' ] ; then
+        if [ -r "$_ffil" ] ; then
+            local _trap="$CEN_QUIT_TRAP" ; CEN_QUIT_TRAP=   # suspend trap
+            . $_ffil &>/dev/null
+            CEN_QUIT_TRAP="$_trap"
+            if [ $? = 0 ] ; then
+                $_otra -c $" read" -- "$_ffil"
+            else
+                $_oerr $"Failed to deserialize data from:" "$_ffil"
+                return 1
+            fi
+        elif [ -n "$_fqui" ] ; then
+            $CEN_TRACE -c $" missing" -- "$_ffil" ; return 1
+        else
+            $_oerr $"Cannot deserialize data from:" "$_ffil" ; return 1
+        fi || true
+    fi
+
+    # --- zero ---
+
+    if [ -n "$_fzer" ] ; then
+        for _item in "$@" ; do
+            local -n _vvar="$_item"
+            [ ${#_vvar[@]} -gt 1 ] && _vvar=()
+            [ ${#_vvar[@]} = 1 ] && _vvar=
+        done
+    fi
+
+    # --- delete file ---
+
+    if [ -n "$_fdel" ] ; then
+        remove $_fqui -- "$_ffil" || return 1
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# spliteval - Split strings using the bash eval builtin
+#
+# Call:     (1) spliteval -a|-s <var> [-g|-n] [-q|-w] -i <var>
+#               spliteval -a|-s <var> [-g|-n] [-q|-w] [--] <data> ...
+#           (3) spliteval -u <var> [-g] [-q|-w] -i <var>
+#               spliteval -u <var> [-g] [-q|-w] [--] <data> ...
+#
+# Options:  -a  result array
+#           -g  enable bash globbing
+#           -i  input from <var>, can be array or string
+#           -n  no eval, just smart quoting (use with -s only)
+#           -q  do not report eval errors
+#           -s  result string (smart quoted)
+#           -u  simplified 'unquote' to result array
+#           -w  print warning on eval errors
+#
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#.Examples: # do globbing and eval
+#.          local dest=() data=("*.conf" '1st example' "$CEN_PATH/etc")
+#.          spliteval -a dest -g -i data
+#
+#.          # do globbing and eval, smart quoting
+#.          local dest data=("*.conf" '1st example' "$CEN_PATH/etc")
+#.          spliteval -s dest -g -i data
+#
+#.          # smart quoting arguments to string
+#.          local dest
+#.          spliteval -s dest -n -- "*.conf" '1st example' "$CEN_PATH/etc"
+#
+#.          # simplified unquote of a quoted string
+#.          local quot uquo=()
+#.          spliteval -s quot -- " one * 'two tree'   four '|'" "\"five\"  \$HOME"
+#.          spliteval -u uquo -i quot
+# ------------------------------------------------------------------------------
+spliteval() {
+    local _oinp _oset _oerr=error _oglo _onoe _oset _stat=0
+    local -n _vvei _vveo
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a|-u)
+            _oset="$1" ; shift ; _vveo="$1" ; _vveo=() ;;
+      -g)   _oglo=1 ;;
+      -i)   shift ; _oinp=1 ; _vvei="$1" ;;
+      -n)   _onoe=1 ;;
+      -q)   _oerr="$CEN_TRACE" ;;
+      -s)   _oset="$1" ; shift ; _vveo="$1" ; _vveo= ;;
+      -w)   _oerr=warning ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ -n "$_oinp" ] && set -- "${_vvei[@]}"
+
+    # simple 'unquote' eval, fast path
+    if [ "$_oset" = '-u' ] ; then
+        if [ -n "$_oglo" ] ; then
+            eval _vveo=("$*") ; _stat=$?
+        else
+            set -f ; eval _vveo=("$*") ; _stat=$? ; set +f
+        fi 2>/dev/null
+        [ "$_stat" = 0 ] && return 0
+        _vveo=("$*")
+        $_oerr $"Syntax error:" "$_vveo" ; return 1
+    fi
+    [ -z "$_oset" ] && _cen_abort = '-a|-s|-u'
+
+    # full eval
+    local _line _item _ugly _args=()
+    [ -z "$_oglo" ] && set -f
+    for _item in "$@" ; do
+       # _ugly=
+        if [ -n "$_onoe" ] ; then
+            _args+=("$_item")
+        else
+            # fix-ups to make eval happy
+            if [ "$_item" != "${_item/[(|)]/}" ] ; then
+                _item="${_item//|/\\|}" ; _item="${_item//(/\\(}"
+                _item="${_item//)/\\)}" ; _ugly=1
+            fi
+            # use eval to append to array
+            if ! eval _args+=("$_item") 2>/dev/null ; then
+                [ -z "$_oglo" ] && set +f
+                $_oerr $"Syntax error:" "$_item"
+                _args+=("$_item") ; _stat=1
+            fi
+        fi
+    done
+    [ -z "$_oglo" ] && set +f
+
+    # smart quoting
+    for _item in "${_args[@]}" ; do
+        if [ -n "$_ugly" ] ; then                   # undo fix-ups
+            _item="${_item//\\\|/|}" ; _item="${_item//\\\(/(}"
+            _item="${_item//\\\)/)}"
+        fi
+        if [ "$_oset" = '-a' ] ; then               # array output
+            _vveo+=("$_item")
+            continue
+        fi
+        case "$_item" in                            # smart quoting
+        '')     _item="''" ;;
+        *[![:alnum:]]*)
+                [ -n "${_item//[[:alnum:]-+=_.:@\/\[\]]/}" ] && _item="${_item@Q}" ;;
+        esac
+        [ -z "$_line" ] && _line="$_item" || _line+=" $_item"
+    done
+    [ "$_oset" = '-s' ] && _vveo="$_line"
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# Type -r/-w checker called by optarg(): [-a|-f|-r|-w] <nopt> [<vnam>]
+#
+# These options depend on other options like --windows --gui or --yes. So the
+# call is queued and the queue is executed when option processing is finished.
+# ------------------------------------------------------------------------------
+_cen_optarg_iom() {
+    # registration ...
+    if [ $# != 1 ] ; then
+        CEN_IOM_QUEUE+=("$1"$'\t'"$2"$'\t'"$3"$'\t'"$CEN_ACTARR")
+        return 0
+    fi
+
+    # execute queued options
+    local _emsg _opta _optf _argo ; splitjoin -s _argo -- "$1"
+    CEN_IOM_ERROR="${_argo[1]}=${_argo[3]}"         # see _cen_iom_error
+    case "${_argo[0]}" in
+        -a|-w)
+            [ -n "$CEN_OPT_FORCE" -o "${_argo[0]}" = 'a' ] && _opta='-a'
+            outfile $_opta -c -l -s _optf -- "${_argo[3]}"
+            case $? in
+                0)  optarg "${_argo[1]}" "${_argo[2]}" -t "$_optf" ;;
+                1)  quit ;;
+                *)  _emsg=$"No output path provided"
+            esac
+            ;;
+        -d) outfile -c -l -d -e -s _optf -- "${_argo[3]}"
+            case $? in
+                0)  optarg "${_argo[1]}" "${_argo[2]}" -t "$_optf" ;;
+                1)  quit ;;
+                *)  _emsg=$"No folder path provided"
+            esac
+            ;;
+        -s) inpfile -c -l -d -e -s _optf -- "${_argo[3]}"
+            case $? in
+                0)  optarg "${_argo[1]}" "${_argo[2]}" -t "$_optf" ;;
+                1)  quit ;;
+                *)  _emsg=$"No folder path provided"
+            esac
+            ;;
+        *)  inpfile $CEN_IOM_OPT_E -c -l -s _optf -- "${_argo[3]}"
+            case $? in
+                0)  optarg "${_argo[1]}" "${_argo[2]}" -t "$_optf" ;;
+                1)  quit ;;
+                *)  _emsg=$"No input path provided"
+            esac
+            ;;
+    esac
+    CEN_IOM_ERROR=
+    [ -z "$_emsg" ] && return 0
+    optarg "${_argo[1]}" "${_argo[3]}" -e "$_emsg" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# options() hook: <option> <argument>
+# ------------------------------------------------------------------------------
+_cen_iom_option() {
+    case "$1" in
+
+    # handle queued options from optarg
+
+    "")
+        local _item
+        for _item in "${CEN_IOM_QUEUE[@]}" ; do
+            _cen_optarg_iom "$_item" || break
+        done  ; CEN_IOM_QUEUE=()
+        ;;
+
+    # pass option info to usage module
+
+    --help)
+        [ "$2" = "opts" ] && _cen_iom_add_opts ;;
+
+    # options added by this module
+
+    -i|--inp*)
+        [ -n "$CEN_IOM_OPT_I" ] && optarg "input"  CEN_INPFILE -r ;;
+    -o|--out*)
+        [ -n "$CEN_IOM_OPT_O" ] && optarg "output" CEN_OUTFILE -w ;;
+    -r|--rea|--read)
+        [ -n "$CEN_IOM_OPT_R" ] && optarg "input"  CEN_INPFILE -r ;;
+    -w|--wri*)
+        [ -n "$CEN_IOM_OPT_W" ] && optarg "output" CEN_OUTFILE -w ;;
+
+    esac || :
+    $CEN_IOM_HOOK_OPTIONS "$@"
+}
+
+# helper for _cen_iom_options
+_cen_iom_add_opts() {
+    [ -n "$CEN_IOM_OPT_I" ] && _cen_use_option "-i" "--input   <file>" $"Open file for input"
+    [ -n "$CEN_IOM_OPT_O" ] && _cen_use_option "-o" "--output  <file>" $"Open file for output"
+    [ -n "$CEN_IOM_OPT_R" ] && _cen_use_option "-r" "--read    <file>" $"Open file for reading"
+    [ -n "$CEN_IOM_OPT_W" ] && _cen_use_option "-w" "--write   <file>" $"Open file for writing"
+}
+
+# ------------------------------------------------------------------------------
+# Startup
+# ------------------------------------------------------------------------------
+
+while [ "${1::1}" = "-" ] ; do
+    case "$1" in
+    --)   shift ; break ;;
+    -e)   CEN_IOM_OPT_E="-e" ;;
+    -i)   CEN_IOM_OPT_I=1 ;;
+    -o)   CEN_IOM_OPT_O=1 ;;
+    -r)   CEN_IOM_OPT_R=1 ;;
+    -w)   CEN_IOM_OPT_W=1 ;;
+    esac ; shift
+done
+
+CEN_IOM_HOOK_OPTIONS="$CEN_HOOK_OPTIONS"
+CEN_HOOK_OPTIONS=_cen_iom_option
+
+:
+
+# end

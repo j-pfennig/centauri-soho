@@ -1,0 +1,519 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2024; BSD License"
+CEN_TITLE="Opens a SSH connection to the given host"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d - '0.68:2' 1 || exit 2
+
+# Data
+DAT_SERVER_GEN=                 # default host (generic server name)
+netquery -s DAT_SERVER_GEN current
+
+CEN_OPT_COMPRESS=               # see --compress
+CEN_OPT_PORT=                   # see --port
+CEN_OPT_SOUND=                  # see --sound
+CEN_OPT_TERM=                   # see --terminal
+CEN_OPT_USER=                   # see --user
+CEN_OPT_HOST=                   # see --host
+CEN_OPT_X11=                    # see --X11
+
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+do_ssh() {
+    local ox11="${CEN_OPT_X11:+-X}" opts=() opt1 opt2 opt3
+    [ -z "$ox11" -a "$CEN_ACTION" = "batch" ] && ox11="-x"
+
+    do_private
+
+    if [ -z "$CEN_OPT_COMPRESS" -a -z "$ox11" ] ; then
+        netiface -k 'eth0'
+        nettool -c -d "$_netiface" -q isup || CEN_OPT_COMPRESS=1
+        ox11='-X'
+    fi
+
+    [ -n "$ox11"  ] && opts+=("$ox11")
+    [ -n "$CEN_OPT_COMPRESS" ] && opts+=("-C")
+    [ -n "$CEN_OPT_PORT" ] && opts+=("-p" "$CEN_OPT_PORT")
+    [ "$CEN_OPT_TERM" = "0" ] && opts+=("-T")
+    [ "$CEN_OPT_TERM" = "1" ] && opts+=("-t")
+    [ -n "$XDG_CURRENT_DESKTOP" ] && opts+=("-o" "SendEnv=XDG_CURRENT_DESKTOP")
+    [ -n "$GDK_DPI_SCALE" -a "$ox11" != "-x" ] && opts+=("-o" "SendEnv=GDK_DPI_SCALE")
+
+    local dest="$CEN_OPT_HOST"
+    [ -n "$CEN_OPT_USER" ] && dest="$CEN_OPT_USER@$CEN_OPT_HOST"
+    if do_sound ; then
+        if do_local_ip ; then
+            export PULSE_SERVER="$HOSTNAME"
+            trace "Pulseaudio sound via local network"
+        else
+            export PULSE_SERVER=localhost
+            opts+=("-R" "4713:localhost:4713")
+            trace "Tunneling pulseaudio sound (port=4713)"
+        fi
+        opts+=("-o" "SendEnv=PULSE_SERVER")
+    fi
+    system -x ssh "${opts[@]}" "$dest" "$@"
+}
+
+# check for sound forwarding
+do_sound() {
+    [ "$CEN_OPT_SOUND" = "0" ] && return 1
+    [ "$CEN_OPT_SOUND" = "1" ] && return 0
+    [ "$CEN_ACTION" = "batch" ] && return 1
+
+    # pulse audio running?
+    [ -d "/tmp/pulse-$USER" ] && return 0
+    [ -d "$TMP/pulse" ] && return 0
+    message "Implied --sound=off (pulseaudio not running)"
+    return 1
+}
+
+do_local_ip() {
+    nethost "$CEN_OPT_HOST" && return 0             # configured host is local
+
+    local rslt
+    system -a rslt -d ' \t\n' -q -- getent ahostsv4 "$CEN_OPT_HOST"
+    if [ "${rslt//[0-9]/}" != "..." ] ; then
+        trace -a -p "Got no IP for: $CEN_OPT_HOST" ; return 1
+    fi
+
+    set -- ${rslt//./ }
+    local myip="$((($1<<24)+($2<<16)+($3<<8)+$4))"  # numeric host ip
+    local mnet curr netw
+    for netw in "${CEN_NET_NETWORKS[@]}" ; do
+        mnet="${netw##*/}" ;                        # netmask bits
+        mnet="$(((1 << (32 - mnet)) - 1))"          # low mask
+        mnet="$((myip - (myip & mnet)))"            # network ip
+
+        curr="${netw%/*}"
+        set -- ${curr//./ }
+        curr="$((($1<<24)+($2<<16)+($3<<8)+$4))"    # numeric net ip
+
+        [ "$curr" = "$mnet" ] || continue           # not in this net
+        trace -a -p "IP %s is local to %s" "$rslt" "$netw"
+        return 0
+    done
+    return 1
+}
+
+# handle user@host things
+do_parse() {
+    local host="${1##*@}"
+    local user="${1%%@*}"
+    [ -n "$host" ] && CEN_OPT_HOST="$host"
+    [ -n "$user" -a "$host" != "$1" ] && CEN_OPT_USER="$user"
+}
+
+# parse scp argument: [<user>@]<[host]>:<[path]>
+do_scparg_user=
+do_scparg_host=
+do_scparg_path=
+do_scparg() {
+    do_scparg_user=
+    do_scparg_host=
+    do_scparg_path="${1##*:}"
+    [ "$do_scparg_path" = "$1" ] && return 1
+    do_scparg_host="${1%:*}"                    # [<user>@]<[host]>
+    do_scparg_user="${do_scparg_host%%@*}"      # <user>
+    [ "$do_scparg_user" = "$do_scparg_host" ] && do_scparg_user=
+    do_scparg_host="${do_scparg_host##*@}"
+    #echo "[$do_scparg_user] [$do_scparg_host] [$do_scparg_path]"
+    return 0
+}
+
+# open a tunnel       : open <local-port> <host> [<host-port>]
+# wait to become ready: wait
+# close the tunnel    : close
+do_tunnel_prtl=
+do_tunnel_host=
+do_tunnel_prth=
+do_tunnel() {
+    if [ "$1" = "open" ] ; then
+        do_private
+        do_tunnel_prtl="$2"
+        do_tunnel_host="${3:-localhost}"
+        do_tunnel_prth="${4:-$2}"
+        system -r -f -p ssh $CEN_OPT_HOST \
+            -L "$do_tunnel_prtl:$do_tunnel_host:$do_tunnel_prth" -N &
+        message -i "Tunnel to '$CEN_OPT_HOST' opened (remote=$do_tunnel_host:$do_tunnel_prth)"
+
+    elif [ "$1" = "close" ] ; then
+        system -r -e -p pkill -f \
+               "ssh $CEN_OPT_HOST -L $do_tunnel_prtl:$do_tunnel_host:$do_tunnel_prth -N" &&
+            message -i "Tunnel to '$CEN_OPT_HOST' closed (port=$do_tunnel_prth)"
+
+    else
+        local indx
+        for indx in 1 x 2 x 3 x 4 x 5 x 6 x 7 x 8 x 9 x x x x x x 0 ; do
+            sleep 0.5
+            system -r nc -z localhost $do_tunnel_prtl && break
+            [ "$indx" = 2 ] && message -i "Waiting for tunnel to become ready..."
+        done
+        [ "$indx" = 0 ] || return 0
+        error "Tunnel not ready - timeout" ; return 1
+    fi
+}
+
+# mount encfs private folder
+do_private() {
+    [ -h ~/.ssh -a ! -e ~/.ssh/id_rsa ] && embed -r centauriencfs -q mount -
+}
+
+# ------------------------------------------------------------------------------
+# Action - Run command
+# ------------------------------------------------------------------------------
+actionExec() {
+    do_ssh "$@"
+}
+
+# ------------------------------------------------------------------------------
+# Action - Login
+# ------------------------------------------------------------------------------
+actionLogin() {
+    if [ "$CEN_OPT_SOUND" = "1" ] ; then
+        warning "Type 'export PULSE_SERVER=localhost' to enable sound forwarding"
+    elif [ "$CEN_OPT_SOUND" != "0" ] ; then
+        trace "Sound forwarding implicitly disabled for 'login'"
+        CEN_OPT_SOUND=0
+    fi
+
+    do_parse "$1"
+    local user="$CEN_OPT_USER"
+    [ -z "$user" -a -n "$1" ] && user="$USER"
+    CEN_OPT_USER="remote"
+
+    if [ -n "$user" ] ; then
+        do_ssh -t -- su -l "$user"
+    else
+        do_ssh
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Action - Open connection
+# ------------------------------------------------------------------------------
+actionOpen() {
+    do_parse "$1"
+    do_ssh
+}
+
+# ------------------------------------------------------------------------------
+# Action - Run local bash
+# ------------------------------------------------------------------------------
+actionBash() {
+    if [ "$USER" = "$CEN_OPT_USER" -o -z "$CEN_OPT_USER" ] ; then
+        system -e -x -- bash -l
+    else
+        [ -n "$DISPLAY" ] && system -q xhost "+si:localuser:$CEN_OPT_USER"
+        system -e -x -u "$CEN_OPT_USER" -- bash -l
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# copy with tunneled scp: <orig> <dest>
+#
+# if no --host is given the remote host argument is used as (proxy)host and the
+# remote host is set to localhost.
+# ------------------------------------------------------------------------------
+actionCopy() {
+    # build scp argument: <name> <user> <host> <path>
+    __join() {
+        declare -n vref="$1" ; shift
+        local user="${1:-$CEN_OPT_USER}" ; [ -z "$user" ] && user="$USER"
+        local host="$2"
+
+        # short form: no --host, use <host>
+        if [ "$CEN_OPT_HOST" = "$DAT_SERVER_GEN" ] ; then
+            [ -n "$host" ] || error "no <host> specified"
+            CEN_OPT_HOST="$host" ; host="localhost"
+        fi
+        [ -n "$CEN_OPT_USER" -a "$CEN_OPT_USER" != "$user" ] &&
+            error "Conflicting '--user' option"
+        vref="$user@${host:-localhost}:${3:-.}"
+    }
+
+    system -c -e scp getent nc                  # check requirements
+    do_private
+
+    local pssh="22"                             # host port for ssh
+    local ptun="2201"                           # port to tunnel
+
+    local orig dest host
+    if do_scparg "$1" ; then                    # 1st arg is remote
+        host="$do_scparg_host"
+        __join orig "$do_scparg_user" "$host" "$do_scparg_path"
+        do_scparg "$2" && error "Only one remote path permitted"
+        dest="$do_scparg_path"
+    else                                        # 1st arg is local
+        orig="$do_scparg_path"
+        do_scparg "$2" || error "One remote path required"
+        host="$do_scparg_host"
+        __join dest "$do_scparg_user" "$host" "$do_scparg_path"
+    fi
+    error -t || return
+
+    if system -r -q getent hosts "$CEN_OPT_HOST" ; then
+        if [ "$CEN_OPT_HOST" != "$host" -a -n "$host" ] ; then
+            error "Conflicting '--host' option" ; return
+        fi
+        orig="${orig/@localhost:/@$CEN_OPT_HOST:}"
+        dest="${dest/@localhost:/@$CEN_OPT_HOST:}"
+        message -i "copy '$orig' => '$dest'  [-no proxy-]"
+        do_private
+        system -e -p scp -p -r "$orig" "$dest"
+    else
+        message -i "copy '$orig' => '$dest'  [$CEN_OPT_HOST]"
+        do_tunnel open "$ptun" "" "$pssh"
+        do_tunnel wait && system -e -p scp -P "$ptun" -p -r "$orig" "$dest"
+        do_tunnel close
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# List authorized keys: -no args-
+# ------------------------------------------------------------------------------
+actionAuth() {
+    embed -v centaurikeys user "$HOME"
+}
+
+# ------------------------------------------------------------------------------
+# rdp tunnel for remote desktop: [<user>@<host>]
+# ------------------------------------------------------------------------------
+actionDesk() {
+    system -c -f krdc nc                        # check requirements
+
+    local prot port prdp=3389                   # rdp port to tunnel
+    local host="${1##*@}"
+    local user="${1%%@*}"
+    [ "$user" = "$1" ] && user=
+    [ -z "$user" ] && user="$CEN_OPT_USER"
+
+    if [ "${CEN_OPT_PORT:-$prdp}" = "$prdp"  ] ; then
+        prot='rdp' ; port="$prdp"
+    else
+        prot='vnc' ; port=5900
+    fi
+
+    message -i "krdc '$user@$host'  [$CEN_OPT_HOST $prot]"
+    do_tunnel open "$port" "$host" $CEN_OPT_PORT
+
+   # if [ "$prot" = 'krdc' ] ; then
+    do_tunnel wait && system -e -p krdc "$prot://$user@localhost:$port"
+   # else
+   # fi
+
+  #  do_tunnel open "$port" "$host"
+  #  if [ -z "$user" ] ; then
+  #      system -e -p krdc
+  #  else
+  #      do_tunnel wait && system -e -p krdc "rdp://$user@localhost:$port"
+  #  fi
+    do_tunnel close
+}
+
+# ------------------------------------------------------------------------------
+# dolphin with tunneled sftp: [<user>@<host>]
+# ------------------------------------------------------------------------------
+actionFiles() {
+    system -c -e dolphin nc                     # check requirements
+
+    embed -m _centauri_bash_win -n              # no init here
+    windows -e -i 1 -m || return                # force window or fail
+
+    local pssh="22"                             # host port for ssh
+    local ptun="2201"                           # port to tunnel
+    local host="${1##*@}"
+    local user="${1%%@*}"
+    [ "$user" = "$1" ] && user=
+    [ -z "$user" ] && user="${CEN_OPT_USER:-$USER}"
+
+    # short form: no --host, use <host>
+    if [ "$CEN_OPT_HOST" = "$DAT_SERVER_GEN" ] ; then
+        [ -n "$host" ] || error "no <host> specified"
+        CEN_OPT_HOST="$host" ; host="localhost"
+    fi
+
+    error -t || return
+    message -i "sftp '$user@$host:$ptun'  [$CEN_OPT_HOST]"
+
+    do_tunnel open "$ptun" "$host" "$pssh"
+
+    # this is due to a bug in kio-sftp:
+    # system -p ssh-keygen -f "$HOME/.ssh/known_hosts" -R [localhost]:2201
+
+    do_tunnel wait && windows -t "$user@$host [$CEN_OPT_HOST]" -w dolphin "sftp://$user@localhost:$ptun"
+    do_tunnel close
+}
+
+# ------------------------------------------------------------------------------
+# List import: [<clas>]
+# ------------------------------------------------------------------------------
+actionImport() {
+    if netquery server ; then
+        invoke -w "You are on a server, nothing to import" ; return
+    fi
+    local clas="$1" serv="$CEN_OPT_HOST"
+    [ -z "$clas" ] && netquery -s clas class
+
+    folder -m -f -- "$HOME/.ssh" 700
+    if confirm -n -y -f "Import ssh '%s' identity keys from server '%s'" "$clas" "$serv" ; then
+        embed -i -v centaurikeys --host="$serv" import "$clas"
+    elif confirm -n -y "Create new local ssh identities" ; then
+        system -e ssh-keygen -q -t rsa -N '' -f ~/.ssh/id_rsa
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    -C|--com*)
+        optarg "compress"  -                    ;;      # a simple flag
+    -H|--hos|--host)
+        optarg "host"      -             -t     ;;      # text
+    -P|--por|--port)
+        optarg "port"      -             -n     ;;      # a number
+    -S|--sou*)
+        optarg "sound"     -             -o     ;;      # on/off/auto
+    -T|--ter*)
+        optarg "terminal"  CEN_OPT_TERM  -o     ;;      # on/off/auto
+    -U|--use|--user)
+        optarg "user"      -             -t     ;;      # text
+    -X|--[Xx]11)
+        optarg "x11"       -                    ;;      # a simple flag
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    '') [ "${CEN_OPT_USER/@/}" = "$CEN_OPT_USER" ] || do_parse "$CEN_OPT_USER"
+        [ -z "$CEN_OPT_HOST" ] && CEN_OPT_HOST="$DAT_SERVER_GEN"
+        [ -z "$CEN_OPT_HOST" ] && fatal "No known server, please use '--host=<serv>'"
+        [ -z "$DAT_SERVER_GEN" ] && DAT_SERVER_GEN="UNKNOWN"
+        ;;
+
+    *@*)
+        if [ $# = 1 ] ; then
+            invoke 'open'   actionOpen  - - "$1"
+        else
+            do_parse "$1" ; shift
+            invoke 'exec'   actionExec  - - "$@"
+        fi ;;
+
+    bas|bash)
+        invoke 'bash'   -           0   ;;
+    bat*)
+        invoke 'batch'  actionExec  ;;
+    exe*)
+        invoke 'exec'   actionExec  ;;
+    ope|open)
+        invoke 'open'   -           0 1 ;;
+
+    cop|copy|scp)
+        invoke 'copy'   -           2 2 ;;
+    des*|rdp)
+        invoke 'desk'   -           1 2 ;;
+    fil*|ftp|sftp)
+        invoke 'files'  -           0 1 ;;
+    log*)
+        invoke 'login'  -           0 1 ;;
+
+    aut*)
+        invoke 'auth'   -           0   ;;
+    imp*)
+        invoke 'import' -           0 1 ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER This tools tries to pass x11
+       and pulseaudio sound over the connection. For ssh over internet a proxy
+       user and public key authentication are used.
+
+$CEN_USE_OPTIONS
+
+       -H --host <host>     remote maschine to connect to
+       -U --user <user>[@<host>]
+                            connect with this user name
+       -C --compress        force bzip compression    (disables default --x11)
+       -P --port     <port> override default ssh port
+       -S --sound    <mode> Enable/disable pulseaudio sound forwarding
+       -T --terminal <mode> Control ssh PTY use                (default: auto)
+       -X --x11             force X11 forwarding (disables default --compress)
+
+       The --host and --user options get overridden by "<user>@<host>".
+
+       The default options are --x11 and optionally --compress. Compression is
+       automatically enabled if the local machine has no active eth0 interface.
+
+actions:
+       batch   <cmd> <arg>...     # run a command via SSH  (sound/x11 disabled)
+       exec    <cmd> <arg>...     # run a command via SSH   (sound/x11 enabled)
+       bash                       # launch a local login shell (sudo if needed)
+       open    [<user>@][<host>]  # opens a SSH connection to a shell
+
+       copy    <orig> <dest>      # copy (scp), optional proxy user "remote"
+       desk    [<user>@<addr>]    # remote desktop (krdc), proxy user "remote"
+       files   [<user>@][<host>]  # remote sftp via proxy user "remote"
+       login   [<user>@][<host>]  # remote login via proxy user "remote"
+
+       import  [<clas>]           # import keys from server
+       authkeys                   # list authorized keys
+
+action-short-hands:
+       [<user>]@[<host>]    same as open       (overrides --user or --host)
+       [<user>]@[<host>] <cmd> <arg>...
+                            same as exec       (overrides --user or --host)
+
+arguments:
+       <addr>               ip address or dns name on remote side
+       <cmd>                command to be run remotely. This can be a quoted
+                            string that contains options.
+       <arg>...             arguments for remote command. Use the --- separator
+                            if any argument looks like an option.
+       <clas>               host's class, see centaurikeys about host mapping
+       <mode>               can be 'on|off|auto' or '0|1|2'
+       <host>               remote maschine name (default: ${DAT_SERVER_GEN:-<none>})
+       <user>               remote user name     (default: $USER)
+       <port>               ssh port override    (default: 22)
+
+examples:
+                        # connection via proxy, needs --host option ...
+
+       Remote Login  :  $CEN_NAME login --host=alpha-ssh        # prompt user
+                        $CEN_NAME login root@alpha-ssh
+       Remote Desktop:  $CEN_NAME desk --host=alpha-ssh local@alpha6
+       VNC Desktop   :  $CEN_NAME desk --host=alpha-ssh --port=5903 alpha6
+       Filemanager   :  $CEN_NAME files --host=alpha-ssh root@alpha4
+                     :  $CEN_NAME files root@alpha-ssh
+       Copy using scp:  $CEN_NAME copy --host=alpha-ssh ./from root@alpha4:/etc
+                     :  $CEN_NAME copy ./from root@alpha-ssh:/etc
+
+                        # direct ssh connection, no --host option ...
+
+       Remote command:  $CEN_NAME batch --user=root@pokini init 0
+                        $CEN_NAME exec --host pokini "dolphin ~"
+                        $CEN_NAME @pokini "dolphin ~"
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

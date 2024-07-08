@@ -1,0 +1,2083 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_ext = centauri-bash-lib: Filesystem extension
+#
+# Call:     . _centauri_bash_ext
+#
+# Options:  -none-
+#
+#+Some functions of this module call GNU coreutils like **ln**, **mv**, **rm** and
+# others. Their installation folder is usually "/usr/bin" or "/bin". In this
+# documentation "/usr/bin" is used, although the "${CEN_PATHS[1]}" variable (corebin)
+# is checked by [[system()]] and [[sysrun()]] to find the real location of binaries.
+# **CEN_PATHS[1]** can be set to any other folder, depending on the installation,
+# see [[library proxy]] and [[folder()]].
+#
+#+In many cases **ln**, **rm**, **rmdir**, **mkdir** bash builtins can be used
+# to avoid starting extra processes for external commands. See the [[autoload]]
+# documentation. Most functions notably [[move()]], [[remove()]], [[rename()]]
+# and [[symlink()]] are aware of these builtins.
+#
+# Copyright Dr. J. Pfennig (c) 2016-2024
+# ------------------------------------------------------------------------------
+
+CEN_MODULES['_centauri_bash_ext']='0.26:2'
+
+CEN_EXT_TEMP=               # temp file base path, see tmpfile
+CEN_EXT_TIDX=               # ... auto index
+CEN_EXT_TPID=               # ... subshell pid
+CEN_EXT_REALP=              # 0:=use external  1:=use realpath builtin
+
+# ------------------------------------------------------------------------------
+# get logical path (into <logi>): [-e] [-e] <logi> <path>
+#
+# Options:  -e  check for <path> existing
+#           -p  try to generate absolute paths using PWD
+# ------------------------------------------------------------------------------
+_cen_path_pretty() {
+    local _fchk _vnam _fpwd
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -e)   _fchk=1 ;;
+      -p)   _fpwd=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    local -n _vcpp="$1" ; shift ; _vcpp="$1"
+    while true ; do
+        case "$_vcpp" in
+
+        # simple cases and some of their aliases
+        ""|/)           return 0 ;;
+        .|./)           _vcpp="." ; [ -z "$_fpwd" ] && return 0
+                        _vcpp="$PWD" ; return 0 ;;
+        ..|../)         _vcpp=".." ; [ -z "$_fpwd" ] && return 0
+                        _vcpp="${PWD%/*}"
+                        [ -z "$_vcpp" ] && _vcpp="/" ; return 0 ;;
+        //|/.|/..)      _vcpp="/" ; return 0 ;;
+
+        # remove redundant elements
+        ./*)            _vcpp="${_vcpp:2}" ; [ -n "$_fpwd" ] && _vcpp="$PWD/$_vcpp" ;;
+        //*)            _vcpp="${_vcpp:1}" ;;
+        */)             _vcpp="${_vcpp::-1}" ;;
+        */.)            _vcpp="${_vcpp::-2}" ;;
+        */./*|/./*)     _vcpp="${_vcpp/\/.\//\/}" ;;
+        *//*)           _vcpp="${_vcpp/\/\//\/}" ;;
+
+        # parent (this must be last in case)
+        ../*)           [ -z "$_fpwd" ] && break
+                        _vcpp="${PWD%/*}${_vcpp:2}" ; break ;;
+
+        *)              [ -z "$_fpwd" -o "${_vcpp::1}" = "/" ] && break
+                        _vcpp="$PWD/$_vcpp"
+        esac
+    done
+
+    [ -z "$_fchk" ] && return 0
+    [ "$1" -ef "$_vcpp" ]               # return status
+}
+
+# ------------------------------------------------------------------------------
+# regex replace path (in _logi): <filter> <path> (path must exist)
+# ------------------------------------------------------------------------------
+_cen_path_regex() {
+    # check candidate against path
+    _cen_path_regck() {
+        #echo "MATCH $1"
+        local _path="$1" _item _iarg=1
+        for _item in "${BASH_REMATCH[@]:1}" ; do
+            #echo "ITEM $_iarg $_item"
+            _path="${_path//%$_iarg/$_item}"
+            ((_iarg += 1))
+        done
+        [ "$_logi" -ef "$_path" ] || return 1
+        _logi="$_path" ; return 0
+    }
+
+    # pre-checks
+    local _fltr="$1" ; _logi="$2"
+    case "$_logi" in
+        /)      return 0 ;;
+        /*/)    _logi="${_logi::-1}" ;;
+        /*)     ;;
+        *)      return 0
+    esac
+    [ -e "$_logi" ] || return 0
+
+    # loop over regular expressions
+    local _item _path _sifs="$IFS"
+    set -f
+    for _item in "${CEN_PATH_REXP[@]}" ; do
+        IFS=$'\a' ; set -- $_item ; IFS="$_sifs"
+        [ "$_fltr" = "$1" ] || continue
+        [[ "$_logi" =~ $2 ]] || continue
+        shift 2
+        for _path in  "$@" ; do         # loop over paths
+            _cen_path_regck "$_path" || continue
+            _item= ; break
+        done
+        [ -z "$_item" ] && break
+    done
+    set +f ; return 0
+}
+
+# ------------------------------------------------------------------------------
+# Left trim path (in _logi): <trim> [<path>]
+# ------------------------------------------------------------------------------
+_cen_path_ltrim() {
+    [ -n "$2" ] && _logi="$2"
+    [ -z "$1" ] && return 1
+    if [ "$1" = "$2" ] ; then       # same paths -> .
+        _logi="." ; return 0
+    fi
+    local _leng="${#1}"
+    [ "${_logi:_leng:1}" = "/" ] || return 1
+    [ "${_logi::_leng}" = "$1" ] || return 1
+    _logi="${_logi:_leng+1}" ; return 0
+}
+
+# ------------------------------------------------------------------------------
+# Get full path, canonicalize, read link: -a|-c|-l <path>           (sets _logi)
+# ------------------------------------------------------------------------------
+_cen_path_realp() {
+    local _exro _retr _rslt _opta
+    _logi=
+    case "$CEN_EXT_REALP$1" in
+
+    # run commands or builins
+    0-a)    _exro+=(realpath -s) ;;                     # cannot use readlink here
+    1-a)    _exro+=(realpath -s) ; _opta=1 ; _retr=1 ;; # fails for all invalid links
+
+    0-c)    _exro+=(readlink -m) ;;
+    1-c)    _exro+=(realpath) ; _opta=1 ; _retr=1  ;;   # fails for all invalid links
+
+    ?-l)    if   [ -e "$2" ] ; then _exro+=(readlink)
+            elif [ -h "$2" ] ; then _exro+=(readlink)
+            else               return 1 ; fi ;;
+
+    # check if builtin can be loaded
+    -*)     CEN_EXT_REALP=0
+            if [ -n "$CEN_FEATURE_A" ] ; then
+                # set cache and flag if builtin can be loaded
+                if _cen_dyn_builtin 'realpath' >/dev/null ; then
+                    CEN_COMMANDS['realpath']='-' ;CEN_EXT_REALP=1
+                fi
+            fi
+            _cen_path_realp "$@"
+            return ;;
+      *)    _cen_abort - "$CEN_EXT_REALP$_olow"
+    esac
+
+    if [ -n "$_opta" ] ; then                   # direct call...
+        _exro+=(-q -a _rslt -- "$2")
+        [ "$CEN_VERB" -gt 1 ] && dryrun -r "builtin" "${_exro[@]}"
+        builtin "${_exro[@]}" &>/dev/null && _retr=0
+    else
+        sysrun -q -r -a _rslt -b "${_exro[@]}" -- "$2" && _retr=0
+    fi
+
+    # retry with readlink -m as fallback
+    if [ "$_retr" = 1 ] ; then
+        sysrun -q -r -a _rslt -b -- readlink -m -- "$2" && _retr=0
+    fi
+
+    [ "$_retr" = 0 ] || return 1
+    _logi="$_rslt" ; return 0
+}
+
+# ------------------------------------------------------------------------------
+# copy - Copy files/folders using coreutils /usr/bin/cp
+#
+# Call:     copy <opt>... <source>... <dest>
+#
+# Options:  -a  recurse/archive (**/usr/bin/cp -a**)
+#           -f  make errors fatal
+#           -n  disable ''copy-on-write'' (**/usr/bin/cp** --reflink=never)
+#           -o  enable  ''copy-on-write'' (**/usr/bin/cp** --reflink=auto)
+#           -q  do not report errors
+#           -r  ignore --dryrun
+#           -s  no trace messages
+#           -u  update (**/usr/bin/cp** -u)
+#           -v  generate messages (default is trace)
+#           -x  remove destination before ''copy'' (**/usr/bin/rm** -r)
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#+This is a conveniency wrapper for coreutils **/usr/bin/cp** that provides some
+# extra reporting and error handling.
+#
+#+In newer versions for gnu coreutils ''copy-on-write'' is enabled by default.
+# ------------------------------------------------------------------------------
+copy() {
+    local _oflg='-e -p' _oerr='error' _omsg="$CEN_TRACE" _oarc _ocow _oupd _olis _odes _orem
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   _oarc="-a" ;;
+      -f)   _oerr='fatal' ; _oflg='-f -p' ;;
+      -n)   _ocow="--reflink=never" ;;
+      -o)   _ocow="--reflink=auto" ;;
+      -q)   _oerr="$CEN_TRACE" ; _oflg='-q' ;;
+      -r)   _orun="-r" ;;
+      -s)   _omsg=: ;;
+      -u)   _oupd="-u" ;;
+      -v)   _omsg=message ;;
+      -x)   _orem=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    if [ $# = 2 ] ; then
+        _olis="$1" ; _odes="$2"
+    elif [ $# -lt 2 ] ; then
+        _cen_abort $"Missing arg(s)"
+    else
+        _olis=("${@:1:$#-1}") ; _odes="${@:$#}"
+        if [ ! -d "$_odes" ] ; then
+            $_oerr $"Copy destination is not a folder"": $_odes" ; return 2
+        fi
+    fi
+
+    if [ -e "$_odes" ] ; then
+        if [ -n "$_orem" ] ; then
+            $_omsg -a $"Removing destination before copy"": $_odes"
+            remove $_orun ${_oflg/-p/} -d -- "$_odes" || return 1
+        elif [ ! -w "$_odes" ] ; then
+            $_oerr $"Copy destination is not a writable"": $_odes" ; return 1
+        fi
+    fi
+
+    if [ $# -gt 2 ] ; then
+        $_omsg -a -p $"Copying %d item to '%s'" "${#_olis[*]}" "$_odes"
+    else
+        $_omsg -a -p $"Copying '%s' to '%s'" "${_olis[*]}" "$_odes"
+    fi
+    sysrun $_oflg $_orun -b -o 'copy()' -- \
+           cp $_oarc $_ocow $_oupd -- "${_olis[@]}" "$_odes" && return 0
+    [ -n "$CEN_OPT_DRYRUN" ]                     # --dryrun always returns 0
+}
+
+# ------------------------------------------------------------------------------
+# joinpath - Build a path name from components
+#
+# Call:     joinpath [-s <rslt>] [-n] [-e <extn>] <elem>...
+#
+# Options:  -c  canonicalize path (using **/usr/bin/readlink**)
+#           -d  add extension only as default
+#           -e  add extension (ignored if "."), see [[suffixpath()]]
+#           -p  prettify path, see [[prettypath()]]
+#           -r  all elements are relative
+#           -s  save result to <rslt> (default is CEN_JOINPATH)
+#
+#.Examples: joinpath    /base more    # =>  /base/more
+#.          joinpath    /base /more   # =>  /more
+#.          joinpath -r /base /more   # =>  /base/more
+#
+#.          joinpath    -e xml /dir file       # =>  /dir/file.xml
+#.          joinpath    -e xml /dir file.html  # =>  /dir/file.html.xml
+#.          joinpath -d -e xml /dir file.html  # =>  /dir/file.html
+# ------------------------------------------------------------------------------
+CEN_JOINPATH=
+joinpath() {
+    local _fset="CEN_JOINPATH" _oabs _orel _opre _odef _opte _path _elem
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   _oabs=1 ;;
+      -c)   _opre="-q -c" ;;
+      -d)   _odef="-d" ;;
+      -e)   shift ; _opte="$1" ;;
+      -p)   _opre="-q" ;;
+      -r)   _orel=1 ;;
+      -s)   shift ; _fset="$1" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    local -n _varg="$_fset" ; _varg=
+
+    while [ "$#" -gt 0 ] ; do
+        if [ -z "$1" ] ; then
+            :
+        elif [ -z "$_path" ] ; then
+            _path="$1"
+        elif [ "${1::2}" = "./" ] ; then
+            if [ -n "$_oabs" ] ; then
+                _path+="${1:1}"
+            elif [ -z "$_orel" ] ; then
+                _path="${1:2}"
+            else
+                _path+="/$1"
+            fi
+        elif [ "${1::1}" = "/" ] ; then
+            [ -z "$_orel" ] && _path=
+            _path+="$1"
+        else
+            _path+="/$1"
+        fi ; shift ; [ "$_path" = "/" ] || _path="${_path%/}"
+    done
+
+    _path="${_path//\/\//\/}"           # //  => /
+    _path="${_path//\/.\//\/}"          # /./ => /
+
+    [ "${_opte:-.}" != "." ] && suffixpath -s _path $_odef -- "$_opte"
+
+    _path="${_path:-.}"
+    [ -n "$_opre" ] && prettypath $_opre -s _path -- "$_path"
+    _varg="$_path"
+}
+
+# ------------------------------------------------------------------------------
+# matchpath - Match argument paths by type and access permission
+#
+# Call:    matchpath [-a|-s <rslt>] [-c <func>] [-d|-e|-f|-l|-n] [-m] [-o] [-p] \
+#                    [-r|-w|-x]... [--] <path>...
+#
+#          Simple filtering of paths, no recursion. See also: [[walk()]].
+#
+# Options: -a  name of result array variable
+#          -c  call <func> for accepted item, ignore item on failure
+#          -d  match folders only
+#          -e  match existing paths only
+#          -f  match files only
+#          -l  match symlink (including stale symlink)
+#          -m  match against --include/--exclude
+#          -n  match non-existing paths only (finds stale links)
+#          -o  return first match only
+#          -p  run prettypath on matches
+#          -r  path must be readable
+#          -s  name of result string variable (LF seperated)
+#          -w  path must be writable
+#          -x  path must be executable
+#
+# Return:   **true** if at least one file did match or **false** otherwise.
+#
+#.Examples: # get alternatives
+#.          matchpath -o ~/."$CEN_NAME" "/etc/default/$CEN_NAME"
+#.          message "Got:" "${CEN_MATCHPATH:--nothing-}"
+#
+#.          # get a list of files, report count
+#.          matchpath -a list -f -r -- *.c *.cpp *.h
+#.          pluralize -z -c 2 -- "${#list[@]}" 'file'
+#
+#.          # matching glob patterns
+#.          CEN_OPT_INCLEXCL=()                 # clear filter list
+#.          optarg - - -x '*.bak'               # exclude: *.bak
+#.          optarg - - -i '^centauri*'          # include: centauri*
+#.          matchpath -f -m -- *
+#
+#.          # use enumerator/filter callback
+#.          my_filter() {
+#.              [ -h "$1" ] || return 0         # accepted, good
+#.              message "Ignore symlink:" "$1" ; return 1
+#.          }
+#.          matchpath -a list -c my_filter -- * || quit "No match"
+# ------------------------------------------------------------------------------
+CEN_MATCHPATH=
+matchpath() {
+    local _oarr _ostr _oone _opre _otyp _orea _owri _oexe _scal=':' _smat=':'
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _oarr="$1" ;;
+      -c)   shift ; isfunction -f -- "$1" ; _scal="$1" ;;
+      -d)   _otyp='-d' ;;
+      -e)   _otyp='-e' ;;
+      -f)   _otyp='-f' ;;
+      -l)   _otyp='-h' ;;
+      -m)   _smat='filter' ;;
+      -n)   _otyp='! -e' ;;
+      -o)   _oone=1 ;;
+      -p)   _opre=1 ;;
+      -r)   _orea=1 ;;
+      -s)   shift ; _ostr="$1" ; _oarr='_cen_ext_matchpath' ;;
+      -w)   _owri=1 ;;
+      -x)   _oexe=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    local -n _varr="${_oarr:-CEN_MATCHPATH}" ; _varr=()
+
+    local _item _stat=1
+    for _item in "$@" ; do
+        $_smat -- "$_item" || continue
+        if [ -n "$_otyp" ] ; then
+            [ $_otyp "$_item" ] || continue
+        fi
+        if [ -n "$_orea" ] ; then
+            [ -r "$_item" ] || continue
+        fi
+        if [ -n "$_owri" ] ; then
+            [ -w "$_item" ] || continue
+        fi
+        if [ -n "$_oexe" ] ; then
+            [ -x "$_item" ] || continue
+        fi
+        _stat=0
+        [ -n "$_opre" ] && _cen_path_pretty -p _item "$_item"
+        $_scal "$_item" || continue
+        _varr+=("$_item")
+        [ -n "$_oone" ] && break
+    done
+
+    # create result string from array
+    if [ -n "$_ostr" ] ; then
+        if [ "${#_varr[@]}" -le 1 ] ; then
+            local -n _rslt="$_ostr" ; _rslt="$_varr"
+        else
+            splitjoin -j "$_ostr" -d '\n' -i "$_oarr"
+        fi
+    fi
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# move - Move (or rename) files or folders using /usr/bin/mv
+#
+# Call:    move [-f] [-o|-x] [-q|-s|-v] [-r] <src>... <dest>
+#
+# Options: -f  make errors fatal
+#          -o  try to overwrite readonly <dest>
+#          -q  do not report errors
+#          -r  ignore --dryrun
+#          -s  do not report via [[message()]] or [[trace()]]
+#          -v  report via [[message()]] (default is [[trace()]])
+#          -x  remove destination before ''move'' (implies -o)
+#
+# Return:  **true** at success or **false** otherwise.
+#
+#+This is a conveniency wrapper for **/usr/bin/mv** that provides some extra
+# reporting and error handling. Unlike [[rename()]] the move function accepts
+# multiple <src> arguments if <dest> is a folder.
+#
+# +Option -o will try to remove a readonly <dest> and option -x will
+# unconditionally try to remove <dest>. If more than two arguments are passed
+# <dest> must be a folder. In this case -o and -x are disabled.
+# ------------------------------------------------------------------------------
+move() {
+    local _oftl _orep _orun _osys="-e -p" _oerr=error _omsg="$CEN_TRACE"
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -f)   _oftl="-f" ; _osys="-f -p" ; _oerr=fatal ;;
+      -o)   _orem=1 ;;
+      -q)   _orep="-q" ; _osys="-q" ; _oerr="$CEN_TRACE" ;;
+      -r)   _orun="-r" ;;
+      -s)   _orep="-s" ; _omsg=: ;;
+      -v)   _orep="-v" ; _omsg=message ;;
+      -x)   _orem=2 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    local _dest="$2"
+    if [ $# -gt 2 ] ; then
+        _dest="${@:$#}" ; _orem=                # cannot remove dest folder
+        if [ ! -d "$_dest" ] ; then
+            $_oerr $"Move destination is not a folder:" "$_dest" ; return 1
+        fi
+    elif [ $# -lt 2 ] ; then
+        _cen_abort $"Missing arg(s)"
+    fi
+
+    if [ -e "$_dest" ] ; then
+        if [ -z "$_orem" ] ; then
+            if [ ! -w "$_dest" ] ; then
+                $_oerr $"Move destination not writable:" "$_dest" ; return 1
+            fi
+        elif [ "$_orem" = 2 ] ; then
+            [ "$_osmg" = ":" ] || $CEN_TRACE -a $"Removing destination before move:" "$_dest"
+            remove $_oftl $_orun $_orep -d -- "$_dest" || return 1     # may use builtins
+        fi
+    fi
+
+    $_omsg -a -p $"Moving '%s' to '%s'" "${*:1:$#-1}" "$_dest"
+
+    sysrun $_orun $_osys -b -o 'move()' -- mv -f -- "${@:1:$#-1}" "$_dest" && return 0
+    [ -n "$CEN_OPT_DRYRUN" ]                     # --dryrun always returns 0
+}
+
+# ------------------------------------------------------------------------------
+# prettypath - Get pretty/canonical/real path of a file or folder
+#
+# Call:      prettypath [-f|-q|-w] [-e] [-s <var>] [-t <trm>]
+#                       [-n] [-b] [-c|-l] [-p] [--] [<path>]
+#
+# Options:  -b  get dirname of argument (strip trailing file name)
+#           -c  canonicalize path (return full physical path)
+#           -e  <path> must exist
+#           -f  errors are made fatal
+#           -l  read symlink but do not canonicalize (return logical path)
+#           -n  network (abstract) path, see **repath** in **centauri-bash-lib**
+#           -p  physical path, do not apply **repath** expressions
+#           -q  output no error messages
+#           -s  save path to <var> (default is CEN_PRETTYPATH)
+#           -t  trim prefix from result path
+#           -w  errors are reported as warnings
+#
+# Arguments:<path>  the path name to be prettified
+#           <var>   prettified path  -or-  empty in failure
+#           <trm>   remove any leading <trm>**/** from result <path>s
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#+As indicated by it's name the function tries to return pretty path names by
+# normalizing and by applying 'repath' expressions. The later are part of the
+# library and can be defined in the [library] section of the "centauri-bash-lib"
+# configuration file. The data is compiled into the proxy at installation time.
+#
+#+Repath expressions are 'regular°expressions' that can replace matches in a
+# path.
+#
+#+If option -c is given, the function first uses the **/usr/bin/readlink** to
+# resolve any symlinks in the path. Otherwise the path is only normalized (which
+# is faster than using -c). This may lead to different results:
+#
+#.          ln -s /dev/shm /tmp
+#.          prettypath       -- /dev/shm/.      # result is: /tmp   (by repath)
+#.          prettypath -p    -- /dev/shm/.      # result is: /dev/shm
+#.          prettypath -b -c -- /tmp/..         # result is: /dev
+#.          prettypath -b    -- /tmp/..         # result is: /
+#
+#+If option -b, -c or -p are given, the function uses the **/usr/bin/readlink**
+# command. Otherwise the function applies some heuristics to prettify the result.
+#
+# Examples: prettify path, strip working folder path
+#.          prettypath -t "$PWD" -- "$1"
+#.          message "Path:" "$CEN_PRETTYPATH"
+#
+#           prettify but do not apply repath expressions
+#.          local path
+#.          prettypath -p -s path -- "$1"
+# ------------------------------------------------------------------------------
+CEN_PRETTYPATH=
+prettypath() {
+    local _ocan _oerr="error" _oexi _obas _otrm _logi _phys
+    local _fset="CEN_PRETTYPATH" _fltr="-l"
+    while [ "${1::1}" = '-' ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -b)   _obas=1 ;;
+        -c)   _ocan=2 ;;
+        -e)   _oexi=1 ;;
+        -f)   _oerr="fatal" ;;
+        -l)   _ocan=1 ;;
+        -n)   _fltr="-n" ;;
+        -p)   _phys=1 ;;
+        -q)   _oerr=":" ;;
+        -s)   shift ; _fset="$1" ;;
+        -t)   shift ; _otrm="$1" ;;
+        -w)   _oerr="warning" ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+    local -n _varg="$_fset" ; [ $# = 0 ] && set -- "$_varg"
+    _varg=
+
+    if [ -n "$_oexi" ] ; then
+        if [ ! -e "$1" ] ; then
+            $_oerr $"No such file or folder:" "$1" ; _varg= ; return 1
+        fi
+    fi
+
+    if [ "$_ocan" = 1 ] ; then                      # read symlink
+        _cen_path_realp -l "$1" && _varg="$_logi"
+    elif [ -n "$_ocan" ] ; then                     # canonicalize
+        _cen_path_realp -c "$1" && _varg="$_logi"
+    else                                            # prettify
+        _cen_path_pretty -p "$_fset" "$1"
+        if [[ "$_varg" == *..* ]] ; then            # must canonicalize path ...
+            _cen_path_realp -a "$1" && _varg="$_logi"
+        fi
+    fi
+
+    if [ -n "$_obas" ] ; then                       # base folder
+        _varg="${_varg%/*}" ; [ -z "$_varg" ] && _varg="/"
+    fi
+
+    if [ -z "$_phys" ] ; then                       # apply repath expressions
+        _cen_path_regex "$_fltr" "${_varg:-$1}" ; _varg="$_logi"
+    fi
+    _cen_path_ltrim "$_otrm" "$_varg" && _varg="$_logi"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# readline - read a single line of text
+#
+# Call:     readline [-e|-f|-w] [-h <hnum>|-i <file>] [-q] [-a|-s <vnam>] [-x]
+#
+# Options:  -a  save data to array
+#           -e  report errors
+#           -f  make errors fatal
+#           -h  input from file handle
+#           -i  input file path
+#           -q  no trace messages
+#           -s  save data to variable (default: CEN_READLINE)
+#           -w  report errors as warnings
+#           -x  create a message for non-existing input file
+#
+# Arguments:<file>  file path
+#           <hnum>  handle number
+#           <vnam>  variable name
+#
+# Return:   0   success
+#           1   error
+#           2   not a readable file (only without option -x)
+# ------------------------------------------------------------------------------
+CEN_READLINE=
+readline() {
+    local _oerr='trace' _finp _oqui= _oarr _oexi _vnam='CEN_READLINE' _mesg
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _vnam="$1" ; _oarr='-a' ;;
+      -e)   _oerr='error' ;;
+      -f)   _oerr='fatal' ;;
+      -h)   shift ; _finp="/dev/fd/$1" ;;
+      -i)   shift ; _finp="$1" ;;
+      -q)   _oqui=1 ;;
+      -s)   shift ; _vnam="$1" ; _oarr= ;;
+      -w)   _oerr='warning' ;;
+      -x)   _oexi=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    if [ ! -r "$_finp" ] ; then
+        [ -z "$_oexi" ] && return 2
+        _mesg=$"Cannot read from:"" $_finp"
+    elif ! read $_oarr $_vnam <"$_finp" &>/dev/null ; then
+        _mesg=$"Failed to read from:"" $_finp"
+    elif [ -z "$_oqui" ] ; then
+        trace -a -c ' file OK' -- "$_finp"
+    fi
+
+    [ -z "$_mesg" ] && return 0
+    $_oerr -- "$_mesg" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# redirect - Open/close file handle for input/output
+#
+# Call:     redirect [-q] [-h <num> | -v <var>] -o|-x <file>    # for write
+#           redirect [-q] [-h <num> | -v <var>] -a <file>       # for append
+#           redirect [-q] [-h <num> | -v <var>] -i <file>       # for read
+#           redirect [-q] [-h <num> | -v <var>]                 # close
+#           redirect [-q] -f <var>                              # get free handle
+#
+# Options:  -a  append to output         (<file> **-** for stdout, **+** to prompt)
+#           -f  [*] save free handle to <var>
+#           -h  [*] use handle <num>
+#           -i  redirect input to file   (<file> **-** for stdin,  **+** to prompt)
+#           -o  redirect output to file  (<file> **-** for stdout, **+** to prompt)
+#           -q  quiet, no error messages
+#           -s  do not generate trace messages
+#           -v  [*] save/get handle to/from <var>
+#           -x  don't ask if output can be overridden
+#
+#           [*] these options are mutually exclusive
+#
+# Variables:<file>   file path or "-" or "+"
+#           <num>    handle number
+#           <var>    variable to save handle
+#
+#+Return:   **true** at success or **false** otherwise. After a successfull open
+#           the variable CEN_REDIRECT contains the canonicalized file path.
+#
+#.Examples: redirect -h 4 -i /etc/fstab     # open handle 4 for read
+#.          read -u 4 ...
+#.          redirect -h 4                   # close handle 4
+#
+#.          redirect -v fhan -o +           # open for write, handle in fhan
+#.          echo one >&$fhan                # always use > (it appends)
+#.          echo two >&$fhan                # second output line
+#.          redirect -v fhan                # closes handle from fhan
+#
+#+The function can attempt to find a free file handle, but this is not
+# thread-safe (bash subshell or co-process).
+#
+#+The ">>&" cannot be used with handle variables (syntax error). Open the
+# handle for append (using -a) and always use the ">&" operator for write.
+#
+#+Options -a|-i|-o depend on module [[_centauri_bash_iom]] which is loaded
+# on demand.
+# ------------------------------------------------------------------------------
+CEN_REDIRECT=
+redirect() {
+    local _sinp _sout _ocnt=0 _oapp _ofnd _osav _hndl _oaop='>' _oerr='error -z' _otra="$CEN_TRACE"
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _sout="${1:--}" ; _oapp="-a" _oaop=">>" ;;
+      -f)   shift ; ((_ocnt += 1)) ; _osav="${1:--}" ; _ofnd=1 ;;
+      -h)   shift ; ((_ocnt += 1)) ; _hndl="$1" ;;
+      -i)   shift ; _sinp="${1:--}" ;;
+      -o)   shift ; _sout="${1:--}" ;;
+      -q)   _oerr="$CEN_TRACE" ;;
+      -s)   _otra=: ;;
+      -v)   shift ; ((_ocnt += 1)) ; _osav="${1:--}" ;;
+      -x)   shift ; _sout="${1:--}" ; _oapp="-a" _oaop=">" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ "$_ocnt" = 1 ] || _cen_abort - '-f|-h|-v'
+    local -n _ovar ; [ -n "$_osav" ] && _ovar="$_osav"
+
+    # close handle
+    if [ -z "$_sinp$_sout$_ofnd" ] ; then
+        if [ -n "$_osav" ] ; then
+            _hndl="$_ovar" ; _ovar=
+        fi
+        CEN_REDIRECT=
+        [ -z "$_hndl" ] && return 0
+        [ -e "/dev/fd/$_hndl" ] || return 0
+        $_otra -a "redirect:" $"closing file handle:" "$_hndl"
+        [ "$CEN_VERB" -gt 2 ] && dryrun -r "exec $_hndl>&-"
+        eval exec "$_hndl>&-" ; return
+    fi
+
+    # search free handle
+    if [ -n "$_ofnd" -o -z "$_hndl" ] ; then
+        [ -n "$_osav" ] && _ovar=
+        if [ -n "$_hndl" ] ; then
+            if [ -e "/dev/fd/$_hndl" ] ; then
+                $_oerr -p $"File handle %s is in use" "$_hndl" ; return 1
+            fi
+        elif [ -z "$_osav" ] ; then
+            $_oerr $"Got no variable to save file handle" ; return 1
+        else
+            _cen_handle _hndl
+            $_otra -a "redirect:" $"found file handle:" "$_hndl" "${_sinp:-$_sout}"
+            _ovar="$_hndl" ; [ -n "$_ofnd" ] && return 0
+        fi
+    fi
+
+    # open a file
+    [ -n "$_osav" ] && _ovar=
+    if [ -n "$_sinp" ] ; then
+        CEN_REDIRECT=
+        embed -r -m '_centauri_bash_iom'        # uglify: do not pull in the iom module
+        inpfile -e -f -l -s CEN_REDIRECT -- "$_sinp" || return 1
+        [ "$CEN_VERB" -gt 2 ] &&  dryrun -r "exec $_hndl<$CEN_REDIRECT"
+        eval exec "$_hndl<'$CEN_REDIRECT'" || return 1
+    elif [ -n "$_sout" ] ; then
+        CEN_REDIRECT=
+        embed -r -m '_centauri_bash_iom'        # uglify: ...
+        outfile $_oapp -f -l -s CEN_REDIRECT -- "$_sout" || return 1
+        [ "$CEN_VERB" -gt 2 ] &&  dryrun -r "exec $_hndl$_oaop'$CEN_REDIRECT'"
+        eval exec "$_hndl$_oaop'$CEN_REDIRECT'" || return 1
+    fi
+    [ -n "$_osav" ] && _ovar="$_hndl" ; return 0
+}
+
+# ------------------------------------------------------------------------------
+# remove - Remove files or folders using rm, rmdir coreutil or builtin
+#
+# Call:     remove [-d] [-e] [-o] [-r] [-f|-q] [-s|-v] <path>...
+#
+# Options:  -d  recurse folders (like using "/usr/bin/rm -r")
+#           -e  files/dirs must exist (default is "/usr/bin/rm -f")
+#           -f  make errors fatal
+#           -o  add option **--one-file-system** to **rm** command
+#           -q  do not output error messages
+#           -r  ignore --dryrun
+#           -s  do not report activity via [[trace()]]
+#           -v  report via [[message()]] (default is [[trace()]])
+#
+#+Notes:    Does implicitly ''remove'' a folder (without -d option with a single
+#           argument that is a folder):
+#
+#.          remove <dir>        # (1 arg) will run "/usr/bin/rmdir <dir>"
+#.                              # resulting in error for non-empty dir.
+#.          remove .. <dir> ..  # (n args) will generate an error by "/usr/bin/rm"
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#+This is a conveniency wrapper for **unlink**, **rm** and **rmdir** that provides
+# some extra reporting and error handling. The implementation is aware of simple
+# cases so that the bash builtins **unlink** and **rmdir** can be used (if enabled
+# via [[autoload]]). If the number of arguments is > 1 the function always calls
+# **rm** without any further checks.
+# ------------------------------------------------------------------------------
+remove() {
+    local _oerr="-e -p" _orec _ofrc="-f" _oone _orun _omsg="$CEN_TRACE" _oitm=$"file" _smpl
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -d)   _orec="-r" ;;
+      -e)   _ofrc= ;;
+      -f)   _oerr="-f -p" ;;
+      -o)   _oone="--one-file-system" ;;
+      -q)   _oerr="-q" ;;
+      -r)   _orun="-r" ;;
+      -s)   _omsg=: ;;
+      -v)   _omsg=message ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # single argument - allow rmdir and unlink bash builtins
+    if [ $# = 1 ] ; then
+        [ "${1:--}" = '-' ] && return 0
+        if [ -h "$1" ] ; then                   # symlink - use unlink
+            _oitm=$"symlink" ; _smpl=unlink
+        elif [ -d "$1" ] ; then
+            _oitm=$"folder"
+            [ -z "$_orec" ] && _smpl=rmdir      # non-recursive - use rmdir
+        elif [ ! -e "$1" ] ; then
+            return 0
+        else
+            _smpl=unlink                        # simple - use unlink
+        fi
+    elif [ $# = 0 ] ; then
+        return 0
+    else                                        # use coreutils remove
+        _oitm=$"entries"
+    fi
+    $_omsg -a -c " $_oitm" -- "$*"
+
+    # bash builtins might be unable to handle options or -- . Also: use </dev/null
+    # to avoid interactive mode of rm (will delete readonly files like with -f) ...
+
+    if [ -n "$_oone" ] ; then
+        sysrun $_oerr $_orun -i -- rm $_oone $_orec $_ofrc -- </dev/null "$@" && return 0
+    elif [ -n "$_smpl" ] ; then
+        sysrun $_oerr $_orun -d -b -o "$_oitm" \
+               -m $"Cannot remove %s: %s" -- $_smpl -- "$1" && return 0
+    else
+        sysrun $_oerr $_orun -b -- rm $_orec $_ofrc -- "$@" </dev/null && return 0
+    fi
+    [ -n "$CEN_OPT_DRYRUN" ]                     # --dryrun always returns 0
+}
+
+# ------------------------------------------------------------------------------
+# rename - Rename (or move) a file or folder using /usr/bin/mv
+#
+# Call:    (1) rename [-f] [-o|-x] [-q|-s|-v] [-r] <src> <des>
+#          (2) rename [-b <suff>] [-f] [-q|-s|-v] [-r] <src>
+#
+#          Form (2) renames <src> to <src>.bak or <src>.<suff>
+#
+# Options: -b  make backup '<src>.<suf>' (no <des> argument allowed)
+#          -f  make errors fatal
+#          -m  source file/folder may be missing (no error message)
+#          -o  allow to replace an existing file
+#          -q  do not report errors
+#          -r  ignore --dryrun
+#          -s  do not report via [[message()]] or [[trace()]]
+#          -v  report via [[message()]] (default is [[trace()]])
+#          -x  allow to replace an existing folder (implies -o)
+#
+# Arguments:<des>   new name or location
+#           <src>   current name or location
+#           <suff>  backup suffix (default: 'bak')
+#
+# Return:  **true** at success or **false** otherwise.
+#
+#+This is a conveniency wrapper for **/usr/bin/mv** that provides some extra
+# reporting and error handling. Only one <src> argument is supported and the
+# function fails if <des> exists and neither option -o or -x are given.
+# ------------------------------------------------------------------------------
+rename() {
+    local _oftl _omis _orep _orun _osys='-e -p' _oerr=error _omsg="$CEN_TRACE" _suff
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -b)   shift ; _suff="${1#.}" ; _orem=1 ;;
+      -f)   _oftl="-f" ; _osys='-f -p' ; _oerr=fatal ;;
+      -m)   _omis=1 ;;
+      -o)   _orem=1 ;;
+      -q)   _orep="-q" ; _osys='-q' ; _oerr="$CEN_TRACE" ;;
+      -r)   _orun="-r" ;;
+      -s)   _orep="-s" ; _omsg=: ;;
+      -v)   _orep="-v" ; _omsg=message ;;
+      -x)   _orem=2 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    if [ -n "$_omis" ] ; then
+        [ -e "$1" -o -h "$1" ] || return 0
+    fi
+    [ "$#" = 1 -a -z "$_suff" ] && _suff='bak'
+
+    local _dest="$2"
+    if [ -n "$_suff" -a $# -ge 1 ] ; then
+        [ $# -gt 1 ] && _cen_abort $"Extra arg(s)" "$_dest"
+        [ -e "$1" ] || return 0
+        _dest="$1.$_suff" ; _orem=1
+    elif [ $# -gt 2 ] ; then
+        _cen_abort $"Extra arg(s)" "$*"
+    elif [ $# -lt 2 ] ; then
+        _cen_abort $"Missing arg(s)"
+    fi
+
+    if [ -e "$_dest" ] || [ -h "$_dest" ] ; then
+        if [ -z "$_orem" ] ; then
+            $_oerr $"Rename destination exists:" "$_dest" ; return 1
+        elif [ -d "$_dest" ] ; then
+            if [ "$_orem" != 2 ] ; then
+                $_oerr $"Rename destination is a folder:" "$_dest" ; return 1
+            fi
+            [ "$_osmg" = ":" ] || $CEN_TRACE -a $"Removing destination before rename:" "$_dest"
+            remove $_oftl $_orun $_orep -d -- "$_dest" || return 1     # may use builtins
+        fi
+    fi
+
+    $_omsg -a -c " " -- "$1 => $_dest"
+    sysrun -b $_orun $_osys -- mv -f -- "$1" "$_dest" && return 0
+    [ -n "$CEN_OPT_DRYRUN" ]                     # --dryrun always returns 0
+}
+
+# ------------------------------------------------------------------------------
+# resolve - Resolve and prettify (multiple) file/dir paths
+#
+# Call:     resolve [-a <arr>|-s <var>] [-t <trm>] [-e] [-f|-q] [-c|-l|-m] [-p] <path>...
+#           resolve [-s <var>] [-e] [-f|-q] [-c|-l|-m] [-p] -x|-y <exe>
+#
+# Options:  -a  save result to array <arr> (default is CEN_RESOLVE)
+#           -c  canonicalize, ignore missing <path>s
+#           -e  error if <path>s does not exist
+#           -f  make errors fatal
+#           -l  read symlink(s) but do not canonicalize
+#           -m  canonicalize, including missing <path>s
+#           -s  save result to <var> (default is CEN_RESOLVE)
+#           -t  trim prefix from result paths
+#           -f  make errors fatal
+#           -p  return pretty name, see [[prettypath()]]
+#           -q  do not report errors
+#           -x  locate an executable file using PATH and BASH_ARGV0
+#           -y  like -x but locate any file
+#
+# Arguments:<path>  any symlink, file or folder. All <path> args are
+#           °       resolved at once by a single call to **/usr/bin/readlink**
+#           <exe>   name of an executable file or script
+#           <arr>   result array
+#           <var>   result string (one line per <path>)
+#           <trm>   remove any leading <trm>**/** from result <path>s
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#+In contrast to [[prettypath()]] this function calls **/usr/bin/readlink**
+# (unless option -p is used). Also it can pass multiple <path> args at once.
+#
+#+If option -p is given, the function prettifies the result paths in the same
+# way as [[prettypath()]] does. This option overrides option -m and only
+# existing paths will be returned.
+#
+#+Options -x/-y search $CEN_TOOLS, $CEN_LIBRARY and the BASH_ARGV0 basedir.
+# A script can use this to get the invocating path or a file in the library
+# or the same folder as the invocating path.
+#
+#.Examples: # check a list and return pretty names (don't call readlink)
+#.          resolve -e -m -p -- here/* and/there*
+#
+#.          # check a list and return resolved paths
+#.          resolve -e -m -- here/* and/there*
+#
+#.          # generate error messages for missing items
+#.          resolve -- here/* and/there*    # readlink execution would fail
+#.          resolve -e -- here/* and/there* # error message per missing item
+#
+#.          # read symlink (fails if arg is not a symlink)
+#.          resolve -q -l /usr/bin/sh && message "sh symlinked: $CEN_RESOLVE"
+#
+#.          # get my invocation path
+#.          resolve -x -p && message "Path:" "$CEN_RESOLVE"
+# ------------------------------------------------------------------------------
+CEN_RESOLVE=
+resolve() {
+    local _ocan _otrm _oexe _osys='-e -p' _pret \
+          _vset="CEN_RESOLVE" _varr _vrrr _xchk _xerr=error _nret=0
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _vset= ; local -n _vvaa="$1" ; _vvaa=() ;;
+      -c)   _ocan='-e' ;;
+      -e)   _xchk=1 ;;
+      -f)   _xerr=fatal ; _osys="-f -p" ;;
+      -l)   _olnk='-l' ;;
+      -m)   _ocan='-m' ;;
+      -p)   _pret=1 ;;
+      -q)   _xerr=: ; _osys="-q" ;;
+      -s)   shift ; _vset="$1" ; _varr= ;;
+      -t)   shift ; _otrm="$1" ;;
+      -x)   _oexe=1 ;;
+      -y)   _oexe=2 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # string output, set reference
+    if [ -n "$_vset" ] ; then
+        local -n _vsss="$_vset" ; _vsss=
+    fi
+
+    # get executable - use _centauri_bash_lib paths and resolve argv0 if needed
+    if [ -n "$_oexe" ] ; then
+        local _logi _self="$CEN_TOOLS:$CEN_LIBRARY:${BASH_ARGV0%/*}"
+        [ -n "$1" ] && PATH="$PATH:$_self" sysrun -q -r -a _logi -- type -f -p -- "$1"
+        if [ -z "$_logi" ] ; then
+            [ -h "$BASH_ARGV0" ] && _cen_path_realp -c "$BASH_ARGV0" || _logi="$BASH_ARGV0"
+            case "$_logi" in
+            /*/*)   _self="${_logi%/*}" ;;
+            /*)     _self='/' ;;
+            */*)    _self="$PWD/${_logi%/*}" ;;
+            *)      _self="$PWD"
+            esac
+            set -- "$_self${1:+/}$1"
+            if [ "$_oexe" = 1 ] ; then
+                [ -x "$1" ] || _nret=1
+            else
+                [ -e "$1" ] || _nret=1
+            fi
+        else
+            set -- "$_logi"
+        fi
+    fi
+
+    # check file list
+    if [ -n "$_xchk" ] ; then
+        local _file _flst=()
+        for _file in "$@" ; do
+            if [ -h "$_file" ] || [ -e "$_file" ] ; then
+                _flst+=("$_file") ; continue
+            fi
+            $_xerr $"No such file or folder:" "$_file" ; _nret=1
+        done
+        set -- "${_flst[@]}"
+    fi
+
+    # resolve symlinks
+    if [ -n "$_ocan" -o -n "$_olnk" ] ; then
+        if [ $# = 1 ] ; then
+            if [ "$_ocan" = '-e' ] && [ ! -e "$1" ] ; then
+                $_xerr $"No such file or folder:" "$1" ; return 1
+            else
+                _cen_path_realp ${_olnk:--c} "$1" || return 1 ; set -- "$_logi"
+            fi
+        elif [ $# -gt 1 ] ; then
+            sysrun $_osys -a _vrrr -r -- readlink $_ocan -- "$@" || return 1
+            set -- "${_vrrr[@]}"
+        fi
+    fi
+
+    # try to find a nice path names
+    if [ -n "$_pret" -o -n "$_otrm" ] ; then
+        _vrrr=()
+        for _logi in "$@" ; do
+            if [ -n "$_pret" ] ; then
+                _cen_path_pretty -e -p _logi "$_logi" || continue
+                _cen_path_regex '-l' "$_logi"
+            fi
+            [ -n "$_otrm" ] && _cen_path_ltrim "$_otrm"
+            _vrrr+=("$_logi")
+        done
+        set -- "${_vrrr[@]}"
+    fi
+
+    # join array into string and return status
+    if [ -n "$_vset" ] ; then
+        splitjoin -j "$_vset" -d "\n" -- "$@"
+    else
+        _vvaa=("$@")
+    fi
+    return $_nret
+}
+
+# ------------------------------------------------------------------------------
+# splitkeyval - Split key/value pair using a single character delimiter
+#
+# Call:     splitkeyval <data> [<vkey>|- [<vval>|- [<deli>]]]
+#
+# Arguments:<data>  input: ''<key><deli><val>''
+#           <vkey>  name of a variable to receive ''<key>''
+#           <vval>  name of a variable to receive ''<val>''
+#           <deli>  single character delimiter (default: '=')
+#
+# Return:   0       found delimiter, split into ''<key>'' and ''<val>''
+#           1       no delimiter, ''<key>'' returns <data>, ''<val>'' is empty
+# ------------------------------------------------------------------------------
+splitkeyval() {
+    local _vkey="${2:--}" _vval="${3:--}" _deli="${4:-=}" _skey _sval _stat=0
+    _skey="${1%%$_deli*}"
+    [ "$_skey" = "$1" ] && _stat=1 || _sval="${1#*$_deli}"
+    [ "$_vkey" = '-' ] || printf -v $_vkey '%s' "$_skey"
+    [ "$_vval" = '-' ] || printf -v $_vval '%s' "$_sval"
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# splitpath - Split path name into components
+#
+# Call:     splitpath -a <rslt> [-e] [-f] [-g|-p] [-w] <path>
+#
+# Options:  -a  result array (parent, base, ext)
+#           -f  parent is 1st name part only
+#           -e  separate extension
+#           -g  separate extensions (greedy)
+#           -p  separate parent path (greedy)
+#           -w  try to strip "$PWD" from parent
+#
+# Return:   0: success  1: path is root (no parent)  2: readlink error
+#
+#+The function does a simple prettify of the path to remove redundant or
+# trailing "/" chars or "./" and "/./" . Relative paths are made absolute
+# and unnormalized paths like "weird/../path" need to invoke the
+# **/usr/bin/readlink** command.
+#
+#+None of path the components need to exist. Unless option -w is used,
+# the returned field 0 (parent) always contains an absolute path otherwise
+# it is empty when "$PWD" is the parent.
+#
+# Examples: results for path '/' '/one' '/one/two' :
+#.          splitpath    -p ...  #  =>  ("" "/" "")    # root has no parent
+#.          splitpath    -p ...  #  =>  ("/" "one" "")
+#.          splitpath    -p ...  #  =>  ("/one" "two" "")
+#
+#           results for path '/example/base.text' :
+#.          splitpath -e -p ...  #  =>  ("/example" "base" "text")
+#.          splitpath -e    ...  #  =>  ("/example/base" "text")
+#.          splitpath    -p ...  #  =>  ("/example" "base.text")
+#
+#           results (greedy) for path '/one/two/a.b.c' :
+#.          splitpath -e -f ...  #  =>  ("/one/two" "a.b" "c")
+#.          splitpath -g -f ...  #  =>  ("/one/two" "a" "b.c")
+#.          splitpath    -f ...  #  =>  ("/one/two" "a.b.c")
+# ------------------------------------------------------------------------------
+# This is a table of examples for options -f or -p and -e:
+#   _Input_____ _Output(-f -e)___________________ _Output(-p -e)_________________
+#   x           ([0]=""  [1]="x"     [2]="")      ([0]=""     [1]="x"    [2]="")
+#   x/y         ([0]="x" [1]="y"     [2]="")      ([0]="x"    [1]="y"    [2]="")
+#   x/y/z       ([0]="x" [1]="y/z"   [2]="")      ([0]="x/y"  [1]="z"    [2]="")
+#   x/y/z/      ([0]="x" [1]="y/z"   [2]="")      ([0]="x/y"  [1]="z"    [2]="")
+#   a.b.c       ([0]=""  [1]="a.b"   [2]="c")     ([0]=""     [1]="a.b"  [2]="c")
+#   /a.b        ([0]="/" [1]="a"     [2]="b")     ([0]="/"    [1]="a"    [2]="b")
+#   a.b/        ([0]=""  [1]="a.b"   [2]="")      ([0]=""     [1]="a.b"  [2]="")
+#   /a.b/       ([0]="/" [1]="a.b"   [2]="")      ([0]="/"    [1]="a.b"  [2]="")
+#   /x          ([0]="/" [1]="x"     [2]="")      ([0]="/"    [1]="x"    [2]="")
+#   /x/y        ([0]="/" [1]="x/y"   [2]="")      ([0]="/x"   [1]="y"    [2]="")
+#   /x/y/z      ([0]="/" [1]="x/y/z" [2]="")      ([0]="/x/y" [1]="z"    [2]="")
+#   /x/y/z/     ([0]="/" [1]="x/y/z" [2]="")      ([0]="/x/y" [1]="z"    [2]="")
+# ------------------------------------------------------------------------------
+splitpath() {
+    local _vset _oext _odmy _opar _left _righ _path _ofir _ospl _owrk _pref
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _vset="$1" ; local -n _vvaa="$1" ; _vvaa=() ;;
+      -e)   _oext=1 ;;
+      -f)   _ofir=1 ; _ospl=1 ;;
+      -g)   _oext=2 ;;
+      -p)   _opar=1 ; _ospl=1 ;;
+      -w)   _owrk=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ -z "$_vset" ] && _cen_abort = '-a'        # missing option
+    _path="${1:-.}" ; [ "$_path" = '.' ] && _path="$PWD"
+
+    # remove trailing or leading slash, prettify
+    case "$_path" in
+        /)      ;;                              # special handling
+        /*/)    _path="${_path:1}" ; _pref="/"
+                _cen_path_pretty _path "${_path::-1}" ; [ -n "$_oext" ] && _odmy=1 ; _oext= ;;
+        /*)     _cen_path_pretty _path "${_path:1}" ; _pref="/" ;;
+        */)     _cen_path_pretty -p _path "${_path::-1}" ; [ -n "$_oext" ] && _odmy=1 ; _oext= ;;
+        *)      _cen_path_pretty -p _path "$_path"
+    esac
+
+    if [[ "$_path" == *..* ]] ; then            # must canonicalize path ...
+        sysrun -q -r -b -a _path -- readlink -s -m -- "$1" || return 2
+    fi
+
+    if [ "$_path" = '/' ] ; then                # root has no parent
+        _vvaa=('' '/' '') ; return 1
+    fi
+
+    if [ -n "$_ofir" ] ; then
+        _left="${_path%%/*}" ; _righ="${_path#*/}"
+    elif [ -n "$_opar" ] ; then
+        _left="${_path%/*}" ; _righ="${_path##*/}"
+    fi
+
+    if [ -n "$_ospl" ] ; then
+        if [ "$_left" = "$_righ" ] ; then
+            _vvaa=("$_pref") ; _path="$_righ"
+        else
+            _vvaa=("$_pref$_left") ; _path="$_righ"
+        fi
+    else
+        _path="$_pref$_path"
+    fi
+
+    if [ "$_oext" = 2 ] ; then                  # separate extensions (greedy)
+        _left="${_path%%.*}" ; _righ="${_path#*.}"
+        [ "$_left" = "$_righ" ] && _righ=
+        _vvaa+=("$_left" "$_righ")
+    elif [ -n "$_oext" ] ; then                 # separate parent path (greedy)
+        _left="${_path%.*}" ; _righ="${_path##*.}"
+        [ "$_left" = "$_righ" ] && _righ=
+        _vvaa+=("$_left" "$_righ")
+    else
+        _vvaa+=("$_path")
+        [ -n "$_odmy" ] && _vvaa+=("")
+    fi
+
+    if [ -n "$_owrk" ] ; then                   # strip $PWD
+        [ "$_vvaa" = "$PWD" ] && _vvaa= || _vvaa="${_vvaa#$PWD/}"
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# suffixpath - add or remove a suffix to or from a file path
+#
+# Call:     (1) suffixpath [-s <varname>] [-d] [-l] [-c <from>] [-x] [--] <suffix> [<path>]
+#           (2) suffixpath [-s <varname>] [-r] [-l] [-c <from>] [-x] [--] <suffix>|- [<path>]
+#
+# Options:  -c  change suffix
+#           -d  only append if path has no other suffix
+#           -l  lower case
+#           -r  remove one suffix (use - to match any suffix)
+#           -s  variable to be used (default is CEN_SUFFIXPATH)
+#           -x  exclude folders
+#
+# Arguments:<varname>  a variable holding the path
+#           <suffix>   suffix to be append
+#           <path>     use this path or use current <varname> if missing
+#
+# Return:   **true** at success. If <path> is a folder or ends with a "/" or for an
+#           attempt to remove non-existing suffix **false** is returned.
+#
+#+The function implements some logic to handle default suffixes. It is used by
+# [[inpfile()]] and [[outfile()]] for this purpose:
+#
+#,          - If the path is empty or ends with **/** or is an existing folder, the
+#,            function does nothing and returns **false**.
+#
+#,          - A path ending on **.** causes the dot to be removed and no further action
+#,            to be taken. This can be used to prevent this function from addind any
+#,            default suffix to a path.
+#
+#,          - If the suffix does not start with a **.** character it is prefixed with
+#,            one.
+#
+# Examples: simply adding a suffix:
+#.          suffixpath 'bak' 'my-file.txt'      # results in: my-file.txt.bak
+#.          suffixpath 'dat' '/tmp/scratch'     # results in: /tmp/scratch.dat
+#.          suffixpath 'dat' '/tmp/scratch.'    # results in: /tmp/scratch
+#.          suffixpath 'dat' '/tmp/scratch/'    # results in: /tmp/scratch/
+#.          suffixpath 'dat' '/tmp'             # results in: /tmp  (ignore folder)
+#
+#           adding a default suffix:
+#.          suffixpath -d 'gpx'  'my-track'     # results in: my-track.gpx
+#.          suffixpath -d 'gpx'  'my-track.tmp' # results in: my-track.tmp
+#.          suffixpath -d 'gpx'  'my-track.'    # results in: my-track
+#
+#           removing a suffix:
+#.          if ! suffixpath -r 'bak' '$1' ; then
+#.              message "File '$1' has no 'bak' suffix"
+#.          fi
+#.          case $? in
+#.          1)  message "Got a folder:" "$1" ;;
+#.          2)  message "File '$1' has no 'bak' suffix" ;;
+#.          esac
+# ------------------------------------------------------------------------------
+CEN_SUFFIXPATH=
+suffixpath() {
+    local _vnam="CEN_SUFFIXPATH" _suff _from _optd _olow _orem _oxcl
+    while [ "${1::1}" = '-' ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -)    break ;;
+        -c)   shift ; _from="$1" ;;
+        -d)   _optd=1 ;;
+        -l)   _olow=1 ;;
+        -r)   _orem=1 ;;
+        -s)   shift ; _vnam="$1" ;;
+        -x)   _oxcl=1 ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+
+    local -n _vsuf="$_vnam"
+    [ $# -gt 1 ] && _vsuf="$2"                      # allow inplace operation
+
+    # special cases: folder, remove trailing ., no suffix
+    local _snam="${_vsuf##*/}"                      # path with suffix removed
+    [ -z "$_snam" ] && return 1                     # empty or trailing / (is a folder)
+    _snew="${1#.}" ; [ -z "$_snew" ] && return 1    # no suffix given
+    if [ "${_snam:${#_snam}-1:1}" = "." ] ; then    # ending with .
+        [ -n "$_oxcl" -a -d "$_vsuf" ] && return 1  # do not touch a folder name
+        _vsuf="${_vsuf::${#_vsuf}-1}" ; return 0    # remove dot
+    fi
+    local _scur="${_snam#*.}"                       # get current suffix
+
+    # append a suffix
+    if [ "$_scur" = "$_snam" ] ; then               # file has no suffix
+        [ -n "$_orem" ] && return 0                 # nothing to remove
+        [ -n "$_oxcl" -a -d "$_vsuf" ] && return 1  # ignore folder
+        _vsuf+=".$_snew" ; return 0
+    elif [ -z "$_optd" -a -z "$_from" -a -z "$_orem" ] ; then
+        [ -n "$_oxcl" -a -d "$_vsuf" ] && return 1  # ignore folder
+        _vsuf+=".$_snew" ; return 0
+    fi
+
+    # lower case
+    if [ -n "$_olow" ] ; then
+        _scur="${_scur,,}" ; _from="${_from,,}"
+    fi
+
+    # change current suffix
+    if [ -n "$_from" ] && [ "$_from" = '-' -o "$_from" = "$_scur" ] ; then
+        [ -n "$_oxcl" -a -d "$_vsuf" ] && return 1  # ignore folder
+        _vsuf="${_snam%.*}.$_snew" ; _scur="$_snew"
+    fi
+
+    # remove suffix
+    [ -z "$_orem" ] && return 0
+    if [ "$_orem" = '-' -o "$_scur" = "$_orem" ] ; then
+        [ -n "$_oxcl" -a -d "$_vsuf" ] && return 1  # ignore folder
+        _vsuf="${_snam%.*}"
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# symlink - Make symlink single or multiple targets using /usr/bin/ln
+#
+# Call:     (1) symlink [-f|-q] [-i] [-n] [-m|-x] [-r] [-s] [--] <target> <link>
+#           (2) symlink [-f|-q] [-i] [-n] [-m|-x] [-r] [-s] [--] <target> [<fldr>]
+#           (3) symlink [-f|-q] [-n] [-r] [--] <target>... <fldr>
+#           (4) symlink -n [-f|-q] [-r] [-s] [--] <target> <fldr>/<link>
+#
+# Options:  -c  canonicalize target path
+#           -d  allow that <link> is a folder
+#           -f  make errors fatal
+#           -i  [*] no error message for missing <target>
+#           -m  if <link> is a file/dir move it to '<link>.$CEN_NAME'
+#           -n  [*] no checks, <link> will replace file (ln -f -s)
+#           -q  do not report errors
+#           -r  make relative links
+#           -s  do not generate messages
+#           -w  report errors as warnings
+#           -x  if <link> is a file/dir explicitly delete it
+#
+#           [*] use '-i -n' to allow the creation of stale symlinks
+#
+# Arguments:<target> location the symlink points to
+#           <link>   name (or path) of symlink to be created
+#           <fldr>   folder where to create the symlink
+#
+# Return:   **0** := OK   **1** := no <target>   **2** := <link> is a file
+#
+#+This is a conveniency wrapper for **/usr/bin/ln** (or the loadable bash builtin)
+# that provides some extra reporting and error handling. Without option -n the
+# form (1) and (2) refuse to create a ''symlink'' if <target> does not exist.
+#
+#+Form (3) can place multiple links into a folder but cannot check <target>...
+# at all.
+#
+#+The function cannot check a relative <target> path with <link> being a folder,
+# see form (4).
+# ------------------------------------------------------------------------------
+symlink() {
+    local _fign _targ _ocan _odir _oftl='error' _onck _orel _osys='-e -p' _move _mesg="$CEN_TRACE"
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -c)   _ocan=1 ;;
+      -d)   _odir=1 ;;
+      -f)   _oftl='fatal' ; _osys='-f -p' ;;
+      -i)   _fign=1 ;;
+      -m)   _move=1 ;;
+      -n)   _onck='-f' ;;
+      -q)   _oftl=':' ; _osys='-q' ;;
+      -r)   _orel=1 ;;
+      -s)   _mesg=: ;;
+      -v)   _mesg='message' ;;
+      -w)   _oftl='warning' ; _osys='-w -p' ;;
+      -x)   _move=0 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ -z "$1" ] && _cen_abort +
+    local _etxt _link="$2" _targ="${1%/}"
+    [ -z "$1" ] && _targ='/'
+    [ -z "$_link" ] && _link="${_targ##*/}"
+
+    # multiple targets, link must be an existing folder, run /usr/bin/ln
+    if [ $# -gt 2 ] ; then
+        local _leng="$#" ; _link="${!_leng}"    # kde/kate highligt bug: ${!#}
+        folder ${_osys//-[ep]/} -- "$_link" || return 1
+        sysrun $_osys -i -m "$_etxt" -d -- ln $_onck $_orel -s -- "$@" || return 2
+        return 0
+    fi
+
+    # check if single target exists (allow stale link: -i -n)
+    if [ -z "$_onck" -o -n "$_fign" ] ; then
+        if [ ! -e "$_targ" ] ; then
+            [ -z "$_fign" ] && $_oftl $"Link target does not exist:" "$_targ"
+            [ -z "$_onck" ] && return 1
+            $_mesg -a -c $"Stale symlink" "$_link"
+        fi
+    fi
+
+    # move existing link away
+    if [ -e "$_link" ] ; then
+        if [ "$_move" = 0 ] ; then              # always delete ...
+            remove -d -- "$_link" || return 2
+        elif [ -h "$_link" ] ; then
+            if [ -n "$_move" ] ; then
+                remove -- "$_link"              # do not dereference
+            elif [ "$_targ" -ef "$_link" ] ; then
+                $_mesg -a -c $"Link is current" "$_link" ; return 0
+            elif [ -z "$_odir" -a -n "$_onck" ] && [ -d "$_link" ] ; then
+                remove -d -- "$_link"           # do not dereference
+            fi
+        elif [ -n "$_move" ] ; then             # move it away ...
+            sysrun $_osys -b -- mv -f -- "$_link" "$_link.$CEN_NAME" || return 2
+            $_mesg -a $"Link '$_link' file/fldr moved"": $_link.$CEN_NAME"
+        elif [ -d "$_link" ] ; then             # existing folder ...
+            if [ -n "$_odir" ] ; then
+                $_mesg -a $"Link is a folder:" "$_link"
+            else
+                $_oftl $"Link is an existing folder:" "$_link" ; return 2
+            fi
+        elif [ -z "$_onck" ] ; then
+            $_oftl $"Link is an existing file:" "$_link" ; return 2
+        fi
+    # silently replace stale links
+    elif [ -h "$_link" ] ; then
+        _onck='-f'
+    fi
+
+    # run 'ln' and disable builtin for option '-r'
+    _etxt=$"Failed to create symbolic link"": %s%s"
+    if [ -n "$_orel" ] ; then
+        sysrun $_osys -m "$_etxt" -i -- ln $_onck -s -r -- "$_targ" "$_link" || return 1
+    else
+        sysrun $_osys -b -m "$_etxt" -d -- ln $_onck -s -- "$_targ" "$_link" || return 1
+    fi
+    $_mesg -a -c $" created" -- "$_link => $_targ" ; return 0
+}
+
+# ------------------------------------------------------------------------------
+# sysrun - run a command or builtin, optionally generate error messages
+#
+# Call:     (1) sysrun [-e|-f|-w] [-p] [-v] [-m <mesg>] [-o <what>]
+#                      [-a|-s <onam>] [-b|-i] [-d] [-n] [-r] [-z] [--] <cmd> <arg>...
+#           (2) sysrun -q
+#                      [-a|-s <onam>] [-b|-i] [-d] [-n] [-r] [-z] [--] <cmd> <arg>...
+#           (3) sysrun -c <stat> [-f|-w] [-m <mesg>] [--] [<cmd> <arg>...]
+#
+#+          This is a faster, simpler variant of [[system()]], see below. Form (1)
+#           runs a command or builtin with error reporting, form (2) does no error
+#           reporting at all. Form (3) can be used to generate error messages from
+#           error codes.
+#
+# Options:  -a  capture <cmd> output into an array
+#           -b  do not run a function, prefer builtin over external
+#           -c  error code for reporting (<cmd> is not executed)
+#           -d  use './' prefix if 1st arg starts with a '-'
+#           -e  call [[error()]] if command <cmd> fails
+#           -f  call [[fatal()]] on error
+#           -i  do not run a function or builtin, see **sysfind -i**
+#           -m  custom format string for error message
+#           -n  do no checks on <cmd> (implied if <cmd> is a path)
+#           -o  override command name in error message
+#           -p  discard **/dev/stdout**, capture **/dev/stderr**, pretty-print error message
+#           -q  discard **/dev/stdout** and **/dev/stderr**, no error message
+#           -r  ignore --dryrun
+#           -s  capture <cmd> output into an string
+#           -v  show <show> arguments in warning/error message
+#           -w  call [[warning()]] on error
+#           -z  don't capture **/dev/stdout**
+#
+# Arguments:<onam>  variable that receives the <cmd> output
+#           <mesg>  printf format string with 2 string variables
+#           <what>  shown in error message
+#           <stat>  status code to report (**0** reports nothing)
+#           <cmd>   a program name or path
+#           <arg>   program argument, at least one argument is required
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#+The options -e -f -p -q and -z of this function work like in [[system()]].
+# The use of -c -m and -w offers extra functionality for error reporting.
+# The main reason for using sysrun is performance:
+#
+#+The bash "$(<cmd>°<arg>...)" construct as it is used by [[system()]] creates a
+# subshell for each command, which is time consuming and can spawn extra processes.
+# On the other hand the temporary file used by sysrun has to be created on
+# 1st use and later to be deleted in a quit hook, see [[quit()]].
+#
+#+So this function is good especially when builtin commands like **mkdir**, **rmdir**,
+# **unlink** or **ln** are to be executed (as some methods in [[_centauri_bash_ext]] do).
+# User script code might prefer calls to [[system()]] unless high performance is
+# of particular importance.
+#
+#+Option -d helps to solve the problem of some tools (bash builtins) that do not
+# implement -- to stop option parsing. This is done here by scanning for --, to
+# remove it and to prefix the next argument with './' if it starts with a '-'.
+#
+#+Option -b will always use an available builtin and will not run script functions.
+# Without -b sysrun behaves like [[system()]] and honors cached paths.
+# Option -i can be used to run an external command rather than a builtin.
+#
+#+Using a full path for <cmd> overrides option -b and allows to ignore cached paths.
+# This can be used for example to bypass a builtin. **Note:** It is not possible for
+# a script to disable builtins via "enable -n". See [[sysfind()]]
+#
+#+A file created via [[tmpfile()]] is used to capture <cmd> output (options -a, -s or -p).
+# Callers should set umask=66 to avoid a public readable file if XDG_RUNTIME_DIR
+# is not available.
+#
+#+It is possible to use sysrun from a subshell, but the main process should have set
+# the tmpfile base folder (like "tmpfile -n") before starting the subshell in order
+# to remove temporary files.
+#
+#+Using sysrun to call a script function is not recommended, use "system -n" instead.
+# This is because sysrun uses only a single file to capture output which prevents
+# recursive use.
+#
+#.Examples: # print an error message
+#.          sysrun -c 127 -m "%s: failed to create '%s'" xmkdir /xxx
+#.              # xmkdir: failed to create '/xxx': Program not found
+#.          sysrun -c 1 -m "%s: failed to create '%s'" mkdir /xxx
+#.              # mkdir: failed to create '/xxx'
+#.          sysrun -c 129 mytool
+#.              # 'mytool' failed: Signal 1
+#
+#.          # run a program without capturing output:
+#.          sysrun -r -z -- diff f1 f2
+#
+#.          # run a program (or builtin) discarding stdout:
+#.          sysrun -d -- unlink -- -this-is-a-file
+#.          sysrun -f -m "%s: cannot remove folder '%s'" rmdir /xxx
+#
+#.          # capture output into an array:
+#.          sysrun -a aout -p -- ls -l && splitjoin -i aout
+# ------------------------------------------------------------------------------
+sysrun() {
+    $CEN_NOTRACE set +x
+    local _ecmd="$CEN_TRACE" _emsg _vstr _vnam
+    local _ofmt _oign _osta _opre _orun _oout _over _owho _fqui _ffnd=1
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _vnam="$1" ; _oout=0 ;;
+      -b)   _ffnd=0 ;;
+      -c)   shift ; _osta="$1" ;;
+      -d)   _opre=1 ;;
+      -e)   _ecmd=error ;;
+      -f)   _ecmd=fatal ;;
+      -i)   _oign='-i' ;;
+      -m)   shift ; _emsg="$1" ; [ -z "$_oout" ] && _oout=0 ;;
+      -n)   _ffnd= ;;
+      -o)   shift ; _owho="$1" ;;
+      -p)   _ofmt=1 ; [ -z "$_oout" ] && _oout=0 ;;
+      -q)   _fqui=1 ; [ -z "$_oout" ] && _oout=0 ;;
+      -r)   _orun="-r" ;;
+      -s)   shift ; _vstr="$1" ; _oout=0 ; _vnam='-' ;;
+      -v)   _over=1 ;;
+      -w)   _ecmd=warning ;;
+      -z)   _oout=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    local _xmsg _xerr _xarg _xtmp _xcmd="$1" _outf ; shift
+    [ -z "$_vnam" -a -n "$_ofmt" ] && _vnam='-'             # dummy for -p
+    [ "$_vnam" = '-' ] && { local _cen_ext_sysrun ; _vnam='_cen_ext_sysrun' ; }
+
+    # run a command or builtin
+    if [ -z "$_osta" ] ; then
+        # option -n does no checks at all
+        if [ -z "$_ffnd" ] ; then
+            _opre=
+        # having a path disables -n and -d options
+        elif [ "${_xcmd/\//}" != "$_xcmd" ] ; then          # contains /
+            _opre=
+        # using sysfind and cache
+        else
+            _xtmp="${CEN_COMMANDS["${_xcmd:--}"]}"          # sysfind() cache
+            if [ "$_xtmp" = '-' ] ; then                    # cached as builtin
+                if [ -z "$_oign" ] ; then
+                    _xtmp="$_xcmd"
+                else
+                    sysfind -i -s _xtmp -- "$_xcmd" || _osta=127
+                fi
+            elif [ -n "$_xtmp" ] ; then                     # cached as command
+                _xtmp+="/$_xcmd"
+                if [ "$_ffnd" = 0 ] ; then                  # force builtins ...
+                    # check for builtin, clear search path to disable autoload
+                    if BASH_LOADABLES_PATH= enable -a "$_xcmd" &>/dev/null ; then
+                        _xtmp="$_xcmd"
+                    # if it's a shell function then try dynamic load
+                    elif PATH= type -t -- "$_xcmd" >/dev/null ; then
+                        [ -n "${CEN_MODULES["_centauri_bash_dyn"]}" ] &&
+                            _cen_dyn_builtin "$_xcmd" >/dev/null && _xtmp="$_xcmd"
+                    fi
+                fi
+            elif ! sysfind ${_oign:--b} -c -s _xtmp -- "$_xcmd" ; then
+                _osta=127
+            fi
+            if [ "${_xtmp::1}" = '/' ] ; then               # run as command
+                _opre= ; _xcmd="${_xtmp/\/\//\/}"
+            elif [ -n "$_xtmp" ] ; then                     # run as builtin
+                _xcmd='builtin' ; set -- "$_xtmp" "$@"
+            fi
+        fi
+        [ -z "$_owho" ] && _owho="$_xcmd"
+    fi
+
+    # run command "$_xcmd" ...
+    if [ -z "$_osta" ] ; then
+
+        # stupid builtins: remove '--' from command line
+        if [ -n "$_opre" ] ; then
+            local _afix=()
+            while [ $# -gt 0 ] ; do
+                if [ "$1" == "--" ] ; then
+                    if [ "${2::1}" = '-' ] ; then
+                        _afix+=("./$2") ; shift
+                    fi
+                    shift ; break
+                fi
+                _afix+=("$1") ; shift
+            done
+            set -- "${_afix[@]}" "$@"
+        fi || :
+        if dryrun $_orun -- "$_xcmd" "$@" ; then
+            $CEN_NOTRACE set -x ; return 1
+        fi
+
+        if [ -n "$_vnam" ] ; then                           # capture output
+            _osta=0
+            [ "$CEN_EXT_TPID" = "$$" ] && _outf="${CEN_EXT_TEMP}0" \
+                                       || tmpfile ${_orun:+-r} -s _outf -f -n 0
+            if [ "$_oout" = 0 ] ; then                      # ... capture all
+                "$_xcmd" "$@" &>"$_outf" || _osta=$?
+            else                                            # ... errors only
+                "$_xcmd" "$@" 2>"$_outf" || _osta=$?
+            fi
+            IFS=$'\n' read -a "$_vnam" -d '' -r <"$_outf"
+        elif [ "$_oout" = 0 ] ; then
+            "$_xcmd" "$@" &>/dev/null ; _osta=$?
+        else
+            "$_xcmd" "$@" ; _osta=$?
+        fi || :
+    fi
+
+    # create result string from array
+    if [ -n "$_vstr" ] ; then
+        local -n _rarr="$_vnam"
+        if [ "${#_rarr[@]}" -le 1 ] ; then
+            local -n _rslt="$_vstr" ; _rslt="$_rarr"
+        else
+            splitjoin -j "$_vstr" -d '\n' -i "$_vnam"
+        fi
+    fi
+
+    # error reporting ...
+    [ -z "$_osta" ] && _osta=1                  # must have a value here
+    if [ "$_osta" = 0 -o -n "$_fqui" ] ; then
+        $CEN_NOTRACE set -x ; return $_osta
+    fi
+
+    case "$_osta" in
+    1)      ;;
+    2)      _xmsg=$"Invalid argument(s)" ;;
+    126)    _xmsg=$"File not executable" ;;
+    127)    _xmsg=$"Program not found" ;;
+    *)      if [ "$_osta" -gt 128 ] ; then
+                _xmsg=$"Signal"" $((_osta - 128))"
+            else
+                _xmsg=$"Status"" $_osta"
+            fi
+    esac
+
+    [ "${_emsg:--}" = '-' ] && _emsg=$"Running '%s%s' failed"
+    [ -n "$_xmsg" ] && _xmsg=": $_xmsg"
+    if [ "$_ecmd" = "$CEN_TRACE" -a -n "$_ofmt" ] ; then    # system -p style
+        splitjoin -j _xtmp -d '\n' -i "$_vnam"
+        message -n "$_xtmp"
+        $CEN_NOTRACE set -x ; return $_osta
+    elif [ -n "$_ofmt" ] ; then                         # system -e -p style
+        splitjoin -s _xtmp -d '\n' -i "$_vnam"
+        _xarg="${_xtmp#/*: }"                           # strip file name prefix
+        if [ "$_xcmd" = 'builtin' -a "$_xarg" != "$_xtmp" ] ; then
+            _xarg="${_xarg#[[:alpha:]]*[0-9]: }"        # strip line number
+            _xarg="${_xarg#$1: }"                       # strip builtin name
+        fi
+        splitjoin -j _xarg -n -- "$_xarg" "${_xtmp[@]:1}"
+        [ "$_xcmd" = 'builtin' ] && _xtmp=" $1" || _xtmp=
+        [ -n "$_over" ] && _xtmp+=" $*"
+        $_ecmd -n -p "$_emsg%s\n%s" "${_owho:-($_xcmd)}" "$_xtmp" "$_xmsg" "$_xarg"
+    else                                                # simple ...
+        [ "$_xcmd" = 'builtin' ] && _xtmp=" $1" || _xtmp=
+        [ -n "$_over" ] && _xtmp+=" $*"
+        $_ecmd -p "$_emsg$_xmsg" "${_owho:-($_xcmd)}" "$_xtmp"
+    fi
+    $CEN_NOTRACE set -x ; return $_osta
+}
+
+# ------------------------------------------------------------------------------
+# tmpfile - create temporary files that get deleted on program exit
+#
+# Call:     (1) tmpfile -t|-v|-b <fldr>                  # set base folder
+#           (2) tmpfile [-t|-v|-b <fldr>] [-p]           # create file/pipe
+#                       [-f] [-n] [-s <name>] [<suff>]
+#           (3) tmpfile [-t|-v|-b <fldr>] -d             # delete created files
+#
+#+          This documentation uses "/tmp" and "/var/tmp", but at runtime
+#           these paths may differ, see $CEN_PATHS settings.
+#
+# Options:  -b  set base folder to <fldr> (default is $XDG_RUNTIME_DIR)
+#           -d  delete all files created by tmpfile for this process
+#           -f  make errors fatal
+#           -i  registers a subshell for its own base folder
+#           -n  do not actually create the file
+#           -p  create a pipe (fifo) instead of a file
+#           -r  ignore --dryrun
+#           -s  use variable <name> to save result (default is CEN_TMPFILE)
+#           -t  set base folder to "/tmp/centauri-<user>"
+#           -v  set base folder to "/var/tmp/centauri-<user>"
+#
+# Arguments:<fldr>  folder path (use - for $XDG_RUNTIME_DIR)
+#           <name>  name of result variable
+#           <suff>  suffix to append to file name (default is a counter)
+#
+#.Examples: # create a temp file (might be in XDG_RUNTIME_DIR)
+#.          tmpfile -s myfile test
+#.          message "Base folder: $CEN_EXT_TEMP, temp file: $myfile"
+#
+#.          # create a temp file in /tmp/centauri-<user>
+#.          tmpfile -t -s myfile test
+#
+#.          # delete current files, switch base folder to /var/tmp/...
+#.          tmpfile -d ; tmpfile -v
+#
+#.          # create a spool file, then switch back to default base
+#.          tmpfile -b "/var/spool/$CEN_NAME" -s myfile
+#.          tmpfile -b -
+#
+#.          # delete a specific base folder (resets current base)
+#.          tmpfile -b "/var/spool/$CEN_NAME" -d
+#
+#+If a <suff> string is used, it must not start with a digit. If <suff> is **-**,
+# missing or empty an incrementing counter value is used instead.
+#
+#+Temp files are created inside a base folder (see CEN_EXT_TEMP). This folder
+# is by default set and created at the 1st call. Changing the base folder via -t,
+# -v or -b does not automatically delete prevously created files.
+#
+#+Daemons or services should use -v or unset XDG_RUNTIME_DIR. Otherwise systemd
+# might delete the base folder, which in turn may cause severe problems as new
+# temp files cannot be created any longer. The [[_cen_bash_svc]] module unsets
+# XDG_RUNTIME_DIR on load.
+#
+#+For performance reasons the function does not set umask. Although temporary
+# files are usually created in the private XDG_RUNTIME_DIR or a private folder
+# in "/var/tmp", any custom folder can be specified via -b. In the later case
+# the caller's umask may lead to a temporary file that is public readable.
+#
+#+The function registers a quit hook to delete created files on exit. A bash
+# glob with '*' appended to CEN_EXT_TEMP selects the files to be deleted.
+# **Note:** only files and folders in the current base folder get deleted.
+#
+#+When using tmpfile from a subshell care must been taken to remove temp files.
+# The subshell code must not call [[quit()]] but can safely call "tempfile -d".
+# Terminating the main shell via quit() may unexpectedly delete temp files of
+# subshells:
+#
+#.          # save subshell use ...
+#.          tmpfile -n                      # main shell registers hook
+#.          do_background &                 # run subshell
+#.          do_something_else
+#.          wait ; quit                     # wait for subshell before quit
+# ------------------------------------------------------------------------------
+CEN_TMPFILE=
+CEN_EXT_TSUB=
+tmpfile() {
+    local _odel _oftl _onoc _opip _oerr='error -z' _orun _updt _snam='CEN_TMPFILE' _base
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      -)    break ;;
+      --)   shift ; break ;;
+      -b)   shift ; [ "${1:--}" = '-' ] || _base="${1%/}" ; _updt=1 ;;
+      -d)   _odel=1 ;;
+      -f)   _oerr=fatal ; _oftl='-f' ;;
+      -i)   CEN_EXT_TSUB="$BASHPID" ; CEN_EXT_TPID= ; return 0 ;;
+      -n)   _onoc=1 ;;
+      -p)   _opip=1 ;;
+      -r)   _orun='-r' ;;
+      -s)   shift ; _snam="$1" ;;
+      -t)   _base= ; _updt=1 ;;
+      -v)   _base='-' ; _updt=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # make sure to have a base folder
+    if [ -z "$_base" -a -z "$_updt" ] ; then
+        _base="${XDG_RUNTIME_DIR:-$CEN_EXT_TEMP}"
+        [ -z "$_base" ] && _updt=1
+    fi
+
+    # detect sub-shell use
+    local _ssuf                                         # extra suffix for subshell
+    if [ "$CEN_EXT_TPID" != "$BASHPID" ] ; then
+            [ -z "$CEN_EXT_TPID" ] && _updt=1           # 1st time: init base folder
+            CEN_EXT_TIDX=1
+            CEN_EXT_TPID="$BASHPID"
+    fi
+
+    # temp file naming
+    #       <name>-<$$>-<indx>              # main process
+    #       <name>-<$$>-<BASHPID>-<indx>    # simple subshell
+    #       <name>-<BASHPID>-<indx>         # registered subshell, see -i
+
+    if [ "$CEN_EXT_TPID" != "$$" ] ; then               # we are a subshell ...
+        # use main base + suffix if not registered by -i option
+        [ "$CEN_EXT_TSUB" != "$BASHPID" ] && _ssuf="$BASHPID-"
+    fi
+
+    # set base folder
+
+    if [ -n "$_updt" ] ; then                           # get base-folder name
+        local _name="${LOGNAME:-$USER}"
+        [ "$EUID" = '0' ] && _name='root'
+        [ "$_base" = '-' ] &&                           # use /var/tmp
+            [ -d "${CEN_PATHS[3]}/tmp" ] && _base="${CEN_PATHS[3]}/tmp/centauri-${_name:-$EUID}"
+        [ "${_base:--}" = '-' ] &&                      # fallback and/or use /tmp
+            _base="${CEN_PATHS[4]}/centauri-${_name:-$EUID}"
+
+        if [ -z "$_odel" ] ; then
+            if [ -n "$CEN_EXT_TEMP" ] ; then
+                _updt="${CEN_EXT_TEMP%/*}"
+                [ "$_updt" = "$_base" ] || $CEN_TRACE2 -c $" update" -- "$_updt => $_base"
+            fi
+            folder $_oftl $_orun -m -s _base -- "$_base" 700 || return 1
+        fi
+        CEN_EXT_TEMP=
+        _base+="/$CEN_NAME-${CEN_EXT_TSUB:-$$}-"
+    else
+        _base="$CEN_EXT_TEMP"
+    fi
+
+    # delete temp files (ignores --dryrun)
+
+    if [ -n "$_odel" ] ; then
+        [ -z "$_base" ] && return 0                     # not initialized
+        $CEN_TRACE2 -c $" remove" -- "$_base$_ssuf*"
+        CEN_EXT_TEMP= ; CEN_TMPFILE=
+        [ -d "$_base" ] && return 0                     # do not remove folder
+        set +f ; set -- "$_base$_ssuf"*                 # make sure glob is on
+        [ "$1" = "$_base$_ssuf*" ] && return 0          # nothing to remove
+        sysrun $_orun -q -b -- rm -f -r -- "$@" ; return   # return status
+    fi
+
+    # create folder / file
+
+    if [ -z "$CEN_EXT_TEMP" ] ; then                    # create folder, set hook
+        CEN_EXT_TEMP="$_base"
+    fi
+    [ -n "$_onoc" -a -z "$_snam" ] && return 0          # init only
+
+    local _suff="${1:--}" ; local -n _svar="$_snam"
+    case "$_suff" in
+    -)  _svar="$CEN_EXT_TEMP$_ssuf$((CEN_EXT_TIDX++))" ;;
+    .*) _svar="$CEN_EXT_TEMP$_ssuf${_suff#.}" ;;
+    *)  _svar="$CEN_EXT_TEMP$_ssuf$_suff"
+    esac
+    [ -n "$_onoc" ] && return 0                         # do not create
+
+    if [ -z "$_opip" ] ; then
+        dryrun $_orun ">'$_svar'" && return 1
+        2>/dev/null >"$_svar" && return 0
+        $_oerr $"Cannot create" "$_svar" || return 1
+    else
+        sysrun -e -b $_orun -- mkfifo "$_svar" || return 1
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# walk - Iterate over files and folders
+#
+# Call:     walk [-a] [-d <fdir>] [-f <ffil>] [-i] [-e <extn>]
+#                [-r] [-l <levl>] [--] <path>...
+#
+# Options:  -a  append to **CEN_WALK_xxx** arrays
+#           -b  include broken symlinks
+#           -c  case sensitive filter using --include|--exclude
+#           -d  callback for directories   (default: **false**)
+#           -e  filter files by extension, repeatable
+#           -f  callback for files         (default: **true**)
+#           -h  find hidden files and folders
+#           -i  case insensitive filter using --include|--exclude
+#           -l  limit for recursion levels (default: no limit)
+#           -n  do not follow symlinks into folders
+#           -r  recurse into folders
+#
+# Arguments:<ffil>  command excuted for each file   (default **true**)
+#           <fdir>  command excuted for each folder (default **true**)
+#           <extn>  extension filter, example "-e xml -e html -e gpx"
+#           <levl>  max recursion depth, **0** to disable recursion
+#           <path>  any file or folder
+#
+# Variables:CEN_WALK_LEVEL  current recursion level (in callbacks)
+#           CEN_WALK_DIRS   array of folders seen (canonicalized path)
+#           CEN_WALK_FILES  array of files seen   (relative path)
+#
+# Return:    **0** := OK  **1** := empty  **2** := error  **3** := stopped
+#
+#+The walk function is not reentrant. Folder names are canonicalized and
+# kept in a map to prevent folders from being walked multiple times.
+# Symlinks to folders are resolved and recursion is not restricted to a
+# single filesystem.
+#
+# Recursion uses bash globbing, which must not be turned off.
+#
+#+Recursion ignores file or folder names starting with a dot unless
+# the -h option is used.
+#
+#+The --include and --exclude filter (enabled by option -c or -i) is run
+# before and -d or -f callback. See [[filter()]] for details.
+#
+#+Callbacks:The optional caller supplied callback functions <fdir> and
+#           <ffil> can be used for processing or filtering:
+#
+#,          <fdir> <canonical> <item>    # 1st arg is full path
+#,          <ffil> <item>                # <item> is a relative path
+#
+#           The return value controls further processing by walk:
+#
+#,          0  -  append item to **CEN_WALK_xxx** array
+#,          1  -  do not append to **CEN_WALK_xxx** array
+#,          2  -  skip current folder (see remark on symlinks below)
+#,          3  -  stop walk
+#
+#+Symlinks:To avoid parsing a folder multiple times when symlinks are followed
+# (no -n option) the code uses a map of absolute folder paths to skip such items.
+# Unluckily this will cause problems when trying to skip a symlinked folder in
+# the folder callback (return code 2) - better use option -n for this purpose.
+# ------------------------------------------------------------------------------
+CEN_WALK_FILES=()
+CEN_WALK_DIRS=()
+CEN_WALK_LEVEL=0
+declare -g -A CEN_WALK_DMAP
+
+walk() {
+    local _fdir=false _ffil=: _fexc=: _frec _fadd _fbro _fhid _fnod _fext=() _stat _levl=999999999
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   _fadd=1 ;;
+      -b)   _fbro=1 ;;
+      -c)   _fexc="filter --" ;;
+      -d)   shift; _fdir="$1" ;;
+      -e)   shift; _fext+=("$1") ;;
+      -f)   shift; _ffil="$1" ;;
+      -h)   _fhid=1 ;;
+      -l)   shift; _levl="$1" ;;
+      -n)   _fnod=1 ;;
+      -r)   _frec=1 ;;
+      -i)   _fexc="filter -i --" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # recursive helper, args: <file|dir>...
+    _cen_walk() {
+        ((CEN_WALK_LEVEL += 1))
+        local _item _inam _dirs=() _stat=0
+
+        # loop over argument list
+        for _item in "$@" ; do
+            _item="${_item/\/\//\/}"
+            if [ -d "$_item" ] ; then                   # folder
+                [ -n "$_fnod" ] && [ -h "$_item" ] && continue
+                _dirs+=("$_item") ; continue
+            elif [ -e "$_item" ] ; then
+                _inam="${_item##*/}"
+            elif [ -h "$_item" ] ; then                 # broken symlink
+                [ -n "$_fbro" ] || continue
+                _inam="${_item##*/}"
+            else                                        # not existing
+                continue
+            fi
+            if [ -n "$_fext" ] ; then           # extension filter
+                local _iext=0 _sext="${_inam##*.}"
+                while [ $_iext -lt "${#_fext[@]}" ] ; do
+                    if [ "$_sext" = "${_fext[_iext]}" ] ; then
+                    _iext=-1 ; break
+                    fi
+                    ((_iext += 1))
+                done
+                [ $_iext = -1 ] || continue
+            fi
+            $_fexc "$_inam" || continue          # --incl/--excl
+            $_ffil "$_item" ; _stat=$?           # user callback
+            [ "$_stat" -ge 2 ] && break
+            [ "$_stat" = 0 ] && CEN_WALK_FILES+=("$_item")
+        done
+
+        # recurse into folders
+        if [ -n "$_dirs" -a "$_stat" -lt 3 ] ; then
+            local _full _indx=0 _cen_walk_dirn
+            resolve -a _cen_walk_dirn -m -- "${_dirs[@]}" || return 3
+            for _item in "${_dirs[@]}" ; do
+                _full="${_cen_walk_dirn[_indx++]}"
+                [ -n "${CEN_WALK_DMAP[$_full]}" ] && continue
+                CEN_WALK_DMAP[$_full]="$_item"
+                _stat=0
+                if [ "$_ffil" = "false" ] ; then  # --incl/--excl
+                    $_fexc "${_full##*/}" ; _stat=$?
+                fi
+                if [ "$_stat" = 0 ] ; then
+                    $_fdir "$_full" "$_item" ; _stat=$?
+                fi
+                [ "$_stat" -ge 3 ] && break
+                [ "$_stat" = 0 ] && CEN_WALK_DIRS+=("$_full")
+                [ -z "$_frec" -o "$_stat" = 2 ] && continue
+                [ "$CEN_WALK_LEVEL" -gt "$_levl" ] && continue
+
+                _stat=0
+                if [ -n "$_fhid" ] ; then
+                    _cen_walk "$_item"/.[!.]* "$_item"/* || _stat=$?
+                else
+                    _cen_walk "$_item"/* || _stat=$?
+                fi
+                [ "$_stat" -ge 2 ] && break
+            done
+        fi
+        ((CEN_WALK_LEVEL -= 1))
+        return "$_stat"
+    }
+
+    if [ -z "$_fadd" ] ; then
+        CEN_WALK_FILES=() ; CEN_WALK_DIRS=() ; CEN_WALK_DMAP=()
+    fi
+
+    _stat=0 ; _cen_walk "$@" || _stat=$?
+    [ "$_stat" -ge 3 ] && return "$_stat"
+    [ "${#CEN_WALK_FILES[@]}" = 0 -a "${#CEN_WALK_DIRS[@]}" = 0 ] && return 1
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Startup - module init
+# ------------------------------------------------------------------------------
+
+# delete temp files created by tmpfile
+_cen_ext_quit() {
+    [ "$CEN_EXT_TEMP" ] && tmpfile -d -r
+}
+
+:
+# end

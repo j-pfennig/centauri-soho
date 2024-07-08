@@ -1,0 +1,6 @@
+[allow to start synaptic without password]
+Identity=unix-group:wheel;unix-group:sudo
+Action=com.ubuntu.pkexec.synaptic
+ResultAny=no
+ResultInactive=no
+ResultActive=yes

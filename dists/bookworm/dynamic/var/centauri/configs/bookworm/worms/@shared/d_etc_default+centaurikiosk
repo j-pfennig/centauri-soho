@@ -1,0 +1,28 @@
+# centaurikiosk - configuration
+
+# services to stop/start
+# ----------------------
+# a list of service names (prefix - to stop)
+
+router  = -graphical multi-user squid lighttpd minidlna
+kiosk   = -graphical multi-user -squid -lighttpd
+desktop = graphical squid lighttpd
+
+# modes to show in menu
+# ---------------------
+#
+
+# modes=router kiosk desktop maintenance
+modes=router desktop maintenance
+
+
+# start a desktop
+# ---------------
+#   none    no desktop
+#   auto    autostart, no displaymanager
+#   <name>  name of display-manager (default is lightdm)
+
+#desktop=lightdm
+#desktop=auto
+
+### end

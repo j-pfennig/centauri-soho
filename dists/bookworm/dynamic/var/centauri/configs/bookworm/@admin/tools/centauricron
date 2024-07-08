@@ -1,0 +1,760 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_TITLE="Tool to run Centauri Cron Jobs"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.32:1' || exit 2
+
+# Data
+DAT_LOGDIR="/var/log"
+DAT_MIDNIGHT=
+DAT_TRIM_FLAG=
+DAT_UNMOUNT_FLAG=
+DAT_SPINDOWN_FLAG=
+DAT_DEL_OUTPUT=
+DAT_OFS_OUTPUT=0                        # initial file size
+DAT_QUIT_LIST=                          # for exit_hook
+DAT_KEEP_PIDFILE=                       # don't delete pidfile
+DAT_ROLE=                               # from CEN_NET_ROLE
+
+# data for extra options
+CEN_OPT_APPEND=                         # see --append
+CEN_OPT_CONFIG=                         # see --config
+CEN_OPT_LOGMAX=                         # see --logmax
+CEN_OPT_OUTPUT=                         # see --output
+
+# get paths
+folder -s DAT_MIDNIGHT   -b transient 'centauricron_midnight'
+folder -s CEN_OPT_CONFIG -b default   "$CEN_NAME"
+
+# allow relative path names
+export PATH="$CEN_TOOLS:$PATH"
+
+# ------------------------------------------------------------------------------
+# Hourly default script
+# ------------------------------------------------------------------------------
+default_hourly() {
+    ### update private repositories
+    [ -e "$CEN_ROOT/machines/rsyncd.conf" ] &&
+        execute -s 3 centaurimachines -U -s
+
+    if [ "$DAT_ROLE" != 'UNKNOWN' ] ; then
+
+        ### process mail send queue
+        execute -s 2 centaurimail --silent queue
+    fi
+
+    ### update network folder
+    execute -s 2 centauridata update
+
+    ### umount stale encfs
+    execute -s 2 centauriencfs cleanup
+
+    ### umount autofs volumes and spindown disks
+    DAT_UNMOUNT_FLAG=1
+    DAT_SPINDOWN_FLAG=1
+}
+
+# ------------------------------------------------------------------------------
+# Daily default script
+# ------------------------------------------------------------------------------
+run_inhibit() {
+    local inhi="${CEN_PATHS[1]}/systemd-inhibit"
+    if [ -x "$inhi" ] ; then
+        $inhi --what=handle-power-key:shutdown --who="$CEN_NAME" \
+              --why="Running: $*" --mode=block $*
+    else
+        $*
+    fi
+}
+
+default_daily() {
+    header "Update Status-Info"
+
+    ### Update info files
+    execute -s 4 centauriinfo cron
+
+    if [ "$DAT_ROLE" != 'UNKNOWN' ] ; then
+
+        header "Update Mail and Repository"
+
+        ### run a cyrus db check
+        execute -s 5 centaurimail --silent backup
+
+        ### process mail send queue
+        execute -s 5 centaurimail --silent queue
+
+        ### fetch mail, prune delivery
+        execute -s 5 centaurimail --zombie --silent fetch -- prune -- index
+
+        ### synchronize config files
+        execute -s 5 centauriconfig cron
+    fi
+
+    header "Make daily Backups, set Permissions"
+
+    ### make backups
+    execute -s 6 centauridata day
+
+    ### set permissions
+    execute -s 7 centaurisecurity cron
+
+    ### trim ssds, umount autofs volumes and spindown disks
+    DAT_TRIM_FLAG=1
+    DAT_UNMOUNT_FLAG=1
+    DAT_SPINDOWN_FLAG=1
+}
+
+# ------------------------------------------------------------------------------
+# Weekly default script
+# ------------------------------------------------------------------------------
+default_weekly() {
+    ### make backups and set permissions
+    execute -s 5 centauridata week
+
+    ### run short or long selftests
+    execute -s 6 centaurismart -s test run
+
+    # repeat some daily actions ...
+
+    ### Update info files
+    # execute -s 7 centauriinfo cron
+
+    ### synchronize config files
+    # execute -s 8 centauriconfig cron
+
+    ### umount autofs volumes and spindown disks
+    DAT_UNMOUNT_FLAG=1
+    DAT_SPINDOWN_FLAG=1
+}
+
+# ------------------------------------------------------------------------------
+# Monthly default script
+# ------------------------------------------------------------------------------
+default_monthly() {
+    ### make backups and set permissions
+    execute -s 5 centauridata month
+
+    ### set flag for long selftests
+    execute -s 6 centaurismart -s test long
+
+    # repeat some daily actions ...
+
+    ### Update info files
+    #execute -s 7 centauriinfo cron
+
+    ### synchronize config files
+    #execute -s 7 centauriconfig cron
+
+    ### umount autofs volumes and spindown disks
+    DAT_UNMOUNT_FLAG=1
+    DAT_SPINDOWN_FLAG=1
+}
+
+# ------------------------------------------------------------------------------
+# Defaults for boot/shutdown management
+# ------------------------------------------------------------------------------
+# The midnight flag file is created via cron at midnight.  If 'shutdown' action
+# (invoked via anacrontab) finds this file it checks it the system is configured
+# to be shutdown.
+# ------------------------------------------------------------------------------
+default_boot() {
+    remove "$DAT_MIDNIGHT"
+}
+
+default_midnight() {
+    autoshutdown
+}
+
+default_shutdown() {
+    # we must have a midnight file
+    [ -e "$DAT_MIDNIGHT" ] || return
+    remove "$DAT_MIDNIGHT"
+
+    # run daily shutdown if configured
+    [ -f "${CEN_PATHS[6]}/daily_shutdown" ] && . "${CEN_PATHS[6]}/daily_shutdown"
+    [ -n "$SHUTDOWN_TIME" ] || return
+
+    message -a "daily shutdown triggered by ${CEN_PATHS[6]}/daily_shutdown"
+    system -e -p -- shutdown -h "$SHUTDOWN_TIME" "$SHUTDOWN_MESSAGE"
+}
+
+# ------------------------------------------------------------------------------
+# helper functions that can be called from user hook
+# ------------------------------------------------------------------------------
+
+# invoke default action: -no args-
+default() {
+    trace "Beginnig 'default' for action '$CEN_ACTION'"
+    folder -f -c "/tmp"
+    default_${CEN_ACTION}
+    trace "Finished 'default' for action '$CEN_ACTION'"
+}
+
+# do not invoke default action (place holder): -no args-
+nodefault() {
+    trace "Skipping 'default' for action '$CEN_ACTION'"
+}
+
+header() {
+    [ "$CEN_ACTION" = "hourly" ] && return
+    [ -z "$CEN_AUTOIND" ] && message -i " "
+    message -- "=== $* (status $CEN_EXIT) ==="
+    message -a " " ; CEN_AUTOIND=
+}
+
+# find a script and run: [-c|-s <status>] <name> <arg>...
+execute() {
+    local stat=9 sbak="$CEN_EXIT" path fopt
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -c)   stat='-' ;;                           # ignore error
+        -o)   fopt=1 ;;
+        -s)   shift ; stat="$1" ;;                  # status to set on error
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+
+    # use the PATH variable to locate a centauri script for embedding
+    if sysfind -s path -p "$CEN_TOOLS:$CEN_TOOLS/utilities" -- "$1" ; then
+        shift ; embed -v -- "$path" "$@" && stat=
+    # run simple command ...
+    elif sysfind -s path -- "$1" ; then
+        shift ; "$path" "$@" && stat=
+    elif [ -n "$fopt" ] ; then
+        trace "Program not found: $*" ; return 0
+    else
+        message "Program not found: $*"
+    fi
+    CEN_AUTOIND=
+    [ -z "$stat" ] && return 0
+    if [ "$stat" = '-' ] ; then                     # reset error
+        CEN_EXIT="$sbak"
+        [ "$CEN_EXIT" = "0" ] && error -c
+    else
+        status "$stat" "$path"
+    fi
+    return 1
+}
+
+# report an error: <status> <message>...
+status() {
+    local stat="$1" ; shift
+    error -s "$stat"
+    [ -n "$1" ] && error "$* (status $stat)"
+}
+
+# ------------------------------------------------------------------------------
+# log output
+# ------------------------------------------------------------------------------
+# output to syslog and stderr: [-q] [-s] <arg>...
+#
+# Options:  -q  quiet, no logfile output
+#           -s  report status
+#           -t <tag> ignored
+# ------------------------------------------------------------------------------
+logger_mesg() {
+    local fqui fsta mesg faci="cron.info"
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -q)   fqui=1 ;;
+      -s)   fsta=1 ;;
+      -t)   shift ;;            # ignored for compatibility
+      *)    fatal "Bad '${FUNCNAME[0]}' argument: $1"
+      esac ; shift
+    done
+
+    if [ -n "$fsta" ] ; then
+        mesg="$* (status=$CEN_EXIT)"
+        if [ "$CEN_EXIT" != 0 ] ; then
+            faci="cron.error" ; fqui=
+        fi
+    else
+        mesg="$*"
+    fi
+
+    [ -z "$fqui" ] && message -a "$mesg"
+    isservice -l "$faci" "$mesg"
+}
+
+# create and rotate logfiles: -no args-
+logger_init() {
+    # check if savlog exists
+    if [ "${CEN_OPT_LOGMAX:-0}" -gt 1 -a -z "$(type -t savelog)" ] ; then
+        warning -a "using '--logmax 1', program 'savelog' not found"
+        CEN_OPT_LOGMAX=1
+    fi
+
+    # rotate log
+    if [ -e "$CEN_OPT_OUTPUT" -a "${CEN_OPT_LOGMAX:-0}" -gt 0 ] ; then
+        if [ "$CEN_OPT_LOGMAX" -gt 1 ] ; then
+            system -e -p -- savelog -q -c "$CEN_OPT_LOGMAX" "$CEN_OPT_OUTPUT"
+        else
+            system -e -p -- rename -o -- "$CEN_OPT_OUTPUT" "$CEN_OPT_OUTPUT.1"
+        fi
+    fi
+
+    # init new log file
+    if [ -n "$CEN_OPT_APPEND" ] ; then
+        [ -w "$CEN_OPT_OUTPUT" ] ||
+            fatal "Cannot write output file: $CEN_OPT_OUTPUT"
+        echo >>"$CEN_OPT_OUTPUT"
+        system -q -s DAT_OFS_OUTPUT -- stat "$CEN_OPT_OUTPUT" --format="%s" || DAT_OFS_OUTPUT=0
+    else
+        : 2>/dev/null >"$CEN_OPT_OUTPUT" ||
+            fatal "Cannot create output file: $CEN_OPT_OUTPUT"
+    fi
+    {   message -- "$(date +"%F %T") [${CEN_CMDARGS[@]}]"
+        echo
+    } >>"$CEN_OPT_OUTPUT" 2>&1
+}
+
+# exit hook to delete temporary logfile and PID file
+exit_hook() {
+    if [ -e "$CEN_OPT_OUTPUT" ] ; then
+        if ! error -t ; then
+            {   echo ; error "Exit with status=$CEN_EXIT done=$CEN_DONE" ; echo
+            } >>"$CEN_OPT_OUTPUT" 2>&1
+            system -z -- tail -c +$((DAT_OFS_OUTPUT + 1)) "$CEN_OPT_OUTPUT"
+        fi
+        [ -n "$DAT_DEL_OUTPUT" ] && remove "$CEN_OPT_OUTPUT"
+    fi
+    [ -z "$DAT_KEEP_PIDFILE" ] && pidfile -d -r
+    $DAT_QUIT_LIST "$@"
+}
+
+# pretty print a function: <hook>|- [<default>]
+list_function() {
+    ___list() {
+        declare -f "$1"
+    }
+
+    # used recursively for user and default function
+    if [ "$1" != "-" ] ; then
+        [ -n "$2" ] && message "The user hook implementation is:"
+        local line sifs="$IFS" ; IFS=$'\n'
+        while read line ; do
+            message -a "$line"
+        done <<!EOF
+$(___list "$1")
+!EOF
+        IFS="$sifs"
+    fi
+
+    # default function
+    [ "${2:--}" = "-" ] && return
+    message "The default implementation is:"
+    list_function "$2"
+}
+
+# ------------------------------------------------------------------------------
+# Queue daily shutdown: [-c|-v]
+# ------------------------------------------------------------------------------
+autoshutdown() {
+    local down hhmm mesg="trace -a"
+    [ "$1" = "-v" ] && mesg="message -a"
+    [ -f "${CEN_PATHS[6]}/daily_shutdown" ] && . "${CEN_PATHS[6]}/daily_shutdown"
+
+    if [ -z "$SHUTDOWN_TIME" ] ; then
+        $mesg "Daily shutdown not configured"
+        return 1
+    fi
+
+    if [ -e "$DAT_MIDNIGHT" ] ; then
+        $mesg message -a "Daily shutdown has been sheduled"
+        return 0
+    elif [ -z "$SHUTDOWN_DAYTIME" ] ; then
+        $mesg "Daily shutdown not constrained"
+    else
+        $mesg "Daily shutdown constrained:" "$SHUTDOWN_DAYTIME"
+        printf -v hhmm "%(%H%M)T" -1
+        [ "$hhmm" \> "${SHUTDOWN_DAYTIME/:/}" ] && return 1
+    fi
+
+    [ "$1" = "-c" ] && return 0
+    $mesg "Daily shutdown will be sheduled"
+    create "$DAT_MIDNIGHT"
+}
+
+# ------------------------------------------------------------------------------
+# Spinning down disks: <wait>
+# ------------------------------------------------------------------------------
+spindown() {
+    # build a list of candidates
+    DAT_SPINDOWN_FLAG=
+    local wdrv wcur wxxx dlst=() dsta=()
+    sync ; sleep 3
+    for wdrv in /dev/disk/by-id/{ata,scsi,usb}-* ; do
+        wdrv="${wdrv/-part?/}"
+        [ "$wdrv" = "$wcur" ] && continue
+        wcur="$wdrv" ; [ -b "$wdrv" ] || continue
+        system -r -e -p -s wdrv -- readlink -f "$wdrv" || continue
+        [ "$(</sys/block/${wdrv##*/}/queue/rotational)" = "1" ] || continue
+        wdrv="${wdrv##*/}"
+        [ "${wdrv::2}" = "sr" ] && continue
+        dlst+=("$wdrv")
+        dsta+=("$wdrv $(</sys/block/$wdrv/stat)" )
+    done
+
+    # any drive in list? Wait to measure activity
+    if [ -z "$dlst" ] ; then
+        message -a "Drive(s) to spin down: -none-" ; return
+    fi
+    message -a "Drive(s) to spin down: ${dlst[@]}"
+    sleep "${1:-10}" ; dlst=()
+
+    # check for activity, spin down
+    for wdrv in "${dsta[@]}" ; do
+        wcur="${wdrv%% *}"
+        if [ "$wdrv" != "$wcur $(</sys/block/$wcur/stat)" ] ; then
+            message -a -- "- Drive is active    : $wcur" ; continue
+        fi
+        system -r -e -p -s wxxx -- hdparm -C "/dev/$wcur"
+        if [ "${wxxx##* }" = "standby" ] ; then
+            message -a -- "- Drive not spinning : $wcur" ; continue
+        fi
+        system -q -- hdparm -y "/dev/$wcur" && dlst+=("$wcur")
+    done
+    [ -n "$dlst" ] && message -a "Sent spindown command:" "${dlst[*]}"
+}
+
+# ------------------------------------------------------------------------------
+# trimssd - run fstrim on ssd partition(s)
+# ------------------------------------------------------------------------------
+trimssd() {
+    DAT_TRIM_FLAG=
+    local irun idev icnt=0 ivol=()
+    local -A imap
+
+    # search partitions, /mnt/vol? should be 1st (btrfs volumes)
+    for irun in /mnt/vol? /mnt/* "/export" "/home" "/shared" "/" ; do
+        [ -e "$irun" ] || continue
+        [ -e "$irun/Volumes" ]                  # trigger automount
+        findmount "$irun" || continue           # get disk partition
+        idev="${CEN_MOUNT_DEV##*/}"             # strip path
+        case "$idev" in                         # strip partition...
+        nvm*)   idev="${idev%p[0-9]}" ;;
+        *)      idev="${idev%[0-9]}"
+        esac
+        [ -n "${imap["$idev"]}" ] && continue   # already in list
+        imap["$idev"]="$idev"
+        trace -a "Mounted: $irun -> $CEN_MOUNT_DEV ($idev)"
+
+        [ -r "/sys/block/$idev/queue/rotational" ] || continue
+        [ "$(</sys/block/$idev/queue/rotational)" = "0" ] || continue
+        ((icnt += 1)) ; ivol+=("$irun")
+    done
+
+    [ "$irun" = 0 ] && return                   # nothing found
+    message -a "Running fstrim on $icnt SSD(s)"
+    for irun in "${ivol[@]}" ; do
+        system -q -- fstrim "$irun"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# actionsCron
+# ------------------------------------------------------------------------------
+actionCron() {
+    case "$CEN_ACTION" in
+    hourly|daily|weekly|monthly)
+        if pidfile -c -r ; then             # check for existing PID file
+            if [ -n "$CEN_OPT_FORCE" ] ; then
+                trace -a "Other instance ignored due to '--force' option"
+            else
+                trace -a "Found another instance, waiting 15s before retry"
+                if ! actionWait 15 ; then
+                    if [ -n "$CEN_OPT_SILENT" ] ; then
+                        trace -a "Stop because another instance is running"
+                    else
+                        error "Stop because another instance is running, use '--force' to override"
+                    fi
+                    DAT_KEEP_PIDFILE=1          # don't remove!
+                    quit
+                fi
+            fi
+        fi
+        pidfile -r -w ;;                    # create PID file
+    esac
+
+    if : ; then
+        logger_mesg -q "Inkoved action '$CEN_ACTION'"
+        folder -f -c -- "/tmp"
+
+        # call hooks
+        if [ "$(type -t "$CEN_ACTION")" = "function" ] ; then
+            if [ -n "$CEN_OPT_DRYRUN" ] ; then
+                list_function $CEN_ACTION default_${CEN_ACTION}
+            else
+                trace -a "Entering user hook for action '$CEN_ACTION'"
+                $CEN_ACTION
+            fi
+            trace -a "Finished user hook for action '$CEN_ACTION'"
+        else
+            trace -a "Found no user hook for action '$CEN_ACTION'"
+            if [ -n "$CEN_OPT_DRYRUN" ] ; then
+                list_function - default_${CEN_ACTION}
+            else
+                default
+            fi
+        fi
+
+        # things running after script ...
+        if [ -z "$CEN_OPT_DRYRUN" ] ; then
+
+            if [ -n "$DAT_UNMOUNT_FLAG" -o -n "$DAT_SPINDOWN_FLAG" ] && \
+                system -r -q -- systemctl is-active centaurimounter.service ; then
+                DAT_UNMOUNT_FLAG=
+                DAT_SPINDOWN_FLAG=
+            fi
+
+            local shdr
+            [ -n "$DAT_TRIM_FLAG" ] && shdr+=", trim SSDs"
+            [ -n "$DAT_UNMOUNT_FLAG" ] && shdr+=", unmount"
+            [ -n "$DAT_SPINDOWN_FLAG" ] && shdr+=", spindown HDs"
+            shdr="${shdr:2}" ; [ -n "$shdr" ] && header "${shdr^}"
+
+            # ssd trim
+            [ -n "$DAT_TRIM_FLAG" ] && trimssd
+
+            # signal to automounter
+            if [ -n "$DAT_UNMOUNT_FLAG" ] ; then
+                DAT_UNMOUNT_FLAG=
+                if pkill -USR1 -x "automount" ; then
+                    message -a "Automounter notified to release all mounts"
+                else
+                    warning -a "Automounter not running (DAT_UNMOUNT_FLAG set)"
+                fi
+            fi
+
+            # spindown non-ssd drives
+            [ -n "$DAT_SPINDOWN_FLAG" ] && spindown 60
+
+            logger_mesg -q -s "Completed action '$CEN_ACTION'"
+        fi
+    fi >>"${CEN_OPT_OUTPUT:-/dev/fd/1}" 2>&1
+}
+
+# ------------------------------------------------------------------------------
+# action shutdown: [run|status|queue]
+# ------------------------------------------------------------------------------
+actionShutdown() {
+    case "$1" in
+    ""|run)     actionCron ;;
+    que*)       default_midnight ;;
+    sta*)       default_midnight -s ;;
+    *)          invoke -e "Bad argument: %s" "$1"
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action wait: <maxs>
+# ------------------------------------------------------------------------------
+actionWait() {
+    local wsec=0 wmax="${1//[!0-9]/}"
+    while pidfile -c -r ; do
+        if [ -n "$wmax" ] && [ "$wsec" -ge "$wmax" ] ; then
+            DAT_KEEP_PIDFILE=1          # don't remove!
+            trace -a "Maximum wait time reached" ; return 1
+        fi
+        sleep 1 ; ((wsec += 1))
+        trace -a "Waiting since ${wsec}s"
+    done
+    return 0                    # return code used in actionCron
+}
+
+# ------------------------------------------------------------------------------
+# option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    '') netserver                                           # load state
+        DAT_ROLE="${CEN_NET_ROLE:-UNKNOWN}"
+        trace -a -c "network role" "$DAT_ROLE" ;;
+
+    -A|--app*)
+        optarg "append"     CEN_OPT_APPEND ;;               # a simple flag
+    -C|--con*)
+        optarg "config"     CEN_OPT_CONFIG -t ;;            # any text
+    -L|--log*)
+        optarg "logmax"     CEN_OPT_LOGMAX -n ;;            # a number
+    -O|--out*)
+        optarg "output"     CEN_OPT_OUTPUT -t ;;            # any text
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    # before 1st action ...
+    "") context -r
+        [ -r "$CEN_OPT_CONFIG" ] || fatal "Cannot read: $CEN_OPT_CONFIG"
+        . "$CEN_OPT_CONFIG" || fatal "Failed to load: $CEN_OPT_CONFIG"
+        DAT_QUIT_LIST="$CEN_HOOK_QUIT" ; CEN_HOOK_QUIT=exit_hook
+
+        # use default logfile for --logmax
+        if [ -z "$CEN_OPT_OUTPUT" ] ; then
+            [ -n "$CEN_OPT_APPEND" -o -n "$CEN_OPT_LOGMAX" ] &&
+                CEN_OPT_OUTPUT="$DAT_LOGDIR/$CEN_NAME"
+        fi
+
+        embed -m _centauri_bash_svc
+        CEN_OPT_SYSLOG=0                        # disable auto syslog output
+
+        # where to write
+        if [ "$CEN_OPT_OUTPUT" = "-"  -o -n "$CEN_OPT_DRYRUN" ] ; then
+            CEN_OPT_OUTPUT=
+        elif [ -z "$CEN_OPT_OUTPUT" ] ; then
+            system -f -p -s CEN_OPT_OUTPUT -- mktemp --tmpdir "${CEN_NAME}_XXXXXX"
+            DAT_DEL_OUTPUT=1
+        elif [ -d "$CEN_OPT_OUTPUT" ] ; then
+            CEN_OPT_OUTPUT+="/$CEN_NAME" ; logger_init
+        else
+            logger_init
+        fi ;;
+
+    hou*)
+        invoke "hourly"    actionCron 0 ;;      # no args
+    da[iy]*)
+        invoke "daily"     actionCron 0 ;;      # no args
+    wee*)
+        invoke "weekly"    actionCron 0 ;;      # no args
+    mon*)
+        invoke "monthly"   actionCron 0 ;;      # no args
+
+    boo*|reb*)
+        invoke "boot"      actionCron 0 ;;      # no args
+    mid*)
+        invoke "midnight"  actionCron 0 ;;      # no args
+    shu*)
+        invoke "shutdown"  -        0 1 ;;      # optional arg
+    wai*)
+        invoke "wait"      -        0 1 ;;
+
+    spi*)
+        invoke "spindown"  spindown   0 ;;      # DEBUG
+    tri*)
+        invoke "trimssd"   trimssd    0 ;;      # DEBUG
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -A  --append         append to output file  (implies '--output $DAT_LOGDIR')
+       -C  --config <file>  configuration file               (default see below)
+       -L  --logmax <nmax>  keep <nmax> logfiles   (implies '--output $DAT_LOGDIR')
+       -O  --output <file>  output file/folder  -or-  '-' for stdout
+
+actions:
+       hourly               to be executed every few hours
+       daily                to be executed every day
+       weekly               to be executed every week
+       monthly              to be executed every month
+
+       boot                 called to boot time to reset the midnight flag
+       midnight             set a flag that midnight has passed
+       shutdown [<mode>]    used to run shutdown if the midnight flag is set
+
+       spindown             put rotational disks into power save mode
+       trimssd              run 'fstrim' for volumes in non-rotational drives
+       wait     [<maxs>]    wait until another $CEN_NAME instance exits
+
+arguments:
+       <file>               any file
+       <maxs>               maximum wait time in [s]
+       <mode>               queue:=set flag, status:=show info, run:=do it
+
+Whithout the '--output' option any cron output is sent to a [temporary] file.
+If the return status is non-zero the file gets copied to stdout (in this case
+cron will send the output via mail to the administrator).
+
+The '--logmax <nmax>' option keeps up to <nmax> versions of the output files.
+The location is '$DAT_LOGDIR/$CEN_NAME' unless altered via '--output'.
+
+Use the --dryrun option to list the cron shell scriptlets on standard output.
+
+config:
+       The current configuration file is: '$CEN_OPT_CONFIG'.
+!EOF
+    usagecat -v "More:  Use -- to show configuration syntax." << !EOF
+syntax:
+       The configuration file is a bash script that gets sourced by $CEN_NAME.
+       The script can override the following functions:
+
+        - daily        called once per day
+        - weekly       called once per week
+        - monthly      called once per month
+        - boot         called after system boot
+        - midnight     called at midnight
+        - shutdown     called by autoshutdown to run shutdown code
+
+       Inside these overrides the following commands can be used:
+
+       - header        print a header in logfile
+       - execute       run a tool or program
+       - default       execute the default script
+       - autoshutdown  shedule call to shutdown()
+       - status        status report to logfile
+
+       Here an example configuration:
+
+         #!/usr/bin/bash
+         # $CEN_OPT_CONFIG - cofigure standard cron actions
+         °
+         # This file is sourced by '$CEN_NAME. The defined functions are optional and
+         # correspond to actions.  The functions can contain any commands.  Builtin
+         # 'default' will run some default actions and 'status' is used to report any
+         # problems.  If a function is not present the default actions will be run.
+         °
+         # This should be invoked via anacrontab every few hours
+         hourly() {
+         °   default
+         °   mycommand || status 7 "failed: mycommand"
+         }
+         °
+         # This should be invoked via anacrontab once per day
+         daily() {
+         °   header "Running 'some_command'"
+         °   execute some_command
+         °   default
+         }
+         °
+         # This should be invoked via anacrontab once per week
+         weekly() {
+         °   default
+         }
+         °
+         # This should be invoked via anacrontab once per month
+         monthly() {
+         °   default
+         }
+         °
+         # This should be invoked via crontab at a fixed time
+         shutdown() {
+         °   # the default action is to shutdown the computer
+         °   #default
+         }
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

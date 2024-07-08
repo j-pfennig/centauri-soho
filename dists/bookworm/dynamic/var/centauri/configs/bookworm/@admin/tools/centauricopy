@@ -1,0 +1,589 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2023; BSD License"
+CEN_TITLE="Tool to copy folders recursively using rsync"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -i -m bat -m con -s -y "$0" "0.54:2" || exit 2
+
+# Data
+DAT_PASSWORD="/$CEN_ROOT/secrets/rsync_trusted"
+DAT_RUN_IMPLIED=
+DAT_EXCLUDE=                    # filled by do_exclude
+DAT_COUNTER=0                   # copied + deleted files
+DAT_DELETED=0                   # deleted files
+
+# Options
+CEN_OPT_ALL=            # see --all
+CEN_OPT_BACKUP=         # see --backup
+CEN_OPT_COMPRESS=       # see --compress
+CEN_OPT_COUNTS=         # see --counts
+CEN_OPT_DELETE=         # see --delete
+CEN_OPT_FOLDER=         # see --folder
+CEN_OPT_FUZZY=          # see --fuzzy
+CEN_OPT_HARDLINKS=      # see --hardlinks
+CEN_OPT_LOCAL=          # see --local
+CEN_OPT_MORE=           # see --more
+CEN_OPT_NOCOPY=         # see --nocopy
+CEN_OPT_ONE=            # see --onoe
+CEN_OPT_OPTION=()       # see --option
+CEN_OPT_PASSWORD=       # see --password
+CEN_OPT_PROXY=          # see --proxy
+CEN_OPT_SLOPPY=         # see --sloppy
+CEN_OPT_UPDATE=         # see --update
+CEN_OPT_VOLUME=         # see --volume
+
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+do_folder_=
+do_folder() {
+    # remove trailing slash
+    do_folder_="${1%/}"
+    [ "$1" = "/" ] && do_folder_="/"
+    [ "$1" = "." ] && do_folder_="$PWD"
+    # return error if remote folder
+    if [ "${do_folder_##*:}" != "$do_folder_" ] ; then
+        [ "${do_folder_##*:}" = "." ] && do_folder_="${do_folder_/:./:$PWD}"
+        return 1
+    fi
+    # validate local folder
+    [ -n "$CEN_OPT_FORCE" ] && return 0
+    folder -f "$do_folder_"
+}
+
+# read exclusions from config, see --all and --volume
+do_exclude() {
+    # hard coded defaults for missing config file
+    ___defaults() {
+        [ -z "$CEN_OPT_ALL" ] && DAT_EXCLUDE=("--exclude" ".Trash[0-9]*" "--exclude" "/lost+found")
+        return 1
+    }
+
+    # handle config lines
+    ___reader() {
+        case "$1" in
+            exc*)   ;;
+            noc*)   [ "$CEN_OPT_NOCOPY" = "1" ] || return 0 ;;
+            *)      configfile -w - "Invalid statement:" "$*" ; return 0
+        esac
+        configfile -e - 2 2 $# || return 0
+        mxcl["$2"]="${CEN_CONFIGFILE[3]}"
+    }
+
+    DAT_EXCLUDE=()
+    local -A mxcl
+    local item args=()
+
+    if [ -n "$CEN_OPT_VOLUME" ] ; then
+        [ -z "$CEN_OPT_ALL" ] && args+=("")     # read default section
+        args+=("${CEN_OPT_VOLUME^}")            # read this section
+        configfile -a ___reader -n centauricopy "${args[@]}" || return 1
+    else
+        [ -n "$CEN_OPT_ALL" ] && return 0       # no excludes at all
+        # missing config is ok, hard coded default
+        configfile -a ___reader -i ___defaults -n centauricopy "" || return 0
+    fi
+
+    for item in "${!mxcl[@]}" ; do
+        DAT_EXCLUDE+=("--exclude" "$item")
+    done
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# sync action
+# ------------------------------------------------------------------------------
+actionSync() {
+    system -f -c rsync
+    DAT_COUNTER=0 ; DAT_DELETED=0
+
+    # counts
+    ___counts() {
+        if [ -z "$CEN_OPT_COUNTS" ] ; then
+            message "$@" ; return 0
+        fi
+        ((DAT_COUNTER += 1))
+        [ $((DAT_COUNTER & 3)) = 0 ] || return
+        if [ "$DAT_DELETED" = 0 ] ; then
+            progress -a -l -p "Copied %s files" "$DAT_COUNTER"
+        else
+            progress -a -l -p "Copied %s, deleted %s files" \
+                     "$((DAT_COUNTER - DAT_DELETED))" "$DAT_DELETED"
+        fi
+    }
+
+    # print message if not using --silent
+    ___message() {
+        [ -n "$CEN_OPT_SILENT" ] || message "$@"
+    }
+    # progress display if not using --silent
+    ___progress() {
+        [ -n "$CEN_OPT_SILENT" ] || progress "$@"
+    }
+
+    # implied run
+    [ -n "$DAT_RUN_IMPLIED" ] && trace "No action given, trying: run $*"
+
+    # check source and dest
+    local orig dest base bas1 bas2 info
+    if [ -z "$2" ] ; then
+        orig="."; dest="$1"
+    else
+        orig="$1"; dest="$2"
+    fi
+    do_folder "$orig" && bas1="$do_folder_" ; orig="$do_folder_"
+    do_folder "$dest" && bas2="$do_folder_" ; dest="$do_folder_"
+
+    if   [ -n "$bas1" -a -n "$bas2" ] ; then
+        base="$bas2" ; info="Local copy   "
+        CEN_OPT_PASSWORD="#"
+        [ -z "$CEN_OPT_LOCAL" ] && CEN_OPT_LOCAL=1
+    elif [ -z "$bas1" -a -n "$bas2" ] ; then
+        base="$bas2" ; info="From remote  "
+    elif [ -n "$bas1" -a -z "$bas2" ] ; then
+        info="To remote    "
+    else
+        fatal "Cannot copy between two remote destinations"
+    fi
+
+    # get the backup folder
+    if [ "$CEN_OPT_BACKUP" = "-" ] ; then
+        [ -z "$base" ] &&
+            fatal "cannot use '--backup=-' on remote destination"
+        CEN_OPT_BACKUP=
+        embed -s CEN_OPT_BACKUP centauripaths --deleted --logical "$1"
+        [ -z "$CEN_OPT_BACKUP" ] && fatal "Cannot locate 'Deleted' folder"
+    elif [ -n "$CEN_OPT_BACKUP" ] ; then
+        if [ -n "$base" ] ; then
+            [ -d "$CEN_OPT_BACKUP" ] ||
+                fatal "Not a folder: $CEN_OPT_BACKUP"
+        else
+            trace "cannot check backup folder on remote destination"
+        fi
+    fi
+
+    # implement --folder
+    if [ -z "$CEN_OPT_FOLDER" ] ; then
+        [ -z "${orig##*:}" ] && orig+="."
+        orig+="/"
+    fi
+    ___message "$info: $orig  =>  $dest"
+
+    # get the rsync password
+    if [ "${CEN_OPT_PASSWORD:-#}" != "#" ] ; then
+        export RSYNC_PASSWORD
+        if [ "$CEN_OPT_PASSWORD" != "-" ] ; then
+            if [ "$CEN_OPT_PASSWORD" = "+" ] ; then
+                CEN_OPT_PASSWORD="$DAT_PASSWORD"
+            elif [ ! -r "$CEN_OPT_PASSWORD" ] ; then
+                fatal "Cannot read rsync password from: $CEN_OPT_PASSWORD"
+            fi
+            if [ -r "$CEN_OPT_PASSWORD" ] ; then
+                ___message -i "Password file: $CEN_OPT_PASSWORD"
+                . "$CEN_OPT_PASSWORD"
+            fi
+        fi
+
+        if [ -z "$RSYNC_PASSWORD" ] ; then
+            progress -a "rsync password: " ; read -s RSYNC_PASSWORD
+            [ -n "$RSYNC_PASSWORD" ] || warning -i "Got no rsync password"
+        fi
+    fi
+
+    # --- generate rsync options ---
+
+    # action "copy"   implies --compress  --hardlinks  --fuzzy
+    # action "update" implies --compress  --hardlinks  --fuzzy  --update
+    # action "sync"   implies --compress  --hardlinks  --fuzzy  --update  --delete
+    # action "mirror" implies --compress  --hardlinks  --fuzzy            --delete  --nocopy=1
+
+    local opts=('--archive' '--protect-args')
+    local odel='--delete'
+    [ -z "$CEN_OPT_FORCE"  ] && opts+=('--force')
+
+    if [ "$CEN_ACTION" = "mirror" -a "$CEN_OPT_NOCOPY" != "1" ] ; then
+        CEN_OPT_NOCOPY=0 ; opts+=("--delete-excluded")
+    fi
+    [ -z "$CEN_OPT_NOCOPY" ] && CEN_OPT_NOCOPY=1
+
+    # excludes from config file
+    do_exclude || return
+
+    if [ -z "$DAT_EXCLUDE" ] ; then
+        ___message -i "Exclusions   : [none]"
+    else
+        local xmsg="${DAT_EXCLUDE[*]}"
+        ___message -i -b 15 "Exclusions   : ${xmsg//--exclude /}"
+        opts+=("${DAT_EXCLUDE[@]}")
+    fi
+
+    # handle --include and --exclude options
+    local iaut valu excl="include"
+    for valu in "${CEN_OPT_INCLEXCL[@]}" ; do
+        if [ -n "$valu" ] ; then
+            valu="${valu#^}" ; valu="${valu%$}"     # remove glob ^/$
+            opts+=("--$excl=$valu")
+            [ "$excl" = "include" ] && iaut=1 || iaut=
+        fi
+        [ "$excl" = "include" ] && excl="exclude" || excl="include"
+    done
+    if [ -n "$iaut" ] ; then
+        trace -i "Appending '--include=*/ --exclude=*' --prune-empty-dirs"
+        opts+=("--include=*/" "--exclude=*" "--prune-empty-dirs")
+    fi
+
+    if [ -n "$CEN_OPT_BACKUP" ] ; then
+        ___message -i "Backup folder: $CEN_OPT_BACKUP"
+        opts+=("--backup" "--backup-dir=$CEN_OPT_BACKUP")
+    else
+        ___message -i "Backup folder: [none]"
+    fi
+
+    if [ -n "${CEN_OPT_OPTION[*]}" ] ; then
+        local more=() mopt
+        for mopt in "${CEN_OPT_OPTION[@]}" ; do
+            more+=("--$mopt")
+        done
+        ___message -i "Extra options: ${more[*]}"
+        opts+=("${more[@]}")
+    fi
+
+    if [ -n "$CEN_OPT_MORE" ] ; then
+        local more mopt
+        eval more="\$$CEN_OPT_MORE"
+        if [ -n "$more" ] ; then
+            ___message -i "Environment  : $more"
+            set -f
+            for mopt in $more ; do
+                opts+=("$mopt")
+            done
+            set +f
+        else
+            ___message -i "Environment  : [$CEN_OPT_MORE not set or empty]"
+        fi
+    fi
+
+    if [ "$CEN_OPT_LOCAL" = 1 ] ; then
+        opts+=("--whole-file")
+    else
+        [ -n "$CEN_OPT_COMPRESS"  -o "$CEN_ACTION" != "run" ] &&
+            opts+=("--compress")
+        [ -n "$CEN_OPT_FUZZY"     -o "$CEN_ACTION" != "run" ] &&
+            opts+=("--fuzzy") && odel="--delete-after"
+    fi
+    if [ -n "$CEN_OPT_HARDLINKS" ] ; then
+        opts+=("--hard-links")
+    elif [ "$CEN_ACTION" != "run" -a -z "$CEN_OPT_SLOPPY" ] ; then
+        opts+=("--hard-links")
+    fi
+
+    [ -n "$CEN_OPT_SLOPPY" ] &&
+        opts+=('--modify-window=5' '--no-group' '--no-owner' '--no-perms' '--copy-links' '--copy-dirlinks')
+    [ -z "$CEN_OPT_SLOPPY" ] && opts+=('--acls' '--xattrs')
+
+    [ -n "$CEN_OPT_UPDATE"    -o "$CEN_ACTION" = "update" \
+                              -o "$CEN_ACTION" = "sync" ] &&
+        opts+=("--update")
+
+    [ -n "$CEN_OPT_DELETE"    -o "$CEN_ACTION" = "sync" \
+                              -o "$CEN_ACTION" = "mirror" ] &&
+        opts+=("$odel")
+
+    [ -n "$CEN_OPT_DRYRUN" ] && opts+=("--dry-run")
+
+    [ -n "$CEN_OPT_ONE" ] && opts+=("--one-file-system")
+
+    # check for --delete-excluded and prompt user
+    local item conn
+    [ -z "$CEN_EMBED" ] && for item in "${opts[@]}" ; do
+        [ "$item" = "--delete-excluded" ] || continue
+        confirm -n -y "This command might unexpectedly delete destination data. Are you sure" || quit -t
+        break
+    done
+
+    if [ -n "$CEN_OPT_PROXY" ] ; then
+        RSYNC_CONNECT_PROG="ssh -x '$CEN_OPT_PROXY' nc %H 873"
+        export RSYNC_CONNECT_PROG
+    fi
+    if [ "$CEN_VERB" -gt 1 ] ; then
+        trace -b 15 "rsync command: rsync ${opts[@]} $orig $dest"
+        [ -n "$RSYNC_CONNECT_PROG" ] &&
+            trace -i "rsync proxy  : RSYNC_CONNECT_PROG=$RSYNC_CONNECT_PROG"
+    fi
+
+    # get access to ssh id
+    if [ -z "$RSYNC_PASSWORD" -a -z "$CEN_OPT_PASSWORD" ] ; then
+        local hdir="/home/$USER"; [ "$EUID" = "0" ] && hdir="/root"; [ -d "$hdir" ] || hdir=~
+        [ -h "$hdir/.ssh" -a ! -e "$hdir/.ssh/id_rsa" ] && embed -r centauriencfs -q mount -
+    fi
+
+    # quiet mode
+    if [ "$CEN_VERB" -lt 1 ] ; then
+        [ -z "$CEN_OPT_SILENT" ] && opts+=("--verbose")
+        system -e -p -r -z -- rsync "${opts[@]}" "$orig" "$dest"
+
+    # progress reporting
+    else
+        ___progress -a -l "connecting... "
+        opts+=("--out-format=%o %n%L")
+        (LC_MESSAGES=C rsync --verbose "${opts[@]}" "$orig" "$dest" 2>&1 &&
+             echo "///STAT=0" || echo "///STAT=$?") |
+        while read -e poll ; do
+            case "$poll" in
+            ///STAT=0)
+                ___progress
+                if [ -n "$CEN_OPT_COUNTS" ] ; then
+                    pluralize -z -p "%s %s copied" "$((DAT_COUNTER - DAT_DELETED))" "file"
+                    [ "$DAT_DELETED" = 0 ] ||
+                        pluralize -a -z -p "%s %s deleted" "$DAT_DELETED" "file"
+                fi
+                return 0
+                ;;
+            ///STAT=[0-9]*)
+                ___progress ; return "${poll##*=}"
+                ;;
+            "Warning: No xauth data; using fake"*)
+                ;;
+            "X11 forwarding request failed"*)
+                ;;
+            "building file list"*)
+                ___progress -l -- "$poll" ;;
+            "receiving file list"*)
+                ___progress -l -- "$poll" ;;
+            "receiving incremental file list"*)
+                ___progress -l -- "$poll" ;;
+            "sending incremental file list"*)
+                ___progress -l -- "$poll" ;;
+            "sent "*" bytes  received "*" bytes"*)
+                ;;
+            "total size is "*"  speedup is "*)
+                ;;
+            send*/)
+                ___message -d 1 -a -- "=>  ${poll#send }" ;;
+            send*)
+                ___counts -d 1 -a -- "=>  ${poll#send }" ;;
+            recv*/)
+                ___message -d 1 -a -- "<=  ${poll#recv }" ;;
+            recv*)
+                ___counts -d 1 -a -- "<=  ${poll#recv }" ;;
+            del.*)
+                ((DAT_DELETED += 1))
+                ___counts -d 1 -a -- "><  ${poll#del. }" ;;
+            *)  [ -n "$poll" ] || continue
+                message -l -d 2 -a -- "$poll" ;;
+            esac
+        done
+        stat=$?
+        if [ "$stat" = 130 ] ; then
+            quit -t
+        elif [ "$stat" != 0 ] ; then
+            error "rsync terminated with status=$stat"
+            return
+        fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# implement option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    "")
+        CEN_FEATURE_S="-s --silent          do not print an information header before rsync  -or-\n"
+        CEN_FEATURE_S+="                     print no progress output if used together with --quiet"
+        optarg "$CEN_OPT_FOLDER${CEN_OPT_VOLUME:+1}" - -m "--folder --volume"
+        ;;
+
+    -A|--all)
+        optarg "all"        -           ;;
+    -1|--one)
+        optarg "one"        -           ;;
+    -B|--bac*)
+        optarg "backup"     -        -t ;;
+    -C|--com*)
+        optarg "compress"   -           ;;
+    -D|--del*)
+        optarg "delete"     -           ;;
+    -F|--fol*)
+        optarg "folder"     -           ;;
+    -Z|--fuz*)
+        optarg "fuzzy"      -           ;;
+    -H|--har*)
+        optarg "hardlinks"  -           ;;
+    -L|--loc*)
+        optarg "local"      -        -o ;;
+    -M|--mor*)
+        optarg "more"       -        -t ;;
+    -N|--noc*)
+        optarg "nocopy"     -        -o ;;
+    -O|--opt*)
+        optarg "option"     []       -t ;;
+    -P|--pas*)
+        optarg "password"   -        -t ;;
+    -S|--slo*)
+        optarg "sloppy"     -           ;;
+    -T|--cou*)
+        optarg "counts"     -           ;;
+    -U|--upd*)
+        optarg "update"     -           ;;
+    -V|--vol*)
+        optarg "volume"     -        -t ;;
+    -X|--pro*)
+        optarg "proxy"      -        -t ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# implement action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    run*)
+        invoke "run"    actionSync  1 2 ;;
+    cop*)
+        invoke "copy"   actionSync  1 2 ;;
+    mir*)
+        invoke "mirror" actionSync  1 2 ;;
+    upd*)
+        invoke "update" actionSync  1 2 ;;
+    syn*)
+        invoke "sync"   actionSync  1 2 ;;
+
+    # the run action is implied
+    ""|-) ;;
+    *)
+        DAT_RUN_IMPLIED=1
+        invoke "run"     actionSync 1 2 "$@" ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    prettypath -c "$CEN_ROOT/default/$CEN_NAME"
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -1 --one             do not cross filesystem boarders
+       -A --all             do not use default exclusions
+       -B --backup  <fldr>  folder for deleted or modified original files
+       -C --compress        compress file data during the transfer
+       -D --delete          delete extra files in <dest>
+       -F --folder          copy <orig> as a folder (default is file-by-file)
+       -Z --fuzzy           do a fuzzy match on the remote side
+       -H --hardlinks       try to preserve hardlinks
+       -L --local   <mode>  run in local mode (no compression, whole-file mode)
+       -M --more     <env>  add extra options from <env> env var to rsync
+       -N --nocopy  <mode>  honour 'nocopy' config entries. Default is 'on' for
+                            copy|update|sync, 'on' disables 'delete-excluded'
+       -O --option   <val>  add extra option to rsync command
+       -P --password <pwd>  rsync password file or '-' to prompt or '+' to use
+                            the following file: $DAT_PASSWORD
+       -S --sloppy          sloppy time, no user/group/symlink (for VFAT et al)
+       -U --update          copy only files that are newer
+       -V --volume  <volu>  volume name for excludes (loaded from config file)
+       -X --proxy   <host>  use "ssh <host> nc %H 873" as rsync connection prog
+
+actions:
+       [run]  [<orig>] <dest> # just call rsync
+       copy   [<orig>] <dest> # copy to <dest>, do NOT delete extra files
+       udpate [<orig>] <dest> # like copy but copy only newer files
+       sync   [<orig>] <dest> # like update but delete extra files in <dest>
+       mirror [<orig>] <dest> # like copy --delete --option=delete-excluded
+
+       Exclusions can be defined in config file '$CEN_PRETTYPATH'
+       and are interpreted depending on the options --volume and --nocopy.
+
+arguments:
+       <mode>               can be 'on|off|auto' or '0|1|2'
+       <fldr>               a local folder -or- '-' to search for '[dD]eleted'
+       <orig>               an origin folder (trailing '/' ignored, '.' is OK)
+       <dest>               the destination folder (trailing '/' ignored, '.'
+                            is replaced by the local '\$PWD' value).
+       <volu>               section name for volume in config file
+
+       If <orig> is omitted (only one action argument given) it is replaced by
+       '\$PWD'.
+       One of <orig> or <dest> can be a rsync host like 'myself@mysvr:/export'
+       or 'mysvr::vol1/subdir' and one must be an existing local folder.
+
+examples:
+       $CEN_NAME copy .    user@host:dest  # copy the current folder content
+       $CEN_NAME copy orig user@host: -F   # copy 'orig' folder to remote \$HOME
+       $CEN_NAME sync user@host:test dest  # sync files from 'test' (can delete)
+       $CEN_NAME sync .    ../myfolder     # sync \$PWD content to local folder
+
+       $CEN_NAME copy mysvr:.              # short for: copy . \$USER@mysvr:\$PWD
+       $CEN_NAME sync egon@mysvr:/tmp      # short for: sync . egon@mysvr:/tmp
+!EOF
+    usagecat -v "more:  Use -- to get more details and examples." << !EOF
+notes: * Unless the --folder option is given a trailing slash is appended to the
+         origin folder to let rsync copy the content and not the folder itself.
+
+       * Actions other then "run" can be seen as macros that add options:
+         "copy"   implies --hardlinks --fuzzy                    --nocopy=1
+         "update" implies --hardlinks --fuzzy --update           --nocopy=1
+         "sync"   implies --hardlinks --fuzzy --update --delete  --nocopy=1
+         "mirror" implies --hardlinks --fuzzy --delete --option=delete-excluded
+
+       * Use --option=<rsync-opt>[=<val>] to add any rsync option. Examples:
+         --option=prune-empty-dirs --option=modify-window=30
+
+       * The --include/--exclude options are implemented by rsync and may behave
+         unexpectedly. $CEN_NAME adds extra arguments if an --include option
+         is not followed by an --exclude option to simplify the use:
+         --option prune-empty-dirs --include="*/" --exclude="*"
+
+       * For rsync any --include not followed by an --exclude has no effect. Use
+         a trailing dummy --exclude=/ to disable the behaviour mentioned above.
+
+defaults:
+       Default exclusions are loaded from config file '$CEN_PRETTYPATH'.
+       The file is divide into sections, the --volume option is used to choose
+       the section that applies. Without --volume the '[]' section is used:
+
+       []                             # used if --volume is missing/not found
+             exclude /lost+found/*
+             exclude .Trash[0-9]*
+             exclude .centauritime.*
+       [Root]                         # 1st char of name must be uppercase
+             nocopy  /var/backups
+             nocopy  /var/lib/apt
+             nocopy  /var/log/
+             exclude /data/*
+             exclude /root/.cache/*
+             exclude /root/.dbus
+       [Home]
+             exclude /*/.cache/*
+             exclude /*/.dbus
+
+       The 'nocopy' exclusion is controlled via option --nocopy. Is is usefull
+       together with --option=deleted-excluded (see verb 'mirror').
+
+examples:
+       # Using include/exclude
+       $CEN_NAME dest --include="*wald*.jpg"
+       $CEN_NAME dest --exclude="*.mov" --option=prune-empty-dirs
+       $CEN_NAME dest --excl "*.mov" --excl "*.mp4" --incl "*.*"
+       $CEN_NAME dest --exclude "*test*" --include="2016-*/*"
+
+       # Copy or sync volumes
+       $CEN_NAME --one --vol=Root mirror / /mnt/xxx/Volumes/Root
+       $CEN_NAME --one --vol=Home sync   / /mnt/xxx/Volumes/Home
+       centaurirestore --restore=/mnt/xxx/Volumes --clone=newname
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

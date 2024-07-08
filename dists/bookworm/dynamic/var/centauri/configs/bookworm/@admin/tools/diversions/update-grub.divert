@@ -1,0 +1,6 @@
+status=on
+target=/usr/sbin/update-grub
+divert() {
+    echo "update-grub: disabled by 'centauridivert'"
+    exit 0
+}

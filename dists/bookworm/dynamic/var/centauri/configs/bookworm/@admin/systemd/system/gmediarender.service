@@ -1,0 +1,20 @@
+# jpf@centauri
+[Unit]
+Description=Centauri Start GMediaRender
+PartOf=centauri-network.service
+ConditionPathExists=/etc/init.d/gmediarender
+
+[Service]
+Type=forking
+Restart=no
+TimeoutSec=30s
+IgnoreSIGPIPE=no
+KillMode=process
+GuessMainPID=no
+RemainAfterExit=yes
+SuccessExitStatus=5 6
+ExecStart=/etc/init.d/gmediarender start
+ExecStop=/etc/init.d/gmediarender stop
+
+[Install]
+WantedBy=centauri-network.service

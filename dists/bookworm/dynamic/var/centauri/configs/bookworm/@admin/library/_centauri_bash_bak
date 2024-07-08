@@ -1,0 +1,452 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_bak = centauri-bash-lib: Backup file support
+#
+# Call:     . _centauri_bash_bak
+#
+#+          This modules generates backup file names, parses them and finds
+#           backups. Backup names are built from **fields** in one of two forms:
+#
+#           (1)  <tag>_<date>.<extension>
+#                <host>_<date>.<extension>
+#           (2)  <host>_<tag>_<date>.<extension>
+#
+#           There is only one public function: [[backup()]]
+#
+# Fields:   <tag>        an identifier like "root" or "buster" or "disk1"
+#           <host>       a machine name
+#           <date>       string, see below
+#           <extension>  a file name extension like "tgz"
+#
+#+          None of the fields should contain spaces. The <date> must at least
+#           contain a 4-digit year like "1998" or "2017".  A trailing month
+#           and day (sort order!) are optional.
+#
+#+          The sub-field separator of <date> can be **-** (prefered) or **_** (depricated).
+#
+#.Examples: data_2015.bak
+#.          jupiter_info_2015-07.lzo
+#.          computer1_root_2015-12-31.tgz
+#.          computer1_home_2015_12_31.tgz
+#
+#+The module was written when centauri-bash-lib was just emerging. It is still
+# used by 'centauribackup' and 'centauriarchive'. The -f (find) call should not
+# be used in new code, the [[walk()]] function is more efficient.
+#
+# Copyright Dr. J. Pfennig (c) 2015-2024
+# ------------------------------------------------------------------------------
+
+CEN_MODULES['_centauri_bash_bak']='0.20:1'
+
+# options for find/tree
+CEN_BAK_FILTER=                         # filter callback (list/tree)
+CEN_BAK_INCLUDE=                        # use --include/--exclude
+CEN_BAK_REVERSE=                        # reverse order (list/tree)
+CEN_BAK_MAXLVL=                         # for tree
+
+# other data
+CEN_BAK_GLOB1="%H_*%D.*"                # glob for find/tree (no tags)
+CEN_BAK_GLOB2="%H_%T_%D.*"              # glob for find/tree (strict)
+CEN_BAK_DPAT="[12][09][0-9][0-9]*"      # %D glob
+CEN_BAK_DFMT="%Y-%m-%d"                 # used to format date
+CEN_BAK_DATE=                           # current date, formatted
+
+CEN_BAK_NFMT="%H_%T_%D.%X"              # name format
+CEN_BAK_NAME=                           # see _cen_backup_name
+CEN_BAK_FIND=()                         # see _cen_backup_find
+CEN_BAK_TREE=()                         # see _cen_backup_tree
+CEN_BAK_PARSE=()                        # see _cen_backup_parse
+
+# ------------------------------------------------------------------------------
+# backup (date option) - set/format a date string
+#
+# Call:     backup  <other>... -d [""|<fmt> [<val>]]
+#
+# Arguments:<fmt>  override default format if not empty.
+#           <val>  return current date if <val> is empty -or-
+#           <>     set the current date to <val>.
+#
+# Variables:uses CEN_BAK_DFMT to save/get tge default date format
+#
+# Result:   Sets the varibale CEN_BAK_DATE
+#
+#.Examples: backup -d                   # current/last date in last used format
+#.          backup -d "" "last week"    # override current date
+#.          backup -d "%Y" "last year"  # use but don't set fmt, override date
+#.          backup -d "%d.%m.%y"        # set default format
+# ------------------------------------------------------------------------------
+_cen_backup_date() {
+    local dfmt="$1" dval="$2"
+    if [ -z "$dfmt" ] ; then                    # use current format
+        dfmt="$CEN_BAK_DFMT"
+    elif [ -z "$dval" ] ; then                  # set format
+        [ "$CEN_BAK_DFMT" = "$dfmt" ] || CEN_BAK_DATE=
+        CEN_BAK_DFMT="$dfmt"
+    else                                        # temporarily use format
+        [ "$CEN_BAK_DFMT" = "$dfmt" ] || CEN_BAK_DATE=
+    fi
+
+    if [ -n "$dval" ] ; then
+        system -r -e -p -s CEN_BAK_DATE date --date="$dval" "+$dfmt"
+    elif [ -z "$CEN_BAK_DATE" ] ; then
+        system -r -e -p -s CEN_BAK_DATE date "+$dfmt"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# backup (name option) - generate a name
+#
+# Call:     backup  <other>... -n <fmt> <host> <tag>|- <ext>|- <tgz>|-
+#
+# Arguments:<fmt>   format pattern using placeholders (overrides default):
+#           <>      %D (date) %H (host) %T (target) %X (extension) %Z (filename)
+#           <host>  host name, overrides $HOSTNAME
+#           <tag>   optional tag name
+#           <ext>   extensions, overrides "tar.gz"
+#           <tgz>   a non-empty <tgz> value replaces an <ext> value of "tar.gz"
+#
+# Examples: backup -n "%H-%T-%D"            # change the default format
+#           backup -n "" "" "hello"         # use default format and default host
+#           backup -n                       # don't use a tag value
+#           backup -n "" -  "hello"         # use default format and NO host
+# ------------------------------------------------------------------------------
+_cen_backup_name() {
+    local nfmt="${1:-$CEN_BAK_NFMT}"
+    local host="${2:-$HOSTNAME}"
+    local ntag="$3" ; [ "$ntag" = "-" ] && ntag=
+    local next="$4" ; [ "$next" = "-" ] && next=
+    [ "$next" = "tar.gz" -a "${5:--}" != "-" ] && next="$5"
+
+    # set default format
+    CEN_BAK_NAME=
+    if [ "$#" = 1 ] ; then
+        CEN_BAK_NFMT="$nfmt"
+        return 0
+    fi
+
+    # implicitly get date
+    [ -z "$CEN_BAK_DATE" ] && _cen_backup_date
+
+    # parse format
+    local sifs="$IFS"
+    set -f ; IFS="%"
+    local tok ini=1
+
+    for tok in $nfmt ; do
+        if [ -n "$ini" ] ; then
+            CEN_BAK_NAME+="$tok"
+            ini=
+            continue
+        fi
+        case "$tok" in
+        "")     CEN_BAK_NAME+="%" ; ini=1
+                ;;
+        D*)     CEN_BAK_NAME+="$CEN_BAK_DATE${tok:1}"
+                ;;
+        H*)     CEN_BAK_NAME+="$host${tok:1}"
+                ;;
+        T*)     CEN_BAK_NAME+="$ntag${tok:1}"
+                ;;
+        X*)     CEN_BAK_NAME+="$next${tok:1}"
+                ;;
+        Z*)     CEN_BAK_NAME+="${host}_${ntag}_${CEN_BAK_DATE}${tok:1}"
+                ;;
+        *)      CEN_BAK_NAME+="%$tok"
+                warning "Invalid filename format: %${tok::1}"
+                ;;
+        esac
+    done
+
+    CEN_BAK_NAME="${CEN_BAK_NAME//-_/_}"
+    CEN_BAK_NAME="${CEN_BAK_NAME//__/_}"
+    CEN_BAK_NAME="${CEN_BAK_NAME//_./.}"
+    set +f ; IFS="$sifs"
+}
+
+# ------------------------------------------------------------------------------
+# backup (find option) - find backup files in a folder
+#
+# Call:     backup  <other>... -f [<host>|- [<tag>|- <glob>]]]
+#
+# Arguments:<host>  filter by host name if not empty
+#           <tag>   filter by tag if not empty
+#           <glob>  shell glob plus extensions: %H (host) %T (tag) %D (any date).
+#           <>      All sequences of multiple "_" are replaced by a single "_".
+#
+# For each selected file a user supplied filter can be called. The filter
+# is called via CEN_BAK_FILTER (see **backup -f**). The filter arguments are:
+#
+#, <file> <host> <tag> <year> <month> <day> <ext> <indx> <change>
+#
+#.Examples: backup -f                   # clear results, search current folder
+#.          backup -f -m "" "root"      # merge search results
+#.          backup -f "alpha1"          # host alpha1, all tags
+#.          backup -f "" -              # all hosts, do not use tags
+#.          backup -f -- -              # do not use hosts, all tags
+# ------------------------------------------------------------------------------
+_cen_backup_find() {
+    local ahst="${1:-*}" atag="${2:-*}"
+    local glob="${3:-$CEN_BAK_GLOB2}"
+    # use glob#1 if tags are off
+    if [ "$atag" = "-" ] ; then
+        atag= ; glob="${3:-$CEN_BAK_GLOB1}"
+    fi
+    # replace %H
+    [ "$ahst" = "-" ] && ahst=
+    glob="${glob//%H/$ahst}"
+    # replace %T
+    glob="${glob//%T/$atag}"
+    # replace %D
+    glob="${glob//%D/$CEN_BAK_DPAT}"
+    # fix __
+    glob="${glob//__/_}" ; glob="${glob//__/_}" ; glob="${glob//__/_}"
+    # fix leading _
+    glob="${glob#_}"
+    # fix trailing _.
+    glob="${glob/_./.}"
+
+    system -r -f -c sort
+
+    # generate sorted file list
+    _cen_backup_sort() {
+        local file indx=-1
+        for file in "$@" ; do
+            indx=$((indx + 1))
+            _cen_backup_parse "$file" || continue
+            # <path> <name>  <tag>  <year> <month> <day>  <ext>  <indx>
+            echo "${CEN_BAK_PARSE[@]} $indx"
+        done | sort -k 1,2 -k 4,6$CEN_BAK_REVERSE -k 3,3 -k 7,7
+    }
+
+    # globber, call 'filter' and make full path
+    local file args=("${CEN_BAK_FIND[@]}")
+    for file in $glob ; do
+        [ -n "$file" -a -e "$file" ] || continue
+        $CEN_BAK_INCLUDE "${file##*/}" || continue
+        if [ "${file:1}" != "/" ] ; then
+            file="$PWD/$file"
+            file="${file//\/.\//\/}"    # replace "/./" -> "/"
+        fi
+        args+=("$file")
+    done
+
+    # merge files for tree, except for last folder
+    if [ -n "$CEN_BAK_TREE" ] ; then
+        local ntre="${#CEN_BAK_TREE[*]}"
+        if [ "${CEN_BAK_TREE[$ntre - 1]}" != "${glob%/*}/" ] ; then
+            CEN_BAK_FIND=("${args[@]}")
+            return 0
+        fi
+    fi
+    CEN_BAK_FIND=()
+
+    # sort files
+    local sifs="$IFS"
+    IFS=$'\n'
+    list=( $(_cen_backup_sort ${args[*]}) )
+    IFS="$sifs"
+
+    # remove dupes, apply callback filter
+    local rslt curr cdir chos cdat cext ndat nmod
+    for rslt in "${list[@]}" ; do
+        set -- $rslt ; file="${args[$8]}"
+        [ "$file" = "$curr" ] && continue
+        curr="$file"
+        if [ -n "$CEN_BAK_FILTER" ] ; then
+            nmod=0                              # same date/host
+            ndat="$4$5$6"
+            [ "$7"    != "$cext" ] && nmod=4    # extension changed
+            [ "$ndat" != "$cdat" ] && nmod=3    # date changed
+            [ "$2"    != "$chos" ] && nmod=2    # host changed
+            [ "$1"    != "$cdir" -a \
+              -n "$CEN_BAK_TREE" ] && nmod=1    # folder changed
+            chos="$2" ; cdat="$ndat" ; cext="$7" ; cdir="$1"
+            shift
+            $CEN_BAK_FILTER "$file" "$@" "$nmod"
+            case $? in
+            0)  ;;              # OK
+            1)  continue ;;     # ignore file
+            *)  return 2        # stop find
+            esac
+        fi
+        CEN_BAK_FIND+=("$file")
+    done
+
+    # return status
+    [ -n "$CEN_BAK_FIND" ]
+}
+
+# ------------------------------------------------------------------------------
+# backup (tree option) - find backup files recursively
+#
+# Call:     backup  <other>... -f [<host>|- [<tag>|- <glob>]]]
+#
+# The function uses **/bin/find** to recurse folders and calls **backup -f**
+# on each folder.
+# ------------------------------------------------------------------------------
+_cen_backup_tree() {
+    local ahst="${1:-*}" atag="${2:-*}"
+    local glob="${3:-$CEN_BAK_GLOB2}"
+    local cdir dirs
+
+    # use find to get tree
+    local sifs="$IFS" ; IFS=$'\n'
+    if   [ "$CEN_BAK_MAXLVL" -lt 0 ] ; then
+        system -r -a dirs -p -f find -type d -printf "%p/\n"
+    elif [ "$CEN_BAK_MAXLVL" -gt 0 ] ; then
+        system -r -a dirs -p -f find -maxdepth "$CEN_BAK_MAXLVL" -type d -printf "%p/\n"
+    fi
+    IFS="$sifs"
+
+    # found no sub folders
+    if [ -z "${dirs[1]}" ] ; then
+        CEN_BAK_TREE=()
+        _cen_backup_find "$ahst" "$atag" "$glob"
+        [ "$?" -ge 2 ] && return 2
+
+    # loop over folders
+    else
+        CEN_BAK_TREE=("${dirs[@]}")
+        for cdir in "${dirs[@]}" ; do
+            _cen_backup_find "$ahst" "$atag" "$cdir$glob"
+            [ "$?" -ge 2 ] && return 2
+        done
+    fi
+
+    # return status
+    [ -n "$CEN_BAK_FIND" ]
+}
+
+# ------------------------------------------------------------------------------
+# backup (parse option) - parse backup name
+#
+# Call:     backup  <other>... -p <name>
+#
+# Return:   **true** at success or **false** otherwise. On success the CEN_BAK_PARSE
+#           array is set:
+#
+#       CEN_BAK_PARSE[0]        path (no trailing /)
+#       CEN_BAK_PARSE[1]        host
+#       CEN_BAK_PARSE[2]        tag
+#       CEN_BAK_PARSE[3]        year
+#       CEN_BAK_PARSE[4]        month
+#       CEN_BAK_PARSE[5]        day
+#       CEN_BAK_PARSE[6]        extension (starting after 1st dot)
+#
+#           The array elements do not contain spaces. No element can be empty,
+#           - is used as a place holder.
+#
+# Examples: °  **good/host_tag_2015-12-24.tar.gz**
+#           => good  host  tag  2015  12  24  tar.gz  good/host_tag_2015-12-24.tar.gz
+#
+#           °  **short/host_2015-12**
+#           => short host  -    2015  -   -   -       short/host_2015-12
+#
+#           °  **bad/x x_y y y_2015-12**
+#           => bad   x-x y-y-y  2015  -   -   -       bad/x x_y y y_2015-12
+# ------------------------------------------------------------------------------
+_cen_backup_parse() {
+    CEN_BAK_PARSE=()
+
+    local safe="${1// /-}"                      # remove spaces
+    local path="${safe%/*}" name="${safe##*/}"
+    [ "$path" = "$name" ] && path=
+    local fext="${name#*.}" ; name="${name%%.*}"
+    [ "$fext" = "$name" ] && fext=
+
+    CEN_BAK_PARSE[0]="${path:--}"
+    CEN_BAK_PARSE[6]="${fext:--}"
+
+    # get host and tag
+    local host="${name%%_*}" date ftag
+    case "$name" in
+    *_*_[12][09][0-9][0-9]*)
+            date="${name#*_}"   # <tag>_<date>
+            ftag="${date%%_*}"
+            date="${date#*_}"
+            ;;
+    *_[12][09][0-9][0-9]*)
+            date="${name#*_}"
+            ;;
+    *)      return 1
+    esac
+    CEN_BAK_PARSE[1]="${host:--}"
+    CEN_BAK_PARSE[2]="${ftag:--}"
+
+    # parse date
+    case "$date" in
+    [12][09][0-9][0-9][-_][01][0-9][-_][0123][0-9])
+        CEN_BAK_PARSE[4]="${date:5:2}"
+        CEN_BAK_PARSE[5]="${date:8:2}"
+        ;;
+    [12][09][0-9][0-9][-_][01][0-9])
+        CEN_BAK_PARSE[4]="${date:5:2}"
+        CEN_BAK_PARSE[5]="-"
+        ;;
+    [12][09][0-9][0-9])
+        CEN_BAK_PARSE[4]="-"
+        CEN_BAK_PARSE[5]="-"
+        ;;
+    *)  return 1
+    esac
+    CEN_BAK_PARSE[3]="${date::4}"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# backup - the one and only public function of module "bak"
+#
+# Call:    backup -d <option>... <arg>...       # see [backup (date option)]
+#          backup -l <option>... <arg>...       # see [backup (list option)]
+#          backup -n <option>... <arg>...       # see [backup (name option)]
+#          backup -p <option>... <arg>...       # see [backup (parse option)]
+#          backup -t <option>... <arg>...       # see [backup (tree option)]
+#
+# Options: -c                                   # [list, tree] case sens. -i/-x
+#          -d [""|<fmt> [<val>]]                # set/format date
+#          -f <proc>                            # [list, tree] filter results
+#          -i                                   # [list, tree] case ins. -i/-x
+#          -l <opts> <host> <tag> <glob>        # find files in current folder
+#          -m                                   # [list, tree] merge
+#          -n <args>...                         # make file name
+#          -p <name>                            # parse file name
+#          -r                                   # [list, tree] reverse date sort
+#          -t <maxd> <opts> <host> <tag> <glob> # find files in tree
+# ------------------------------------------------------------------------------
+backup() {
+    CEN_BAK_FILTER=
+    CEN_BAK_INCLUDE=":"
+    CEN_BAK_REVERSE=
+    CEN_BAK_MAXLVL=
+
+    # parse options
+    local fwrk fmer
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -c)   CEN_BAK_INCLUDE="filter --" ;;
+      -d)   fwrk=_cen_backup_date ;;
+      -f)   shift ; CEN_BAK_FILTER="$1" ;;
+      -i)   CEN_BAK_INCLUDE="filter -i --" ;;
+      -l)   fwrk=_cen_backup_find ;;
+      -m)   fmer=1 ;;
+      -n)   fwrk=_cen_backup_name ;;
+      -p)   fwrk=_cen_backup_parse ;;
+      -r)   CEN_BAK_REVERSE="r" ;;
+      -t)   fwrk=_cen_backup_tree
+            shift ; CEN_BAK_MAXLVL=$(($1 - 1)) ;;
+      *)    fatal "Bad 'backup' argument: $1"
+      esac ; shift
+    done
+
+    [ -n "$fwrk" ] || fatal "missing main option: backup"
+    [ -n "$fmer" ] || CEN_BAK_FIND=()
+    $fwrk "$@"
+}
+
+# ------------------------------------------------------------------------------
+# Startup
+# ------------------------------------------------------------------------------
+
+:
+# end

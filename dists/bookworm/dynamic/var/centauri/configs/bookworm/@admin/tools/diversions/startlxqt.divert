@@ -1,0 +1,6 @@
+status=on
+target=/usr/bin/startlxqt
+divert() {
+    # lxqt does not run a login shell but we need one to run centaurisession
+    /usr/bin/bash -l -c ". /usr/bin/startlxqt.distrib"
+}

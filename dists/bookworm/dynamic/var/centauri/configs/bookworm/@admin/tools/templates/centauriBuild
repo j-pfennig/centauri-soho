@@ -1,0 +1,279 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2021; BSD License"
+CEN_TITLE="Build distributable tar for portable stand-alone script with l10n"
+
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -y "$0" "0.00:1" || exit 2
+
+CEN_RUN_MAX_ARGS=0                              # don't allow script arguments
+
+DAT_SUFF_BUILD='.build'                         # suffixes ...
+DAT_SUFF_SOURCE='-source'
+DAT_SUFF_TARGET='.package'
+DAT_SUFF_RUNTIME='-runtime'
+
+DAT_SOURCE="${BASH_SOURCE%.*}$DAT_SUFF_SOURCE"  # absolute src path
+[ "${DAT_SOURCE::1}" = '/' ] || DAT_SOURCE="$PWD/${DAT_SOURCE#./}"
+DAT_RELSRC="${DAT_SOURCE#$PWD/}"                # display friendly name
+
+DAT_NAME="${CEN_NAME%.*}"                       # target base name
+DAT_BUILD="$DAT_NAME$DAT_SUFF_BUILD"            # build file name (myself)
+DAT_TARGET="$DAT_NAME$DAT_SUFF_TARGET"          # target file name
+
+DAT_CONF_TEMPLATE=
+DAT_CONF_DESCRIPT=
+DAT_CONF_AUTHOR=
+DAT_CONF_LICENSE=
+DAT_CONF_SHELL=
+
+DAT_CONF_LOCALES="#locales $DAT_NAME"           # configuration ...
+
+# Source file tree
+# ------------------------------------------------------------------------------
+#    $DAT_NAME$DAT_BUILD                #    build script
+#    $DAT_NAME$DAT_SUFF_SOURCE/         # +  source folder
+#       $DAT_NAME                       #    tool to be packaged
+#       $DAT_NAME.conf                  #    configuration file
+#       $DAT_NAME.desktop               # *- optional desktop file
+#       $DAT_NAME$DAT_SUFF_TARGET       # *- packaged tool
+#       README                          #  - optional
+#       locale/<lang>/                  # +- internationalization
+#          $DAT_NAME.po                 # +  translations
+#          LC_MESSAGES/$DAT_NAME.mo     # *- translation catalogue
+#    <extra files>                      # *- additional files (see .conf)
+
+# Generated runtime tree
+# ------------------------------------------------------------------------------
+#    $DAT_NAME                          #  - optional symlink
+#    $DAT_NAME.desktop                  #  - optional symlink
+#    $DAT_NAME.README                   #  - optional symlink
+#    $DAT_NAME$DAT_SUFF_SOURCE/         #  - runtime folder
+#       $DAT_NAME.desktop               #  - optional desktop file
+#       $DAT_NAME$DAT_SUFF_TARGET       #  - packaged tool
+#       README                          #  - optional
+#       locale/<lang>/                  #  - internationalization
+#          LC_MESSAGES/$DAT_NAME.mo     #  - translation catalogue
+#    <extra files>                      # *- additional files (see .conf)
+
+# ------------------------------------------------------------------------------
+# The one and only action
+# ------------------------------------------------------------------------------
+run() {
+    # check name of this tool
+    [ "$CEN_NAME" != "$DAT_BUILD" ] &&
+        quit -p "The tool's name must be '%s' - please rename" "$DAT_BUILD"
+
+    # setup source folder
+    [ -d "$DAT_SOURCE" ] ||
+        confirm -y -n "Create source folder"" '$DAT_RELSRC'" || quit
+    folder -m -f -- "$DAT_RELSRC"
+
+    # read or setup config file
+    config_file "$DAT_RELSRC/$DAT_NAME.conf" || quit
+
+    # check application
+    [ -x "$DAT_RELSRC/$DAT_NAME" -o -n "$DAT_CONF_TEMPLATE" ] || quit -m \
+        "No 'template' set in configuration and no '$DAT_NAME' script found." "\n" \
+        "Please edit the configuration file '$DAT_RELSRC/$DAT_NAME'" "\n" \
+        "to auto create the script, or create one manually by calling:" "\n" \
+        "centauricreate -T <template> '$DAT_RELSRC/$DAT_NAME'"
+
+    # enter source folder and run build steps ...
+
+    folder -c -f -- "$DAT_SOURCE"
+
+    step1           # run uglify and get l10n list
+    step2           # run l10n if needed
+    step3           # create desktop file if needed
+    step4           # run tar to create distributable
+}
+
+# ------------------------------------------------------------------------------
+# read or create configuration file: <file>
+# ------------------------------------------------------------------------------
+config_file() {
+    # create initial configuration
+    if [ ! -s "$1" ] ; then
+        create -c -- "$1" <<!EOF || quit
+### build configuration file. Commented lines cause defaults to be used.
+
+### step 1 - generating a script from template, see 'centauricreate':
+
+#template     <required>
+#description  <required>
+#author
+#license
+#shell        "/usr/bin/env bash"
+
+### step 2 - locales to be included (auto updated, comment out to disable l10n)
+
+$DAT_CONF_LOCALES
+
+### step 3 - generate/install a desktop file, <icon> can be a file or a name
+
+#desktop    [<icon>]
+
+### step 4 - extra files to add to generated tar
+
+#tartype    <"tgz">
+#extra      <file>...
+#symlink    <file>...
+
+# end
+!EOF
+        quit -p "Created '%s' config. Please edit and rerun" "$1"
+    fi
+
+    DAT_CONF_LOCALES=
+    configfile -l config_reader -n "$1"
+}
+
+config_reader() {
+    local text
+    splitjoin -s text -d " \t" -- "$1"
+    case "$text" in
+        \#*|'')     ;;
+
+        template)   DAT_CONF_TEMPLATE="${text[*]:1}" ;;
+        descrip*)   DAT_CONF_DESCRIPT="${text[*]:1}" ;;
+        author)     DAT_CONF_AUTHOR="${text[*]:1}" ;;
+        license)    DAT_CONF_LICENSE="${text[*]:1}" ;;
+        shell)      DAT_CONF_SHELL="${text[*]:1}" ;;
+
+        locales)    DAT_CONF_LOCALES="${text[*]:1}" ;;
+        desktop)    true ;;
+        extra)      true ;;
+        locales)    true ;;
+    *)          configfile -e  ;;
+    esac
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# step1 - run uglify and get l10n list
+# ------------------------------------------------------------------------------
+step1() {
+    error -t || return          # must not run after error
+    message "Step 1 - Create packaged script"
+
+    if [ ! -x "$DAT_NAME" ] ; then
+        local opts=()
+        optmake -a opts -n 'author'  -v "$DAT_CONF_AUTHOR"
+        optmake -a opts -n 'descr'   -v "$DAT_CONF_DESCRIPT"
+        optmake -a opts -n 'license' -v "$DAT_CONF_LICENSE"
+        optmake -a opts -n 'shell'   -v "$DAT_CONF_SHELL"
+        optmake -a opts -n 'templ'   -v "$DAT_CONF_TEMPLATE"
+        embed -y -z centauricreate "${opts[@]}" "$DAT_NAME"
+        [ -x "$DAT_NAME" ] ||
+            quit -e "Have no script, cannot continue:" "$DAT_RELSRC/$DAT_NAME"
+    fi
+
+    system -f -c -- "$CEN_LIBRARY/uglify"
+    embed -y -z -- "$CEN_LIBRARY/uglify" -o "$DAT_TARGET" -C "$DAT_NAME.conf" -- "$PWD/$DAT_NAME"
+}
+
+# ------------------------------------------------------------------------------
+# step2 - run l10n if needed
+# ------------------------------------------------------------------------------
+step2() {
+    error -t || return                          # must not run after error
+                                                # re-read config
+    config_file "$DAT_SOURCE/$DAT_NAME.conf" || return
+    [ -n "$DAT_CONF_LOCALES" ] || return        # no localization
+    message "Step 2 - Create message catalogue(s)"
+
+    local ldir l10x
+
+    # check l10n tool, create locale folder
+    system -f -c -- "$CEN_ROOT/locale/l10n-tool"
+    folder -f -m -s ldir "$PWD/locale"
+    folder -f -c         "$CEN_ROOT/locale"
+    l10x="$CEN_ROOT/locale/l10n-tool"
+
+    # loop over library defined language folders
+    local lang item dest
+    for lang in ?? ??-?? ; do
+        [ -d "$lang" ] || continue
+        folder -f -m "$ldir/$lang"              # create package lang dir
+        folder -f -c -- "$lang"                 # enter library lang dir
+
+        dest="$ldir/$lang"
+        if ! [ -s "$dest/$DAT_NAME.po" ] ; then # create .po file if missing
+            embed -- "$l10x" -f --input="$DAT_SOURCE" --output="$dest" prepare "$DAT_NAME"
+            [ -s "$dest/$DAT_NAME.po" ] &&
+                message -p "Newly created '%s' needs translations!" "$DAT_RELSRC/$DAT_NAME.po"
+        else
+            embed -- "$l10x" -f --input="$DAT_SOURCE" --output="$dest" dump "$DAT_NAME"
+        fi
+        [ -s "$dest/$DAT_NAME.po" ] &&          # create .mo file (for .po files)
+            embed -- "$l10x" -f --input="$DAT_SOURCE" --output="$dest" join "$DAT_NAME" $DAT_CONF_LOCALES
+        folder -f -c ..
+    done
+
+    folder -c -f -- "$DAT_SOURCE"       # go back to source folder
+}
+
+# ------------------------------------------------------------------------------
+# step3 - create desktop file if needed
+# ------------------------------------------------------------------------------
+step3() {
+    error -t || return                  # must not run after error
+    message "Create desktop file"
+}
+
+# ------------------------------------------------------------------------------
+# step4 - run tar to create distributable
+# ------------------------------------------------------------------------------
+step4() {
+    error -t || return                  # must not run after error
+    message "Create distributable tar"
+
+    local dest="$DAT_SOURCE/$DAT_NAME$DAT_SUFF_RUNTIME.tgz"
+
+    local file lang mesg drun list=("$DAT_NAME$DAT_SUFF_RUNTIME/$DAT_TARGET")
+    for file in "$DAT_NAME.desktop" "README" ; do
+        [ -s "$file" ] && list+=("$DAT_NAME$DAT_SUFF_RUNTIME/$file")
+    done
+    for lang in "locale"/?? "locale"/??_?? ; do
+        mesg="$lang/LC_MESSAGES/$DAT_NAME.mo"
+        [ -s "$mesg" ] || continue
+        list+=("$DAT_NAME$DAT_SUFF_RUNTIME/$mesg")
+    done
+
+    folder -r -f -m -c -- "$TMP/$CEN_NAME.$$"
+    symlink -- "$DAT_SOURCE" "$DAT_NAME$DAT_SUFF_RUNTIME"
+    create -t -v list -- "filelist"
+    system -t -e -p -- tar -caf "$dest" --files-from="filelist"
+    folder -c -f -- "$DAT_SOURCE"       # go back to source folder
+    remove -r -d -- "$TMP/$CEN_NAME.$$"
+}
+
+# ------------------------------------------------------------------------------
+# Print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat <<!EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+This program was generated by 'centauricreate -T build' and is used to build
+stand-alone scripts. It manages a 'scource' folder that contains all neccessary
+components to build a distributable tar file.
+
+You will be guided through this process by calling '$CEN_NAME' multiple
+times to gnerate or edit the components. During the 1st call a folder structure
+will be set up in '$DAT_SOURCE'.
+
+By editing the generated configuration file you can be customize the resulting
+distributable. Please read the comments in '$DAT_NAME.conf'.
+
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

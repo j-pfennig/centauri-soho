@@ -1,0 +1,1428 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2024; "$"BSD License"
+CEN_TITLE=$"Collect and show some usefull information"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f - '0.50:2' || exit 2
+
+CEN_OPT_ALL=                    # see --all
+CEN_OPT_DELETE=                 # see --delete
+CEN_OPT_FOLDER=                 # see --folder
+
+# Data
+DAT_DISK_LABELS=                # used in ___disk_label
+DAT_HTML_ROOT='/var/www/html'   # used by do_indexHtml and do_archive
+DAT_SEPARATOR=                  # flag for do_separator
+
+DAT_CSS_ARCHIVE='
+h1  { font-weight: bold; color: blue; background-color:
+      rgb(220,220,220); border: 1px solid rgb(128,128,128); padding: 2pt }
+h2  { color: blue; background-color:
+      rgb(220,220,220); border: 1px solid rgb(128,128,128) }
+.txt { vertical-align:top; font-family:monospace }
+@media screen { .navi { position:absolute; margin-top: 2pt; margin-left: 18em } }
+@media print  { .navi { display: none; } }
+'
+DAT_JS_ARCHIVE='
+var curshow; var curtext; var allshow=true;
+function toggle(indx) {
+    if(!allshow) showall();
+    var x = document.getElementById("x." + indx); if(x == null) return;
+    if(curtext != null) curtext.innerText="Expand single node";
+    if(curshow != x) {
+        if(curshow != null && curshow.style.display != "none")
+            curshow.style.display = "none" ; curshow = x
+    }
+    if(x.style.display != "none")
+    {  x.style.display = "none"; text="Expand single node" }
+    else
+    {  x.style.display = ""; text="Collaps single node" }
+    curtext = document.getElementById("t." + indx);
+    if(curtext != null) curtext.innerText=text;
+}
+function showall() {
+    var icnt=0; var item; var mode; var tall
+    if(allshow) {  mode=""; tall="Collaps all nodes"; }
+    else        {  mode="none"; tall="Expand all nodes"; }
+    allshow = !allshow;
+    if( curtext != null) curtext.innerText="Expand single node";
+    curtext=null; curshow=null;
+    while((item = document.getElementById("x." + icnt)) != null)
+    {   item.style.display = mode;
+        item = document.getElementById("a." + icnt)
+        if(item != null) item.innerText=tall
+        icnt++;
+    }
+}
+function onload() {
+    var text=document.URL; var hash=text.lastIndexOf("#");
+    text = (hash > 0) ? text.substr(hash+1) : null;
+    var icnt=0;   var item;  var elts
+    while((item = document.getElementById("h." + icnt)) != null)
+    {  if(item.innerText == text) toggle(icnt);
+        elts = document.getElementById("x." + icnt)
+        if(elts != null)
+        {  elts = elts.getElementsByTagName("tr");
+            var irun; var idat=0
+            for(irun=0; irun < elts.length; irun++)
+                if(elts[irun].getElementsByTagName("td").length > 1) idat++
+            item.innerHTML = item.textContent + "&nbsp;&nbsp;&nbsp;&nbsp; (" + idat + (idat==1 ? " File)" : " Files)");
+        }
+        icnt++;
+    }
+}
+'
+
+# ------------------------- data for infobuilder() -----------------------------
+
+DAT_INFO_SECTION=                   # webindex|manifest
+DAT_INFO_CURR=                      # current section
+DAT_INFO_FRAG=                      # output fragment
+DAT_INFO_LIST=                      # see infodata()
+DAT_INFO_MODE=                      # html|text
+DAT_INFO_FILE=                      # output file
+DAT_INFO_CONT=                      # temp file
+DAT_INFO_TEXT=                      # "
+
+DAT_CSS_WEBINDEX='
+.function   { font-weight: bold; color: blue; background-color:
+               rgb(220,220,220); border: 1px solid rgb(128,128,128); padding: 2pt }
+.section    { font-size: large; font-weight: bold; margin-top: 6mm; margin-bottom: 3mm }
+.tabenum    { margin-left: 8mm }
+.fontfat    { font-size: 12pt; font-weight: bold }
+.infobox    { margin-left: 4mm; margin-right: 4mm; background-color: rgb(248,248,240);
+              border: 1px solid rgb(128,128,128); padding: 3pt }
+.block      { text-align: justify; margin-left: 4mm; margin-right: 4mm }
+.fancy      { font-weight: bold; font-style: italic; color: darkred }
+.warning    { color: darkred }
+h1          { font-size: 16pt; font-weight:bold }
+h3          { margin-top: 4mm; margin-bottom: 4mm }
+li          { font-size: 11pt; margin-top: 3; margin-bottom: 3pt }
+.big        { font-size: 12pt; font-weight:bold }
+'
+DAT_CSS_MANIFEST='
+h1 { font-weight: bold; color: blue; background-color: rgb(220,220,220);
+     border: 1px solid rgb(128,128,128); padding: 2pt }
+h2 { font-weight: bold; color: blue; background-color: rgb(220,220,220);
+     border: 1px solid rgb(128,128,128); padding: 2pt }
+h3 { background-color: rgb(220,220,220);
+     border: 1px solid rgb(128,128,128); padding: 2pt }
+.index1 { font-size:10pt; font-weight: bold; }
+.index2 { margin-left: 3mm; }
+@media screen { .small { font-size:9pt; margin-left: 6mm; } }
+@media print  { .small { display:none; }  .index { display:none; } }
+'
+# ------------------------------------------------------------------------------
+# Catalog HTML generation: <input> <output>
+# ------------------------------------------------------------------------------
+do_archiveHtml() {
+    local larg opti
+    if [ -z "$1" ] ; then
+        larg="$1/*"
+    elif [ -d "$1" ] ; then
+        larg="$1/*"
+    else
+        larg="$1"
+    fi
+
+    # Page header
+    __head() {
+       xml_comment -n $"Do not edit - autogenerated by:"" $CEN_NAME $CEN_ACTION"
+       xml_element style -n -- "$DAT_CSS_ARCHIVE"
+       xml_element script -a 'language="javascript"' -n -- "$DAT_JS_ARCHIVE"
+    }
+
+    # Page content
+    __cont() {
+        xml_anchor -a "name='top'"
+        xml_element h1 -n '<center>'$"Archive Report (generated $(date +'%F %R'))"'</center>'
+        local chos   cdat   cata
+        local nhos=0 ndat=0 nata=0
+        local host date data floc base file size kcur hlnk tidx=0
+
+        while read kind host date data floc base file size ; do
+            if [ "${kind::1}" = "0" ] ; then
+                if [ -z "$host" ] ; then
+                    xml_element p -n "$hlnk"
+                else
+                    hlnk+="&nbsp;&nbsp;&nbsp;<a href="#$host">$host Backups</a>"
+                fi
+                continue
+            fi
+            [ -z "$size" ] && continue
+            [ -n "${size//[0-9]/}" ] && continue
+            kind="${kind:1}"
+            # xml_comment -n "$kind $host $date $data $floc $base $file $size"
+
+            if [ "$kcur" != "$kind" ] ; then
+                [ -n "$kcur" ] && do_host
+                xml_element h2 -n "<a name='$kind'></a>&nbsp;$kind Backups<a href='#top' style='font-size: small'> [top]</a>"
+                kcur="$kind" ; nhos=0 ; chos=
+            fi
+            if [ "$chos" != "$host" ] ; then
+                do_host $nhos $host
+                ndat=0 ; nata=0 ; chos="$host" ; cdat="$date"
+                nhos=$((nhos + 1))
+            fi
+            if [ "$cdat" != "$date" ] ; then
+                xml_element tr -n "<td colspan=4><hr></td>"
+                cdat="$date" ; ndat=0 ; nata=0
+            fi
+            [ "$cata" = "$data" ] || nata=0
+            cata="$data"
+            do_data $nhos $host $ndat $date $nata $data "$floc:$base/$file" $(((size + 1023)/1024))
+            ndat=$((ndat + 1)) ; nata=$((nata + 1))
+        done <<!EOF
+    $(do_list 0 $larg | sort -k 1,1 -k 2,2 -k 3,3r -k 4)
+!EOF
+        do_host $nhos
+        xml_text -n -l "<hr/>" "<p>$hlnk</p>"
+    }
+
+    if [ "$CEN_VERB" -gt 1 ] ; then
+        opti="-i 1"
+        message -a $"Generating indented HTML"
+    fi
+    embed -m "_centauri_bash_xml"
+    xml_document -5 $opti -h __head -f __cont \
+                 -a "$CEN_LEGAL" -t $"Archive Report" "onload='onload()'"
+}
+
+# Args: $1 zero-based counter
+#       $2 host-name  -or-  empty to finish
+#       $3 data kind
+do_host() {
+    [ "$1" = "0" ] || xml_text -n -l "<tr><td colspan=4><hr></td></tr>" "</table>"
+    [ -n "$2"  ] || return
+
+    if [ -z "$CEN_OPT_NOJS" ] ; then
+        xml_text -n -l \
+            "<div><span class='navi'>" \
+            "[<a id='t.$tidx' href=\"javascript:toggle('$tidx')\">Expand single node</a>] " \
+            "[<a id='a.$tidx' href=\"javascript:showall()\">Expand all nodes</a>]</span>" \
+            "<h3 id='h.$tidx'>$2</h3></div>" \
+            "<table id='x.$tidx' width='98%' style='display: none'>"
+    else
+        xml_text -n -l "<h3>$2</h3>" "<table width='98%'>"
+    fi
+    xml_element tr -n "<td colspan=4><hr/></td>"
+    tidx=$((tidx + 1))
+}
+
+do_data() {
+    if [ "$CEN_VERB" -gt "1" ] ; then
+        xml_element tr -i -b
+        if [ "$3" = 0 ] ; then
+            xml_element td    -n -a "width='12%'"   "$4"
+        else
+            xml_element td    -n
+        fi
+        if [ "$5" = 0 ] ; then
+            xml_element td    -n -a "width='12%'"   "$6"
+            xml_element td    -n                    "$7"
+            xml_element td    -n -a "align='right'" "$8"
+        else
+            xml_element td    -n
+            xml_element td    -n                    "$7"
+            xml_element td    -n -a "align='right'" "$8"
+        fi
+        xml_element tr -u -e -n
+    # fast path ...
+    else
+       local col1='<td></td>'
+       [ "$3" = 0 ] && col1="<td width='12%'>$4</td>"
+       if [ "$5" = 0 ] ; then
+           xml_element tr -n "$col1<td width='12%'>$6</td><td>$7</td><td align='right'>$8</td>"
+       else
+           xml_element tr -n "$col1<td></td><td>$7</td><td align='right'>$8</td>"
+       fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Parse file list           Args: $1 filter for location (disk, data ...)
+#                                 $n list files
+# ------------------------------------------------------------------------------
+do_list() {
+    # group helper: <prio> <key> <host> <date> <data> <floc> <base> <file> <size>
+    local bytk=":"
+    __bytype() {
+        if [ -z "$1" ] ; then
+            echo '0z'
+        else
+            echo "$1$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+            local key="${bytk/:$2:/}"
+            [ "$key" = "$bytk" ] || return
+            bytk="$bytk$2:"
+            echo "0a$1" "$2"
+        fi
+    }
+
+    local item filter="$1" nitm=0 ; shift
+    for item in $* ; do
+        [ -d "$item" ] && continue
+        trace -a -c $"catalogue processing" "$item"
+        local base name host data date floc base file size
+        while read floc base file size; do
+            name="${file%%.*}" ; host="${name%%_*}"
+            [ -n "$name" ] || continue
+            file="${file##*/}" ; data="${name#*_}"
+            date="${data#*_}" ; data="${data%%_*}"
+            nitm=$((nitm + 1))
+            case "$base" in
+### TODO Disk hack
+            /mnt/sdc1/*)
+                __bytype 3 "Disk"      "$host" "$date" "$data" "$floc" "${base:9}" "$file" "$size" ;;
+
+            */data)
+                __bytype 1 "Logical"   "$host" "$date" "$data" "$floc" "$base" "$file" "$size" ;;
+            */disk|*/phys|*/vbox)
+                __bytype 2 "Physical"  "$host" "$date" "$data" "$floc" "$base" "$file" "$size" ;;
+            */daily)
+                __bytype 5 "Daily"     "$host" "$date" "$data" "$floc" "$base" "$file" "$size" ;;
+            */weekly)
+                __bytype 6 "Weekly"    "$host" "$date" "$data" "$floc" "$base" "$file" "$size" ;;
+            */monthly)
+                __bytype 7 "Monthly"   "$host" "$date" "$data" "$floc" "$base" "$file" "$size" ;;
+
+            /)
+                __bytype 3 "DVD"       "$host" "$date" "$data" "$floc" "$base" "$file" "$size" ;;
+            *)
+                __bytype 9 "Other"     "$host" "$date" "$data" "$floc" "$base" "$file" "$size" ;;
+            esac
+        done < $item
+    done
+    __bytype
+    trace -a -c $"backup files found" "$nitm"
+}
+
+# ------------------------------------------------------------------------------
+# output a separator line: [-n]
+#
+#       -1
+#       -n      output empty line
+# ------------------------------------------------------------------------------
+do_separator() {
+    local mode='one'
+    if [ -z "$DAT_SEPARATOR" ] ; then
+        embed -m '_centauri_bash_con'
+        [ -n "$CEN_COLS" ] || CEN_COLS=120
+    fi
+
+    if [ "$1" = '-1' ] ; then
+        DAT_SEPARATOR=1
+    elif [ "$1" = '-2' ] ; then
+        DAT_SEPARATOR=1 ; mode='two'
+    elif [ "$1" = '-n' ] ; then
+        [ -n "$DAT_SEPARATOR" ] && output -l
+        DAT_SEPARATOR=0 ; return
+    fi
+
+    if [ -z "$DAT_SEPARATOR" ] ; then
+        DAT_SEPARATOR=1 ; return
+    fi
+
+    if [ "$DAT_SEPARATOR" = 0 ] ; then
+        output -l
+        DAT_SEPARATOR=1 ; return
+    fi
+
+    output -l -d "$mode" -x "$CEN_COLS" .
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+#       -c <func>       call function for each input line
+#       -h <head>
+#       -i <list>       get input lines from array
+#       -w <wide>       table width (columns)
+# ------------------------------------------------------------------------------
+do_table() {
+    local func head leng args=()
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -c)   shift ; func="$1" ;;
+      -h)   shift ; head="$1" ;;
+      -i)   shift ; args+=('-i' "$1") ;;
+      -w)   shift ; leng="$1" ;;
+      *)    fatal -t '-' "$1"
+      esac ; shift
+    done
+    [ -z "$func" ] && func='output -l --' ; args+=('-x' "$func")
+
+    do_separator -n                                 # no auto separator line
+    if [ -n "$leng" ] ; then
+        [ "$leng" = '-' ] && leng="$CEN_COLS"
+        [ "$leng" -lt 60 ] && leng=60
+        printf -v head "%-${leng}s" "$head"
+    fi
+
+    head="${head// /_}" ; head="${head//|/ }"
+    output -l -- "${head//_/ }"
+    output -l -d one -- "$head"
+    splitjoin "${args[@]}" "$@"                     # list content
+    output -l -d '-' -- "$head"
+}
+
+# ==============================================================================
+# create webindex or manifest file
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Load translations: <locale>   <pair>...
+# ------------------------------------------------------------------------------
+
+DAT_L10N=
+___info_l10n() {
+    local _vres="$1" ; [ "$1" = '-' ] && _vres='DAT_L10N' ; shift
+    local _text _xlat _rslt _xkey
+    for _text in "$@" ; do
+        _xkey="${_text,,}" ; _xkey="x${_xkey//[!a-z0-9]/_}"
+        _xlat="${DAT_L10N_DICT["$_xkey"]}"
+        [ -n "$_xlat" ] && trace -a -c "translated" "'$_text' -> '$_xlat'"
+        _rslt+=" ${_xlat:-$_text}"
+    done
+    printf -v "$_vres" '%s' "${_rslt:1}"
+}
+
+infolocale() {
+    [ "${LANG::2}" = "$1" ] || return
+    declare -g -A DAT_L10N_DICT
+    local xley lang="$1" ; shift
+    while [ -n "$1" ] ; do
+        xkey="${1,,}" ; xkey="x${xkey//[!a-z0-9]/_}"
+        DAT_L10N_DICT["$xkey"]="$2" ; shift ; shift
+    done
+    trace -a -c "Localization" "${#DAT_L10N_DICT[@]} entries"
+}
+
+# ------------------------------------------------------------------------------
+# Start a section: <name> [<titl>]
+# ------------------------------------------------------------------------------
+infosection() {
+    if [ "$DAT_INFO_SECTION" = "$1" ] ; then
+        DAT_INFO_CURR="$1"
+        local titl
+        if [ $# -gt 1 ] ; then
+            shift ; ___info_l10n titl "$@"
+        else
+            titl="${1^} - $HOSTNAME"
+        fi
+
+        if [ "$DAT_INFO_SECTION" = 'webindex' ] ; then
+            if [ "$DAT_INFO_MODE" = 'html' ] ; then
+                xml_element 'h1' -c 'function' -a "align='center'" -n -- "$titl"
+            else
+                echo "SECTION $titl"
+            fi
+
+        else
+            if [ "$DAT_INFO_MODE" = 'html' ] ; then
+                CEN_XML_INDENT=
+                xml_flush -n
+                xml_anchor -b 'top'
+                xml_element 'h1' -n -- "$titl"
+                xml_element 'pre' -b -n
+            else
+                do_separator -2
+                output -l -- "$titl"
+                do_separator -2
+            fi &>>"$DAT_INFO_CONT"
+        fi
+    else
+        DAT_INFO_CURR=
+    fi
+    DAT_INFO_SKIP=
+}
+
+# ------------------------------------------------------------------------------
+# Print a header, content entry: <titl>
+# ------------------------------------------------------------------------------
+infoheader() {
+    ___info_htmlref() {
+        local dest="$1" deco text
+        if [ $# = 2 ] ; then
+            text="${2,,}"
+        else
+            deco="$2" ; text="${3,,}"
+        fi
+        if [ "$dest" = '-b' ] ; then
+            xml_anchor -b "${text//[!a-z0-9]/}"
+        elif [ "$dest" = '-l' ] ; then
+            if [ -z "$deco" ] ; then
+                xml_anchor -c 'index1' -n -m "${text//[!a-z0-9]/}" -- "$3"
+            else
+                xml_text -- "$deco"
+                xml_anchor -c 'index2' -n -m "${text//[!a-z0-9]/}" -- "$3"
+            fi
+        else
+            printf -v "$dest" '%s' "${text//[!a-z0-9]/}"
+        fi
+    }
+
+    ___info_htmlhdr() {
+        ___info_htmlref -b "$2"
+        xml_element "$1" -b
+        xml_text -- "$2 "
+        [ "$1" = 'h3' ] && xml_anchor -c 'small' -m 'top' -- $"top"
+        xml_element "$1" -e -n
+    }
+
+    ___info_htmlink() {
+        # the xml module cannot handle parallel documents, try to fix indentation
+        local idnt="$CEN_XML_INDENT"
+        xml_flush
+        CEN_XML_INDENT='    ' ; CEN_XML_BUFFER="$CEN_XML_INDENT"
+        ___info_htmlref -l "$@"
+        xml_flush
+        CEN_XML_INDENT="$idnt" ; CEN_XML_BUFFER="$idnt"
+    }
+
+    if [ "$DAT_INFO_SKIP" = 1 ] ; then
+        DAT_INFO_SKIP=2 ; return
+    fi
+    DAT_INFO_SKIP=
+    [ "$DAT_INFO_SECTION" = "$DAT_INFO_CURR" ] || return
+
+    local text
+    case "$DAT_INFO_SECTION-$DAT_INFO_MODE" in
+    webindex-html)
+            if [ "$1" != '-' ] ; then
+                ___info_l10n text "$@"
+                xml_element tr -n "<td colspan='3'><h3>$text</h3></td>"
+            elif [ -n "$DAT_INFO_FRAG" ] ; then
+                shift ; ___info_l10n text "$@"
+                xml_element tr -b -i
+                xml_element td -n -a "valign='top'" '' "$text" "$DAT_INFO_FRAG"
+                xml_element tr -e -u -n
+                DAT_INFO_FRAG=
+            fi >>"$DAT_INFO_TEXT"
+            ;;
+    webindex-*)
+            if [ "$1" != '-' ] ; then
+                ___info_l10n text "$@"
+                echo "HEADER $text"
+            elif [ -n "$DAT_INFO_FRAG" ] ; then
+                shift ; ___info_l10n text "$@"
+                echo "GROUP  $text"
+                echo "    ${DAT_INFO_FRAG::120}"
+                DAT_INFO_FRAG=
+            fi
+            ;;
+    manifest-html)
+            xml_element 'pre' -e -n -u
+            if [ "$1" = '-' ] ; then
+                shift
+                ___info_htmlhdr 'h3' "$*"
+                ___info_htmlink '•' "$*" >>"$DAT_INFO_CONT"
+            else
+                ___info_htmlhdr 'h2' "$*"
+                ___info_htmlink '' "$*" >>"$DAT_INFO_CONT"
+            fi
+            xml_element 'pre' -b -n -i
+            ;;
+    manifest-*)
+            output -l
+            if [ "$1" = '-' ] ; then
+                shift
+                do_separator -1
+                output -l -- "••• $*"
+                do_separator -1
+                echo "    • $*" >>"$DAT_INFO_CONT"
+            else
+                do_separator -2
+                output -l -- "$*"
+                do_separator -2
+                echo >>"$DAT_INFO_CONT"
+                echo "    $*" >>"$DAT_INFO_CONT"
+            fi
+            output -l
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# check condition for infodata: file|folder|tool <arg>
+# ------------------------------------------------------------------------------
+#       infocheck     file     <path>
+#       infocheck     folder   <path>
+#       infocheck     tool     <name>...|<path>...
+# ------------------------------------------------------------------------------
+infocheck() {
+    [ "$DAT_INFO_SECTION" = "$DAT_INFO_CURR" ] || return
+    [ -n "$DAT_INFO_SKIP" ] && return
+    local what="$1" ; shift
+    case "$what" in
+    fil*)   [ -r "$1" ] && return
+            ;;
+    fol*)   [ -d "$1" ] && return
+            ;;
+    too*)   system -c -- "$@" && return
+            ;;
+    *)      fatal -t '-' "$what"
+    esac
+    DAT_INFO_SKIP=1
+}
+
+# ------------------------------------------------------------------------------
+# Run a tool|embeddable|scriptlet: tool|embed|script <arg>...
+# ------------------------------------------------------------------------------
+#       infodata      tool     <name>|<path> <arg>...
+#       infodata      embed    <name> <arg>...
+#       infodata      script   <code>...
+# ------------------------------------------------------------------------------
+infodata() {
+    [ "$DAT_INFO_SECTION" = "$DAT_INFO_CURR" ] || return
+    [ -n "$DAT_INFO_SKIP" ] && return
+    local text idnt='-i 4' mode="$1" ; shift
+
+    case "$mode" in
+    too*)   system -e -p -a DAT_INFO_LIST "$@" || return
+            ;;
+    emb*)   embed -s text -- "${@}" || return
+            splitjoin -n -s DAT_INFO_LIST -- "$text"
+            [ "${DAT_INFO_LIST::2}" = '  ' ] && idnt=
+            ;;
+    scr*)   system -e -p -s text -- eval "$*" || return
+            splitjoin -n -s DAT_INFO_LIST -- "$text"
+            ;;
+    *)      fatal -t '-' "$mode"
+    esac
+    if [ "$DAT_INFO_MODE" = 'html' ] ; then
+        xml_text -n -l -- "${DAT_INFO_LIST[@]}"
+    else
+        [ "${#DAT_INFO_LIST}" -gt 132 ] && idnt=
+        output -l $idnt -- "${DAT_INFO_LIST[@]}"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# get filesystem items: file|folder <item>...
+# ------------------------------------------------------------------------------
+infowebdoc() {
+    [ "$DAT_INFO_SECTION" = "$DAT_INFO_CURR" ] || return
+    [ -n "$DAT_INFO_SKIP" ] && return
+    local mode="$1" ; shift
+    case "$mode" in
+    fil*)   matchpath -f -r -a DAT_INFO_LIST -- "$@"
+            ;;
+    fol*)   matchpath -d -r -a DAT_INFO_LIST -- "$@"
+            ;;
+    *)      fatal -t '-' "$mode"
+    esac
+    [ -z "$DAT_INFO_LIST" ] && DAT_INFO_LIST=('<void>')
+}
+
+# ------------------------------------------------------------------------------
+# url entry:
+#
+#   weburl parses DAT_INFO_LIST items into these variables:
+#
+#       DOCUMENT    full document path
+#       FILE        file name+suffix
+#       NAME        file name
+#       SUFFIX      file suffix
+#       FOLDER      folder of a file or folder
+#       PARENT      parent of folder
+# ------------------------------------------------------------------------------
+___info_addurl() {
+    local text surl="$2"
+    case "$surl" in
+    //*)        surl="http:$surl" ;;
+    http:*)     ;;
+    https:*)
+    esac
+    ___info_l10n text "$1"
+    if [ "$DAT_INFO_MODE" = 'html' ] ; then
+        DAT_INFO_FRAG+="[<a href='$surl'>$text</a>] "
+    else
+        DAT_INFO_FRAG+="[$text] href=$surl   "
+    fi
+}
+
+infoweburl() {
+    [ "$DAT_INFO_SECTION" = "$DAT_INFO_CURR" ] || return
+    [ -n "$DAT_INFO_SKIP" ] && return
+    if [ -z "$DAT_INFO_LIST" ] ; then
+        ___info_addurl "$1" "$2"
+        return
+    elif [ "$DAT_INFO_LIST" = '<void>' ] ; then
+        DAT_INFO_LIST=()
+        return
+    fi
+
+    local DOCUMENT FILE NAME SUFFIX FOLDER PARENT
+    local stxt surl
+    for DOCUMENT in "${DAT_INFO_LIST[@]}" ; do
+        FILE="${DOCUMENT##*/}"  ; NAME="${FILE%.*}"
+        FOLDER="${DOCUMENT%/*}" ; PARENT="${FOLDER%/*}"
+        FOLDER="${FOLDER##*/}"  ; PARENT="${PARENT##*/}"
+        SUFFIX="${FILE#*.}" ; [ "$FILE" = "$SUFFIX" ] && SUFFIX=
+        eval stxt="\"$1\""
+        eval surl="\"$2\""
+        ___info_addurl "$stxt" "$surl"
+    done
+    DAT_INFO_LIST=()
+}
+
+# ------------------------------------------------------------------------------
+# run info script: manifest|webindex [<file>]
+# ------------------------------------------------------------------------------
+infobuilder() {
+    DAT_INFO_SECTION="$1"
+    local scss docf
+
+    # pager or output file
+    case "$2" in
+    '')             ;;
+    *.htm|*.html)   DAT_INFO_MODE='html' ;;
+    *)              DAT_INFO_MODE='text'
+    esac
+
+    if [ -n "$DAT_INFO_MODE" ] ; then
+        outfile -c -r ${CEN_OPT_FORCE:+-a} -s DAT_INFO_FILE -t -- "$2" || return
+        message -a -c "Create ""$DAT_INFO_MODE" "${1^}" "'$DAT_INFO_FILE'"
+    fi
+    if [ "$DAT_INFO_SECTION" = 'manifest' ] ; then
+        tmpfile -s DAT_INFO_CONT 'cont'
+        tmpfile -s DAT_INFO_TEXT 'text'
+        docf="$DAT_INFO_CONT"
+        [ "$DAT_INFO_MODE" = 'html' ] && scss="$DAT_CSS_MANIFEST"
+    else
+        if [ "$DAT_INFO_MODE" = 'html' ] ; then
+            tmpfile -s DAT_INFO_TEXT 'text'
+            docf="$DAT_INFO_TEXT"
+            scss="$DAT_CSS_WEBINDEX"
+        fi
+    fi
+
+    # create html document
+    if [ "$DAT_INFO_MODE" = 'html' ] ; then
+        CEN_COLS=164
+        ___info_xml_hdr() {
+            xml_comment -n $"Do not edit - autogenerated by:"" $CEN_NAME $CEN_ACTION"
+            xml_comment -n $"Configuration:"" $CEN_ROOT/default/$CEN_NAME"
+            xml_element 'style' -t -n "$scss"
+        }
+        # cannot use "-o <file>" here ...
+        xml_document -b -a "$CEN_LEGAL" -h ___info_xml_hdr -5 -i 1 >"$docf"
+    fi
+
+    # build webindex and return
+    if [ "$DAT_INFO_SECTION" = 'webindex' ] ; then
+        folder -c -f "$DAT_HTML_ROOT"
+        if [ -z "$DAT_INFO_FILE" ] ; then
+            source "$CEN_ROOT/default/$CEN_NAME"
+        else
+            {   source "$CEN_ROOT/default/$CEN_NAME"
+                if [ "$DAT_INFO_MODE" = 'html' ] ; then
+                    # Table content from file
+                    ___info_tbdy() {
+                        xml_flush
+                        sysrun -e -- cat "$DAT_INFO_TEXT"
+                    }
+                    # Table header
+                    ___info_thdr() {
+                        xml_element colgroup -b
+                            xml_element col -a "width='4%'"
+                            xml_element col -a "width='20%'"
+                            xml_element col
+                        xml_element colgroup -e
+                    }
+                    # Page content in a Table
+                    xml_element div -n -a "id='pagehdr'"
+                    xml_table -n -h ___info_thdr -b ___info_tbdy -a "width='96%'"
+                    xml_document -e
+                fi
+            } >>"$DAT_INFO_FILE"
+        fi
+        return
+    fi
+
+    # manifest
+    source "$CEN_ROOT/default/$CEN_NAME" >"$DAT_INFO_TEXT"
+    if [ "$DAT_INFO_MODE" = 'html' ] ; then
+        xml_element 'pre' -e -u -n
+        xml_document -e
+    else
+        do_separator
+    fi &>>"$DAT_INFO_TEXT"
+    echo >>"$DAT_INFO_CONT"
+
+    trace -- "$DAT_INFO_CONT + $DAT_INFO_TEXT => ${DAT_INFO_FILE:-}"
+    if [ -n "$DAT_INFO_FILE" ] ; then
+        sysrun -e -- cat "$DAT_INFO_CONT" "$DAT_INFO_TEXT" >"$DAT_INFO_FILE"
+    else
+        sysrun -n -- cat "$DAT_INFO_CONT" "$DAT_INFO_TEXT"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# create backup lists: [-|<domain>]
+# ------------------------------------------------------------------------------
+actionArchive() {
+    local auto="autosave.html" arch="$CEN_ROOT/archived/@autosave"
+    if [ -z "$1" ] ; then
+        embed -r -s arch centauriname --domain
+        arch="$CEN_ROOT/archived/${arch%.*}"
+        auto="archived.html"
+    elif [ "$1" != '-' ] ; then
+        arch="$CEN_ROOT/archived/$1"
+        auto="archived.html"
+    fi
+
+    if [ -d "$DAT_HTML_ROOT" ] ; then
+        message -a "Creating $auto ..."
+    else
+        warning -a "Not creating $auto (no '$DAT_HTML_ROOT')"
+        return
+    fi
+
+    if [ -d "$arch" ] ; then
+        arch="$arch/*"
+    elif [ ! -f "$arch" ] ; then
+        trace -i "No backups: $arch" ; return
+    fi
+    #embed listBackup -I "$arch" -O "$DAT_HTML_ROOT/$auto" html
+    dryrun "do_archiveHtml '$arch' >'$DAT_HTML_ROOT/$auto'" && return
+    do_archiveHtml "$arch" >"$DAT_HTML_ROOT/$auto"
+}
+
+# ------------------------------------------------------------------------------
+# Action cron - do housekeeping
+# ------------------------------------------------------------------------------
+actionCron() {
+    # update motd
+    message -a $"Updating status information ..."
+    if dryrun actionMotd ; then
+        :
+    elif [ -e '/etc/motd.static' ] ; then
+        symlink -n '/etc/motd.static' '/etc/motd'
+    else
+        remove '/etc/motd'
+        actionMotd > '/etc/motd'
+    fi
+
+    # create the manifest
+    remove '/etc/MANIFEST.html'
+    actionManifest '/etc/MANIFEST.html'
+
+    # update the list of archives
+    embed centauridata list
+
+    # make html stuff
+    if [ -d "$DAT_HTML_ROOT" ] ; then
+        actionArchive
+        actionArchive -
+        remove "$DAT_HTML_ROOT/index.html"
+        actionIndex "$DAT_HTML_ROOT/index.html"
+    else
+        trace -a -pf $"No '%s' folder - not generating HTML files" "$DAT_HTML_ROOT"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Report disks and partitions
+# ------------------------------------------------------------------------------
+actionDisk() {
+    # help to get disk label via udev
+    ___disk_label() {
+        local -n vref="$1" ; vref=
+        [ -z "$DAT_DISK_LABELS" ] && DAT_DISK_LABELS=(/dev/disk/by-label/*)
+        local item
+        for item in "${DAT_DISK_LABELS[@]}" ; do
+            [ "$item" -ef "$2" ] || continue
+            vref="${item##*/}" ; return
+        done
+    }
+
+    local head ddev vol arg="${1::3}"
+    if [ "${1::5}" = '/dev/' ] ; then
+        ddev="$1"
+    elif [ "$arg" = 'all' -o -n "$CEN_OPT_ALL" ] ; then
+        for vol in /mnt/* '/home' '/export' ; do
+            [ -e "$vol/mount-the-volume" ] && :
+        done
+    fi
+
+    do_separator -n
+
+    head="Device.... Label.......... Type... Total. Used. Free....... Mountpoint"
+    output -l "${head//./ }"
+    local ind="${#head}" ; ((ind -= 10))
+    [ "$CEN_COLS" -lt 70 ] && ind='-'
+    if [ "$CEN_COLS" -ge 60 ] ; then
+        head+='..........................' ; head="${head::CEN_COLS}"
+    fi
+    output -d '-' -l -- "$head"
+
+    # get block device information
+    local itms indx=0 flds info=() iinf=0
+    system -a itms -f -p -- lsblk -o NAME,LABEL,FSTYPE,SIZE,MOUNTPOINT,TYPE -n -b -P -x NAME $ddev
+
+    # get used disk space for mounted file systems
+    while [ "$indx" -lt "${#itms[*]}" ] ; do
+        eval "${itms[indx]}"
+        indx="$((indx + 1))"
+        mpt=$(echo -e "$MOUNTPOINT")
+        [ "${mpt::1}" = '/' ] || continue
+        if [ -r "$mpt" ] ; then
+            info+=("$mpt")
+        else
+            warning -a $"Cannot read:" "$mpt"
+        fi
+    done
+    if [ "${#info[*]}" -gt 0 ] ; then
+        system -a info -f -p -- df -Bg -T "${info[@]}"
+        iinf=0
+    fi
+
+    local dev lbl typ all fre use per nam mpt used
+    indx=0
+    while [ "$indx" -lt "${#itms[*]}" ] ; do
+        eval "${itms[indx]}"
+        flds=("$NAME" "$LABEL" "$FSTYPE" "$SIZE" "$MOUNTPOINT" "$TYPE")
+        [ "${MOUNTPOINT::1}" = '/' ] && iinf=$((iinf + 1))
+        ((indx += 1))
+
+        fre='-' ; use='-' ; per='-'
+        if [ "${flds[5]}" = "part" -o -n "${flds[2]}" ] ; then # partition
+            [ "$arg" = "dri" ] && continue
+            all="${flds[3]}"
+            if [ -z "${flds[1]}" -a "$EUID" != 0 ] ; then
+                ___disk_label lbl "/dev/${flds[0]}"
+                flds[1]=$(echo -e "$lbl")
+            fi
+        elif [ "${flds[5]}" = 'rom' ] ; then
+            [ "$arg" = "all" ] || continue
+            all="${flds[3]}" #; flds[1]=
+            fre= ; use= ; per=
+        else                                            # drive
+            [ "$arg" = "dri" -o "$arg" = "all" ] || continue
+            all="${flds[3]}" ; flds[1]=
+            fre= ; use= ; per=
+        fi
+        if [ -z "$arg" ] ; then
+            [ -z "${flds[1]}" -a -z "${flds[2]}" ] && continue
+            local labl="${flds[1]##*_}"
+            [ "${labl::3}" = "boo" -a "${flds[2]:-vfat}" = "vfat" \
+                                   -a -z "${flds[4]}" ] && continue
+        fi
+
+        [ -n "$all" ] && all="$(((all + (2 << 28)) >> 30))G"
+        dev="${flds[0]}"
+        lbl="${flds[1]}"
+        typ="${flds[2]}"
+        mpt="${flds[4]}"
+        if [ "${mpt::1}" = '/' ] ; then
+            nam="${mpt##*/}"
+            if [ "$mpt" -ef "/mnt/${nam##*_}" ] ; then
+               mpt="/mnt/${nam##*_}"
+            elif [ "$mpt" -ef "/mnt/vol0/Volumes/${nam^}" ] ; then
+                mpt="/mnt/vol0"
+            fi
+            splitjoin -s used -d " \t" "${info[iinf]}"
+            fre="${used[3]}" ; use="${used[4]}" ; per="${used[5]}"
+            [ -z "$typ" ] && typ="${used[1]}"
+        fi
+
+        [ "${#dev}" -gt  9 ] && dev+=$'\n         '
+        [ "${#lbl}" -gt 15 ] && lbl+=$'\n                         '
+        [ "${#typ}" -gt  7 ] && typ+=$'\n                                 '
+        local deco= ; [ -z "$use" ] && deco="-d 1"
+        output $deco -m -b "$ind" -p "%-10s %-15s %-7s %6s%6s%6s %4s  %s" \
+               "$dev" "$lbl" "$typ" "$all" "$fre" "$use" "$per" "$mpt"
+    done
+    output -l -d '-' -- "$head"
+}
+
+# ------------------------------------------------------------------------------
+# Report environment variables: <expr>
+# ------------------------------------------------------------------------------
+actionEnvir() {
+    local vars=() name cont entr glob="$1" head
+    while IFS=$'\0' read -d $'\0' entr ; do
+        vars+=("$entr")
+    done </proc/$PPID/environ
+    txtsort -a vars -i vars
+    [ -n "$glob" ] && [ "$glob" = "${glob/\*/}" ] && glob="*$glob*"
+
+    ___envir_out() {
+        splitkeyval "$1" name cont
+        [ -n "$glob" ] && ! [[ "$name" == $glob ]] && return
+        if [ "${#name}" -gt 20 ] ; then
+            printf "%s\n" "$name" ; name=
+        fi
+        cont="${cont//[[:cntrl:]]/°}"
+        output -m -b 21 -p "%-20s %s" "$name" "$cont"
+    }
+    printf -v head "%-20s|%s" $"Name" $"Value"
+    do_table -c ___envir_out -h "$head" -i vars -w -
+}
+
+# ------------------------------------------------------------------------------
+# Action find: list/delete files
+# ------------------------------------------------------------------------------
+actionFind() {
+    [ -n "$CEN_OPT_FOLDER" ] && folder -c -f -- "$CEN_OPT_FOLDER"
+    if [ -z "$CEN_OPT_DELETE" ] ; then
+        find -xdev \( -name ".encfs_*" -o -name ".cache" \) -prune -o -iname "*$1*" -print
+    else
+        local list item
+        system -r -e -p -a list -- find -xdev \
+                   \( -name ".encfs_*" -o -name ".cache" \) -prune -o -iname "*$1*" -print
+        for item in "${list[@]}" ; do
+            if [ -d "$item" ] ; then
+                confirm -n -q "Remove folder"" '$item'" || continue
+            elif [ -h "$item" ] ; then
+                confirm -n -q "Remove symlink"" '$item'" || continue
+            else
+                confirm -n -q "Remove file"" '$item'" || continue
+            fi
+            remove -d "$item"
+        done
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Action index - generate web index: [<file>]
+# ------------------------------------------------------------------------------
+actionIndex() {
+    if [ ! -d "$DAT_HTML_ROOT" ] ; then
+        warning -a -p $"Not building 'index.html' (no '%s')" "$DAT_HTML_ROOT"
+        return
+    elif [ -z "$1" ] ; then
+        message -a $"Creating Web Index ..."
+        syspager -c yes infobuilder 'webindex'
+    else
+        infobuilder 'webindex' "$1"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# show used/free disk space in "message of the day" format
+# ------------------------------------------------------------------------------
+actionMotd() {
+    dryrun actionMotd && return
+    local vol head vbar
+
+    case "${LANG,,}" in
+    *.utf8|*utf-8)  vbar='║' ;;
+    *)              vbar='|'
+    esac
+
+    if [ "$1" != 'disk' ] ; then
+        if [ "$vbar" != '|' ] ; then
+            echo -e "\n                          ◄ Mounts on $HOSTNAME ►"
+            echo "    ╔════════════════════════════════════════════════════════════════════════╗"
+            echo "    ║ Device          Type      Total   Used       Mountpoint                ║"
+            echo "    ║────────────────────────────────────────────────────────────────────────║"
+            head="    ╚════════════════════════════════════════════════════════════════════════╝"
+        else
+            echo -e "\n                          ~ Mounts on $HOSTNAME ~"
+            echo "    o========================================================================o"
+            echo "    | Device          Type      Total   Used       Mountpoint                |"
+            echo "    |------------------------------------------------------------------------|"
+            head="    o========================================================================o"
+        fi
+    else
+        embed -m '_centauri_bash_con'
+        [ -n "$CEN_COLS" ] || CEN_COLS=80
+        head="Device......... Type..... Total.. Used.. Free...... Mountpoint"
+        output -l "${head//./ }"
+        if [ "$CEN_COLS" -ge 60 ] ; then
+            head+=".........................." ; head="${head::CEN_COLS}"
+        fi
+        output -d '-' -l -- "$head"
+    fi
+
+    local typ all fre use per mpt nam dmy
+    local nl=$'\n'
+    while read vol typ all fre use per mpt ; do
+        if [ "${vol::13}" = "/dev/disk/by-" ] ; then
+            for dmy in /dev/sd* ; do
+                [ "$vol" -ef "$dmy" ] || continue
+                vol="$dmy" ; break
+            done
+        fi
+        nam="${mpt##*/}"
+        [ "$mpt" -ef "/mnt/${nam##*_}" ] && mpt="/mnt/${nam##*_}"
+        if [ "$1" != 'disk' ] ; then
+             if [ "${#vol}" -gt 15 ] ; then
+                 printf "    ║ %-71s║\n" "$vol"
+                 vol=
+             fi
+             printf "    $vbar %-15s %-8s %6s %6s %4s  %-26.26s$vbar\n" \
+                    "$vol" "$typ" "$all" "$fre" "$per" "$mpt"
+        else
+            [ "${#vol}" -gt 15 ] && vol="$vol$nl               "
+            printf "%-15s %-8s %6s %6s %6s %4s  %s\n" "$vol" "$typ" "$all" "$fre" "$use" "$per" "$mpt"
+        fi
+    done <<!EOF
+$(df -Bg -l -t auto -t ext3 -t ext4 -t vfat -t ntfs -t btrfs -t f2fs -t fuseblk -T | grep "^/" | sort)
+!EOF
+    if [ "$1" != 'disk' ] ; then
+        echo "$head"
+    else
+        output -d '-' -l -- "$head"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# System Manifest
+# ------------------------------------------------------------------------------
+actionManifest() {
+    if [ -z "$1" ] ; then
+        message -a $"Creating Manifest ..."
+        syspager -c yes infobuilder 'manifest'
+    else
+        infobuilder 'manifest' "$1"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# network information
+# ------------------------------------------------------------------------------
+actionNetwork() {
+    local scmd icmd list
+    case "$1" in
+        a*4)    scmd='addr4'  ; icmd='ip -4 addr show' ;;
+        a*6)    scmd='addr6'  ; icmd='ip -6 addr show' ;;
+        r*4)    scmd='route4' ; icmd='ip -4 route show' ;;
+        r*6)    scmd='route6' ; icmd='ip -6 route show' ;;
+        *)      invoke -e $"Invalid invokation:" "$*"
+    esac ; shift
+
+    [ -n "$CEN_PATHS" ] && PATH="/system/bin:$PATH"         # for termux/android
+    system -e -p -a list -- $icmd "$@" || return            # run 'ip' command
+    [ "${scmd::1}" = 'a' ] && ___net_addr "${list[@]}" || ___net_route "${list[@]}"
+}
+
+___net_addr() {
+    do_separator
+    local line mesg
+    for line in "$@" ; do
+        if [ "$CEN_VERB" -gt 1 ] ; then
+            if [ "${line::1}" = ' ' ] ; then
+                printf '%s\n' "$line"
+            else
+                output -d bold -l -- "$line"
+            fi
+            continue
+        fi
+
+        trimjoin -c -w -s line
+        case "$line" in
+            *:\ *:\ *)
+                mesg="${line#*: }"
+                output -d bold -m -b 8:2 -p '%-8s%s' "${mesg%%:*}" "${mesg#* }" ;;
+            inet*)
+                mesg="${line#* }"
+                output -m -b 50:2 -p '%-4s%-41s %s' '' "${mesg%% *}" "${mesg#* }" ;;
+            *)  ;;
+        esac
+    done
+}
+
+___net_route() {
+    do_separator
+    local line mesg wlis ctab curr='xxkernel'
+    for line in "$@" ; do
+        if [ "$CEN_VERB" -gt 1 ] ; then
+            printf '%s\n' "$line" ; continue
+        fi
+
+        trimjoin -c -w -s line
+        mesg="${line%% *}"
+        case "$mesg" in
+            local|multicast|anycast|broadcast|unreachable|nat|prohibit|blackhole|throw)
+                    if [ "$mesg" != "$curr" ] ; then
+                        output -d bold -l -- "$mesg" ; curr="$mesg"
+                    fi
+                    line="${line#* }"
+                    line="${line/ table $mesg / }" ;;
+            *)
+                    mesg='kernel'
+                    if [ "$mesg" != "$curr" ] ; then
+                        output -d bold -l -- "$mesg" ; curr="$mesg"
+                    fi
+                    ;;
+        esac
+
+        mesg="${line%% *}"
+        case "$mesg" in
+            default)
+                splitjoin -s wlis -d ' ' -- "$line"
+                if [ "${wlis[1]}" = 'via' ] ; then
+                    output -m -b 46:2 -p '    %-41s %s' "${wlis[*]::3}" "${wlis[*]:3}"
+                else
+                    output -m -b 46:2 -p '    %-41s %s' "${wlis[*]::1}" "${wlis[*]:1}"
+                fi ;;
+            nexthop)
+                splitjoin -s wlis -d ' ' -- "$line"
+                output -m -b 46:2 -p '        %-37s %s' "${wlis[*]::3}" "${wlis[*]:3}" ;;
+            *.*.*.*)
+                output -m -b 46:2 -p '    %-41s %s' "${line%% *}" "${line#* }" ;;
+            *:*:*)
+                output -m -b 46:2 -p '    %-41s %s' "${line%% *}" "${line#* }" ;;
+            *::/[0-9]*)
+                output -m -b 46:2 -p '    %-41s %s' "${line%% *}" "${line#* }" ;;
+            *)
+                printf '        %s\n' "$line"
+        esac
+    done
+}
+
+# ------------------------------------------------------------------------------
+# show mounted disks: [all|drives]
+# ------------------------------------------------------------------------------
+actionMount() {
+    local fall ; [ "$1" = 'all' -o -n "$CEN_OPT_ALL" ] && fall='-t tmpfs -t efivarfs'
+    local fdri ; [ "${1::3}" = 'dri' ] && fdri=1
+
+    do_separator -n
+
+    local serv list item flds cdev clbl
+    netquery -s serv 'MASTER'
+    findmount -a $fall -t -
+    txtsort -a list -i CEN_MOUNT_ARR
+
+    local labl dhdr dind dmar
+    if [ "$CEN_VERB" -gt 1 ] ; then
+        labl="Device........ Mountpoint................ Type.... Label.......... Options"
+        output -l "${labl//./ }" ; output -d '-' -v dhdr "$labl"
+        dind=${#labl}
+        dmar=$((CEN_COLS - dind)) ; [ "$dmar" -lt 1 ] && dmar=0
+        [ "$CEN_COLS" -lt 80 ] && dind='-' || ((dind -= 7))
+    else
+        labl="Device.......... Mountpoint.................. Type........ Label.........."
+        output -l "${labl//./ }" ; output -d '-' -v dhdr "$labl"
+        dind='-'
+        dmar=0
+    fi
+    printf -v dmar "%${dmar}s" ""
+    output -d '-' -l -- "$dhdr${dmar// /.}"
+
+    local ivol impt ityp iopt
+    for item in "${list[@]}" ; do
+        CEN_AUTOIND=
+        splitjoin -s flds -- "$item"
+        ivol="$flds" ; impt="${flds[1]}" ; ityp="${flds[2]}" ; iopt="${flds[3]}"
+        ivol="${ivol//\\/\/}"
+        [ -n "$fdri" -a "${ivol::5}" != "/dev/" ] && continue
+
+        prettypath -s impt -- "$impt"
+        item="${impt%/*}"
+        [ "$item" = "/data/$serv" ] && ivol="[${impt##*/}]"
+        [ "$impt" = "/data/home" ] && ivol="[home]"
+
+        if [ "$flds" = "$cdev" ] ; then
+            ivol= ; ityp='...' ; clbl='...'
+        else
+            findmount -r label "$flds"
+            clbl="$CEN_MOUNT_DIR" ; cdev="$flds"
+        fi
+
+        if [ "$CEN_VERB" -gt 1 ] ; then
+            if [ "${#ivol}" -gt 14 ] ; then
+                output -l "$ivol" ; ivol=
+            fi
+            if [ "${#impt}" -gt 26 ] ; then
+                output -l -p "%-14s %s" "$ivol" "$impt" ; ivol= ; impt=
+            fi
+            if [ "${#clbl}" -gt 15 ] ; then
+                output -l -p "%-14s %-26s %-8s %s" "$ivol" "$impt" "${ityp::8}" "$clbl"
+                ivol= ; impt= ; ityp= ; clbl=
+            fi
+            output -l -b "$dind" -p "%-14s %-26s %-8s %-15s %s" \
+                   "$ivol" "$impt" "${ityp::8}" "$clbl" "$iopt"
+        else
+            if [ "${#ivol}" -gt 16 ] ; then
+                output -l "$ivol" ; ivol=
+            fi
+            if [ "${#impt}" -gt 28 ] ; then
+                output -l -p "%-16s %s" "$ivol" "$impt" ; ivol= ; impt=
+            fi
+            output -l -b "$dind" -p "%-16s %-28s %-12s %s" \
+                   "$ivol" "$impt" "${ityp::12}" "$clbl"
+        fi
+    done
+
+    output -d '-' -l -- "$dhdr${dmar// /.}"
+}
+
+# ------------------------------------------------------------------------------
+# show syslog: [[-f|-b] [<expr>]]
+#
+#   syslog -b|-f|-t            -> journalctl --no-host -b|-f
+#   syslog -b|-f|-t <expr>     -> journalctl --no-host -b|-f | grep <expr>
+#   syslog -b|-f|-t -g <expr>  -> journalctl --no-host -b|-f -g <expr>
+#   syslog <opt>... <expr>  -> journalctl --no-host <opt>... | grep <expr>
+# ------------------------------------------------------------------------------
+actionSyslog() {
+    local fgrp ffol opts=('--no-host')
+    while [ "${1::1}" = '-' ] ; do
+        case "$1" in
+        --)     shift ; break ;;
+        -f)     ffol=1 ; opts+=("$1") ;;
+        -g)     fgrp=1 ;;
+        -p|-u)  opts+=("$1" "$2") ; shift ;;
+        -t)     opts+=('--since=today') ; shift ;;
+        *)      opts+=("$1") ;;
+        esac
+        shift
+    done
+
+    if [ "${CEN_OPT_PAGER::1}" = '/' ] ; then
+        invoke -e $"Only '--pager=no' is supported" ; return
+    elif [ -n "$CEN_OPT_PAGER" ] ; then
+        opts+=('--no-pager')
+    fi
+
+    if [ -n "$fgrp" ] ; then
+        system -e -x 'journalctl' "${opts[@]}" -g "$@"
+    elif [ $# = 0 ] ; then
+        system -e -x 'journalctl' "${opts[@]}" "$@"
+    else
+        local pipe item args=(-E)
+        for item in "$@" ; do
+            args+=('-e' "$item")
+        done
+        if [ -n "$CEN_OPT_PAGER" -o -n "$ffol" ] ; then
+            sysfind -c -f journalctl grep
+            journalctl "${opts[@]}" | grep --color=auto "${args[@]}"
+        else
+            sysfind -c -f journalctl grep less
+            journalctl "${opts[@]}" | grep --color=always "${args[@]}" | less -r -F -R -X
+        fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# show users
+# ------------------------------------------------------------------------------
+actionUsers() {
+    local head=$"Username       |||  uid|||Primary Group  |||  gid|||Home"
+    local frmt='%-16s%7s   %-16s%7s   %s' item
+    local list item last flds rows=()
+    declare -A gmap
+
+    system -r -e -p -a list -- getent group || return       # get a group dictionary
+    for item in "${list[@]}" ; do
+        splitjoin -d ':' -s flds -- "$item"
+        gmap["${flds[2]}"]="${flds[0]}"
+    done
+
+    system -r -e -p -a list -- getent passwd || return
+    for item in "${list[@]}" ; do
+        splitjoin -d ':' -s flds -- "$item"
+        if [ -z "$CEN_OPT_ALL" ] ; then
+            [ "${flds[2]}" -lt 1000 ] && continue
+            item="${flds[6]}"                               # no non-interactive users
+            [ "$item" = '/usr/sbin/nologin' ] && continue
+            [ "$item" = '/usr/bin/false' ] && continue
+            [ "$item" = '/bin/false' ] && continue
+        fi
+        item="${flds[3]}" ; item="${gmap[$item]}"
+        printf -v item "$frmt" "${flds[0]}" "${flds[2]}" "$item" "${flds[3]}" "${flds[5]}"
+        rows+=("$item")
+    done
+    extsort -i rows -a rows -u                              # unique entries only
+    do_table -w 80 -h "$head" -i rows
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> [<argument>]
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    -a|--all)
+        optarg 'all'        -       -f ;;       # flag
+
+    -D|--del*)
+        optarg 'delete'     -       -f ;;       # flag
+    -F|--fol*)
+        optarg 'folder'     -       -t ;;       # text
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    a*4|a*6|r*4|r*6)
+        invoke    'network'    - 0 + "$@" ;;
+    arc*)
+        invoke -r 'archive'    - 0 1 ;;
+    cro*)
+        invoke -r 'cron'       - 0 ;;
+    dis*)
+        invoke    'disk'       - 0 1 ;;
+    env*)
+        invoke    'envir'      - 0 1 ;;
+    fin|find)
+        invoke    'find'       - 1 ;;
+    ind*)
+        invoke -r 'index'      - 0 1 ;;
+    man*)
+        invoke -s 'manifest'   - 0 1 ;;
+    mot*)
+        invoke    'motd'       - 0 1 ;;
+    mou*)
+        invoke    'mount'      - 0 1 ;;
+    sys*)
+        invoke -s 'syslog'     - 0 + ;;
+    use*)
+        invoke    'users'      - 0 ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -o - \
+        -o '-a --all'             $"show all availlable data" \
+        -o '-D --delete'          $"action find: delete matched files" \
+        -o '-F --folder'          $"action find: start folder" \
+
+    usageset \
+        -a 'cron'                 $"do some housekeeping (archive, index and manifest)" \
+        -a 'find    <expr>'       $"find file, optionally delete (see --delete)" \
+        -a - \
+        -a $"••• HTML file creation •••" \
+        -a - \
+        -a 'archive [-|<domain>] '$"archived.html or autosave.html ('-' for autosave)" \
+        -a 'index   [<file>]'     $"build the index.html frontpage" \
+        -a 'manifest [<file>]'    $"create a manifest file" \
+        -a - \
+        -a $"••• information display •••" \
+        -a - \
+        -a 'disks   [all|drives] '$"show disk usage (detailed)" \
+        -a 'envir   [<glob>]'     $"show environment variables (optional glob filter)" \
+        -a 'motd    [disk]'       $"show disk usage (in /etc/motd format)" \
+        -a 'mounts  [all|drives] '$"show mounted disk partions" \
+        -a 'syslog  [--- -b|-f|-t] [-g] [<expr>]' \
+        -a -                      $"show journalctl output" \
+        -a 'users'                $"show real users (same as 'centaurildap users')" \
+        -a - \
+        -a $"••• network •••" \
+        -a - \
+        -a 'addr4|6  <iarg>...'   $"list IPv4/6 adresses using 'ip addr list ...'" \
+        -a 'route4|6 <iarg>...'   $"list IPv4/6 routes using 'ip route list ...'" \
+
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

@@ -1,0 +1,3 @@
+#!/bin/bash
+[ "$2" -ef "/boot/initrd.img" ] || exit 0
+/var/centauri/tools/centauriefilinux hook update

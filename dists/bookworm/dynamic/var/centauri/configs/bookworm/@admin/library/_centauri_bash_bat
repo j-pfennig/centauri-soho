@@ -1,0 +1,368 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_bat = centauri-bash-lib: Batch job support
+#
+# Call:     . _centauri_bash_bat [-b|-l|-n]
+#
+# Options:  -b  enable batch only
+#           -l  enable logfile only
+#           -n  disable all (batch and logfile), no module init
+#
+#+This module adds the --batch and --logfile options to a script, depending
+# on the module options described above. The module load options are relevant
+# for command line option parsing and --help output only. Manual initialization
+# via [[batchmode()]] and [[logfile()]] is always possible.
+#
+#+The [[main()]] function will automatically invoke the [[batchmode()]] function
+# to run a script in batch mode.  This behaviour can be overriden, see
+# [[batchmode()]] or the CEN_BAT_STATE variable.
+#
+#+By default, when no module options are given, the variables CEN_BAT_BATCH
+# (enable batch) and CEN_BAT_LOGFILE (enable logfile) are set. These can be
+# used or set by a script as needed.
+#
+# Modes:    The command line option --batch controls the run mode:
+#
+#           --batch=echo        # don't run, just print command
+#           --batch=none        # (default) run in foreground
+#           --batch=nohup       # run using the 'nohup' program
+#           --batch=batch       # run using the 'batch' program
+#
+# Logging:  The batch output is controlled by the --logfile option:
+#
+#           --logfile=<file>    # log to <file>
+#           --logfile=**-**     # no logging at all
+#           --logfile=**+**     # (default) use $CEN_NAME.log as <file>
+#
+# Copyright Dr. J. Pfennig (c) 2017-2024
+# ------------------------------------------------------------------------------
+
+CEN_MODULES['_centauri_bash_bat']='0.12:2'
+
+embed -c '_centauri_bash_utl'   # import on demand, see timer()
+
+CEN_OPT_BATCH=                  # see --batch
+CEN_OPT_LOGFILE=                # see --logfile
+
+CEN_BAT_STATE=                  # see batchmode()
+CEN_BAT_COMMANDS=()
+
+CEN_BAT_BATCH=1                 # enable batch
+CEN_BAT_LOGFILE=1               # enable logfile
+
+# ------------------------------------------------------------------------------
+# batchmode - handle batch processing
+#
+# Call:     batchmode -c|-i|-r <arg>...
+#
+# Options:  -c  explicitly set batch arguments
+#           -i  enable batch, used by [[options()]] or [[actions()]]
+#           -r  run it, used by [[quit()]] callback
+#
+# Variable: CEN_BAT_STATE=          # no batch command queued
+#           CEN_BAT_STATE="init"    # command queued
+#           CEN_BAT_STATE="run"     # about to execute
+#           CEN_BAT_STATE="done"    # command executed (or error)
+#
+#+Batches can be implicit (the user script does nothing) or explicit. For the
+# later the user script must call "batchmode°-c" with arguments at the end
+# of option processing -or- start of action processing -or- set CEN_BAT_STATE
+# to an non-empty value.
+#
+#+Batches are always run from the quit callback. When the user script did not call
+# "batchmode°-c" or set CEN_BAT_STATE before action processing starts (or [[run()]]
+# gets called), a [[quit()]] call is made by this code.
+#
+#+The quit callback checks if commands where queued (via ''"''**batchmode -c** <cmd>''"'').
+# If not the original script call is added as command. The queue is then executed
+# via **/usr/bin/nohup** or **/usr/bin/at**.
+#
+#+Warning:  Script options passed to **batchmode -c** must have long names and must use
+#           the **=** syntax for values (examples: --hello **--color=green**).
+#
+# Example:  Registering explicit batch commands (using verb dispatching)
+#.          options() {
+#.              case "$1" in
+#.
+#.              # end of option parsing, register batch commands
+#.              "")
+#.                  if [ "${CEN_OPT_BATCH:-none}" != 'none' ] ; then
+#.                      batchmode -c -- --number=3 one 1
+#.                      batchmode -c one 2 -- two tick tack
+#.                  fi ;;
+#.
+#.              # more options ...
+#.
+#.              esac
+#.          }
+# ------------------------------------------------------------------------------
+batchmode() {
+
+    # helper to start a batch (used to redirect output)
+    _cen_bat_launch() {
+        if [ "$CEN_OPT_BATCH" = 'none' ] ; then
+            embed "${args[@]}" 2>&1
+        elif [ "$CEN_OPT_BATCH" = "nohup" ] ; then
+            system -e nohup "${args[@]}" 2>&1 &
+        elif [ "$CEN_OPT_BATCH" = "batch" ] ; then
+            system -e -p batch <<!EOF
+${args[@]}
+!EOF
+        else
+            echo "${args[@]}"
+        fi
+    }
+
+    # helper to add options to args()
+    _cen_bat_addopts() {
+        for item in "$@" ; do
+            [ "${item::2}" = "--" ] || continue     # skip non-option
+            [ "$item" = "---" ] && return           # end of options
+            [ "$item" = "--" ]  && continue         # skip verb separator
+            [ "${item::7}" = "--batch"  ] && continue
+            [ "${item::6}" = "--wait"   ] && continue
+            [ "${item::8}" = "--dryrun" ] && continue
+            [ "${item::8}" = "--logfil" ] && continue
+            _cen_bat_quote
+        done
+    }
+
+    # helper to add arguments to args()
+    _cen_bat_addargs() {
+        local flit
+        for item in "$@" ; do
+            case "$item" in
+                --)  ;;
+                ---) flit=1 ;;
+                --*) [ -z "$flit" ] && continue ;;
+            esac
+            _cen_bat_quote
+        done
+    }
+
+    # helper to quote commands (for batch and echo)
+    _cen_bat_quote() {
+        if [ "$CEN_OPT_BATCH" != "nohup" -a "$CEN_OPT_BATCH" != "batch" ] ; then
+            item="${item//\\/\\\\}" ; item="${item// /\\ }"
+            item="${item//\'/\\\'}" ; item="${item//\"/\\\"}"
+        fi
+        args+=("$item")
+    }
+
+    # run command (batch and nohup)
+    _cen_bat_runit() {
+        echo "[running]" $(date +"%Y-%m-%d %T") "*> $1 ${@:3}"
+        "$1" "${@:3}"
+        local stat="$?" ; [ "$stat" = 0 ] || error -s "$stat"
+        echo "[status] " $(date +"%Y-%m-%d %T") "*> $stat"
+    }
+
+    # --- batchmode ---
+
+    local _optc _opti _optr _logf
+    while [ "${1::1}" = '-' ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -c)   _optc=1 ;;
+        -i)   _opti=1 ;;
+        -r)   _optr=1 ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+
+    # handle batch commands
+
+    [ -z "$CEN_OPT_BATCH" ] && CEN_OPT_BATCH='none'
+
+    if [ -n "$_optc" ] ; then
+        [ "$CEN_OPT_BATCH" = 'none' ] &&
+            fatal -p $"Call to '%s' without '--batch'" "${FUNCNAME[0]}"
+        [ "$#" = 0 ] && return
+        [ "${#CEN_BAT_COMMANDS[@]}" = 0 ] || CEN_BAT_COMMANDS+=("--")
+        CEN_BAT_COMMANDS+=("$@")
+        CEN_BAT_STATE= ; return
+    fi
+    [ "$CEN_OPT_BATCH" = 'none' -a "${CEN_OPT_LOGFILE:--}" = '-' ] && return
+
+    if [ -n "$_opti" ] ; then
+        if ! error -t ; then
+            CEN_BAT_STATE="done" ; return
+        fi
+
+        # must enable quit callback
+        CEN_BAT_BATCH=1
+
+        # reinvokation with --batch=@
+        if [ "${CEN_OPT_BATCH::1}" = "@" ] ; then
+            CEN_BAT_STATE="done"
+            _logf="${CEN_OPT_BATCH##*@}"
+            if [ "${_logf:--}" = '-' ] ; then
+                _cen_bat_runit "$0" "${CEN_CMDOPTS[@]}" "${CEN_CMDARGS[@]}"
+            else
+                _cen_bat_runit "$0" "${CEN_CMDOPTS[@]}" "${CEN_CMDARGS[@]}" 2>&1 | tee -a "$_logf"
+            fi
+            quit
+        fi
+
+        # do the real init here...
+        $CEN_TRACE -a "batchmode [init] state=${CEN_BAT_STATE:--}"
+        system -f -c batch nohup tee
+
+        if [ -z "$CEN_BAT_STATE" ] ; then
+            CEN_BAT_STATE="init"
+            _logf="${CEN_OPT_LOGFILE:--}"
+            if [ "$_logf" = '-' ] ; then
+                [ "$CEN_OPT_BATCH" = 'echo' -o "$CEN_OPT_BATCH" = 'none' ] && quit
+                quit -a -p $"Running in batchmode as '%s'" "$CEN_OPT_BATCH"
+            else
+                [ "$CEN_OPT_BATCH" = 'echo' -o "$CEN_OPT_BATCH" = 'none' ] &&
+                    quit -a -p $"Output redirected, logfile='%s'" "$_logf"
+                quit -a -p $"Running in batchmode as '%s', logfile='%s'" "$CEN_OPT_BATCH" "$_logf"
+            fi
+        fi
+        CEN_BAT_STATE="init"
+
+    elif [ -n "$_optr" ] ; then
+        $CEN_TRACE -a "batchmode [run] state=${CEN_BAT_STATE:--}"
+        [ "$CEN_BAT_STATE" = "init" ] && CEN_BAT_STATE="run"
+
+    else
+        _cen_abort =                                # missing option
+    fi
+
+    # handle batch execution ...
+
+    [ "$CEN_BAT_STATE" = 'run' ] || return
+    CEN_BAT_STATE='done'
+
+    # option/argument processing
+    local item="$0" args=() ; _cen_bat_quote
+    [ "$CEN_OPT_BATCH" = 'batch' ] && args+=("--batch=@$CEN_OPT_LOGFILE")
+    [ "$CEN_OPT_BATCH" = 'nohup' ] && args+=('--batch=@')
+    [ -n "$CEN_FEATURE_Y" -a -z "$CEN_YESNO" ] && args+=('--yes')
+
+    if [ ${#CEN_BAT_COMMANDS[@]} = 0 ] ; then       # explicit args
+        _cen_bat_addopts "${CEN_CMDOPTS[@]}"
+        _cen_bat_addargs "${CEN_CMDARGS[@]}"
+    else                                            # use initial args
+        _cen_bat_addopts "${CEN_BAT_COMMANDS[@]}"
+        _cen_bat_addargs "${CEN_BAT_COMMANDS[@]}"
+    fi
+
+    # lauch batch
+    if [ -n "$CEN_OPT_DRYRUN" -o "${CEN_OPT_LOGFILE:--}" = '-' ] ; then
+        _cen_bat_launch
+    else
+        _cen_bat_launch >> "$CEN_OPT_LOGFILE"
+    fi
+    [ -t 1 ] && timer -w 0.1                        # allow batchmode to start
+}
+
+# ------------------------------------------------------------------------------
+# logfile - initialize a logfile to capture batch output
+#
+# Call:     logfile [<file>]
+#
+# Returns:  **true** on success, sets CEN_OPT_LOGFILE to path
+#
+#+This function implements the --logfile option and is usually called
+# automatically by [[options()]] or [[actions()]]. It can be called explicitly
+# to override the default behaviour.
+# ------------------------------------------------------------------------------
+logfile() {
+    local logf="${1:-$CEN_OPT_LOGFILE}"
+    if [ -z "$logf" -a -n "$CEN_OPT_BATCH" ] ; then
+        [ "${CEN_OPT_BATCH::1}" = '@' ] || logf='+'
+        [ "$CEN_OPT_BATCH" = 'echo' -o "$CEN_OPT_BATCH" = 'none' ] && logf=
+    fi
+    [ "$logf" = '+' ] && logf="$CEN_NAME.log"
+    CEN_OPT_LOGFILE="${logf:--}"
+    [ "${CEN_OPT_LOGFILE:--}" = '-' ] && return         # no logfile at all
+
+    # partial log init for batch execution
+    CEN_BAT_LOGFILE=1
+    [ "${CEN_OPT_BATCH::1}" = '@' ] && return
+
+    # exiting logfile?
+    local fapp sbat="$CEN_BAT_STATE" ; CEN_BAT_STATE=
+    if [ -e "$CEN_OPT_LOGFILE" ] ; then
+        confirm -a -q $"Truncate logfile:" "$logf" || fapp=1
+    fi
+    if [ -n "$fapp" ] ; then
+        [ -w "$logf" ] || fatal $"Cannot write logfile:" "$logf"
+    elif ! dryrun $"Create logfile:" "$logf" ; then
+        2>/dev/null >"$logf" || fatal $"Cannot create logfile:" "$logf"
+    fi
+    CEN_BAT_STATE="$sbat"
+}
+
+# ------------------------------------------------------------------------------
+# Hooks
+# ------------------------------------------------------------------------------
+
+# hook for options()
+_cen_bat_option() {
+    $CEN_BAT_HOOK_OPTIONS "$@"
+    case "$1" in
+    "")
+        if [ -n "$CEN_FEATURE_R" ] ; then
+            [ -n "$CEN_BAT_LOGFILE" ] && logfile
+            [ -n "$CEN_BAT_BATCH" ] && batchmode -i
+        fi
+        ;;
+
+    # pass option info to usage module
+
+    --help)
+        [ "$2" = "opts" ] || return                 # ignore unless _cen_usage()
+
+        [ -n "$CEN_BAT_BATCH" ] && _cen_use_option "-b" "--batch   <brun>" \
+                        $"run in batchmode (<brun>:=echo|batch|nohup|none)"
+        if [ -n "$CEN_BAT_LOGFILE" ] ; then
+            local _mesg ; printf -v _mesg \
+                $"logfile (use - to disable, + for %s)" "${CEN_NAME##*/}.log"
+            _cen_use_option "-l" "--logfile <file>" "$_mesg"
+        fi ;;
+
+    # options added by this module
+
+    -b|--bat*)
+        [ -n "$CEN_BAT_BATCH" ] && optarg "batch" - "echo|batch|nohup|none|@.*" ;;
+    -l|--log*)
+        [ -n "$CEN_BAT_LOGFILE" ] && optarg "logfile" - -t ;;
+    esac
+}
+
+# hook for actions()
+_cen_bat_action() {
+    $CEN_BAT_HOOK_ACTIONS "$@"
+    [ -z "$CEN_ACTION" ] || return
+    [ -n "$CEN_BAT_LOGFILE" ] && logfile
+    [ -n "$CEN_BAT_BATCH" ] && batchmode -i
+}
+
+# called by quit()
+_cen_bat_quit() {
+    [ -n "$CEN_BAT_BATCH" ] && error -t && batchmode -r
+}
+
+# ------------------------------------------------------------------------------
+# Startup: [-b|-l|-n]
+# ------------------------------------------------------------------------------
+
+if [ "$1" = "-b" ] ; then           # batch only
+    CEN_BAT_LOGFILE=
+elif [ "$1" = "-l" ] ; then         # logfile only
+    CEN_BAT_BATCH=
+elif [ "$1" = "-n" ] ; then         # do not init
+    CEN_BAT_BATCH=
+    CEN_BAT_LOGFILE=
+    return 0
+fi
+
+# register option/action hooks
+CEN_BAT_HOOK_OPTIONS="$CEN_HOOK_OPTIONS" ; CEN_HOOK_OPTIONS='_cen_bat_option'
+CEN_BAT_HOOK_ACTIONS="$CEN_HOOK_ACTIONS" ; CEN_HOOK_ACTIONS='_cen_bat_action'
+
+:
+# end

@@ -1,0 +1,1937 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
+CEN_TITLE="Manage network configuration files, resolv.conf and routing"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a - '0.56:2' || exit 2
+
+# Import the net library, don't read config
+embed -m _centauri_bash_net -n
+
+# Data
+                    # invalid host (reject route)
+CEN_NET_REJECT_HOST=(bad-host 10.255.255.1)
+DAT_CONFIG_LINES=   # lines in config file
+DAT_LIST=           # see 'validate list'
+                    # helper lookup tables
+declare -A DAT_MAP_ALLOW
+                    # maps for IP-Addr Mac-Addr Host-Name
+declare -A DAT_MAP_IP DAT_MAP_MAC DAT_MAP_NAME
+
+                    # see do_override() ...
+DAT_OVERRIDE="$CEN_ROOT/persistent/$CEN_NAME-override"
+DAT_OVER_RESOLV=
+DAT_OVER_GATEWAY=
+
+# Data for extra options
+CEN_OPT_CONFIG="/etc/default/$CEN_NAME"
+CEN_OPT_KEEP=       # see --keep
+CEN_OPT_NOREST=     # see --norestart
+CEN_OPT_OUTPUT=     # see --output, '-' for stdout or an existing folder
+CEN_OPT_ROUTER=     # see --router
+CEN_OPT_SERVER=     # see --server
+
+export CEN_SVC_SYSLOG       # actual logging mode (environment import)
+
+# private ports, see load_ports()
+DAT_PORT_SECR=
+DAT_PORT_ADNS=
+DAT_PORT_HTTP=
+DAT_PORT_HTTPS=
+
+# set umask to give all created files 0644 protection
+umask 022
+
+# ------------------------------------------------------------------------------
+# Config tests
+# ------------------------------------------------------------------------------
+# Test if host name is a server: <host>
+is_server() {
+    local name
+    for name in "${CEN_NET_SERVERS[@]}" ; do
+        [ "$1" = "$name" ] && return 0
+    done
+    return 1
+}
+
+# Test if host name is a router: <host>
+is_router() {
+    local name
+    for name in "${CEN_NET_ROUTERS[@]}" ; do
+        [ "$1" = "$name" ] && return 0
+    done
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# Get/check network and netmask for an ip4 addr: <addr>[/<mask>] | <addr>[/bits>]
+# ------------------------------------------------------------------------------
+#   mask_find                   # use base network, get network mask
+#   mask_find <addr>/<mask>     # subnet, check mask
+#   mask_find <add> <mask>      # ...
+# ------------------------------------------------------------------------------
+_mask_find_mask=        # network mask in dot notation
+_mask_find_bits=        #         mask bits
+_mask_find_base=        #         non-masked address, binary
+_mask_find_abit=        #         binary address
+_mask_find_mbit=        #         binary mask
+mask_find() {
+    # base network
+    if [ -z "$1" ] ; then
+        netparse -a -b "$CEN_NET_NETWORKS" || return 1
+        _mask_find_bits="$_netparse_bits"
+        _mask_find_mask="$_netparse_mask"
+        _mask_find_mbit=$((-1 << (32 - _mask_find_bits)))
+        netconv -b -- "$_netparse_addr"
+        _mask_find_abit="$_netconv"
+        _mask_find_base=$((_mask_find_abit & _mask_find_mbit))
+        [ "$((_mask_find_abit & ~_mask_find_mbit))" = 0 ] || return 1
+        return 0
+    fi
+
+    # sub-net check
+    if [ $# = 2 ] ; then
+        _netparse_addr="$1" ; [ -z "$2" ] && return 1
+    else
+        netparse -a -b "$1" || return 1
+    fi
+    netconv -b -- "$_netparse_addr"
+    [ "$((_netconv & _mask_find_mbit))" = "$_mask_find_abit" ] || return 1
+    return 0
+}
+
+mask_check() {
+    if [ -z "$_mask_find_base" ] ; then
+        ___error "No valid 'network' statement seen" ; return 1
+    fi
+    netparse -a "$1" || return 1
+    local mbit=$((-1 << (32 - _mask_find_bits)))
+    netconv -b -- "$_netparse_addr"
+    local abit="$_netconv"
+    if [ "$((abit & mbit))" != "$_mask_find_base" ] ; then
+        ___error "address not in base network:" "$1"
+        return 1
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Get address method: <host>
+# ------------------------------------------------------------------------------
+addr_meth() {
+    # explicit host given, ignore '*'
+    if   netoption -x 'manual' "$1" ; then  CEN_NET_ADDR_METHOD='manual'
+    elif netoption -x 'static' "$1" ; then  CEN_NET_ADDR_METHOD='static'
+    elif netoption -x 'nm'     "$1" ; then  CEN_NET_ADDR_METHOD='nm'
+    elif netoption -x 'auto'   "$1" ; then  CEN_NET_ADDR_METHOD='auto'
+    # use the fallback default (e.g. *)
+    elif netoption    'static' "$1" ; then  CEN_NET_ADDR_METHOD='static'
+    elif netoption    'nm'     "$1" ; then  CEN_NET_ADDR_METHOD='nm'
+    elif netoption    'auto'   "$1" ; then  CEN_NET_ADDR_METHOD='auto'
+    # nothing at all, same as 'manual'
+    else                                    CEN_NET_ADDR_METHOD='manual'
+    fi
+    trace -a -c "Address method" "$CEN_NET_ADDR_METHOD"
+}
+
+# ------------------------------------------------------------------------------
+# Get list of IP4 addresses for a host: <host>
+# ------------------------------------------------------------------------------
+addr_list() {
+    local host="${1%[-_][0-9]}" addr
+    CEN_NET_ADDR_IPLIST=()
+    if [ "$1" != "$host" ] ; then
+        warning "Hostname '$1' should be '$host' [no interface suffix]"
+        return 1
+    fi
+
+    # hostname should have the logical address
+    nethost "$host" || return 1
+    CEN_NET_ADDR_IPLIST+=("$_nethost_ip")
+
+    # add interface addresses
+    for addr in "${CEN_NET_HOSTS[@]}" ; do
+        set -- $addr ; shift
+        addr="${2%%.*}"
+        [ "$addr" = "$host" ] && continue
+        addr="${2%[-_][0-9]}"
+        [ "$addr" = "$host" ] && CEN_NET_ADDR_IPLIST+=("$1")
+    done
+
+    [ "$_nethost_mac" != '-' -a -n "${CEN_NET_ADDR_IPLIST[1]}" ] &&
+        warning "The logical '$host' address should not have a MAC value"
+}
+
+# ------------------------------------------------------------------------------
+# get private port via getent: <name> <vari> [<dflt>]
+# ------------------------------------------------------------------------------
+load_port() {
+    local -n _vdns="$2"
+    [ -n "$_vdns" ] && return
+    local _aprt
+    system -q -r -s _aprt -- getent services "$1"
+    if [ -z "$_aprt" ] ; then
+        [ -z "$3" ] && return
+        _vdns="$3"
+        warning "Could not retrieve '$1' port, using port" "$_vdns"
+    else
+        _vdns="${_aprt##* }" ; _vdns="${_vdns//[!0-9]*/}"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Write config cache file: [<domain>]
+# ------------------------------------------------------------------------------
+do_coca() {
+    ___array() {
+        local name="$1" ; shift
+        local list="'$1'" ; shift
+        local aelt
+        for aelt in "$@" ; do
+            list+=" '$aelt'"
+        done
+        echo "$name=($list)"
+    }
+
+    local domn="${1:-$CEN_NET_DOMAIN}"
+    local ddir="$CEN_ROOT/persistent"
+    [ "$CEN_OPT_OUTPUT" = '.' ] && ddir="$CEN_OPT_OUTPUT$ddir"
+    resolve -m -- "$ddir" && folder -m -- "$CEN_RESOLVE" 775
+    [ "$domn" = '-' ] && return
+
+    [ "$domn" = "$CEN_NET_DOMAIN" ] || \
+        warning -a "Overriding domain: '$CEN_NET_DOMAIN'  =>  '$domn'"
+
+    local radr
+    [ -n "$CEN_NET_ROUTER_DEF" ] && radr="${DAT_MAP_IP[$CEN_NET_ROUTER_DEF]}"
+
+    load_port 'centauriadns'    DAT_PORT_ADNS  5354
+    load_port 'centaurisecrets' DAT_PORT_SECR    95
+    load_port 'centaurihttp'    DAT_PORT_HTTP  3128
+    load_port 'centaurihttps'   DAT_PORT_HTTPS "$DAT_PORT_HTTPS"
+
+    if [ -z "$CEN_NET_PREFIX_IP6" ] ; then
+        CEN_NET_PREFIX_IP6="${CEN_NET_PREFIX_IP6_DFLT%/*}/$((128 - $_mask_find_bits))"
+        trace -a -c "ipv6 prefix" "$CEN_NET_PREFIX_IP6"
+    fi
+
+    netfile -h -- "$CEN_NET_FILE_CONF" <<!EOF
+CEN_NET_DOMAIN='$domn'
+CEN_NET_WIRELESS='$CEN_NET_WIRELESS'
+CEN_NET_PUBLIC='$CEN_NET_PUBLIC'
+
+$(___array CEN_NET_REJECT_HOST "${CEN_NET_REJECT_HOST[@]}")
+
+CEN_NET_SERVER_GEN='$CEN_NET_SERVER_GEN'
+
+CEN_NET_ROUTER_GEN='$CEN_NET_ROUTER_GEN'
+CEN_NET_ROUTER_DEF='$CEN_NET_ROUTER_DEF'
+CEN_NET_ROUTER_IP4='$radr'
+
+CEN_NET_PREFIX_IP6='$CEN_NET_PREFIX_IP6'
+
+CEN_NET_NETMASK='$_mask_find_mask'
+CEN_NET_NETBITS='$_mask_find_bits'
+
+$(___array CEN_NET_ADDR_IPLIST "${CEN_NET_ADDR_IPLIST[@]}")
+CEN_NET_ADDR_METHOD='$CEN_NET_ADDR_METHOD'
+
+$(___array CEN_NET_NETWORKS "${CEN_NET_NETWORKS[@]}")
+$(___array CEN_NET_SERVERS  "${CEN_NET_SERVERS[@]}")
+$(___array CEN_NET_ROUTERS  "${CEN_NET_ROUTERS[@]}")
+$(___array CEN_NET_FILTERS  "${CEN_NET_FILTERS[@]}")
+
+$(___array CEN_NET_OPTIONS  "${CEN_NET_OPTIONS[@]}")
+
+$(___array CEN_NET_HOMEDNS  "${CEN_NET_HOMEDNS[@]}")
+
+$(___array CEN_NET_HOSTS    "${CEN_NET_HOSTS[@]}")
+$(___array CEN_NET_IFACES   "${CEN_NET_IFACES[@]}")
+
+$(___array CEN_NET_FAKES    "${CEN_NET_FAKES[@]}")
+
+CEN_NET_PORT_SECR=$DAT_PORT_SECR
+CEN_NET_PORT_ADNS=$DAT_PORT_ADNS
+CEN_NET_PORT_HTTP=$DAT_PORT_HTTP
+CEN_NET_PORT_HTTPS=$DAT_PORT_HTTPS
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Parse configuration file: [-c|-v|-u] [<hostname> [<domain>]]
+# ------------------------------------------------------------------------------
+do_config() {
+    # options parsing
+    local optc optu optv
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -c)   optc=1 ;;                       # create cache file
+      -u)   optu=1 ;;                       # update cache file if needed
+      -v)   optv=1 ;;                       # validate, force config parsing
+      *)    fatal "Bad 'do_config' argument: $1"
+      esac ; shift
+    done
+
+    if [ -n "$optu" ] ; then
+        if ! [ "$CEN_OPT_CONFIG" -nt "$CEN_NET_FILE_CONF" ] ; then
+            netconfig && return 0
+        fi ; optc=1
+    fi
+    [ -n "$CEN_NET_DOMAIN" -a -z "$optv" ] && return 0  # already parsed
+
+    # setup vars
+    local host="${1:-$HOSTNAME}" domn="$2"
+    local keyw args curr hdns=()
+    DAT_CONFIG_LINES=0
+    # reserved host names
+    DAT_MAP_IP=([local]=+ [guest]=+ [client]=+ [master]=+ [slave]=+)
+    DAT_MAP_MAC=() ; DAT_MAP_NAME=() ; DAT_MAP_ALLOW=()
+    # map for filter
+    local -A mflt
+
+    [ -r "$CEN_OPT_CONFIG" ] || fatal "Cannot read configuration: $CEN_OPT_CONFIG"
+    CEN_NET_PREFIX_IP6=
+
+    # --------------------------------------------------------------------------
+    # local helpers
+    # --------------------------------------------------------------------------
+
+    ___error() {
+        error "$* [line $DAT_CONFIG_LINES]"
+        message -i "$keyw $args" ; return 1
+    }
+
+    ___message() {
+        [ -z "$DAT_LIST" ] && return 0
+#        message -a -p -- "$@" ; return 0
+        local frmt="    $1\n" ; shift
+        printf "$frmt" "$@"
+    }
+
+    # check for valid address (not netmask bits)
+    ___arg_address() {
+        netparse -a -- "$1" && return 0
+        _netparse_addr='0.0.0.0' ; _netparse_bits=0 ; _netparse_mask='0.0.0.0'
+        ___error "Invalid ip address: $1" ; return 1
+    }
+
+    # check for valid network (need netmask bits)
+    ___arg_network() {
+        netparse -a -b -- "$1" && return 0
+        _netparse_addr='0.0.0.0' ; _netparse_bits=0 ; _netparse_mask='0.0.0.0'
+        ___error "Invalid ip network: $1" ; return 1
+    }
+
+    # check arg count range: <cnt> <min> <max> <name>
+    ___arg_rng_chk() {
+        if   [ "$1" -lt "$2" ] ; then
+            ___error "Not enough arguments: got $1 (min $2): $4"
+        elif [ "$1" -gt "$3" ] ; then
+            ___error "Too many arguments: got $1 (max $2): $4"
+        fi
+    }
+
+    ___arg_min_chk() {
+        [ "$1" -ge "$2" ] && return 0
+        ___error "Not enough arguments: got $1 (min $2): $3"
+    }
+
+    ___arg_max_chk() {
+        [ "$1" -le "$2" ] && return 0
+        ___error "Too many arguments: got $1 (max $2): $3"
+    }
+
+    ___filter_chk_port() {
+        case "$1" in
+        '')     return 0 ;;
+        +|++)   return 0 ;;
+        +:++)   return 0 ;;
+        *:|:*)  ;;
+        *)      case "${1//[0-9]/}" in
+                '')     return 0 ;;
+                :)      return 0 ;;
+                +:)     return 0 ;;
+                :++)    return 0 ;;
+                esac
+        esac
+        ___error "Invalid $2 port: $1" ; return 1
+    }
+
+    ___filter_chk_addr() {
+        [ -z "$1" ] && return 0
+        [ "${1//[0-9]}" = '...' -o "${1//[0-9]}" = '.../' ] && return 0
+        ___error "Invalid destination address: $1" ; return 1
+    }
+
+    # Check filter syntax: <dport>[|<sport>[|<daddr>]]
+    ___filter_chk() {
+        local apar npar
+        splitjoin -s apar -d '|' -- "$1"
+        #$CEN_TRACE2 "filter chk: $1 ${apar[0]}|${apar[1]}|${apar[2]}|${apar[3]}"
+        if [ "${#apar[@]}" -gt 4 ] ; then
+            ___error "Too many fields: $1 (dport|sport|daddr|saddr)"
+        else
+            ___filter_chk_port "${apar[0]}" "destination" &&
+            ___filter_chk_port "${apar[1]}" "source" &&
+            ___filter_chk_addr "${apar[2]}" "destination" &&
+            ___filter_chk_addr "${apar[3]}" "source" && return 0
+        fi
+        return 1
+    }
+
+    # Register a host-name: <name> [<ip>|-|+]  # no arg: reserve name
+    ___mapname() {
+        local snam="${name%%.*}" sdom="${name#*.}"
+        [ "$name" = "$sdom" ] && sdom=
+        if [ -n "${snam//[-_a-zA-Z0-9]/}" ] ; then
+            ___error "Host name is invalid: $1"
+        elif [ "$sdom" = "${CEN_NET_DOMAIN:--}" ] ; then
+            ___error "Host must not specify local domain: $1"
+        elif [  "$2" = '+' ] ; then
+            DAT_MAP_IP[$1]= ; return
+        elif [ "${DAT_MAP_IP[$1]}" = "=" ] ; then
+            ___error "Reserved host name: $1"
+        elif [ -n "${DAT_MAP_IP[$1]}" ] ; then
+            ___error "Duplicated host name: $1"
+        else
+            DAT_MAP_IP[$1]="${2:-=}"
+        fi
+    }
+
+    # Register an ip address: <name> <mac>|- [<ip>|-]
+    ___mapaddr() {
+        # check mac address
+        if [ "${2:--}" = '-' ] ; then
+            :
+        elif [ "${2//[0-9a-fA-F]/}" != ":::::" ] ; then
+            ___error "MAC address not valid"
+        elif [ -z "${DAT_MAP_MAC[$2]}" ] ; then
+            DAT_MAP_MAC[$2]="$1"
+        else
+            ___error "MAC address is used by: ${DAT_MAP_MAC[$2]}"
+        fi
+
+        # check ip address
+        [ "${3:--}" = '-' ] && return
+        if [ -z "${DAT_MAP_NAME[$3]}" ] ; then
+            DAT_MAP_NAME[$3]="$1" ; return
+        fi
+        ___error "IP address is used by: ${DAT_MAP_NAME[$3]}"
+    }
+
+    ___config_allow() {
+        ___arg_min_chk $# 2 "allow" || return 1
+        local what="$1" ; shift
+        local curr="${DAT_MAP_ALLOW[$what]} $*"
+        DAT_MAP_ALLOW[$what]="${curr# }"
+        ___message "%-10s %s %s" 'allow' "$what" "$*"
+    }
+
+    ___config_fake() {
+        ___arg_rng_chk $# 1 1 "fake" || return 1
+        CEN_NET_FAKES+=("$@")
+    }
+
+    ___config_filter() {
+        ___arg_min_chk $# 2 "filter" || return 1
+        local addr what="$1" ; shift
+
+   # TODO backward compatibility
+   [ "$what" = 'rules' ] && what='trusted'
+   [ "$what" = 'wild' ] && what='friend'
+        ___message "%-10s %-7s %s" 'filter' "$what" "$*"
+
+        case "$what" in
+        bypass|deny)
+            ;;
+        accept|drop|trusted|player|friend|alien|trash)
+            local list=()
+            for addr in "$@" ; do
+                if [ -z "${addr//[a-z0-9\[\]\?\*-]/}" ] ; then
+                    list+=("$addr")
+                else
+                    ___arg_address "$addr" ; list+=("$_netparse_addr/$_netparse_bits")
+                fi
+            done
+            set -- "${list[@]}"
+            ;;
+        lit)
+            ;;
+        tcp|udp)
+   # TODO backward compatibility
+   if [ "$1" = 'home' ] ; then
+            what+=" trusted" ; shift
+   elif [ "$1" = 'wild' ] ; then
+            what+=" friend" ; shift
+   else
+            what+=" $1" ; shift
+   fi
+            for addr in "$@" ; do
+                ___filter_chk "$addr" || return 1
+                mflt["$what"]+="$addr "
+            done ; return 0
+            ;;
+        *)
+            ___error "Unknown keyword:" "$what"
+        esac
+        CEN_NET_FILTERS+=("$what $*")
+    }
+
+    ___config_homedns() {
+        ___arg_rng_chk $# 2 3 "homedns" || return 1
+        hdns+=("$1 $2 ${3:-$2}")
+        ___message "%-10s %s %s %s" 'homedns' "$1" "$2" "${3:-$2}"
+    }
+
+    ___config_host() {
+        ___arg_min_chk $# 3 "host" || return 1
+        local maca="$1" ; shift
+        local ip4a="$1" ; shift
+
+        if [ "$ip4a" = '+' ] ; then
+            ip4a="${_netparse_addr##*.}" ; ((ip4a += 1))
+            ip4a="${_netparse_addr%.*}.$ip4a"
+            _netparse_addr="$ip4a"
+        elif [ "$ip4a" != '-' ] ; then
+            ___arg_address "$ip4a" ; ip4a="$_netparse_addr"
+        fi
+
+        local name="$1"
+        if [ "$name" = "$CEN_NET_SERVER_GEN" ] ; then
+            ___mapname "$name" +                    # unlock
+            [ "$#" = 1 ] || ___error "Generic server name cannot be aliased"
+        fi
+
+        for name in "$@" ; do                       # loop over list of names...
+            ___mapname "$name" "$ip4a"
+        done
+        ___message "%-10s %-18s %-18s %s" 'host' "$maca" "$ip4a" "$*"
+        CEN_NET_HOSTS+=("$maca $ip4a $*") ; ___mapaddr "$1" "$maca" "$ip4a"
+        mask_check "$ip4a"
+    }
+
+    ___config_iface() {
+        ___arg_rng_chk $# 3 3 "iface" || return 1
+        case "$1" in
+        eth[01]|wlan[01])   ;;
+        *)      ___error "Invalid interface name: $1"
+        esac
+        case "$3" in
+        -)          ;;                              # stop search
+        en*|wl*)    ;;                              # ethernet/wlan
+        ??:??:??:??:??:??)  ;;                      # mac address
+        *)     [ -n ${3//[a-z0-9-]/} ] && ___error "Invalid interface mapping: $3"
+        esac
+        CEN_NET_IFACES+=("$*")
+        ___message "%-10s %s" 'iface' "$*"
+    }
+
+    ___config_network() {
+    if [ $# = 2 ] ; then
+        ___arg_rng_chk $# 2 2 'network' || return 1
+        ___arg_network "$2"
+        local indx
+        case "$1" in
+        *.*)        indx=0 ; CEN_NET_DOMAIN="$1" ;;
+        *)          netindex "$1" && indx="$_netindex"
+        esac
+
+        if [ -z "$indx" ] ; then
+            ___error "Invalid network name:" "$1"
+        elif [ "$indx" = 0 ] ; then
+            CEN_NET_NETWORKS=("$_netparse_addr/$_netparse_bits")
+            mask_find || ___error "invalid base address/mask:" "$1"
+        elif [ -z "$CEN_NET_NETWORKS" ] ; then
+            ___error "No base network defined:" "$1"
+        elif [ -n "${CEN_NET_NETWORKS[indx]}" ] ; then
+            ___error "Network already defined:" "$1"
+        elif ! mask_find "$_netparse_addr" "$_netparse_bits" ; then
+             ___error "invalid sub-net address/mask:" "$1"
+        else
+            CEN_NET_NETWORKS[indx]="$_netparse_addr/$_netparse_bits"
+        fi
+        ___message "%-10s %-16s %s" 'network' "$1" "$2"
+        return
+    fi
+    ### backward compatibility ...
+        ___arg_min_chk $# 2 'network' || return 1
+        CEN_NET_DOMAIN="$1" ; shift
+        CEN_NET_NETWORKS=()
+        local addr
+        for addr in "$@" ; do
+             ___arg_network "$addr"
+            CEN_NET_NETWORKS+=("$_netparse_addr/$_netparse_bits")
+        done
+        ___message "%-10s %s %s" 'network' "$CEN_NET_DOMAIN" "${CEN_NET_NETWORKS[*]}"
+        mask_find
+    }
+
+    ___config_option() {
+        ___arg_min_chk $# 2 "option" || return 1
+        local what="$1" ; shift
+        CEN_NET_OPTIONS+=("$what $*")
+        ___message "%-10s %s %s" 'option' "$what" "$*"
+    }
+
+    ___config_prefix() {
+        ___arg_rng_chk $# 1 1 "prefix" || return 1
+        CEN_NET_PREFIX_IP6="$1"
+        ___message "%-10s %s" 'prefix' "$1"
+    }
+
+    ___config_public() {
+        ___arg_rng_chk $# 0 1 'public' || return 1
+        CEN_NET_PUBLIC="${1:--}"
+        ___message "%-10s %s" 'public' "$CEN_NET_PUBLIC"
+    }
+
+    ___config_reject() {
+        ___arg_rng_chk $# 2 2 "reject" || return 1
+       if netparse -a -- "$2" ; then
+           CEN_NET_REJECT_HOST=($1 $2)
+       else
+           ___error "Invalid ip address: $2"
+       fi
+        ___message "%-10s %s %s" 'reject' "$1" "$2"
+    }
+
+    ___config_router() {
+        ___arg_rng_chk $# 2 5 "router" || return 1
+        CEN_NET_ROUTER_GEN="$1" ; ___mapname "$1" ; shift
+        CEN_NET_ROUTER_DEF="$1"
+        CEN_NET_ROUTERS=("$@")
+        ___message "%-10s %s %s" 'router' "$CEN_NET_ROUTER_GEN" "$*"
+    }
+
+    ___config_server() {
+        ___arg_rng_chk $# 2 3 "server" || return 1
+        CEN_NET_SERVER_GEN="$1" ; ___mapname "$1" ; shift
+        CFG_SERVER_DEF="$1"
+        CEN_NET_SERVERS=("$@")
+        ___message "%-10s %s %s" 'server' "$CEN_NET_SERVER_GEN" "$*"
+    }
+
+    ___config_wireless() {
+        ___arg_rng_chk $# 0 2 'wireless' || return 1
+        CEN_NET_WIRELESS="${1:--} ${2:--}"
+        ___message "%-10s %s" 'wireless' "$CEN_NET_WIRELESS"
+    }
+
+    # --------------------------------------------------------------------------
+    # parsing
+    # --------------------------------------------------------------------------
+
+    ___reader() {
+        DAT_CONFIG_LINES="${CEN_CONFIGFILE[2]}"
+        args="${1%%#*}" ; keyw="${args%%[[:space:]]*}"
+        [ "$keyw" = "$args" ] && args= || args="${args#*[[:space:]]}"
+        set -f ; set -- $args ; set +f
+        [ "$curr" != "$keyw" ] && ___message ' ' ; curr="$keyw"
+        case "$keyw" in
+            '#'*|"")    continue ;;
+            allow)      ___config_allow   "$@" ;;
+            dhcp)       warning "dhcp statement is obsolete" ;;
+            fake)       ___config_fake    "$@" ;;
+            filter)     ___config_filter  "$@" ;;
+            homedns)    ___config_homedns "$@" ;;
+            host)       ___config_host    "$@" ;;
+            iface)      ___config_iface   "$@" ;;
+            network)    ___config_network "$@" ;;
+            option)     ___config_option  "$@" ;;
+            prefix)     ___config_prefix  "$@" ;;
+            public)     ___config_public  "$@" ;;
+            reject)     ___config_reject  "$@" ;;
+            router)     ___config_router  "$@" ;;
+            server)     ___config_server  "$@" ;;
+            wireless)   ___config_wireless "$@" ;;
+            *)          ___error "Invalid configuration entry" ;;
+        esac
+    }
+    configfile -n "$CEN_OPT_CONFIG" -r ___reader
+    error -t || return
+
+    # general checks ...
+    [ -n "$CEN_NET_DOMAIN" ]  || error   "Missing 'network' statements"
+    [ -n "$CEN_NET_ROUTERS" ] || warning "No 'router' statement"
+    [ -n "$CEN_NET_SERVERS" ] || warning "No 'server' statement"
+    [ -n "$CEN_NET_HOSTS" ]   || error   "Got no 'host' statement"
+    error -t || return
+
+    local name stat
+    # check router ....
+    for name in "${CEN_NET_ROUTERS[@]}" ; do
+        [ -n "${DAT_MAP_IP[$name]}" ] || error "Router '$name' has no host statement"
+    done
+
+    # check server ....
+    for name in "${CEN_NET_SERVERS[@]}" ; do
+        [ -n "${DAT_MAP_IP[$name]}" ] || error "Server '$name' has no host statement"
+    done
+
+    # handle --server and --router options
+    if [ -n "$CEN_OPT_ROUTER" ] ; then
+        is_router "$CEN_OPT_ROUTER" || error "Option --router: not a router: $CEN_OPT_ROUTER"
+        CEN_NET_ROUTER_DEF="$CEN_OPT_ROUTER"
+    fi
+    if   [ "$CEN_OPT_SERVER" = '-' ] ; then
+        CFG_SERVER_DEF=
+    elif [ -n "$CEN_OPT_SERVER" ] ; then
+        is_server "$CEN_OPT_SERVER" || error "Option --server: not a server: $CEN_OPT_SERVER"
+        CFG_SERVER_DEF="$CEN_OPT_SERVER"
+    fi
+
+    # fixup homdns
+    local ndef hdef opts ohst
+    CEN_NET_HOMEDNS=()
+    for args in "${hdns[@]}" ; do
+        set -f ; set -- $args ; set +f
+        name="${3%%.*}"
+
+        # handle nameserver argument
+        if [ "${2//[0-9]/}" = "..." ] ; then    # ip4 address
+            args="$2"
+        elif [ "$2" != '-' ] ; then
+            args="${DAT_MAP_IP[${2%%.*}]}"
+            if [ -z "$args" ] ; then
+                error "homedns $*: '$2' is not a host"
+                continue
+            fi
+        fi
+
+        # handle server argument and add config entry
+        if nethost "$name" ; then
+            name="$_nethost_name"
+        elif [ "${name%%.*}" != "$CEN_NET_SERVER_GEN" ] ; then
+            warning "homedns $*: '$3' is no configured host"
+        fi
+        if [ "$1" = "$CEN_NET_DOMAIN" ] ; then
+            [ "${name%%.*}" = "$CEN_NET_SERVER_GEN"   ] && ndef=1
+            [ "${name%%.*}" = "${CEN_NET_SERVERS[0]}" ] && ndef=1
+            [ "${name%%.*}" = "${CEN_NET_SERVERS[1]}" ] && ndef=1
+        fi
+        [ "${name%%.*}" = "$name" ] && name+=".$CEN_NET_DOMAIN"
+        CEN_NET_HOMEDNS+=("$1 $args $name")
+    done
+
+    # homedns default rules
+    if [ -z "$ndef" ] ; then
+        hdef=()
+        for name in "${CEN_NET_SERVERS[@]}" - ; do
+            if [ "${name:--}" = '-' ] ; then
+                name="$CEN_NET_ROUTER_DEF"
+                [ -z "$name" ] && continue
+            else
+                netoption "dns" "$name" || continue
+            fi
+            args="${DAT_MAP_IP[$name]}"
+            [ -n "$args" ] &&
+                hdef+=("$CEN_NET_DOMAIN $args $CEN_NET_SERVER_GEN.$CEN_NET_DOMAIN")
+        done
+        CEN_NET_HOMEDNS=("${hdef[@]}" "${CEN_NET_HOMEDNS[@]}")
+    fi
+
+    # add firewall rules to filters
+    for name in "${!mflt[@]}" ; do
+        CEN_NET_FILTERS+=("$name ${mflt[$name]% }")
+    done
+
+    # write config cache
+    [ -z "$optv" ] && error -q                  # config errors are fatal
+    addr_meth "$host"
+    addr_list "$host"
+    [ -n "$optc" ] && do_coca "$domn"           # write config file
+}
+
+# ------------------------------------------------------------------------------
+# Link /etc/hosts: [-f] <target>
+#
+# Options:  -f      force nameservice restart (implied if link changes)
+# ------------------------------------------------------------------------------
+do_link() {
+    [ "$CEN_OPT_OUTPUT" = '-' ] && return
+
+    local nscd
+    if [ "$1" = "-f" ] ; then
+        nscd=1 ; shift
+    fi
+
+    local base="/etc/hosts"
+    [ -n "$CEN_OPT_OUTPUT" -a "$CEN_OPT_OUTPUT" != '.' ] &&
+        base="$CEN_OPT_OUTPUT/hosts"
+
+    if netlink -m -k "$base" "_" "$1" ; then
+        [ -n "$_netlink" ] && message "Hosts config switched to: $1"
+    elif [ -z "$CEN_OPT_KEEP" ] ; then
+        netlink -m -k "$base" "_" 'local'
+        warning "Hosts config switched to: local ('$1' not found)"
+    fi
+
+    [ -n "$_netlink" ] && nscd=1
+    [ -z "$CEN_OPT_OUTPUT" -a -n "$nscd" ] && do_restart -c nscd
+}
+
+# ------------------------------------------------------------------------------
+# Write the /etc/hosts_xxxx file: servers/routers/hosts <hostname> <mode>
+# ------------------------------------------------------------------------------
+do_hosts() {
+    local igen host="${1:-$HOSTNAME}" ; shift
+    nethost "$CEN_NET_SERVER_GEN"
+    [ "${_nethost_ip:--}" != '-' ] && igen="$_nethost_ip"
+
+    local self nov6
+    [ -n "${DAT_MAP_IP[$host]}" ] || self=" $host"
+    netoption 'ipv6' "$host" || nov6='#'
+
+    local lnam                                  # to insert separator lines
+    local smas="master" sslv="slave"
+
+    # write a host entry: <ip> <name>...
+    ___hosts_writer() {
+        [ "${1:--}" = '-' -o -z "$2" ] && return    # need at least ip and one name
+        printf "%-25s " "$1" ; shift
+        local name
+        for name in "$@" ; do
+            [ -z "$name" ] && continue
+            if [ "${name#*.}" = "$name" ] ; then
+                printf "%-24s %-10s " "$name.$CEN_NET_DOMAIN" "$name"
+            else
+                printf "%-24s " "$name"
+            fi
+        done
+        echo
+    }
+
+    # generate host entry: <mac> <ipv4> <host> [<alias>...]
+    ___hosts_entry() {
+        local maca="$1" ; shift
+        local ip4a="$1" ; shift
+        local bnam="${1%-[0-9]}"                 # base name, strip suffix
+
+        if [ "$maca" = '-' ] && netoption "mdns" "$1" ; then
+            printf "#%-24s %-24s %s\n" "$ip4a" "$bnam" "(using mdns)"
+            return
+        fi
+
+        # the host has ip6v
+        if netoption 'ipv6' "$1" ; then
+            if [ "$bnam" != "$lnam" ] && [ -n "$bnam" ] ; then
+                lnam="$bnam" ; echo " "
+            fi
+            ___hosts_writer "$ip4a" "$@"
+            netconv -u -- "$ip4a" && ___hosts_writer "$_netconv" "$@"
+
+        # is ipv4 only
+        else
+            [ "$lnam" != '-' ] && echo " " ; lnam='-'
+            ___hosts_writer "$ip4a" "$@"
+        fi
+    }
+
+    # Generate a filtered host list: servers|routers|hosts
+    ___hosts_hostlist() {
+        local what="$1"
+        local serv="$2"
+        local addr maca defr defs defm
+
+        if [ "$what" = "servers" ] ; then
+            # fake line for 'local' mode
+            if [ "$serv" = 'local' -a -n "$CEN_NET_SERVER_GEN" ] ; then
+                echo
+                echo "# Fake: local mode, no valid server"
+                ___hosts_writer "${CEN_NET_REJECT_HOST[1]}" "$CEN_NET_SERVER_GEN" $smas $sslv
+
+            # ip entry for generic host
+            elif [ -n "$igen" ] ; then
+                ___hosts_entry - "$igen" "$CEN_NET_SERVER_GEN"
+            fi
+        fi
+
+        for addr in "${CEN_NET_HOSTS[@]}" ; do
+            set -- $addr ; maca="$1" ; shift                # pop ip4 and mac addr
+            [ "$1" = '-' ] && continue                      # no ip4 addr
+            addr="$1" ; shift                               # ip4 addr
+
+            if is_server "$1" ; then                        # select by group ...
+                [ "$what" = "servers" ] || continue
+                [ "$1" = "$serv" ] && defs="$CEN_NET_SERVER_GEN"
+                if [ "$serv" != 'local' ] ; then
+                    [ "$1" = "$serv" ] && defm="$smas" || defm="$sslv"
+                fi
+            elif is_router "$1" ; then
+                [ "$what" = "routers" ] || continue
+                [ "$1" = "$CEN_NET_ROUTER_DEF" ] && defr="$CEN_NET_ROUTER_GEN"
+            else
+                [ "$what" = "hosts" ] || continue
+            fi
+
+            # use generic server with own ip
+            if [ -n "$igen" ] ; then
+                [ "$addr" = "$igen" ] && continue    # no entry for generic
+                defs=
+            fi
+
+            ___hosts_entry "$maca" "$addr" "$@" $defr $defs $defm
+            defr= ; defs= ; defm=
+        done
+    }
+
+    # Generate the fake list
+    ___hosts_fakelist() {
+        local name reje="${CEN_NET_REJECT_HOST[1]}"
+        for name in "${CEN_NET_FAKES[@]}" ; do
+            echo "$reje       $name"
+        done
+    }
+
+    netfile <<!EOF -h "/etc/hosts_$1"
+127.0.0.1       localhost.localdomain   localhost$self
+
+${nov6}# The following lines are desirable for IPv6 capable hosts
+${nov6}::1     localhost ip6-localhost ip6-loopback
+${nov6}ff02::1 ip6-allnodes
+${nov6}ff02::2 ip6-allrouters
+
+# Routers ...
+$(___hosts_hostlist routers)
+
+# Servers ...
+$(___hosts_hostlist servers "$1")
+
+# Address that cannot be reached
+$(printf "%-25s %-24s %s\n" "${CEN_NET_REJECT_HOST[1]}" "${CEN_NET_REJECT_HOST[0]}.$CEN_NET_DOMAIN" "${CEN_NET_REJECT_HOST[0]}")
+
+# Computers ...
+$(___hosts_hostlist hosts)
+
+# Fake entries point to badhost ...
+$(___hosts_fakelist)
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Write the /etc/resolv.conf file: [<server>|- [<domain>|-]]
+# ------------------------------------------------------------------------------
+do_resolv() {
+    local rcon='/etc/resolv.conf'
+    [ "$CEN_NET_OUTPUT" = '.' ] && rcon=".$rcon"
+
+    # always rewrite 'local' conf
+    if [ "${1:-local}" = 'local' ] ; then
+        netresolv - -
+    # don't overwrite on --keep
+    elif [ -n "$CEN_OPT_KEEP" -a -e "$rcon" ] ; then
+        trace "Nameserver '$1' - keeping '$rcon'" ; return 0
+    # localhost
+    elif [ "$1" = '127.0.0.1' ] ; then
+        netresolv "" - "$1"
+    # rewrite only if nameserver is known
+    elif ! nethost "$1" ; then
+        warning "Unknown nameserver '$1' - keeping '$rcon'"
+        return 1
+    else
+        netresolv -d "$1" "$2"
+    fi
+    message "Nameserver '$1' - updated '$rcon'" ; return 0
+}
+
+# ------------------------------------------------------------------------------
+# Write the /etc/dnsmasq.d/xxx_dnsserv drop-in: <iface>|none|- <server>|+|-...
+# ------------------------------------------------------------------------------
+# Fall back to resolv.conf if 1st arg is 'none'.  There can be up to 3 <server>
+# arguments, default is '-'.  If <server> is '-' a configured server is used
+# (primary, sencodary, router).  If <server> is '+' an entry is pulled from the
+# current resolv.conf
+# ------------------------------------------------------------------------------
+do_dnsserv() {
+    # get an output folder (true for stdout and debug)
+    netpath -d '/etc/dnsmasq.d' || return
+
+    local xout="$_netpath/${CEN_NET_DOMAIN%%.*}_dnsserv"
+
+    # fall-back to resolv.conf
+    if [ "$1" = 'none' ] ; then
+        netfile <<!EOF -h "$xout"
+### using /etc/resolv.conf ###
+!EOF
+        return
+    elif [ "$CEN_ACTION" = 'switch' ] ; then
+        :                               # don't check _dnsmasq.d
+    elif [ '/etc/dnsmasq.d' -ef '/etc/dnsmasq.d.slave' ] ; then
+        invoke -e "A 'slave' server cannot be a dns server"
+        return
+    fi
+
+    local serv ifce item psrv pcur nrdy= nuse=0
+    [ "${1:--}" != '-' ] && ifce="@$1" ; shift
+
+    # helper to pull server from resolv.conf (pop $pcur -> $item)
+    ___dnsserv_resolv() {
+        if [ -z "$pcur" ] ; then                # 1st call: get nameservers
+            if [ ! -r '/etc/resolv.conf' ] ; then
+                invoke -w "cannot read:" '/etc/resolv.conf'
+                pcur='-' ; return
+            fi
+            local key val
+            while read key val ; do
+                [ "$key" = 'nameserver' ] || continue
+                [ "$val" = '127.0.0.1' ] && continue
+                pcur+=("$val")
+            done < '/etc/resolv.conf'
+            [ -z "$pcur" ] && pcur='-'
+        fi
+        [ "$pcur" = '-' ] || item="$pcur" ; pcur=("${pcur[@]:1}")
+    }
+
+    # helper to pull server from configuration
+    ___dnsserv_config() {
+        [ -z "$psrv" ] && psrv=("${CEN_NET_SERVERS[@]}" "${CEN_NET_ROUTERS[@]}")
+        item="$psrv" ; psrv=("${psrv[@]:1}")
+    }
+
+    local -A conf
+    for item in "$@" ; do
+        [ "$item" = '+' ] && ___dnsserv_resolv
+        [ "$item" = '-' ] && ___dnsserv_config
+        [ "$item" = "$HOSTNAME" ] && continue
+
+        if [ "${item//[0-9]/}" != '...' ] ; then        # name -> ip
+            if ! nethost "$item" ; then
+                invoke -w "not a known host:" "$item"
+                continue
+            fi
+            item="$_nethost_ip"
+        fi
+        [ -n "${conf[$item]}" ] && continue
+        conf[$item]=1 ; ((nrdy += 1))
+        [ -n "$serv" ] && serv+=$'\n'
+        [ "$nuse" -ge 3 ] && continue
+        serv+="server=$item$ifce" ; ((nuse += 1))
+
+    done
+    if [ -z "$serv" ] ; then
+        invoke -w "got no name server"
+        serv="# No known server"
+    else
+        message "resolv: using $nuse of $nrdy nameservers"
+    fi
+    netfile <<!EOF -h "$xout"
+### (1) ignore /etc/resolv.conf ###
+
+no-resolv
+
+### (2) DNS server(s) to use ###
+
+$serv
+!EOF
+}
+
+# general dnsmasq configuration options - "/etc/dnsmasq.d/(local|slave)" only
+do_dnsmasq() {
+    ___dnsmasq_dns() {
+        local hash
+        if [ -z "$xdns" ] ; then
+            echo "# DNS not configured"
+            hash='#' ; xown='#'
+        fi
+        echo "${hash}domain=$CEN_NET_DOMAIN"
+        echo "${hash}local=/home/"
+        echo "${hash}local=/${CEN_NET_DOMAIN%%.*}/"
+
+        if [ -n "$xsvr" ] ; then
+            if [ -n "$xadc" ] ; then
+                load_port 'centauriadns' DAT_PORT_ADNS 5354
+                echo -e "\n# samba4 ad/dc - must use alternate port\n"
+                echo "${hash}port=$DAT_PORT_ADNS"
+                echo
+                echo "# The main dns (port 53) is handled by samba. So we must use a private port with"
+                echo "# a firewall rule to receive requests forwarded from samba to address 127.0.0.2."
+                echo "# For iptable the following rules would do the mapping:"
+                echo
+                echo "# iptables -t nat -I OUTPUT -p udp -d 127.0.0.2 --dport 53 -j REDIRECT --to-ports $DAT_PORT_ADNS"
+                echo "# iptables -t nat -I OUTPUT -p tcp -d 127.0.0.2 --dport 53 -j REDIRECT --to-ports $DAT_PORT_ADNS"
+            elif [ -n "$xldp" ] ; then
+                echo -e "\n# this lets windows find the LDAP service\n"
+                echo "srv-host=_ldap._tcp.dc._msdcs.${CEN_NET_DOMAIN%%.*},$CEN_NET_ADDR_IPLIST,389"
+                echo "srv-host=_ldap._tcp.dc._msdcs.$CEN_NET_DOMAIN,$CEN_NET_ADDR_IPLIST,389"
+            fi
+        fi
+    }
+     ___dnsmasq_fake() {
+        local hash=
+        [ -z "$xdns" ] && hash='#'
+        local entr reje="${CEN_NET_REJECT_HOST[1]}"
+        for entr in "${CEN_NET_FAKES[@]}" ; do
+            echo "${hash}address=/$entr/$reje"
+        done
+    }
+
+    # dhcp-range from base and offset: <base> <offs> <vout>
+    ___dnsmsq_range() {
+        netparse -a -b "$1" || return 1
+        local mbit=$((-1 << (32 - _netparse_bits)))
+        netconv -b -- "$_netparse_addr"
+        local strt=$((_netconv + $2))
+        ((_netconv |= ~mbit)) ; ((_netconv &= ~1))
+        netconv -d -- "$_netconv" ; mbit="$_netconv"
+        netconv -d -- "$strt" ; strt="$_netconv"
+        netparse -a -b "$CEN_NET_NETWORKS" || return 1
+        printf -v "$3" '%s,%s,%s' "$strt" "$mbit" "$_netparse_mask"
+    }
+
+    ___dnsmasq_dhopt() {
+        if [ -z "$xdhc" ] ; then
+            echo "# DHCP not configured"
+            echo ; return
+        fi
+        local dhcp="${CEN_NET_NETWORKS[-1]}"
+        ___dnsmsq_range "$dhcp" 0 dhcp || fatal -t "cannot get dchp config"
+        echo "${hash}dhcp-range=$dhcp,12h"
+        [ -n "$xsvr" -a -n "$xadc" ] &&
+            echo "${hash}dhcp-option=option:dns-server,$CEN_NET_ADDR_IPLIST"
+
+        [ -n "$xadr" ] && echo "${hash}dhcp-option=option:router,$xadr"
+        [ -n "$xntp" ] && echo "${hash}dhcp-option=option:ntp-server,$CEN_NET_ADDR_IPLIST"
+        [ -n "$xsmt" ] && echo "${hash}dhcp-option=option:smtp-server,$CEN_NET_ADDR_IPLIST"
+        [ -n "$xpop" ] && echo "${hash}dhcp-option=option:pop3-server,$CEN_NET_ADDR_IPLIST"
+
+        if [ -n "$xpad" ] ; then
+            echo -e "\n# automatic proxy detection\n"
+            echo "${hash}dhcp-option=252,http://$xpad.$CEN_NET_DOMAIN/wpad.dat"
+            echo "address=/wpad.$CEN_NET_DOMAIN/$CEN_NET_ADDR_IPLIST"
+            echo "address=/wpad.${CEN_NET_DOMAIN%%.*}/$CEN_NET_ADDR_IPLIST"
+            echo "address=/wpad/$CEN_NET_ADDR_IPLIST"
+        fi
+    }
+    ___dnsmasq_dhaddr() {
+        local hash=
+        [ -z "$xdhc" ] && hash='#'
+        local addr name
+        for addr in "${CEN_NET_HOSTS[@]}" ; do
+            set -- $addr
+            [ "$2" = '-' ] && continue                  # no IP addr
+            name="${3%%.*}"                             # strip domain
+            echo "${hash}dhcp-host=${1%-},id:$name,$2,$name,30d"
+        done
+    }
+
+    # get an output folder (true for stdout and debug)
+    netpath -d "/etc/dnsmasq.d" ".local" || return
+    local xmas xdir="$_netpath"
+
+    # generated statements depend on options
+    local xldp xdns xdhc xntp xsmt xpop xpad xadc
+    netoption 'dns'   "$1" && xdns=1
+    netoption 'dhcp'  "$1" && xdhc=1
+    netoption 'ldap'  "$1" && xldp=1
+    netoption 'ntp'   "$1" && xntp=1
+    netoption 'smtp'  "$1" && xsmt=1
+    netoption 'pop3'  "$1" && xpop=1
+    netoption 'proxy' "$1" && xpad="$CEN_NET_SERVER_GEN"
+    netoption 'addc'  "$1" && xadc=1                # ad/dc overrides ldap
+
+    # are we a server?
+    local xsvr ; is_server "$1" && xsvr="$1"
+    if [ -n "$xsvr" -a -z "$xldp" ] ; then
+        if [ -z "$xadc" ] ; then
+            warning "Server should have 'option ldap $1' or 'option addc $1'"
+        else
+            warning "Server should have 'option ldap $1'"
+        fi
+    fi
+    [ -n "$xadc" -a -z "$xdns" ] &&
+        warning "AD/DC Server should have 'option dns $1'"
+
+    # special case: have dnsmasq but not a server -> so it is a router config
+    local xown xadr="${DAT_MAP_IP[$CEN_NET_ROUTER_DEF]}"
+    if [ -n "$xdns$xdhc" -a -z "$xsvr" ] ; then
+        xown='#' ; xadr="${DAT_MAP_IP[$1]}"
+        [ -z "$xadr" ] && fatal "Need host statement for '$1' to enable dns/dhcp"
+        [ -n "$xpad" ] && xpad="$1"
+    fi
+
+    # write local (master) dnsmasq config
+
+    netfile <<!EOF -h "$xdir/${CEN_NET_DOMAIN%%.*}_dnsmasq"
+### Part 1 - DNS ###
+
+$(___dnsmasq_dns)
+
+### Part 2 - DHCP ###
+
+$(___dnsmasq_dhopt)
+!EOF
+
+    netfile <<!EOF -h "$xdir/${CEN_NET_DOMAIN%%.*}_hosts"
+# List of preassigned dhcp ip addresses
+
+$(___dnsmasq_dhaddr)
+
+# from Fake entries
+
+$(___dnsmasq_fake)
+!EOF
+
+    # write slave dnsmasq config
+    if [ "$1" = "${CEN_NET_SERVERS[0]}" ] ; then
+        xmas="${CEN_NET_SERVERS[1]}"
+    elif [ "$1" = "${CEN_NET_SERVERS[1]}" ] ; then
+        xmas="${CEN_NET_SERVERS[0]}"
+    fi
+
+    if [ -n "$xmas" ] && netpath -d "/etc/dnsmasq.d.slave" ; then
+        netfile <<!EOF -h "$_netpath/${CEN_NET_DOMAIN%%.*}_dhcp"
+# disable DNS
+port=0
+
+# relay DHCP from '$1' to '$xmas'
+dhcp-relay=${DAT_MAP_IP[$1]},${DAT_MAP_IP[$xmas]}
+
+# end
+!EOF
+    fi
+}
+
+# test if dnsmasq is used: <host>
+do_nameserv() {
+    local name="${1:-$HOSTNAME}"
+    netoption 'dns' "$name" || return 1     # no dns configured
+
+    # do not run dnsmasq if computer was booted as 'switch'
+    nettemp -s 'centauriswitch' || return 1 # source state file
+    [ "$DAT_SWITCH_MODE" = 'switch' ] && return 1
+    # mode 'router' uses dnsmasq
+    [ "$DAT_SWITCH_MODE" = 'router' ] && return 0
+
+    netquery CLIENT && return 1             # clients never run DNS
+    netquery MASTER && return 0             # master must run DNS
+    netquery SLAVE  && return 1             # slave never runs DNS
+    return 0
+}
+
+# block generic server name: <server>
+do_notgen() {
+    [ "${1%%.*}" = "$CEN_NET_SERVER_GEN" ] || return
+    fatal "Cannot use generic server name"
+}
+
+# ------------------------------------------------------------------------------
+# get override data
+# ------------------------------------------------------------------------------
+do_override() {
+    [ -n "$CEN_OPT_FORCE" ] && return 1
+    local args stat=0
+    readline -e -s args -i "$DAT_OVERRIDE" && return 1
+    for sarg in "${args[@]}" ; do
+        case "$stat-$sarg" in
+        ?---)   stat=0 ;;
+        0-res*) stat=1 ; DAT_OVER_RESOLV=() ;;
+        1-*)    DAT_OVER_RESOLV+=("$sarg") ;;
+        0-rou*) stat=2 ; DAT_OVER_GATEWAY=() ;;
+        2-*)    DAT_OVER_GATEWAY+=("$sarg") ;;
+        0-*)    warning "Invalid override command:" "$sarg" ;
+                stat=9 ;;
+        9-*)    ;;
+        *)      _cen_abort "bad state:" "$stat"
+        esac
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Setup files: [<hostname> [<domain>]]
+# ------------------------------------------------------------------------------
+do_setup() {
+    local allowed_nets="127.0.0.0/24 [::1] $CEN_NET_NETWORKS [fe80::]/16"
+
+    ___setup_allow() {
+        local name args entr
+        for name in "${!DAT_MAP_ALLOW[@]}" ; do
+            args="${DAT_MAP_ALLOW[$name]}"
+            if [ "$name" = '*' ] ; then
+                entr='ALL:'
+            else
+                port=
+                load_port "$name" port
+                if [ -z "$port" ] ; then
+                    message "Unknown service:" "allow $name $args"
+                    continue
+                fi
+                entr="$port:"
+            fi
+            set -f
+            for args in $args ; do
+                if [ "$args" = '*' ] ; then
+                    entr+=" $allowed_nets"
+                else
+                    entr+=" $args"
+                fi
+            done
+            set +f
+            echo "$entr"
+        done
+    }
+
+    # create files ...
+
+    netfile <<!EOF -h '/etc/hosts.allow'
+$(___setup_allow)
+!EOF
+
+    netfile <<!EOF -h '/etc/hosts.deny'
+# Disallow everything by default
+ALL: ALL
+!EOF
+
+    local nets="$allowed_nets ${DAT_MAP_ALLOW['*']}"
+    nets="${nets//\[/}" ; nets="${nets//\]/}"       # no brackets for samba
+    netfile <<!EOF -h '/etc/samba/networks.conf'
+# Disallow everything by default
+hosts deny  = 0.0.0.0/0 ::0
+
+# Grant access for configured networks
+hosts allow = ${nets// \* / }
+!EOF
+
+    local hcfg host="${1:-$HOSTNAME}" domn="${2:-$CEN_NET_DOMAIN}"
+    if [ -n "$host" ] ; then
+        hcfg="kernel.hostname=$host"
+        HOSTNAME="$host"
+    fi
+
+    netfile <<!EOF -h '/etc/sysctl.d/host+domain.conf'
+kernel.domainname=$domn
+$hcfg
+!EOF
+
+    local ipv4='#' ipv6='#'
+    netoption 'ipv6' "$host" && ipv6= || ipv4=
+    local ipf6="$ipv6"
+    is_server "$host" || ipf6='#'
+    netfile <<!EOF -h '/etc/sysctl.d/ipv4+ipv6.conf'
+net.ipv4.ip_local_port_range=10000 65535
+
+# 0:=disable  1:=allow  2:=prefer
+${ipv6}net.ipv6.conf.all.use_tempaddr = 1
+${ipv6}net.ipv6.conf.default.use_tempaddr = 1
+
+# 0:= disable  1:=allow with forwarding off  2:=allow always
+${ipv6}net.ipv6.conf.all.accept_ra = 2
+${ipv6}net.ipv6.conf.default.accept_ra = 2
+
+# set to one for radvd or if being a server
+${ipf6}net.ipv6.conf.all.forwarding = 1
+
+${ipv4}net.ipv6.conf.all.disable_ipv6 = 1
+${ipv4}net.ipv6.conf.default.disable_ipv6 = 1
+!EOF
+
+    do_dnsmasq "$host"
+
+    # do a full setup if a hostname is given
+
+    [ -z "$1" ] && return
+    [ -n "${DAT_MAP_IP[$host]}" ] || warning "No host statement for <hostname>: $host"
+
+    netfile <<!EOF '/etc/hostname'
+$host
+!EOF
+
+    netfile <<!EOF "/etc/mailname"
+$host.$domn
+!EOF
+
+    # setup for dnsmasq
+    if do_nameserv "$host" ; then
+        do_resolv '127.0.0.1' "$domn"
+        do_dnsserv - "${CEN_NET_SERVERS[@]}" "${CEN_NET_ROUTERS[@]}"
+    else
+        do_resolv "$CFG_SERVER_DEF" "$domn"
+        do_dnsserv 'none'
+    fi
+
+    do_readme                                           # README.centauri in /etc/network
+
+    if [ -z "$CEN_OPT_OUTPUT" ] ; then                  # real setup
+        # migrate, fix things ...
+        netlink -m -k '/etc/hosts' '_'
+        [ -e "/etc/nsswitch.local" ] && netlink -m -k "/etc/nsswitch.conf"
+
+        message "Full setup: server='$CFG_SERVER_DEF'  router='$CEN_NET_ROUTER_DEF'  hostname='$host'"
+        embed -v 'centaurinetgen' -H "$host" create     # interfaces, wpa, hostapd, dnsmasq.d
+        do_link -f "${CFG_SERVER_DEF:-local}"
+
+    elif [ "$CEN_OPT_OUTPUT" = '.' ] ; then             # clone, force full setup
+        message "Name setup: server='$CFG_SERVER_DEF'  router='$CEN_NET_ROUTER_DEF'  hostname='$host'"
+        embed -v 'centaurinetgen' -O . -H "$host" --nm=0 -W - -A - create
+    else                                                # create real files
+        embed -v 'centaurinetgen' -O "$CEN_OPT_OUTPUT" -H "$host" create
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# helper to restart a service: [-c] <name>
+# ------------------------------------------------------------------------------
+do_restart() {
+    if [ -n "$CEN_OPT_NOREST" ] ; then
+        message -a "Service: $2 [restart disabled]"
+        return 0
+    fi
+
+    if [ "$1" = "-c" ] ; then
+        if ! runservice status "$2" ; then
+            [ -n "$CEN_RUNSERVICE" ] && message -a "Service restart: $2 [$CEN_RUNSERVICE]"
+            return 0
+        fi ; shift
+    fi
+
+    local stat
+    runservice restart "$1" ; stat=$?
+    message -a "Service (re)start: $1 ${CEN_RUNSERVICE:-[not available]}"
+    return $stat
+}
+
+# ------------------------------------------------------------------------------
+# README.centauri in /etc/network
+# ------------------------------------------------------------------------------
+do_readme() {
+    netfile <<!EOF "/etc/network/README.centauri"
+The 'interfaces' and 'interfaces.*' files or links are managed by centaurinetcfg
+and centauriroute (centauriswitch).  ... when 'centaurinetcfg setup -' is run.
+This tool also links the configuration to 'interfaces' and to:
+
+'interfaces.static'  for a static address configuration (Server, Workstation)
+'interfaces.simple'  for a single address configuration (Workstation)
+'interfaces.smart'   for a multiple address configuration (Notebook)
+
+These links are used by '/boot/grub/grub.cfg' to select entries in grub's boot
+menu. Two additional options for grub and for centauriroute (centauriswitch)
+can be manually configured:
+
+'interfaces.switch'  to run the computer like a hardware switch (optional DHCP)
+'interfaces.router'  to run the computer like a router with a WWLAN connection.
+
+At boot time the 'centauriswitch=' parameter is used to link 'interfaces' to an
+actual configuration (if any).  This is done by centauriroute.  This tool tries
+to use reasonable defaults if a configuration does not exist.
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# action "config" - create server status: <role> <mode> <master>
+# ------------------------------------------------------------------------------
+actionConfig() {
+    netconfig -f                # cannot run without config
+    netserver -w "$@"
+}
+
+# ------------------------------------------------------------------------------
+# action "edit" - run editor, validate and setup
+# ------------------------------------------------------------------------------
+actionEdit() {
+    local errs
+    copy -a -f -- "$CEN_OPT_CONFIG" "$CEN_OPT_CONFIG.bak"
+    while : ; do
+        system -e -- editor "$CEN_OPT_CONFIG" || return
+        if system -e -p -g 1 -- cmp "$CEN_OPT_CONFIG" "$CEN_OPT_CONFIG.bak" ; then
+            message "No changes made, no action taken"
+            remove -- "$CEN_OPT_CONFIG.bak" ; return
+        fi
+        actionValidate nocache
+        if error -t ; then
+            actionSetup -
+            error -t && return
+            errs=1 ; break
+        fi
+        confirm -n "Undo changes and quit" && break
+        error -c
+    done
+    move -f "$CEN_OPT_CONFIG.bak" "$CEN_OPT_CONFIG"
+    error -c
+    [ -n "$errs" ] && actionSetup -
+}
+
+# ------------------------------------------------------------------------------
+# action "gateway" - set default route: [<gateway>|- [<iface>]]]
+# ------------------------------------------------------------------------------
+actionGateway() {
+    do_config -u                # get/update config
+    error -t || return
+
+    # replace command arguments if there is an override file
+    if do_override && [ -n "$DAT_OVER_GATEWAY" ] ; then
+        warning "From override file:" "gateway ${DAT_OVER_GATEWAY[*]}"
+        set -- "${DAT_OVER_GATEWAY[@]}"
+    fi
+    embed -v centauriroute -t gateway "${1:--}" "${2:--}"
+}
+
+# ------------------------------------------------------------------------------
+# action "option" - list options: [<host>}
+# ------------------------------------------------------------------------------
+actionOptions() {
+    local host="${1:-$HOSTNAME}" opts name desc list=()
+    netconfig -f                                    # cannot run without config
+    for opts in "${CEN_NET_OPTIONS[@]}" ; do        # loop over options
+        name="${opts%% *}"
+        netoption -- "$name" "$host" || continue
+
+#### option  hotplug       ether-* wlan-*
+
+        case "$name" in
+        alien)  ;;
+        addc)   desc="provides AD/DC service" ;;
+        apoint) desc="network: enable access point config" ;;
+        auto)   desc="use nm if installed or smart mode otherwise" ;;
+        coun*)  desc="WLAN: ISO country must be set" ;;
+        dhcp)   desc="provides DHCP service" ;;
+        dns)    desc="provides DNS service" ;;
+        ether)  desc="interfaces: 1st address is ethernet" ;;
+        exte*)  desc="network: enable extender config" ;;
+     #   hotp*)  desc="" ;;
+        ipv6)   desc="enable IPv6 protocol" ;;
+        ldap)   desc="provides LDAP service" ;;
+        manual) desc="not managed by centaurinetcfg/centauriswitch" ;;
+        mdns)   desc="" ;;
+        metr*)  desc="" ;;
+        mobile) desc="mobile device, notebook" ;;
+        nm)     desc="use NetwokManager" ;;
+        nomac)  desc="" ;;
+        ntp)    desc="provides NTP time service" ;;
+        phone)  desc="mobile phone or tablet" ;;
+        player) desc="media player, tv" ;;
+        proxy)  desc="provides HTTP proxy service" ;;
+        radv)   desc="does IPv6 router advertisments" ;;
+        repea*) desc="network: enable repeater mode" ;;
+        router) desc="network: enable router mode" ;;
+        simple) desc="network: enable simple mode" ;;
+        smtp)   desc="provides SMTP service" ;;
+        static) desc="network: enable static mode" ;;
+        switch) desc="network: enable switch mode" ;;
+        sysdn*) desc="network: use systemd interface naming" ;;
+        smtp)   desc="provides Samba basic service" ;;
+        track*) desc="firewall: use connection tracking" ;;
+        trust*) desc="firewall: make this host trusted" ;;
+        wlan)   desc="interfaces: 1st address is wlan" ;;
+        wol)    desc="interfaces: enbale Wake-On-LAN" ;;
+        *)      desc=
+        esac
+        printf -v desc '    %-11s %s' "$name" "$desc"
+        list+=("$desc")
+        #message -a " $name"
+    done
+    message "Options for '$host':"
+    txtsort -i list -a list
+    outdata -a -o list
+
+    netquery -s desc 'connect' "$host"
+    message -i
+    message -i -c "Connection mech." "$desc"
+    netquery -s desc 'class' "$host"
+    message -i -c "Computer class" "$desc"
+}
+
+# ------------------------------------------------------------------------------
+# action "resolv" - reconfigure dnsmasq:
+#       (1) stat|none|default
+#       (2) <ifce>|any none|<ip>|+|- ...
+#       (3) <domain> <serv1> [<serv2> [<serv3>]]
+# ------------------------------------------------------------------------------
+actionResolv() {
+    # helper to show status
+    ___resolv_cat() {
+        local line emty="# file is empty"
+        message "$1:"
+        if [ ! -r "$1" ] ; then
+            message -i "# cannot be read" ; return
+        fi
+        while read line ; do
+            [ -z "$line" -o "${line::1}" = '#' ] && continue
+            message -i -- "$line" ; emty=
+        done <"$1"
+        [ -n "$emty" ] && message -i "$emty"
+    }
+
+    # replace command arguments if there is an override file
+    if do_override && [ -n "$DAT_OVER_RESOLV" ] ; then
+        warning "From override file:" "resolv ${DAT_OVER_RESOLV[*]}"
+        set -- "${DAT_OVER_RESOLV[@]}"
+    fi
+
+    local ifce nsrv=()
+    case "$1" in
+    *.*)        netresolv "$@" ; return ;;
+    any|none)   ifce="$1" ;;
+    def*)       ifce='default' ;;
+    sta*)       ___resolv_cat '/etc/resolv.conf'
+                ___resolv_cat '/etc/dnsmasq.d/centauri_dnsserv'
+                return ;;
+    *)          netiface -k -s ifce -- "$1"     # get kernel interface name
+    esac
+    netconfig -f                                # cannot run without config
+
+    # must have dnsmasq
+    if ! [ "$ifce" = 'none' -o "$ifce" = 'default' ] ; then
+        do_nameserv || { invoke -e "no dns configured:" "$*" ; return ; }
+    fi
+
+    if do_nameserv ; then
+        message "Update resolv.conf and dnsmasq:" "$*"
+        nsrv=("$CEN_NET_DOMAIN" - '127.0.0.1')
+    elif runservice -r enabled 'dnsmasq' ; then
+        message "Update resolv.conf (dnsmasq not used):" "$*"
+    else
+        message "Update resolv.conf:" "$*"
+    fi
+
+    # reset to empty or default
+    if [ "$ifce" = 'none' -o "$ifce" = 'default' ] ; then
+        if [ "$ifce" = 'none' ] ; then
+            netresolv - -                       # empty resolv.conf
+        else
+            netresolv "${nsrv[@]}"              # default resolv.conf
+        fi
+        do_dnsserv 'none'                       # dnsmasq uses resolv.conf
+
+    # use any interface for dns
+    elif [ "${ifce:--}" = '-' -o "$ifce" = 'any' ] ; then
+        shift ; do_dnsserv - "$@" ; netresolv "$sdom" - '127.0.0.1'
+    else
+        [ -d "/sys/class/net/$ifce" ] || invoke -w "no such interface:" "$ifce"
+        do_dnsserv "$@" ; netresolv "$sdom" - '127.0.0.1'
+    fi
+
+    do_restart -c 'dnsmasq'
+}
+
+# ------------------------------------------------------------------------------
+# action "setup" - create host files: [<hostname>]
+#
+#   mode 1: have argument or --output
+#           full update
+#   mode 2: no "$CEN_ROOT/persistent/centaurinetcfg"
+#           update cache only (unless argument given)
+#   mode 3: valid cache, no argument
+#           do nothing
+# ------------------------------------------------------------------------------
+actionSetup() {
+    if [ -n "$1" -o -n "$CEN_OPT_OUTPUT" ] ; then
+        :
+    elif [ ! -e "$CEN_ROOT/persistent/$CEN_NAME" ] ; then
+        actionValidate cache ; return
+    elif [ "$CEN_ROOT/persistent/$CEN_NAME" -nt "$CEN_ROOT/default/centaurinetcfg" ] ; then
+        message "No update (cache is current)" ; return
+    fi
+
+    local domn host="${1:--}"
+    [ "$host" = '-' ] && host="$HOSTNAME"
+    domn="${host#*.}" ; [ "$domn" = "$host" ] && domn=
+    host="${host%%.*}"
+
+    do_coca -                           # create "$CEN_ROOT/persistent" dir
+    do_config -c "$host" "$domn"        # create new config cache
+    error -t || return
+    do_notgen "$1"                      # disallow generic server name
+
+    # create hosts files
+    local name
+    for name in 'local' "${CEN_NET_SERVERS[@]}" ; do
+        do_hosts "$host" "$name"
+    done
+
+    # setup (full if hostname is given)
+    do_setup "$host" "$domn"
+}
+
+# ------------------------------------------------------------------------------
+# action "status"
+# ------------------------------------------------------------------------------
+actionStatus() {
+    netconfig -f                        # cannot run without config
+    local svrn svra
+    if [ -n "$CEN_NET_SERVER_GEN" ] ; then
+        set -- $(getent hosts $CEN_NET_SERVER_GEN)
+        svra="$1" ; svrn="${2%%.*}"
+        [ "$svrn" = "$CEN_NET_SERVER_GEN" ] && svrn='-'
+    fi
+
+    ___status_print() {
+        local idnt
+        [ "$1" = "-i" ] && idnt="\n                            " && shift
+        printf "$idnt%-15s %-15s %-15s %-15s" "$@"
+    }
+
+    ___status_server() {
+        local name
+        for name in "${CEN_NET_SERVERS[@]}" ; do
+            nethost "$name"
+            ___status_print -i "$name" "$_nethost_ip"
+        done
+    }
+
+    ___status_router() {
+        local name
+        for name in "${CEN_NET_ROUTERS[@]}" ; do
+            nethost "$name"
+            ___status_print -i "$name" "$_nethost_ip"
+        done
+    }
+
+    ___status_homedns() {
+        local name opti
+        for name in "${CEN_NET_HOMEDNS[@]}" ; do
+            ___status_print $opti $name ; opti="-i"
+        done
+    }
+
+    create -c <<!EOF
+
+    Data from $CEN_NET_FILE_CONF:
+
+        CEN_NET_DOMAIN      $(___status_print $CEN_NET_DOMAIN "[${#CEN_NET_HOSTS[@]} hosts]" \
+                              "$CEN_NET_NETMASK ($CEN_NET_NETBITS)")
+        CEN_NET_SERVER_...  $(___status_print $CEN_NET_SERVER_GEN  [$svrn])$(___status_server)
+        CEN_NET_ROUTER_...  $(___status_print $CEN_NET_ROUTER_GEN [$CEN_NET_ROUTER_DEF])$(___status_router)
+        CEN_NET_HOMEDNS...  $(___status_homedns)
+        CEN_NET_ADDR_METHOD $(___status_print $CEN_NET_ADDR_METHOD "[$HOSTNAME]")
+        CEN_NET_ADDR_IPLIST $(___status_print ${CEN_NET_ADDR_IPLIST[@]})
+
+!EOF
+    if ! netserver ; then
+        echo -e "    No network status file: $CEN_NET_FILE_STAT\n"
+        return
+    fi
+    create -c <<!EOF
+    Data from $CEN_NET_FILE_STAT:
+
+        CEN_NET_ROLE        $CEN_NET_ROLE
+        CEN_NET_MODE        $CEN_NET_MODE
+        CEN_NET_SERVER      $CEN_NET_SERVER
+        CEN_NET_MASTER      $CEN_NET_MASTER
+
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# action "switch" - set active server: [<server>|local|-]
+# ------------------------------------------------------------------------------
+actionSwitch() {
+    do_config -u                # get/update config
+    error -t || return
+    do_notgen "$1"              # disallow generic server name
+
+    # get configuration
+    local serv="${1:-local}" ; [ "$serv" = '-' ] && serv='local'
+    local snam="${serv%%.*}" sdom="${serv#*.}"
+    [ "$serv" = "$sdom" ] && sdom=
+
+    # get domain from host (only 1st name checked)
+    if [ -z "$sdom" ] ; then
+        nethost "$snam" ; sdom="${_nethost_name#*.}"
+        [ "$sdom" = "$_nethost_name" ] && sdom="$CEN_NET_DOMAIN"
+    fi
+
+    # switch nss name services (not using sssd)
+    local nscd ; _netlink=
+    if [ -e "/etc/nsswitch.local" ] ; then
+        if [ "$snam" = 'local' ] ; then
+            netlink -k -m "/etc/nsswitch.conf" '.' 'local' "$CEN_NAME"
+        elif [ -z "$CEN_OPT_KEEP" ] ; then
+            netlink -k -m "/etc/nsswitch.conf" '.' "$snam" 'client'
+        else
+            netlink -k -m "/etc/nsswitch.conf" '.' "$snam"
+        fi
+        [ $? = 0 -a -n "$_netlink" ] && nscd="-f"
+        [ -n "$nscd" ] && message "nsswitch.conf switched to: $_netlink_suff"
+    fi
+
+    # switch /etc/hosts and (re)create resolv.conf
+    do_link $nscd "$snam"
+
+    # setup for dnsmasq
+    [ "$snam" = 'local' ] && snam="$HOSTNAME"
+    if do_nameserv ; then
+        do_resolv '127.0.0.1' "$sdom"
+        do_dnsserv - "$snam" "${CEN_NET_SERVERS[@]}" "${CEN_NET_ROUTERS[@]}"
+    else
+        do_resolv "$snam" "$sdom"
+        do_dnsserv 'none'
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# validate the config file: [cache|nocache|list]
+# ------------------------------------------------------------------------------
+actionValidate() {
+    local coca args="OK"
+    case "${1:-noc}" in
+    cac*)   coca=1 ;;
+    lis*)   DAT_LIST=1 ;;
+    noc*)   ;;
+    *)      invoke -e "Argument must be: cache|nocache|list"
+    esac
+    do_config -v
+    error -t || args="Error(s) found"
+    [ -n "$DAT_LIST" ] && return
+
+    local name="'${CFG_SERVER_DEF}.$CEN_NET_DOMAIN'"
+    [ -n "$CFG_SERVER_DEF" ] || name="(none)"
+    message "File '$CEN_OPT_CONFIG' [$DAT_CONFIG_LINES lines]: $args"
+    error -t || return
+    message -i -p "Server %-10s =>  %s" "'$CEN_NET_SERVER_GEN'" "$name"
+    message -i -p "Router %-10s =>  '%s'" "'$CEN_NET_ROUTER_GEN'" "${CEN_NET_ROUTER_DEF}.$CEN_NET_DOMAIN"
+    [ -n "$coca" ] && do_coca
+}
+
+# ------------------------------------------------------------------------------
+# Option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+    '') [ "${CEN_SVC_SYSLOG:-0}" != 0 ] && embed -m '_centauri_bash_svc'
+        [ "$CEN_OPT_OUTPUT" = "/" ] && CEN_OPT_OUTPUT=
+        if [ "${CEN_OPT_OUTPUT:--}" != '-' -a "$CEN_OPT_OUTPUT" != '.' ] ; then
+            folder -c -f "$CEN_OPT_OUTPUT" ; CEN_OPT_OUTPUT="$PWD"
+        fi
+        CEN_NET_OUTPUT="$CEN_OPT_OUTPUT"                    # see netfile()
+        ;;
+
+    -l|--sys*)
+        optarg "syslog"  CEN_SVC_SYSLOG  "[012]" ;;
+
+    -C|--con*)
+        optarg "config"  -           -t ;;                  # any text
+    -K|--kee*)
+        optarg "keep"    -              ;;                  # simple flag
+    -N|--nor*)
+        optarg "norest"  -              ;;                  # simple flag
+    -O|--out*)
+        optarg "output"  -           -t ;;                  # any text
+    -R|--rou*)
+        optarg "router"  -           -t ;;                  # any text
+    -S|--ser*)
+        optarg "server"  -           -t ;;                  # any text
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    con*)
+        invoke -r 'config'   -         0 3 ;;               # 0...3 args
+    edi*)
+        invoke -s 'edit'     -         0   ;;               # no arg
+    gat*)
+        invoke -r 'gateway'  -         0 2 ;;               # 0...2 args
+    opt*)
+        invoke    'options'  -         0 1 ;;               # one optional arg
+    res*)
+        invoke -r 'resolv'   -         1 + ;;               # at least 1 arg
+    set*)
+        invoke -r 'setup'    -         0 1 ;;               # one optional arg
+    sta*)
+        invoke    'status'   -         0 ;;                 # no arg
+    swi*)
+        invoke -r 'switch'   -         0 1 ;;               # one optional arg
+    val*)
+        invoke    'validate' -         0 1 ;;               # one optional arg
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+       -l --syslog  [012]   control output to syslog (0:no 1:also 2:only)
+
+       -C --config <file>   configuration  (default $CEN_OPT_CONFIG)
+       -K --keep            do not update resolv.conf, switch ns not to client
+       -N --norestart       do not restart nscd/dnsmasq
+       -O --output <fldr>   modify output locations                 (default: /)
+       -R --router <router> router name       (default is 1st configured router)
+       -S --server <server> server name       (default is 1st configured server)
+
+actions:
+       config  [<role>|- [<mode> [<master>|-]]]
+                            write status files in $CEN_ROOT/transient
+       edit                 edit configuration, run 'validate' and 'setup'
+       gateway [<gateway>|-°[<iface>]]]
+                            set/remove the default gateway
+       resolv  [<fqdn>] default|none|any|<iface> [<dns>...]
+                            update dnsmasq dns server config, restart dnsmasq
+       setup   [<hostname>] create config files, full setup with <hostname>
+       status               show the current status
+       switch  [<server>]   switch /etc/hosts and write /etc/resolv.conf
+       validate [cache|nocache]
+                            validate config, optionally generate cache file
+       validate list        validate and list config
+
+arguments:
+       <dns>                server ip  -or-  '-' pull default server  -or-  '+'
+                            pull from resolv.conf
+       <fldr>               any folder -or- '-' for stdout -or- '/' to install
+       <fqdn>               qualified domain name
+       <gateway>            name to override the router name -or- '-' to remove
+       <hostname>           host (opt. with domain)  -or-  '-' for current name
+       <iface>              interface name like eth0, wlan0 ...
+       <netmask>            any netmask, 0.0.0.0 for '-' or if missing
+       <router>             a configured router name
+       <server>             a configured server name
+!EOF
+    usagecat -v "More:  Use -- to show details for 'setup' and" \
+                "'config' actions." << !EOF
+setup: When action 'setup' is used with a <hostname> a full set of configuration files
+       will be generated:
+
+       /etc/hostname                           § (setup [with <hostname>])
+       /etc/hosts.allow                        § (setup)
+       /etc/hosts.deny                         § (setup)
+       /etc/hosts_<mode>                       § (setup)
+       /etc/mailname                           § (setup [with <hostname>])
+       /etc/network/interfaces                 § (setup [with <hostname>])
+       /etc/resolv.conf                        § (setup, server)
+       /etc/system.d/domain                    § (setup)
+       /etc/samba/networks.conf                § (setup)
+       /etc/sysctl.d/host+domain.conf          § (setup)
+       /etc/sysctl.d/ipv4+ipv6.conf            § (setup)
+       $CEN_ROOT/persistent/centaurinetcfg § (setup, switch, config)
+       $CEN_ROOT/transient/network_proxy   § (switch, config)
+       $CEN_ROOT/transient/network_status  § (switch, config)
+
+config:
+       The arguments for action 'config' are:
+
+         <role>              the computer's role  -or-  '-' to delete status
+                             possible values: WORKSTATION|PRIMARY|SECONDARY|UNKNOWN
+         <mode>              the current network mode
+                             possible values: MASTER|SLAVE|CLIENT|GUEST|SINGLE|UNKNOWN
+         <master>            the server to be used  -or-  '-' for default server
+
+       Examples for 'config':
+
+       # delete status files, create (void) status files ...
+       $CEN_NAME config -                       # delete status files
+       $CEN_NAME config                         # write void status files
+       $CEN_NAME config PRIMARY MASTER alpha1   # a full configuration
+
+resolv:
+       Used to rewrite '/etc/resolv.conf', mostly called by centauriswitch
+
+       $CEN_NAME resolv default                 # use configurated domain and dns
+       $CEN_NAME resolv ppp0 + + + 8.8.8.8      # use interface ppp0 only
+       $CEN_NAME res worms.home none 10.33.4.1  # any iface, no dnsmasq, use domain
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

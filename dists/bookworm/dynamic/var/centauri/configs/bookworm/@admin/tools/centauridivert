@@ -1,0 +1,305 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2018-2024; BSD License"
+CEN_TITLE="Helper for dpkg-divert"
+
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f - '0.13:2' || exit 2
+
+# Data
+DAT_CONFIG_DIR="$CEN_TOOLS/diversions"
+
+# ------------------------------------------------------------------------------
+# helpers
+# ------------------------------------------------------------------------------
+
+# get config file(s): [<pattern>]
+_configs=()
+get_configs() {
+    _configs=()
+    local item
+    [ -n "$1" ] && set -- "*$1*"
+    [ -z "$1" ] && set -- "*"
+    for item in $1.divert ; do
+        [ -r "$item" ] && _configs+=("$item")
+    done
+}
+
+# check diversion state: <target> <divert> <status> <item>
+_state=
+get_state() {
+    # missing
+    # error
+    # pending
+    # remove
+    # on
+    # off
+    # ignore
+    # update
+    _state=
+    local divert="$2" status="${3:-on}" item="$4"
+    [ "$status" = "on"  -a "$CEN_ACTION" = "remove" ] && status="off"
+    [ "$status" = "off" -a "$CEN_ACTION" = "add"    ] && status="on"
+
+    if [ "$status" = "ignore" ] ; then
+        _state="ignore" ; return
+    fi
+    if [ ! -e "$1" ] ; then
+        _state="missing"
+        [ -h "$1" ] && _state="broken" ; return
+    fi
+    if [ -n "$2" -a ! -e "$2" ] ; then
+        _state="error" ; return
+    fi
+    if [ -e "$1.distrib" ] ; then
+        _state="on"
+        if [ "$status" = "off" ] ; then
+            _state="remove"
+        elif [ -z "$divert" ] && [ "$item" -nt "$1" ] ; then
+            _state="update"
+        fi
+    else
+        _state="pending"
+        [ "$status" = "off" ] && _state="off"
+    fi
+}
+
+# loop over items: <callback>
+run_configs() {
+    local item divert target status
+    for item in "${_configs[@]}" ; do
+        target= ; divert= ; status= ; unset -f divert
+        . "$item"
+
+        if [ -z "$target" ] ; then
+            error "Missing 'target=' in: $item"
+            continue
+        fi
+        if [ -z "$divert" ] ; then
+            #declare -f divert
+            if [ "$(type -t divert)" != "function" ] ; then
+                error "Missing 'divert=' in: $item"
+                continue
+            fi
+        fi
+        $1 "$item" "$divert" "$target" "$status"
+    done
+}
+
+run_add() {
+    local name item="$1" divert="$2" target="$3" status="$4"
+    name="${item##*/}" ; name="${name%.*}"
+
+    if [ -e "$target".distrib ] ; then
+        warning -a "Not adding diversion:" "$name" "(existing .distrib)"
+    elif [ -n "$divert" ] ; then
+        message -a -c "Adding diversion" -- "$name" "(symlink)"
+        system -e -p dpkg-divert --add "$target" || return
+        rename -o "$target" "$target.distrib"
+        dryrun "ln -s $divert $target" || symlink -c "$divert" "$target"
+    else
+        message -a "Adding diversion:" "$name" "(script)"
+        system -e -p dpkg-divert --rename --add "$target" || return
+        if ! dryrun "<script $target>" ; then
+            {   echo "#!/usr/bin/bash"
+                declare -f divert
+                echo 'logger -t' "$CEN_NAME" '"running: $0 $*"'
+                echo 'divert "$@"'
+            } > "$target"
+            system -e -p -- chmod 775 "$target"
+        fi
+    fi
+}
+
+# remove a diversion: <what> <dummy> <target> [<dummy>]
+run_remove() {
+    local name item="$1" divert="$2" target="$3" status="$4"
+    name="${item##*/}" ; name="${name%.*}"
+
+    if [ -e "$target".distrib ] ; then
+        message -a -c "Remove diversion" -- "$name"
+        remove "$target"
+        system -e -p dpkg-divert --rename --remove "$target"
+    else
+        warning -a "Not removing diversion:" "$name" "(missing .distrib)"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# create a new diversion: <name> [<exec>]
+# ------------------------------------------------------------------------------
+actionCreate() {
+    local what tool file name="${1%.divert}" ; file="$name.divert"
+    if [ -e "$file" ] ; then
+        invoke -e "Diversion '$name' already exists" ; return
+    fi
+
+    if [ -z "$CEN_OPT_FORCE" ] ; then
+        sysfind -e -i -s what -- "$name" || return
+    else
+        what="/usr/bin/$name"
+    fi
+
+    if [ -n "$2" ] ; then
+        sysfind -e -i -s tool -- "$2" || return
+        create -c -- "$file" <<!EOF
+status=on
+target=$what
+divert=$tool
+!EOF
+    else
+        create -c -- "$file" <<!EOF
+status=on
+target=$what
+divert() {
+    echo "${what##*/}: disabled by 'centauridivert'"
+    exit 0
+}
+!EOF
+    fi
+    message -c "Created divert" -- "$what  =>  ${tool:-(script)}"
+}
+
+# ------------------------------------------------------------------------------
+# delete diversion: <name>
+# ------------------------------------------------------------------------------
+actionDelete() {
+    local target divert status file="${1%.divert}.divert"
+
+    if [ ! -e "$file" ] ; then
+        invoke -w "Diversion '$1' not configured" ; return
+    fi
+    unset -f divert ; . "$file"
+
+    run_remove "$1" - "$target"             # remove diversion
+    remove -- "$file"                       # remove divert file
+    message -c "Deleted divert" -- "$1"
+}
+
+# ------------------------------------------------------------------------------
+# show centauri diversions: [<item>]
+# ------------------------------------------------------------------------------
+actionShow() {
+    ___show() {
+        local name item="$1" divert="$2" target="$3" status="$4"
+        name="${item##*/}" ; name="${name%.*}"
+        get_state "$target" "$divert" "$status" "$item"
+        message -a -p "%-19s %12s: %s  =>  %s" "$name" "[$_state]" "$target" "${divert:-(script)}"
+    }
+
+    get_configs "$1"
+    message -a "Found ${#_configs[@]} diversion(s)"
+    run_configs ___show
+}
+
+# ------------------------------------------------------------------------------
+# update centauri diversions: [<item>]
+# ------------------------------------------------------------------------------
+actionUpdate() {
+    ___update() {
+        local name item="$1" divert="$2" target="$3" status="$4"
+        name="${item##*/}" ; name="${name%.*}"
+        get_state "$target" "$divert" "$status" "$item"
+        if   [ "$_state" = "broken" ] ; then
+            run_remove "$@"
+            [ "$CEN_ACTION" = "remove" ] || run_add "$@"
+        elif [ "$_state" = "pending" ] ; then
+            [ "$CEN_ACTION" = "remove" ] || run_add "$@"
+        elif [ "$_state" = "remove" ] ; then
+            [ "$CEN_ACTION" = "add" ] || run_remove "$@"
+        elif [ "$_state" = "update" ] ; then
+            [ "$CEN_ACTION" = "add" ] || run_remove "$@"
+            [ "$CEN_ACTION" = "remove" ] || run_add "$@"
+        fi
+    }
+    get_configs "$1"
+    run_configs ___update
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    "")
+        [ -d "$DAT_CONFIG_DIR" ] || quit "No config folder: $DAT_CONFIG_DIR"
+        folder -f -c "$DAT_CONFIG_DIR" ;;
+
+    add)
+        invoke -r "add"    actionUpdate 0 1 ;;              # one arg
+    rem*)
+        invoke -r "remove" actionUpdate 0 1 ;;              # one arg
+    upd*)
+        invoke -r "update" -            0 1 ;;              # no args
+
+    cre*)
+        invoke -r "create" -            1 2 ;;              # 1 or 2 args
+    del*)
+        invoke -r "delete" -            1   ;;              # one arg
+    sho|show)
+        invoke    "show"   -            0 1 ;;              # 0..1 arg
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+actions:
+       create <name> <exec> [*] create new diversion file to run <exec>
+       create <name>        [*] create a new diversion file with script
+       delete <name>        [*] delete diversion file (also undo diversion)
+
+       add    [<name>]      add a diversion
+       update [<name>]      auto add/remove or update
+       remove [<name>]      undo a diversion
+
+       show   [<name>]      show state of diversions (.divert files)
+
+       [*] can only be used for commands that are invoked as <name>.
+
+arguments:
+       <name>               item name in $DAT_CONFIG_DIR
+       <exec>               command that is executed by diversion
+
+For each item a ".divert" file with 1 ... 3 control statements and an optional
+'divert()' function are used. The format of these files is:
+
+         status=ignore|on|off    # default: on
+         target=<file>           # mandatory
+         divert=<file>           # default: divert() script
+         [divert() { <body> }]   # optional: script
+
+The ".divert" files are declarative, creating or editing such a file does not
+change the actual system configuration. Use action add, update or remove which
+run 'dkpg-divert' as needed. Action show lists the state of diversions, where
+'pending' diversions wait for action update to become effective.
+
+The 'status=xxc' line tells what action update will do for this item. This is
+intended for tools like centaursysinit to update all configured diversions.
+
+examples:
+       # replace 'some-tool' by '/usr/bin/true'
+       $CEN_NAME create some-tool true -- update
+       # restore 'some-tool' to distribution state
+       $CEN_NAME delete some-tool
+
+       # using a divert() function
+       $CEN_NAME create some-tool
+       editor some-tool.divert
+       $CEN_NAME update
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

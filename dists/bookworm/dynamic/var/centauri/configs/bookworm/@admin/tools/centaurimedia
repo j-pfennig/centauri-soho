@@ -1,0 +1,793 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Dr. J. Pfennig (c) 2020-2024; "$"BSD License"
+CEN_TITLE=$"Tool to wipe, partition, format and label storage media"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t -y - '0.30:3' || exit 2
+
+### TODO --base --label 'mount' 'shell'
+
+# Data
+CEN_OPT_BASE=           # see --base
+CEN_OPT_DEVICE=         # see --device
+CEN_OPT_FSTAB=          # see --fstab
+CEN_OPT_LABEL=          # see --label
+
+DAT_PARTITION=
+DAT_PARTPREF=
+DAT_BLKSIZE=            # see info_device()
+DAT_DEVSIZE=            # ...
+DAT_DEVINFO=            # ...
+DAT_ISOK=               # see ask_if_ok()
+DAT_IMAGE=              # device is an image
+
+# ------------------------------------------------------------------------------
+# check option --device: [-m]
+#
+# Options:  -m      allow device to be mounted
+# ------------------------------------------------------------------------------
+check_device() {
+    blkdevice -d -i -f $1 -- "$CEN_OPT_DEVICE" || return 1
+    CEN_OPT_DEVICE="$CEN_BLKDEVICE"
+    [ "${CEN_BLKDEVICE[2]:--}" = '-' ] && DAT_IMAGE=1
+    return 0
+}
+
+check_image() {
+    [ -z "$DAT_IMAGE" ] && return 0
+    invoke -e $"Not applicable for image: %s" "$CEN_OPT_DEVICE" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# get partition info: [-m] <part>
+#
+# Options:  -m      allow device to be mounted
+# ------------------------------------------------------------------------------
+check_partition() {
+    local mopt
+    [ "$1" = '-m' ] && { mopt="$1" ; shift ; }
+
+    case "${1:-0}" in
+    0)  DAT_PARTITION="$CEN_OPT_DEVICE" ; return 0
+        ;;
+    1)  if [ -n "$DAT_IMAGE" ] ; then           # allow #1 for image
+            DAT_PARTITION="$CEN_OPT_DEVICE" ; return 0
+        fi
+        ;;
+    [2-9]|1[0-9])
+        ;;
+    *)  invoke -e $"Not a valid partition number:" "$1" ; return 1
+    esac
+
+    blkdevice -e $mopt -n "$1" "$CEN_OPT_DEVICE" || return 1
+    DAT_PARTITION="${CEN_BLKDEVICE[1]}"
+    [ -b "$DAT_PARTITION" ] && return 0
+    invoke -e $"Not a partition:" "${CEN_BLKDEVICE[1]}" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# make 6 char (random)name for vfat label: <vnam> <name>
+# make 6 char random string not starting with lower case letter
+# ------------------------------------------------------------------------------
+vfat_name() {
+    local pref="$2"
+    if [ "${#pref}" -gt 6 ] ; then
+        while : ; do
+            read -r -N 16 pref </dev/urandom || fatal $"Cannot read from:" '/dev/urandom'
+            system -f -p -r -s pref base64 <<<$pref
+            [ "${#pref}" -gt 10 ] && break
+        done
+        pref="${pref//[\/+]/%}" ; pref="${pref:3:6}"
+    fi
+    printf -v "$1" '%s' "$pref"
+}
+
+# ------------------------------------------------------------------------------
+# get device info: <part>
+# ------------------------------------------------------------------------------
+info_device() {
+    DAT_BLKSIZE=0 ; DAT_DEVSIZE=0
+    [ "$DAT_DEVINFO" = "$DAT_PARTITION" ] && return 0
+    [ -n "$DAT_IMAGE" ] && return 0
+    DAT_DEVINFO="$DAT_PARTITION"
+
+    local size gran rslt
+    system -f -p -r -s rslt -- lsblk -o SIZE,DISC-GRAN -n -b -d "$DAT_PARTITION"
+    error -t || return 1
+
+    set -- $rslt ; size="$1" ; gran="$2"
+    [ -n "$size" -a -z "${size//[0-9]/}" ] || return 0
+    [ -n "$gran" -a -z "${gran//[0-9]/}" ] || return 0
+    [ "$size" -gt 4096 ] || return 0            # odd data
+    DAT_DEVSIZE="$size"                         # media size [bytes]
+    [ "$gran" -gt 0 ] || return 0               # cannot discard
+
+    ((size /= 100))                             # use 100 blocks for progress reporting
+    DAT_BLKSIZE=$(( ((size + gran - 1) / gran) * gran ))
+    [ $DAT_BLKSIZE -gt $gran ] || DAT_BLKSIZE="$gran"
+}
+
+# ------------------------------------------------------------------------------
+# ask before delete
+# ------------------------------------------------------------------------------
+ask_if_ok() {
+    [ -n "$DAT_ISOK" ] && return
+    if [ "$CEN_ACTION" = 'label' ] ; then
+        confirm -f -n -y $"Change label of partition '%s'. Continue" \
+            "$DAT_PARTITION" || quit -a -u
+        return
+    fi
+    confirm -f -n -y "%s will delete all data of '%s'. Continue" \
+        "$CEN_ACTION" "$DAT_PARTITION" || quit -a -u
+    DAT_ISOK=1
+}
+
+# ------------------------------------------------------------------------------
+# run blkdiscard: [-z]
+# ------------------------------------------------------------------------------
+run_discard() {
+    if [ "${DAT_BLKSIZE:-0}" = 0 ] ; then
+        if [ "$1" != "-z" -o "${DAT_DEVSIZE:-0}" -lt 4096 ] ; then
+            invoke -e $"Unsupported for this device:" "$DAT_PARTITION"
+            return 1
+        fi
+        local size=$((DAT_DEVSIZE / 100))       # use 100 blocks for progress reporting
+        DAT_BLKSIZE=$(( ((size + 4096 - 1) / 4096) * 4096 ))
+    fi
+    system -c -e 'blkdiscard' || return 1
+
+    embed -m '_centauri_bash_con'                   # used for progress reporting
+
+    local offs=0 coun=0
+    while [ $offs -lt $DAT_DEVSIZE ] ; do
+        progress -d 0.1 -l "$CEN_ACTION" $"progress" "$coun%"
+        [ -z "$CEN_OPT_DRYRUN" ] &&
+            system -e -n -p -- blkdiscard -f $1 -o $offs -l $DAT_BLKSIZE "$DAT_PARTITION"
+        ((offs += DAT_BLKSIZE)) ; ((coun += 1))
+    done
+    message "$CEN_ACTION" $"completed."
+}
+
+# ------------------------------------------------------------------------------
+# copy: [<from>|-] <dest>|- [<comp>]
+# ------------------------------------------------------------------------------
+actionCopy() {
+    local from dest stat
+    if [ $# -gt 1 ] ; then
+        if [ -b "$1" -o -c "$1" ] ; then
+            from="$1"
+        else
+            inpfile -f -l -s from -- "$1" || return
+        fi
+        if [ -b "$2" ] ; then
+            dest="$2"
+        else
+            outfile -f -l -s dest -- "$2" || return
+        fi
+     else
+        [ -z "$CEN_OPT_DEVICE" ] && fatal $"Missing '--device' option"
+        check_device -m || return
+        from="$CEN_OPT_DEVICE"
+        [ "$1" = '-' ] && dest='/dev/stdout' || dest="$1"
+     fi
+
+     [ -r "$from" ] || invoke -e $"Cannot read from input:" "$from"
+     if [ ! -e "$dest" ] ; then
+        confirm -n $"Create output file '$dest'" || return
+        create -- "$dest"
+     elif [ ! -w "$dest" ] ; then
+        invoke -e $"Cannot write to output:" "$dest"
+     fi
+     error -t || return
+     if [ "$from" -ef "$dest" ] ; then
+        invoke -e $"Input and output are equal" ; return 1
+     fi
+
+     [ "$CEN_VERB" -ge 1 ] && stat='status=progress'
+     message $"copy data§ §'$from  ->  $dest'"
+     system -- dd if="$from" of="$dest" bs=1M $stat
+}
+
+# ------------------------------------------------------------------------------
+# discard: -no args-
+# ------------------------------------------------------------------------------
+actionDiscard() {
+    check_image || return
+    check_device || return
+    check_partition || return
+    info_device "$DAT_PARTITION" || return
+    ask_if_ok
+    run_discard
+    system -q    -- partprobe "$DAT_PARTITION"      # try part table re-read
+}
+
+# ------------------------------------------------------------------------------
+# set partition flags: <part> <flag>...
+# ------------------------------------------------------------------------------
+actionFlag() {
+    system -e -c 'parted' || return
+    check_image || return
+    check_device -m || return
+    check_partition || return
+    local item pnum="${DAT_PARTITION##*[a-z]}" args=()
+    message -p $"Flags for partition #%s: %s" "$pnum" "$*"
+    for item in "$@" ; do
+        args+=(set $pnum "$item" on)
+    done
+    system -e -p -- parted --script "$CEN_OPT_DEVICE" "${args[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# inhibit: -no args-
+# ------------------------------------------------------------------------------
+actionInhibit() {
+    local inhi='/usr/lib/udisks2/udisks2-inhibit'
+    system -c -f "$inhi"
+    console -m 1                                # init to fancy mode, no cols
+    export PS1="$CEN_DECO_MARK$CEN_NAME$CEN_DECO_NORM \w\$ "
+    system -r -- $inhi bash --norc
+}
+
+# ------------------------------------------------------------------------------
+# format: [<part>] <type> [<label>]
+# ------------------------------------------------------------------------------
+actionFormat() {
+
+    # create fstab entry from ftab array
+    ___sav_fstab() {
+        local line
+        printf -v line "%-23s %-15s %-7s %-47s %s" "${ftab[@]}"
+        if [ "$CEN_OPT_FSTAB" = '-' ] ; then
+            echo "$line"
+        else
+            create -a -v line -- "$CEN_OPT_FSTAB"
+        fi
+    }
+
+    local part=1 ftyp labl svol ftab fvol opts args=() post=() curr="$PWD"
+
+    if [ -z "${1//[0-9]}" ] ; then
+        part="$1" ; shift
+    fi
+    check_device -m || return
+    check_partition "$part" || return
+
+    labl="$2"
+    [ -n "$labl" ] && ftab=("LABEL=$labl") || ftab=("$DAT_PARTITION")
+
+    case "$1" in
+        sys*)       ftyp="btrfs" ; fvol=2 ; args=("-K" "-f")
+                    [ -n "$labl" ] && args+=("-L" "$labl") ;;
+        vol*)       ftyp="btrfs" ; fvol=1 ; args=("-K" "-f")
+                    [ -n "$labl" ] && args+=("-L" "$labl") ;;
+        btrfs)      ftyp="btrfs" ; args=("-K" "-f")
+                    [ -n "$labl" ] && args+=("-L" "$labl") ;;
+
+        f2fs)       ftyp="f2fs" ; args=("-f")
+                    [ -n "$labl" ] && args+=("-l" "$labl") ;;
+
+        exfat)      ftyp="exfat"
+                    [ -n "$labl" ] && args=("-n" "$labl") ;;
+
+        ext4)       ftyp="ext4" ; args=("-E" "nodiscard" "-m" "0")
+                    [ -n "$labl" ] && args+=("-L" "$labl")
+                    post=("tune2fs" "-c" "0" "$DAT_PARTITION") ;;
+
+        ntfs*)      ftyp="ntfs" ; args=("-f")
+                    [ -n "$labl" ] && args+=("-L" "$labl") ;;
+
+        fat*|vfat)  ftyp='vfat'
+                    [ -n "$labl" ] && args+=("-n" "$labl")
+                    ftab[3]='nofail' ;;
+        [lr]fat)    ftyp='vfat'                             # raspi special case
+                    [ -n "$labl" ] && args+=("-n" "$labl")
+                    ftab[1]='/boot' ; ftab[3]='nofail'
+                    [ "$1" = 'rfat' ] && ftab[1]+='/firmware' ;;
+        swap)       ftyp='swap' ; ftab[1]='none' ; ftab[3]='nofail'
+                    [ -n "$labl" ] && args+=("-L" "$labl") ;;
+
+        "")         invoke -e $"No filesystem type specified"
+                    return ;;
+        *)          invoke -e $"Unsupported filesystem: %s" "$1"
+                    return
+    esac
+
+    if [ -n "$CEN_OPT_FSTAB" ] ; then
+
+        local amnt=',x-systemd.automount,x-systemd.idle-timeout=600'
+
+        [ -z "${ftab[1]}" ] && ftab[1]="/mnt/${ftab##*[/_=]}"
+        [ -z "${ftab[2]}" ] && ftab[2]="$ftyp"
+        [ -z "${ftab[3]}" ] && ftab[3]="rw,nofail,defaults,noatime"
+        [ -z "${ftab[4]}" ] && ftab[4]="0 2"
+
+        case "$fvol" in
+        1)  ftab[3]="subvol=/Volumes/Data,${ftab[3]}" ;;
+        2)  ftab[3]="subvol=/,${ftab[3]}" ;;
+        *)  case "${ftab[1]}" in
+                /mnt/root|/mnt/vol0)
+                             ftab[1]='/' ; ftab[4]='0 1'
+                             ftab[3]="rw,defaults,noatime" ;;
+                /mnt/home)   ftab[1]='/home' ;;
+                /mnt/export) ftab[1]='/export' ; ftab[3]+="$amnt" ;;
+                /mnt/shared) ftab[1]='/shared' ; ftab[3]+="$amnt" ;;
+            esac
+        esac
+        ___sav_fstab
+    fi
+
+    info_device "$DAT_PARTITION" || return
+    ask_if_ok
+    if [ -n "$labl" ] ; then
+        message -p $"Creating '%s' filesystem on '%s', label '%s'" "$ftyp" "$DAT_PARTITION" "$labl"
+    else
+        message -p $"Creating '%s' filesystem on '%s', no label" "$ftyp" "$DAT_PARTITION"
+    fi
+
+    # remove fs signatures
+    system -q wipefs --all "$DAT_PARTITION"
+
+    # make swap
+    if [ "$ftyp" = 'swap' ] ; then
+        system -e -p -- mkswap "${args[@]}" "$DAT_PARTITION"
+        system -q    -- partprobe "$DAT_PARTITION"  # try part table re-read
+        return
+    fi
+
+    if ! system -e -p -- mkfs -t "$ftyp" "${args[@]}" "$DAT_PARTITION" ; then
+        [ -z "$CEN_OPT_DRYRUN" ] && return
+    fi </dev/null
+    system -q    -- partprobe "$DAT_PARTITION"      # try part table re-read
+    [ -n "$post" ] && system -e -p -- "${post[@]}"
+
+    # create btrfs sub-volume
+    if [ -n "$fvol" ] ; then
+        folder -f -m -r -s svol -t ".$$"
+        if system -e -p -- mount "$DAT_PARTITION" "$svol" -o subvol=/ || [ -n "$CEN_OPT_DRYRUN" ] ; then
+            folder -m "$svol/Volumes" 775
+            folder -m "$svol/Snapshots" 775
+            if [ "$fvol" = 2 ] ; then
+                opts="${ftab[3]}"
+                for fvol in 'Root' 'Home' 'Export' 'Shared' ; do
+                    if [ -n "$CEN_OPT_FSTAB" ] ; then
+                        ftab[1]="/${fvol,}"
+                        ftab[3]="${opts/=\//=\/Volumes\/$fvol}"
+                        case  "$fvol" in
+                        Root) ftab[1]='/' ; ftab[3]="${ftab[3]/nofail,/}" ;;
+                        Home) ;;
+                        *)    ftab[3]+="$amnt"
+                        esac
+                        ___sav_fstab
+                    fi
+                    system -e -p -t -- btrfs subvolume create "$svol/Volumes/$fvol"
+                done
+                for fvol in 'mnt/boot' 'home' 'export' 'shared' ; do
+                    folder -m -p "$svol/Volumes/Root/$fvol"
+                done
+                system -e -p -t -- btrfs subvolume set-default "$svol/Volumes/Root"
+            else
+                system -e -p -t -- btrfs subvolume create "$svol/Volumes/Data"
+                system -e -p -t -- btrfs subvolume set-default "$svol/Volumes/Data"
+            fi
+            folder -c -- "$curr"
+            system -e -p -- umount "$svol"
+        fi
+        system -q -r -- rmdir "$svol"
+    fi
+    sysrun -q  -- umount "$DAT_PARTITION"       # in case of udisk automount
+}
+
+# ------------------------------------------------------------------------------
+# label: [<part>] <label>
+# ------------------------------------------------------------------------------
+actionLabel() {
+    local part=1 ftyp labl fvol args=() post=()
+    [ $# -gt 1 ] && { part="$1" ; shift ; }
+
+    # TODO mounted btrfs must use mpt
+
+    check_image || return
+    check_partition -m "$part" || return
+    labl="$1"
+
+    # get fs type
+    system -f -p -r -s ftyp -- lsblk -o FSTYPE -n -b -d "$DAT_PARTITION" || return
+
+    case "$ftyp" in
+
+        btrfs)      if findmount "$DAT_PARTITION" ; then
+                        args=(btrfs filesystem label "$CEN_MOUNT_DIR" "$labl")
+                    else
+                        args=(btrfs filesystem label "$DAT_PARTITION" "$labl")
+                    fi ;;
+
+        #f2fs)       ;;
+
+        exfat)      args=(exfatlabel "$DAT_PARTITION" "$labl") ;;
+
+        ext4)       args=(tune2fs '-L' "$labl" "$DAT_PARTITION") ;;
+
+        ntfs*)      args=(ntfslabel "$DAT_PARTITION" "$labl") ;;
+
+        swap)       system -q swapoff "$DAT_PARTITION"
+                    args=(swaplabel '-L' "$labl" "$DAT_PARTITION") ;;
+
+        fat*|vfat)  if [ "${#labl}" -gt 11 ] ; then
+                        invoke -e "max length for vfat is 11 chars:" "$labl"
+                        return
+                    fi
+                    args=(fatlabel "$DAT_PARTITION" "$labl") ;;
+
+        "")         invoke -e $"No filesystem type identified"
+                    return ;;
+        *)          invoke -e $"Unsupported filesystem: %s" "$ftyp"
+                    return
+    esac
+
+    ask_if_ok
+    message -p $"Labeling filesystem on '%s', label '%s'" "$DAT_PARTITION" "$labl"
+    system -e -p -- "${args[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# list partions: -no args-
+# ------------------------------------------------------------------------------
+actionList() {
+    if [ -n "$CEN_OPT_DEVICE" ] ; then
+        check_device -m "$CEN_OPT_DEVICE" || return
+    fi
+    embed -z centauriinfo disk "${CEN_OPT_DEVICE:-all}"
+}
+
+# ------------------------------------------------------------------------------
+# partion: [<kind>] <size>...
+# ------------------------------------------------------------------------------
+actionPartition() {
+    system -e -c 'parted' || return
+    check_image || return
+    check_device || return
+    check_partition || return
+    info_device || return
+
+    local kind numi item size=()
+    case "$1" in
+        msdos|dos)  kind='msdos' ; shift ;;
+        gpt)        kind="gpt"   ; shift ;;
+        [0-9]*|+)   ;;
+        "")         ;;
+        *)          invoke -e $"Partition table type must be 'msdos' or 'gpt': %s" "$1"
+                    return
+    esac
+
+    if [ $# = 0 ] ; then
+        invoke -e $"Need at least one partion size (use '+' for whole device)"
+        return
+    fi
+
+    while [ $# -gt 0 ] ; do
+        if [ "$1" = "+" ] ; then
+            if [ $# = 1 ] ; then
+                size+=("0") ; break
+            else
+                invoke -e $"'+' can be used for the last partition only" ; return
+            fi
+        fi
+        numi="${1::-1}"
+        if [ -n "${numi//[0-9]}" -o -z "$numi" ] ; then
+            invoke -e $"Not a valid partition size: %s" "$1"
+            return
+        fi
+
+        case "${1:${#numi}}" in
+            M)  size+=("${numi}") ;;
+            G)  size+=( $((numi * 1024)) ) ;;
+            T)  size+=( $((numi * 1024 * 1024)) ) ;;
+            %)  size+=( $(((DAT_DEVSIZE / 1024 / 1024 / 100) * numi)) ) ;;
+            *)  invoke -e $"Not a valid partition size: %s" "$1"
+                return
+        esac
+        shift
+    done
+
+    ask_if_ok
+
+    [ -z "$kind" ] && kind='msdos'
+    message -p $"Creating '%s' partition table with %s partition(s)" "$kind" "${#size[@]}"
+
+    local pars=0 offs=0 parts
+    # add partition to parts string: <name> <size>
+    ___add_part() {
+        local pbeg="${offs}MiB" pend ; offs=$((offs + $2))
+        [ "$pbeg" = "0MiB" ] && pbeg="0%"
+        pend="${offs}MiB" ; [ "$2" = 0 ] && pend="100%"
+        parts+="mkpart $1 $pbeg $pend " ; pars=$((pars + 1))
+    }
+
+
+    for item in "${size[@]}" ; do
+        if [ "$kind" = 'msdos' ] ; then
+            ___add_part "primary" "$item"
+        else
+            ___add_part "_part$pars" "$item"
+        fi
+    done
+
+    # zerofill 32MByte before parted to prevent udisk from mounting garbage
+    system -e -p -- dd if=/dev/zero of="$DAT_PARTITION" bs=1M count=32
+    system -e -p -- parted --script -a optimal "$DAT_PARTITION" mklabel "$kind" $parts
+    error -t || return
+
+    message -p $"Created partition table"
+    sleep 0.5
+    [ -b "$DAT_PARTITION" ] || sleep 0.5
+    [ -b "$DAT_PARTITION" ] || sleep 1
+}
+
+# ------------------------------------------------------------------------------
+# re-read partition table: -no args-
+# ------------------------------------------------------------------------------
+actionProbe() {
+    if [ -n "$CEN_OPT_DEVICE" ] ; then
+        check_device -m "$CEN_OPT_DEVICE" || return
+    fi
+    system -e -p -- partprobe $CEN_OPT_DEVICE
+}
+
+# ------------------------------------------------------------------------------
+# system: <name> [<size>] [nobios] [ext4] [raspi|legacy]
+# ------------------------------------------------------------------------------
+actionSystem() {
+    local name="$1" vfat bfat='fat' size fnob nump=3 ext4 ; shift
+    local parg='set 1 esp on set 2 bios_grub on' ptyp='gpt' bios='128M'
+    while [ $# != 0 ] ; do
+        case "$1" in
+        ext4)   ext4=1 ;;
+        nob*)   nump=2 ; parg='set 1 esp on' ; bios= ;;
+        leg*)   nump=2 ; parg='set 1 lba on' ; bios= ; ptyp='msdos' ; bfat='lfat' ;;
+        ras*)   nump=2 ; parg='set 1 lba on' ; bios= ; ptyp='msdos' ; bfat='rfat' ;;
+        [0-9]*) size="$1" ;;
+        *)      invoke -e $"Invalid argument:" "$1"
+        esac ; shift
+    done
+    vfat_name vfat "$name"
+    actionPartition $ptyp 512M $bios "${size:-8G}" +
+    error -t || return
+
+    actionFormat 1 "$bfat" "${vfat}_boot"
+    error -t || return
+    actionFormat "$nump" 'swap' "${name}_swap"
+    error -t || return
+
+    if [ -z "$ext4" ] ; then
+        actionFormat "$((nump + 1))" 'system' "${name}_vol0"
+    else
+        actionFormat "$((nump + 1))" 'ext4' "${name}_root"
+    fi
+
+    system -e -p -- parted --script "$CEN_OPT_DEVICE" "$parg"
+}
+
+# ------------------------------------------------------------------------------
+# umount: -no args-
+# ------------------------------------------------------------------------------
+actionUmount() {
+    check_device -m || return
+
+    local item coun=0
+    findmount -t - -d -- "$CEN_OPT_DEVICE"
+    for item in "${CEN_MOUNT_ARR[@]}" ; do
+        system -e -p -- umount "$item" && ((coun += 1))
+    done
+    pluralize -g -z -p $"Unmounted %s %s" "$coun" $"partion" $"partitions"
+}
+
+# ------------------------------------------------------------------------------
+# zerofill: [<part>]
+# ------------------------------------------------------------------------------
+actionZerofill() {
+    check_image || return
+    check_partition "$1" || return
+    info_device "$DAT_PARTITION" || return
+    ask_if_ok
+    run_discard -z
+    system -q    -- partprobe "$DAT_PARTITION"      # try part table re-read
+}
+
+# ------------------------------------------------------------------------------
+# run: [run] <type>
+# ------------------------------------------------------------------------------
+actionRun() {
+    [ "$1" = "run" ] && shift
+    case "$1" in
+        vol*)       ftyp="volume" ;;
+        btrfs)      ftyp="btrfs" ;;
+        f2fs)       ftyp="f2fs" ;;
+        exfat)      ftyp="exfat" ;;
+        ext4)       ftyp="ext4" ;;
+        ntfs*)      ftyp="ntfs" ;;
+        fat*|vfat)  ftyp="vfat" ;;
+
+        "")         invoke -e $"No filesystem type specified"
+                    return ;;
+        *)          invoke -e $"Unsupported filesystem: %s" "$1"
+                    return
+    esac
+
+    check_image || return
+    check_partition || return
+    info_device "$DAT_PARTITION" || return
+    ask_if_ok
+
+    [ "${DAT_BLKSIZE:-0}" -gt 0 ] && run_discard
+    error -t || return ; actionPartition '+'
+    error -t || return ; actionFormat 1 "$ftyp" "$2"
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> [<argument>]
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+    '') [ -n "$CEN_OPT_DEVICE" -a -n "$CEN_OPT_LABEL" ] &&
+            optarg - - -m '--device --label'
+        ;;
+    -B|--base)
+        optarg 'base'       -   -t  ;;          # text argument
+    -D|--dev*)
+        optarg 'device'     -   -t  ;;          # any text
+    -F|--fst*)
+        optarg 'fstab'      -   -t  ;;          # any text
+    -L|--lab*)
+        optarg 'label'      -   -t  ;;          # any text
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <verb> <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$1" in
+
+    # insist in '--device' option unless the only verb is 'copy' or 'inhibit'
+    '') if [ -z "$CEN_OPT_DEVICE" ] ; then
+            listsearch -- '--' "${CEN_CMDARGS[@]//---/--}" &&
+                fatal $"Missing '--device' option"
+            case "${CEN_CMDARGS::3}" in
+            cop|inh|lis|pro)    ;;
+            *)              fatal $"Missing '--device' option"
+            esac
+        else
+            case "$CEN_OPT_DEVICE" in
+            /dev/*) ;;
+            */*)    ;;
+            *)      CEN_OPT_DEVICE="/dev/$CEN_OPT_DEVICE"
+            esac
+        fi
+        ;;
+
+    cop|copy)
+        invoke -r 'copy'      -          1 2 ;;             # 1..2 args
+    dis*)
+        invoke -r 'discard'   -          0 ;;               # no args
+    fla|flag)
+        invoke -r 'flag'      -          1 + ;;             # 1..n args
+    for*)
+        invoke -r 'format'    -          0 3 ;;             # 0..3 args
+    inh*)
+        invoke -s 'inhibit'   -          0 ;;               # no args
+    lab*)
+        invoke -r 'label'     -          1 2 ;;             # 1..2 args
+    lis|list)
+        invoke    'list'      -          0 ;;               # no args
+    mou*)
+        invoke -s 'mount'     -          0 ;;               # no args
+    par*)
+        invoke -r 'partition' -          0 + ;;             # 0..n args
+    pro*)
+        invoke -r 'probe'     -          0 ;;               # no args
+    she*|bas|bash)
+        invoke -s 'shell'     -          0 ;;               # no args
+    sys*)
+        invoke -r 'system'    -          1 4 ;;             # 1..4 args
+    umo*|unm*)
+        invoke -r 'umount'    -          0 ;;               # no args
+    zer*)
+        invoke -r 'zerofill'  -          0 1 ;;             # 0..1 args
+
+    *)  invoke -r 'run'       -          1 2 "$@" ;;        # 1..2 args
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset -u "(1) $CEN_NAME -D|-L <arg> <option>... [action argument... [--]]..." \
+             -u "(2) $CEN_NAME [-B <fldr>] -D|-L <arg> <option>... mount|shell|umount" \
+             -u "(3) $CEN_NAME <option>... copy <dest>" \
+             -u "(4) $CEN_NAME <option>... inhibit" \
+             -u - \
+             -u $"Form"" (1) ${CEN_TITLE,}." \
+             -u $"Form"" (2) "$"mount multiple disk partitions, run a shell and unmount." \
+             -u $"Form"" (3) "$"copy data from stdin or a device using the 'dd' tool." \
+             -u $"Form"" (4) "$"run a shell that avoids the udisks automount problem." \
+
+    usageset -o - \
+             -o '-B --base    <fldr>' $"mount base folder for form (2) actions" \
+             -o '-D --device  <dev>'  $"[*] block device to use" \
+             -o '-L --label   <dlab>' $"[*] volume or partition label" \
+             -o '-F --fstab   <file>' $"append fstab entry to file, use '-' for stdout" \
+             -o - \
+             -o $"[*] ohne of these is required by form (1) or (2) actions" \
+
+    usageset -a $"••• media setup •••" \
+             -a 'discard'             $"discard all data via 'blkdiscard'" \
+             -a 'zero      [<part>]'  $"zerofill device or partion" \
+             -a - \
+             -a 'partition [<kind>] <size>...' \
+             -a -                     $"create a new partion table" \
+             -a 'flag      [<part>] <flag>...' \
+             -a -                     $"set partion flags" \
+             -a 'format    [<part>] <type> [<label>]' \
+             -a -                     $"format device or partition" \
+             -a 'label     [<part>] <label>' \
+             -a -                     $"set filesystem label for dev/partition" \
+             -a 'system    <host> [<size>] [nobios] [raspi|legacy] [ext4]' \
+             -a -                     $"create 3/4 partition EFI system disk with btrfs," \
+             -a -                     $"swap partition size is <size> or 8G if missing" \
+             -a '[run]     <type> [<label>]' \
+             -a -                     $"discard data (if supported), create one partition" \
+             -a -                     $"and format the entire medium" \
+             -a - \
+             -a $"••• (un-)mounting media •••" \
+             -a 'mount'               $"mount partions of the given device" \
+             -a 'shell'               $"mount, run a shell and unmount" \
+             -a 'umount'              $"unmount all partions of the given device" \
+             -a - \
+             -a $"••• other/helpers •••" \
+             -a 'copy      [<from>|-] <dest>|- [<cmpr>]' \
+             -a -                     $"run 'dd' to copy from stdin/file/device" \
+             -a 'inhibit'             $"run a bash-shell using udisks2-inhibit" \
+             -a 'probe'               $"re-read the partition table" \
+
+    usageset -p '<dest>'     $"output path (use '-' for /dev/stdout)" \
+             -p '<dev>'      $"a dev name or path (like 'sda' or '/dev/sdb')" \
+             -p '<dlab>'     $"volume or partition label (like 'raspi4' or 'worm1_boot')" \
+             -p '<flag>'     $"'efi' 'boot' 'bios_grub'" \
+             -p '<kind>'     $"kind of partition table: msdos|gpt" \
+             -p '<label>'    $"label text" \
+             -p '<part>'     $"a partion number" \
+             -p '<size>'     $"size of partion: <number><M|G|T>" \
+             -p -            $"the last size can be '+' to use all space" \
+             -p '<type>'     $"file system type: swap,fat,ext4,exfat,ntfs,fs2fs, btrfs or" \
+             -p -            $"'volume' or 'system' to create btrfs with subvolume tree" \
+
+    usageset -e '§' 54 \
+             -e '. -D sdd system host1 nobios'               $"# EFI btrfs boot disk" \
+             -e '. -D sdd system raspi1 4G raspi'            $"# raspi btrfs boot disk" \
+             -e - \
+             -e '. -D mmcblk0 discard -- part mdos 300M +'   $"# create 2 partitions" \
+             -e '. -D nvme0n1 format 1 fat -- 2 volume data' $"# 2 filesystems" \
+             -e '. -D sdc zero 2'                            $"# zerofill partition" \
+             -e - \
+             -e '. -D sdc exfat my-videos'                   $"# entire medium" \
+             -e '. -D sdc discard -- system my-host 16'      $"# system disk" \
+
+    usageset -l $"automount" \
+             -t $"The udisk2 automount problem can be circumvented by launching a bash-shell" \
+             -t $"that disables device polling via udisk2-inhibit. No partition detection" \
+             -t $"or automount should happen until the shell terminates. See 'inhibit'." \
+
+    usageset -l - \
+             -t $"Only the 'format' action can be used with <dev> being an image file." \
+
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

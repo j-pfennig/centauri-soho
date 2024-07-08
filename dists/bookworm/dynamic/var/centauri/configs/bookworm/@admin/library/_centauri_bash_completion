@@ -1,0 +1,56 @@
+# _centauri_bash_completion - created by 'centauritools' - do not edit!
+
+# helper to register alias completion: <alias> <tool>
+export CEN_COMPLETION_ALIAS
+_cen_completion_alias() {
+    CEN_COMPLETION_ALIAS+=";$1:$2"
+    complete -X '@(.[^/]*|./.*)' -F _cen_completion_func "$1"
+}
+
+# custom completion function
+_cen_completion_func() {
+    # mangle alias names
+    if [ -n "$CEN_COMPLETION_ALIAS" ] ; then
+        local _temp="${CEN_COMPLETION_ALIAS#*;$1:}"
+        if [ "$CEN_COMPLETION_ALIAS" != "$_temp" ] ; then
+            _temp="${_temp%%;*}"
+            [ "$1" = "$3" ] && set -- "$_temp" "$2" "$_temp" || set -- "$_temp" "$2" "$3"
+        fi
+    fi
+
+    # completion of options
+    if [ "${2::1}" = '-' ] ; then
+        local _xall="$(CEN_COMPLETION=opts $1 --help) --info --help --verbose --quiet"
+        COMPREPLY=($(compgen -W "$_xall" -- $2))
+        # no space for option argument
+        if [ "${#COMPREPLY[@]}" = "1" ] ; then
+            [ "${COMPREPLY:${#COMPREPLY}-1}" = "=" ] && compopt -o nospace
+        fi
+
+    # filenames or verbs
+    else
+        compopt -o filenames
+
+        # forced filename completion
+        if [ "${2::1}" = "." ] ; then
+            :
+        # filename completion after verb (bash bug, needs && here)
+        elif [ -z "${3//[a-z]/}" ] && [ "$1" != "$3" ] ; then
+            :
+        # do verb completion: <prog> <input> <context>
+        else
+            local _xall=$(CEN_COMPLETION="verb:$3" $1 --help)
+            COMPREPLY=($(compgen -W "$_xall" -- $2))
+            [ -n "$COMPREPLY" ] && return
+        fi
+
+        local _sifs="$IFS" ; IFS=$'\n'
+        COMPREPLY=($(compgen -o default -- "$2")) ; IFS="$_sifs"
+    fi
+}
+
+# register the completion function
+complete -X "@(.[^/]*|./.*)" -F _cen_completion_func  'centauriarchive' 'centauribackup' 'centauribuilder' 'centauricerts' 'centaurichroot' 'centauricleanup' 'centauriconfig' 'centauriconvert' 'centauricopy' 'centauricreate' 'centauricron' 'centauridata' 'centauridiff' 'centauridisk' 'centauridivert' 'centauriefilinux' 'centauriencfs' 'centauriexecute' 'centaurifilter' 'centaurigpxinfo' 'centaurigrep' 'centaurihass' 'centaurihelp' 'centaurihotkey' 'centauriinfo' 'centaurikerberos' 'centaurikexec' 'centaurikeys' 'centaurilauncher' 'centaurildap' 'centaurimachines' 'centaurimail' 'centaurimedia' 'centaurimirror' 'centaurimonitor' 'centaurimounter' 'centauriname' 'centaurinetcfg' 'centaurinetgen' 'centauriowner' 'centauripackage' 'centauripaths' 'centauripower' 'centauriprofile' 'centauriraspi' 'centaurirecode' 'centauriremove' 'centaurirestore' 'centaurirights' 'centauriroute' 'centaurirunlevel' 'centaurisecrets' 'centaurisecurity' 'centaurisession' 'centaurismart' 'centaurisnapshot' 'centaurisoho' 'centaurissh' 'centauristartup' 'centauristartx' 'centauriswap' 'centauriswitch' 'centaurisysinit' 'centauritime' 'centauritrack' 'centauritransform' 'centauriusers' 'centaurivbox' 'centaurivstab' 'show-unattended-upgrades' 'vbox'
+
+
+# end

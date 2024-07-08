@@ -1,0 +1,1021 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2012-2024; BSD License"
+CEN_TITLE=$"Date/Time operations on files and folders"
+# ------------------------------------------------------------------------------
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -g -i -m tra -s -t -y - '0.48:2' || exit 2
+
+# Data
+CEN_OPT_CHANGE=         # see --change
+CEN_OPT_DATE=2          # see --date
+CEN_OPT_END=            # see --end
+CEN_OPT_FOLDER=         # see --folder
+CEN_OPT_LOCAL=          # see --local
+CEN_OPT_MATCH='good'    # see --match
+CEN_OPT_NUMBER=         # see --number
+CEN_OPT_OFFSET=         # see --offset
+CEN_OPT_RECURSE=        # see --recurse
+CEN_OPT_SILENT=         # see --silent
+CEN_OPT_UTC=            # see --utc
+
+DAT_HAS_XML2=           # do_content, installation check
+DAT_HAS_EXIF=           # " " "
+DAT_HAS_MEDIAINFO=      # " " "
+
+actionTree_by_kind=$"Theme"
+actionTree_by_date=$"Date"
+actionTree_nest=
+
+actionPretty_kind=
+
+# ------------------------------------------------------------------------------
+# Date Parsing
+# ------------------------------------------------------------------------------
+# Helper to split date: <text> <leng>  <dofs> <dlen>  <tofs> <tlen>
+parseDateSplit() {
+    local tinf text
+    if [ "$2" -gt 0 ] ; then
+        tinf="${1::$2}"
+        parseDate_text_all="${1:$2+1}"
+    else
+        local posi leng
+        leng=$((1 - $2))
+        posi=$((${#1} + $2))
+        tinf="${1:$posi:$leng}"
+        parseDate_text_all="${1::$posi-1}"
+    fi
+
+    # packed date and time
+    local tdat ttim
+    tdat="${tinf:$3:$4}"
+    tdat="${tdat//-/}"
+    tdat="${tdat//_/}"
+    ttim="${tinf:$5:$6}"
+    ttim="${ttim//-/}"
+    ttim="${ttim//_/}"
+    parseDate_date_packed="$tdat"
+    parseDate_time_packed="$ttim"
+
+    # formatted date and time
+    tdat="${tdat::4}-${tdat:4:2}-${tdat:6:2}"
+    tdat="${tdat%-}"
+    if [ "${#ttim}" = 6 ] ; then
+        ttim="${ttim::2}:${ttim:2:2}:${ttim:4}"
+    elif [ "${#ttim}" = 4 ] ; then
+        ttim="${ttim::2}:${ttim:2:2}"
+    fi
+    parseDate_date_pretty="${tdat%-}"
+    parseDate_time_pretty="$ttim"
+
+    # split the text field
+    parseDate_text_kind="${parseDate_text_all%%_*}"
+    parseDate_text_body="${parseDate_text_all#*_}"
+    [ "$parseDate_text_body" = "$parseDate_text_all" ] && parseDate_text_kind=
+}
+
+# Long formats: 2012-11-24_08-11-44
+FMT_1="[12][0-9][0-9][0-9][-_][01][0-9][-_][0[0123][0-9][-_ ][012][0-9][-_][0-6][0-9][-_][0-6][0-9]"
+FMT_2="[12][0-9][0-9][0-9][-_][01][0-9][-_][0[0123][0-9][-_ ][012][0-9][-_][0-6][0-9]"
+FMT_3="[12][0-9][0-9][0-9][-_][01][0-9][-_][0[0123][0-9]"
+
+# Short formats: 20121124_081144   20121124_0811   20121124
+FMT_5="[12][0-9][0-9][0-9][01][0-9][0123][0-9][-_ ][012][0-9][0-5][0-9][0-5][0-9]"
+FMT_6="[12][0-9][0-9][0-9][01][0-9][0123][0-9][-_ ][012][0-9][0-5][0-9]"
+FMT_7="[12][0-9][0-9][0-9][01][0-9][0123][0-9]"
+
+# Extra formats
+EXT_1="19[0-9][0-9][-_][012][0-9]"
+EXT_2="20[0123][0-9][-_][012][0-9]"
+
+EXT_3="19[0-9][0-9]"
+EXT_4="20[0123][0-9]"
+
+# information returned by parseDate
+parseDate_time_packed=      # packed time   : 173323
+parseDate_date_packed=      # packed data   : 20120721
+parseDate_time_pretty=      # formatted time: 17-33
+parseDate_date_pretty=      # formatted date: 2012-07-21
+parseDate_text_all=         # full text part: Leute_Betriebsausflug 2012 Loreley
+parseDate_text_kind=        # text heeder   : Leute
+parseDate_text_body=        # text body     : Betriebsausflug 2012 Loreley
+
+parseDate_folder=           # the folder part (can be empty, no trailing /)
+parseDate_path=             # the full path (can be relative)
+parseDate_extension=        # the file extension including the .
+
+# ------------------------------------------------------------------------------
+# Parse a name trying various date formats: [-m] [-p] <folder|path> [<name>]
+#
+# Options:  -f  auto-enable -p option
+#           -m  enable error messages
+#           -p  also try to get date from parent path
+# ------------------------------------------------------------------------------
+parseDate() {
+    local errmsg opar
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -f)   [ -n "$CEN_OPT_FORCE" ] && opar=1 ;;
+      -m)   [ "$CEN_OPT_MATCH" = 'any' ] && errmsg=1 ;;
+      -p)   opar=1 ;;
+      *)    fatal - "$1"
+      esac ; shift
+    done
+
+    local ret0=0 ret1=1
+    [ "$CEN_OPT_MATCH" = 'any' ] && ret1=0
+    [ "$CEN_OPT_MATCH" = 'bad' ] && { ret0=1 ; ret1=0 ; }
+
+    # split path/name
+    if [ -z "$2" ] ; then
+        local parr
+        splitpath -p -a parr "$1"
+        set -- "${parr[0]}" "${parr[1]}"
+    fi
+
+    # handle folder and extension
+    case "$1" in
+    ""|'.'|"./")        parseDate_folder=    ; parseDate_path="$2";;
+    "/")                parseDate_folder="/" ; parseDate_path="/$2";;
+    *)                  parseDate_folder="${1%/}"
+                        parseDate_folder="${parseDate_folder#./}"
+                        parseDate_path="$parseDate_folder/$2"
+    esac ; shift
+
+    parseDate_extension=
+    local name="${1%%.*}"
+    [ "$name" = "$1" ] || parseDate_extension=".${1#*.}"
+
+    case "$name" in
+    # 2012-04-23_14-31-51_text
+    ${FMT_1}[-_]*)
+        parseDateSplit "$name" 19  0 10  11 8
+        return $ret0 ;;
+
+    # 2012-04-23_14-31_text
+    ${FMT_2}[-_]*)
+        parseDateSplit "$name" 16  0 10  11 5
+        return $ret0 ;;
+
+    # 2012-04-23_text
+    ${FMT_3}[-_]*)
+        parseDateSplit "$name" 10  0 10  0 0
+        return $ret0 ;;
+
+    # text_2012-04-23_14-31-51
+    *[-_]${FMT_1})
+        parseDateSplit "$name" -19  0 10  11 8
+        return $ret0 ;;
+
+    # text_2012-04-23_14-31
+    *[-_]${FMT_2})
+        parseDateSplit "$name" -16  0 10  11 5
+        return $ret0 ;;
+
+    # text_2012-04-23
+    *[-_]${FMT_3})
+        parseDateSplit "$name" -10  0 10  0 0
+        return $ret0 ;;
+
+    ### Short Formats ###
+
+    # 20120423-174321_text
+    $FMT_5|$FMT_5[-_\ ]*)
+        parseDateSplit "$name" 15  0 8  9 6
+        return $ret0 ;;
+
+    # 20120423-1743_text
+    $FMT_6[-_]*)
+        parseDateSplit "$name" 13  0 8  9 4
+        return $ret0 ;;
+
+    # 20120423_text
+    $FMT_7[-_]*)
+        parseDateSplit "$name" 8  0 8  0 0
+        return $ret0 ;;
+
+    # text_20120423-174321
+    *[-_]$FMT_5)
+        parseDateSplit "$name" -15  0 8 9 6
+        return $ret0 ;;
+
+    # text_20120423-1743
+    *[-_]$FMT_6)
+        parseDateSplit "$name" -12  0 8 9 4
+        return $ret0 ;;
+
+    # text_20120423
+    *[-_]$FMT_7)
+        parseDateSplit "$name" -8  0 8 0 0
+        return $ret0 ;;
+
+    ### More Formats (year only or year/month only) ###
+
+    $EXT_1[-_]*|$EXT_2[-_]*)
+        parseDateSplit "$name" 7  0 7  0 0
+        return $ret0 ;;
+
+    $EXT_3[-_]*|$EXT_4[-_]*)
+        parseDateSplit "$name" 4  0 4  0 0
+        return $ret0 ;;
+
+    *[-_]${EXT_1}|*[-_]${EXT_2})
+        parseDateSplit "$name" -7  0 7  0 0
+        return $ret0 ;;
+
+    *[-_]${EXT_3}|*[-_]${EXT_4})
+        parseDateSplit "$name" -4  0 4  0 0
+        return $ret0 ;;
+
+    esac
+
+    parseDate_time_packed=
+    parseDate_date_packed=
+    parseDate_time_pretty=
+    parseDate_date_pretty=
+    parseDate_text_all="$name"
+    # split the text field
+    parseDate_text_kind="${parseDate_text_all%%_*}"
+    parseDate_text_body="${parseDate_text_all#*_}"
+    [ "$parseDate_text_body" = "$parseDate_text_all" ] && parseDate_text_kind=
+
+    if [ -n "$opar" -a "${parseDate_folder:-.}" != '.' ] ; then
+        trace -a $"Trying to get date from folder name:" "$parseDate_path"
+        local stat sfld="$parseDate_folder" spat="$parseDate_path" sext="$parseDate_extension"
+        parseDate ${errmsg:+-m} -- "$parseDate_folder" ; stat=$?
+        parseDate_folder="$sfld" ; parseDate_path="$spat" ; parseDate_extension="$sext"
+        return $stat
+    fi
+
+    [ -n "$errmsg" -a -z "$CEN_OPT_SILENT" ] &&
+        message $"Cannot parse name:" "$parseDate_path"
+    return $ret1
+}
+
+# ------------------------------------------------------------------------------
+# write exit time tags: <path> <time>
+# ------------------------------------------------------------------------------
+exifSetTime() {
+    local farg="$1" etim="$2"
+
+    case "${1,,}" in
+    *.mov|*.mp4|*.tif|*.tiff|*.jp2)
+        trash -w
+        dryrun -s "exiftool -CreateDate='$etim' $farg" && return 1
+        system -e -p -- exiftool -CreateDate="$etim" "$farg"
+        [ -s "$farg" ] && trash -- "${farg}_original"
+        return 0 ;;
+    *)
+        dryrun -s "exif ... '$farg' ... $etim" && return 1
+    esac
+
+    system -e -p -- exif "$farg" -o $$.1.tmp -c --ifd 0    --no-fixup --tag 0x0132 --set-value "$etim" &&
+    system -e -p -- exif $$.1.tmp -o $$.2.tmp   --ifd EXIF --no-fixup --tag 0x9003 --set-value "$etim" &&
+    system -e -p -- exif $$.2.tmp -o $$.3.tmp   --ifd EXIF --no-fixup --tag 0x9004 --set-value "$etim" &&
+    move -- $$.3.tmp "$1" ; remove -- $$.?.tmp ; return 0
+}
+
+# ------------------------------------------------------------------------------
+# Helpers - Low Level
+# ------------------------------------------------------------------------------
+
+# walk files and dirs: do_walk [-n] <func>  <args>...
+do_walk() {
+    local frec="-r" skip
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -n)   frec="-r -l 1" ; skip=1 ;;        # non-recursive, skip base
+        *)    fatal - "$1"
+        esac ; shift
+    done
+    local func="$1" ; shift
+
+    if   [ -n "$CEN_OPT_FOLDER" ]  ; then walk -d : -f false $frec -i -- "$@"
+    elif [ -n "$CEN_OPT_RECURSE" ] ; then walk $frec -i -- "$@"
+    elif [ "$#" = 1 -a -d "$1" ]   ; then walk -l 1 $frec -i -- "$1"
+    else                             walk -i -- "$@" ; fi
+
+    [ -n "$skip" ] && CEN_WALK_DIRS=("${CEN_WALK_DIRS[@]:1}")   # skip base folder
+
+    if   [ -n "$CEN_WALK_FILES" ] ; then
+        pluralize -z -c 2 -p "${CEN_ACTION^}"$" with %s input %s" -- "${#CEN_WALK_FILES[@]}" 'file'
+    elif [ -n "$CEN_WALK_DIRS" ]  ; then
+        pluralize -z -c 2 -p "${CEN_ACTION^}"$" with %s input %s" -- "${#CEN_WALK_DIRS[@]}" 'folder'
+    else
+        warning -a $"No matching file or folder" ; return
+    fi
+
+    local item fldr file dpwd dlen apwd alen
+    dpwd="$PWD" ; dlen="${#dpwd}"
+    resolve -m -s apwd -- "$dpwd" ; alen="${#apwd}"
+    for item in "${CEN_WALK_FILES[@]}" "${CEN_WALK_DIRS[@]}" ; do
+        # separate path and filename
+        fldr="${item%/*}" ; file="${item##*/}"
+        [ "$item" = "$file" ] && fldr='.'
+        # shorten path name
+        if [ "$fldr" = "$dpwd" -o "$fldr" = "$apwd" ] ; then
+            fldr='.'
+        elif [ "$apwd/${fldr##*/}" -ef "$fldr" ] ; then
+            fldr="${fldr##*/}"
+        elif [ "${#fldr}" -gt $dlen -a "${fldr:dlen:1}" = "/" ] ; then
+            [ "${fldr::dlen}" = "$dpwd" ] && fldr="${fldr:dlen+1}"
+        elif [ "${#fldr}" -gt $alen -a "${fldr:alen:1}" = "/" ] ; then
+            [ "${fldr::alen}" = "$apwd" ] && fldr="${fldr:alen+1}"
+        fi
+        $func "$fldr" "$file"
+    done
+}
+
+# fix some uppercase extensions: <path> | <extension> <name> <date>
+do_extension_=
+do_extension() {
+    case "$1" in
+    *.jpeg) do_extension_="${1%jpeg}jpg" ;;
+    *.JPEG) do_extension_="${1%JEPG}jpg" ;;
+    *.JPG)  do_extension_="${1%JPG}jpg" ;;
+    *.JP2)  do_extension_="${1%JP2}jp2" ;;
+    *.AVI)  do_extension_="${1%AVI}avi" ;;
+    *.MOV)  do_extension_="${1%MOV}mov" ;;
+    *.GPX)  do_extension_="${1%GPX}gpx" ;;
+    *.TCX)  do_extension_="${1%TCX}tcx" ;;
+    *.CR2)  do_extension_="${1%CR2}cr2" ;;
+    *.ORF)  do_extension_="${1%ORF}orf" ;;
+    *.tif)  do_extension_="${1%tif}tiff" ;;
+    *.TIF)  do_extension_="${1%TIF}tiff" ;;
+    *.TIFF) do_extension_="${1%TIFF}tiff" ;;
+    *)      do_extension_="$1" ;;
+    esac
+    [ -z "$2" ] && return
+
+    if [ -n "$CEN_OPT_END" ] ; then
+        do_extension_="$2${3:+_}$3$do_extension_"
+    else
+        do_extension_="$3${3:+_}$2$do_extension_"
+    fi
+}
+
+# Create/Purge a link folder: <basedir> <foldername>
+do_link_fldr() {
+    [ -z "$2" ] && return 0
+    local fldr="${1%/}/$2"
+    if [ -d "$fldr" ] ; then
+        confirm -i $"Purge  folder" "'$fldr'" || return 1
+        system -e -p find "$fldr" -mindepth 1 \
+                          -xdev \( -links +1 -type f -o -empty -o -type l \) -delete
+        return                  # return status
+    fi
+
+    confirm -i $"Create folder"" '$fldr'" || return 1
+    folder -m "$fldr"           # return status
+}
+
+# Rename a file: <oldname> <newname> [<base>]
+do_rename_ask() {
+    local fopt name="$2"
+    [ -n "$CEN_OPT_CHANGE" ] && name="${name/${CEN_OPT_CHANGE%/*}/${CEN_OPT_CHANGE#*/}}"
+
+    if [ -n "$CEN_OPT_NUMBER" ] ; then
+        # separate filename and extension
+        local file="${name%%.*}" fext="${name#*.}"
+        [ "$fext" = "$file" ] && fext=
+        case "$file" in
+        *[-_][0-9])
+            file="${file::-2}" ;;
+        *[-_][0-9][0-9])
+            file="${file::-3}" ;;
+        *[-_][0-9][0-9][0-9])
+            file="${file::-4}" ;;
+        *[-_][0-9][0-9][0-9][0-9])
+            file="${file::-5}" ;;
+        *[-_][0-9][0-9][0-9][0-9][0-9])
+            file="${file::-6}" ;;
+        *[-_][0-9][0-9][0-9][0-9][0-9][0-9])
+            file="${file::-7}" ;;
+        esac
+        if [ "${CEN_OPT_NUMBER:--}" = "-" ] ; then
+            name="$file${fext:+.}$fext"
+        else
+            name="$file-$CEN_OPT_NUMBER${fext:+.}$fext"
+            CEN_OPT_NUMBER=$((1$CEN_OPT_NUMBER + 1))
+            CEN_OPT_NUMBER="${CEN_OPT_NUMBER:1}"
+        fi
+    fi
+
+    [ "$1" = "$name" ] && return 0
+    if [ -e "$3$name" ] ; then
+        if [ -h "$3$name" ] ; then
+            fopt="-f"
+        elif [ -z "$CEN_OPT_SILENT" ] ; then
+            message -a "Rename: [skip] destination exists: $3$name" ; return
+        fi
+    fi
+
+    if [ "$CEN_YESNO" = "y" ] ; then
+        message -a "Rename: $1  =>  $name"
+    else
+        confirm -a -q "Rename: $1  =>  $name" || return
+    fi
+
+    system -e -p mv $fopt "$3$1" "$3$name"
+}
+
+# set file time: <path> <date> [<utc>]
+do_set_time() {
+    local path="$1" date="$2" outc="$3" offs zone="TZ=\"UTC\" "
+
+    if [ "$date" = "0000-00-00 00:00:00" ] ; then
+        [ -z "$CEN_OPT_SILENT" ] && message -a "File has null/void date info: $path"
+        return
+    elif [ "${date//[0-9]/}" = "-- ::" -a "${date//[1-9]/0}" != "0000-00-00 00:00:00" ] ; then
+        if [ -n "$CEN_OPT_FORCE" ] ; then
+            local fexi aexi
+            splitjoin -s aexi -d "-: " "$date"
+            fexi="${aexi[0]}0000" ; date="${fexi::4}"
+            fexi="${aexi[1]}00" ; date+="-${fexi::2}"
+            fexi="${aexi[2]}00" ; date+="-${fexi::2}"
+            fexi="${aexi[3]}00" ; date+=" ${fexi::2}"
+            fexi="${aexi[4]}00" ; date+=":${fexi::2}"
+            fexi="${aexi[5]}00" ; date+=":${fexi::2}"
+            exifSetTime "$path" "$date"
+            [ -z "$CEN_OPT_SILENT" ] && message -a "Repaired invalid date info:" "$path [$date]"
+        else
+            [ -z "$CEN_OPT_SILENT" ] && message -a "File has invalid date info:" "$path"
+            return
+        fi
+    fi
+    [ -z "$outc" -o -n "$CEN_OPT_OFFSET" ] && zone=
+    [ -n "$CEN_OPT_OFFSET" ] && offs=" $CEN_OPT_OFFSET"
+
+    if system -n -m -s outc -- touch --no-create --date "$zone$date$offs" "$path" ; then
+        trace -a -c $"Changed date" -- "$path ($zone$date$offs)"
+        return 0
+    fi
+    [ -n "$CEN_OPT_DRYRUN" ] && return 0
+    error -n $"Cannot set date:" "$path\n$outc" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# Helpers - Intermedeate Level
+# ------------------------------------------------------------------------------
+
+DAT_LINK_FOLDER=
+DAT_LINK_TARGET=()
+DAT_LINK_LNKCNT=0
+
+# create links to folder: <folder> <target-path> <target-name> <link-name>
+do_link() {
+    if [ "$#" = 4 ] ; then
+        # queue for sorting
+        if [ "$3" = "$4" ] ; then
+            local sepa=$'\t'
+            DAT_LINK_TARGET+=("$1$sepa$2$sepa$3$sepa$4")
+        # target and link name differ, cannot optimize
+        else
+            folder -m -r "$1" && symlink -n -- "$2/$3" "$1/$4"
+            ((DAT_LINK_LNKCNT += 1))
+        fi
+        return
+    fi
+    [ "$#" = 0 ] || fatal -t - "$*"
+
+    ### empty argument list - flush ###
+
+    trace -a -c $"Sorting" -- "${#DAT_LINK_TARGET[@]} link items"
+    local item nlnk ngrp=0 atrg=() aarg=()
+    extsort -i DAT_LINK_TARGET -a atrg
+
+    trace -a -c $"Processing" -- "${#atrg[@]} link items"
+    DAT_LINK_TARGET=() ; DAT_LINK_FOLDER=
+    local sifs="$IFS"
+    for item in "${atrg[@]}" "" ; do
+        IFS=$'\t' ; set -- $item ; IFS="$sifs"
+        if [ "$DAT_LINK_FOLDER" = "$1" ] ; then
+            DAT_LINK_TARGET+=("$2/$4")
+        else
+            if [ -n "$1" ] ; then
+                folder -m -r "$1" || continue
+            fi
+            nlnk="${#DAT_LINK_TARGET[@]}"
+            if [ "$nlnk" -gt 0 ] ; then
+                symlink -d -n -- "${DAT_LINK_TARGET[@]}" "$DAT_LINK_FOLDER"
+                ((ngrp += 1)) ; ((DAT_LINK_LNKCNT += nlnk))
+            fi
+            DAT_LINK_TARGET=() ; DAT_LINK_FOLDER="$1"
+            [ -n "$1" ] && DAT_LINK_TARGET+=("$2/$4")
+        fi
+    done
+    trace -a "Final count $DAT_LINK_LNKCNT ($ngrp calls to symlink)"
+}
+
+# Build a link tree: <folder> <base>
+do_tree() {
+    # parse the file name
+    parseDate -m "$1" "$2" || return
+
+    # get the right kind of date
+    local date
+    case "$CEN_OPT_DATE" in
+    -)  date= ;;
+    0)  date="${parseDate_date_pretty::4}_" ;;
+    1)  date="${parseDate_date_pretty::7}_" ;;
+    2)  date="${parseDate_date_pretty::10}_" ;;
+    3)  date="${parseDate_date_pretty}_${parseDate_time_pretty::5}_" ;;
+    *)  date="${parseDate_date_pretty}_${parseDate_time_pretty}_" ;;
+    esac
+    local name="$date$parseDate_text_all$parseDate_extension"
+
+    # use a jpeg Subfolder
+    if [ -d "$1/$2/jpeg" ] ; then
+        trace -a "Subfolder:" "$1/$2/jpeg"
+        set -- "$1" "$2/jpeg"
+    fi
+
+    # tree by date
+    local dbas ddir dorg="../../"
+    if [ -n "$actionTree_by_date" ] ; then
+        dbas="$actionTree_by_date/${parseDate_date_packed::4}"
+        ddir="$dbas"
+
+        if [ -n "$actionTree_nest" ] ; then
+            ddir+="/$actionTree_nest" ; dorg+="../"
+        fi
+        [ "${1::1}" = '/' ] && dorg=                # absolute path
+
+        do_link "$ddir" "$dorg$1" "$2" "$name"
+        if [ -n "$actionTree_nest" -a -n "${parseDate_text_kind}" ] ; then
+            ddir="$dbas/$parseDate_text_kind"
+            do_link "$ddir" "$dorg$1" "$2" "$name"
+        fi
+    fi
+
+    # tree by kind
+    if [ -n "$actionTree_by_kind" ] ; then
+        if [ -n "${parseDate_text_kind}" ] ; then
+
+            ddir="$actionTree_by_kind/${parseDate_text_kind}"
+            if [ -n "$actionTree_nest" ] ; then
+                ddir+="/$actionTree_nest"
+            fi
+
+            do_link "$ddir" "$dorg$1" "$2" "$name"
+            if [ -n "$actionTree_nest" -a -n "$date" ] ; then
+                ddir="$actionTree_by_kind/${parseDate_text_kind}/${date::4}"
+                do_link "$ddir" "$dorg$1" "$2" "$name"
+            fi
+        fi
+    fi
+
+   # do_link
+}
+
+# Rename files/folder to match name rules: <base> <object>
+do_pretty() {
+    local kind name date time
+
+    ___pretty_kind() {
+        [ -n "$parseDate_text_kind" ] && return
+        if [ "$CEN_YESNO" = "y" -o "${actionPretty_kind:-.}" != '.' ] ; then
+            kind="$actionPretty_kind"
+        elif [ "$CEN_YESNO" != "n" ] ; then
+            confirm -a -p - -s kind -u "$1  --  Enter a kind"
+            kind="${kind// /}"
+        fi
+    }
+
+    # parse the file name
+    parseDate -m "$1" "$2"
+    if [ -z "$parseDate_date_pretty" ] ; then
+        ___pretty_kind "$2"
+        [ "$kind" = "-" ] && kind=
+        do_rename "$1" "$2" "$kind"
+        return
+    fi
+
+    # get the right kind of date
+    case "$CEN_OPT_DATE" in
+    -)  date= ;;
+    0)  date="${parseDate_date_pretty::4}"  ; time="${parseDate_date_packed:4}-$parseDate_time_packed" ;;
+    1)  date="${parseDate_date_pretty::7}"  ; time="${parseDate_date_packed:6}-$parseDate_time_packed" ;;
+    2)  date="${parseDate_date_pretty::10}" ; time="$parseDate_time_packed" ;;
+    3)  date="${parseDate_date_pretty}_${parseDate_time_pretty::5}" ;;
+    *)  date="${parseDate_date_pretty}_${parseDate_time_pretty}" ;;
+    esac
+# parse globs ' ' erlauben und ohne text
+#message "TIME: $parseDate_time_packed"
+# "Ein Eingabedatei"
+
+    # select a kind
+    ___pretty_kind "$2"
+    name="$time${parseDate_text_all:+_}$parseDate_text_all"
+    [ "${kind:--}" != "-" ] && name="${kind}_$name"
+
+    # finally rename
+    do_extension "$parseDate_extension" "$name" "$date"
+    do_rename_ask "$2" "$do_extension_" "$1/"
+}
+
+# set timestamps from file content
+do_content() {
+    local gtag="trkpt/time"
+    local gtcx="Activity/Lap/@StartTime"
+    local gdat="[12][0-9][0-9][0-9]-[0-5][0-9]-[0-5][0-9]T[012][0-9]:[0-5][0-9]:[0-5][0-9].*"
+    local isok=0 prog date einf outc="$CEN_OPT_UTC"
+    local xten="${2##*.}"
+
+    # get info tool from extension
+    case "${xten,,}" in
+    jpg|jpeg)
+        [ "${DAT_HAS_EXIF:-}" = "-" ] && isok=1 || isok=2
+        prog="exif" ;;
+    gpx)
+        [ "${DAT_HAS_XML2:-}" = "-" ] && isok=1 || isok=2
+        [ -z "$CEN_OPT_LOCAL" ] && outc=1
+        prog="gpx" ;;
+    tcx)
+        [ "${DAT_HAS_XML2:-}" = "-" ] && isok=1 || isok=2
+        [ -z "$CEN_OPT_LOCAL" ] && outc=1
+        prog="tcx" ; gtag="$gtcx" ;;
+    mov|mp4)
+        isok="$DAT_HAS_MEDIAINFO"
+        [ -z "$CEN_OPT_LOCAL" ] && outc=1
+        prog="mediainfo" ;;
+    jp2|tiff|tif|cr2|orf)
+        prog="exiftool" ; isok= ;;
+    esac
+
+    # is that tool installed?
+    if [ -z "$isok" ] ; then
+        if system -c "$prog" ; then
+            isok=1
+        else
+            isok=0 ; warning -a "Program not found (please install): $prog"
+        fi
+        eval DAT_HAS_${prog^^}="$isok"
+    fi
+    if [ "$isok" = "0" ] ; then
+        [ -z "$CEN_OPT_SILENT" ] && message -a "Cannot handle file type: $1/$2"
+        return
+    fi
+
+    if [ "$prog" = "exif" ] ; then
+       if system -r -n -m -s date exif -m -t 0x9003 "$1/$2" ; then
+           date="${date/:/-}" ; date="${date/:/-}"
+       elif system -r -n -m -s date exif -m -t 0x132 "$1/$2" ; then
+           date="${date/:/-}" ; date="${date/:/-}"
+       else
+           einf="$date" ; date=
+       fi
+
+    elif [ "$prog" = "mediainfo" ] ; then
+        system -r -n -p -s date mediainfo --Inform="General;%Encoded_Date%" "$1/$2"
+        date="${date#* }"
+
+    elif [ "$prog" = "exiftool" ] ; then
+        system -r -n -p -s date exiftool -m -p '${CreateDate}' "$1/$2"
+        [ "${date//[0-9]/}" = ":: ::" ] ||
+            system -r -n -p -s date exiftool -m -p '${DateCreated} ${TimeCreated}' "$1/$2"
+        date="${date/+[0-9][0-9]:[0-9][0-9]/}"
+        if [ "${date//[0-9]/}" = ":: ::" ] ; then
+            date="${date/:/-}" ; date="${date/:/-}"
+        elif [ "${date//[0-9]/}" = ":: :: ::" ] ; then
+            date="${date% *}"
+            date="${date/:/-}" ; date="${date/:/-}"
+        else
+            einf="$date" ; date=
+       fi
+
+    else
+       date=$(xml2 <"$1/$2" | grep -m1 -o -e "$gtag=$gdat")
+       date="${date##*=}"
+       [ -z "$date" -o "${date::4}" = "1970" ] &&       # could be a route, retry...
+           date=$(xml2 <"$1/$2" | grep -m1 -o -e "/gpx/metadata/time=$gdat")
+       date="${date##*=}"
+       [ -z "$CEN_OPT_UTC" -a "${date%Z}" = "$date" ] && outc=
+       date="${date::19}"
+       date="${date/T/ }"
+       [ "${date::10}" \< "2001-01-02" ] && date=
+    fi
+
+    # update file timestamp
+    if [ -n "$date" ] ; then
+        do_set_time "$1/$2" "$date" "$outc"
+    elif [ -z "$CEN_OPT_SILENT" ] ; then
+        message -a "File without date infomation: $1/$2"
+        [ -n "$einf" ] && trace   -a "... $einf"
+    fi
+
+    # finally rename
+    do_extension "$2"
+    do_rename_ask "$2" "$do_extension_" "$1/"
+}
+
+# rename files based on timestamps: <folder> <file> <kind>
+do_rename() {
+    local path="$1/$2" base="$1" orig="$2" kind name
+    [ -L "$path" ] && return
+    [ -f "$path" ] || return
+    [ -n "$3" ] && kind="$3_"
+
+    local date
+    [ "${CEN_OPT_DATE:--}" != "-" ] &&
+        system -e -p -r -s date -- find "$path" -printf "%TY-%Tm-%Td_%TH-%TM-%TS"
+
+    # get the right kind of date
+    case "$CEN_OPT_DATE" in
+    0)  date="${date::4}" ;;
+    1)  date="${date::7}" ;;
+    2)  date="${date::10}" ;;
+    3)  date="${date::16}" ;;
+    4)  date="${date::19}" ;;
+    esac
+
+    # finally rename
+    parseDate "$base" "$orig" ; name="$parseDate_text_all"
+    do_extension "$parseDate_extension" "$kind$name" "$date"
+    do_rename_ask "$orig" "$do_extension_" "$base/"
+}
+
+# do_walk callback, used for "list"
+do_list() {
+    # parse the file name
+    parseDate -f "$1" "$2" || return
+    printf "%-10s %-8s %s\n" "${parseDate_date_pretty:--}" "${parseDate_time_pretty:--}" "$parseDate_path"
+}
+
+# callback for action 'set': <path> <name> (using dtim/etim vars)
+do_set() {
+    local farg="$2" ftim
+    [ "$1" != '.' ] && farg="$1/$2"
+    case "${farg,,}" in
+    *.jpg|*.jpeg|*.jp2|*.tif|*.tiff|*.mov|*.mp4)
+        if ! [ -f "$farg" -a -r "$farg" ] ; then
+            error "Not a readable file:" "$farg" ; return 1
+        fi
+        ;;
+    *)  error "File type not supported:" "$farg" ; return 1
+    esac
+
+    # get time from file/folder name
+    if [ "$dtim" = '.' ] ; then
+        parseDate -f "$farg"
+        if [ -z "$parseDate_date_packed" ] ; then
+            if [ -n "$CEN_OPT_FORCE" ] ; then
+                error "Cannot get date from file or folder name:" "$farg"
+            else
+                error "Cannot get date from file name (try --force):" "$farg"
+            fi
+            return 1
+        fi
+        parseDate_date_packed+="0101" ; parseDate_time_packed+="000000"
+        etim="${parseDate_date_packed::8} ${parseDate_time_packed::6}"
+
+    # get time from filesystem
+    elif [ "$dtim" = '@' ] ; then
+        system -e -p -r -s etim -- stat -c "%y" "$farg" || return 1
+        etim="${etim/.*/}" ; etim="${etim//[-:]/}"
+    fi
+
+    # update exif and file-system times
+    ftim="${etim::4}:${etim:4:2}:${etim:6:2} ${etim:9:2}:${etim:11:2}:${etim:13:2}"
+    exifSetTime "$farg" "$ftim"
+    ftim="${ftim/:/-}" ; ftim="${ftim/:/-}"
+    do_set_time "$farg" "$ftim" "$CEN_OPT_UTC"
+    return 1                    # do not add to result array
+}
+
+# do_walk callback, used for "touch"
+do_touch() {
+    # parse the file name
+    if [ "$CEN_OPT_MATCH" = 'any' ] ; then          # always use parent fallback
+        parseDate -p "$1" "$2" || return
+    else                                            # only with --force
+        parseDate -f -m "$1" "$2"
+    fi
+    if [ -z "$parseDate_date_pretty" ] ; then
+        [ "$CEN_OPT_MATCH" = 'good' ] && return
+        [ -z "$CEN_OPT_SILENT" ] && message -a $"Touch [bad]:" "$1/$2"
+        return
+    fi
+    trace -a -c 'Touch' -- "$1/$2"
+
+    # update time
+    local stmp="$parseDate_date_pretty"
+    [ "${#stmp}" = 4 ] && stmp+="-01"
+    [ "${#stmp}" = 7 ] && stmp+="-01"
+    [ -n "$parseDate_time_pretty" ] && stmp+=" $parseDate_time_pretty"
+    do_set_time "$1/$2" "$stmp" "$CEN_OPT_UTC"
+}
+
+# ------------------------------------------------------------------------------
+# Action to check for changes
+# ------------------------------------------------------------------------------
+actionCheck() {
+    local msum mkey path mark rsum rxxx
+    system -r -e -c find sort md5sum || return
+
+    folder "$1" || return
+    system -r -e -s path readlink -f "$1"
+    system -s msum -e eval "find -L '$path' -type f -printf '%p %s %T@\n' | sort | md5sum"
+    system -s mkey -e eval "echo '$HOSTNAME $path' | md5sum"
+    error -t || return
+
+    mark="$PWD/.$CEN_NAME.${mkey%% *}"
+    if [ -r "$mark" ] ; then
+        read rsum rxxx < "$mark"
+        if [ "$rsum" = "${msum%% *}" ] ; then
+            [ -z "$CEN_OPT_SILENT" ] && message -a "Found no changes: $path"
+            [ -n "${CEN_CMDARGS[CEN_CMDINDX]}" ] && trace -a "Additional commands skipped"
+            error -s 1 ; quit
+        fi
+    fi
+    message -a "Data has changed: $path"
+    echo 2>/dev/null "${msum%% *} $path" >"$mark" || error "Cannot write: $mark"
+    error -t && trace -a "Updated status: $mark"
+}
+
+# ------------------------------------------------------------------------------
+# Action to rename files/folders
+# ------------------------------------------------------------------------------
+actionPretty() {
+    actionPretty_kind="$1" ; shift
+    do_walk do_pretty "$@"
+}
+
+# ------------------------------------------------------------------------------
+# Action to set/create EXIF
+# ------------------------------------------------------------------------------
+actionSet() {
+    local etim dtim="$1" ; shift
+    system -f -c touch stat exif
+
+    if ! [ "$dtim" = '.' -o "$dtim" = '@' ] ; then
+        etim="${dtim// /_}_xxx_yyy"
+        parseDate -f "${etim//:/-}"
+        parseDate_date_packed+="0101" ; parseDate_time_packed+="000000"
+        etim="${parseDate_date_packed::8} ${parseDate_time_packed::6}"
+        if [ "${#etim}" != 15 -o "$parseDate_text_kind" != "xxx" ] ; then
+            error $"Bad time/date given, expected" "'yyyy-mm-dd [hh:mm:ss]':" "$dtim" ; return
+        fi
+    fi
+    do_walk do_$CEN_ACTION "$@"
+}
+
+# ------------------------------------------------------------------------------
+# Action to make a link tree
+# ------------------------------------------------------------------------------
+actionTree() {
+    folder -c "${1:--}" || return
+    local dret='return' wdir="$PWD"
+    folder -c -f ..
+
+    [ $# -gt 1 -a "$2" != '-' ] && actionTree_by_date="$2"      # allow "" args
+    [ $# -gt 2 -a "$3" != '-' ] && actionTree_by_kind="$3"
+    actionTree_nest="$4"
+    message $"Building tree in:" "$wdir [$actionTree_by_date $actionTree_by_kind]"
+
+    [ -n "$CEN_OPT_DRYRUN" ] && dret=':'
+    do_link_fldr "$PWD" "$actionTree_by_date" || $dret
+    do_link_fldr "$PWD" "$actionTree_by_kind" || $dret
+
+    do_walk ${CEN_OPT_FOLDER:+-n} do_tree "$wdir"       # foder: non-recursive
+    do_link
+}
+
+# ------------------------------------------------------------------------------
+# Any simple action
+# ------------------------------------------------------------------------------
+actionSimple() {
+    [ "$CEN_ACTION" = 'content' -o "$CEN_ACTION" = 'touch' ] && system -f -c touch
+    do_walk do_$CEN_ACTION "$@"
+}
+
+# ------------------------------------------------------------------------------
+# Option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    -C|--cha*)
+        optarg 'change'  CEN_OPT_CHANGE  '[^/\\]+/[^/\\]*' ;;
+    -D|--dat*)
+        optarg 'date'    CEN_OPT_DATE    '[0-4-]' ;;
+    -E|--end)
+        optarg 'end'     CEN_OPT_END ;;
+    -F|--fol*)
+        optarg 'folder'  CEN_OPT_FOLDER ;;
+    -L|--local)
+        optarg 'local'   CEN_OPT_LOCAL ;;
+    -M|--mat*)
+        optarg 'match'   CEN_OPT_MATCH   'good|bad|any' ;;
+    -N|--num*)
+        optarg 'number'  CEN_OPT_NUMBER  '-|[0-9]+' ;;
+    -O|--off*)
+        optarg 'offset'  CEN_OPT_OFFSET  '[+-]?[0-9][0-9][0-9][0-9]' ;;
+    -R|--rec*)
+        optarg 'recurse' CEN_OPT_RECURSE ;;
+    -U|--utc)
+        optarg 'utc'     CEN_OPT_UTC ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Action parsing
+# ------------------------------------------------------------------------------
+actions() {
+
+    case "$CEN_ACTION" in
+
+    che*)
+        invoke 'check'   -             1   ;;
+    con*)
+        invoke 'content' actionSimple  1 + ;;
+    lis*)
+        invoke 'list'    actionSimple  1 + ;;
+    pre*)
+        invoke 'pretty'  -             2 + ;;
+    ren*)
+        invoke 'rename'  actionSimple  1 + ;;
+    set)
+        invoke 'set'     -             2 + ;;
+    tou*)
+        invoke 'touch'   actionSimple  1 + ;;
+    tre*)
+        invoke 'tree'    -             1 4 ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+#       -A --age [<min>][:<max>]
+#                            filter input for an age range in days
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -C --change          change file name      (example: --change=red/green)
+       -D --date   <date>|- date format -or- '-' to remove date    (default: 2)
+       -E --end             date/time at end of file names   (default is begin)
+       -F --folder          operate on folders              (default are files)
+       -L --local           use local time               (default is automatic)
+       -M --match  <type>   match only items                    (default: good)
+       -N --number <strt>|- numbering format -or- '-' to remove numbering
+       -O --offset <offs>   time offset to UTC
+       -R --recurse         also recurse into non-command-line folders
+       -U --utc             time of content/filename is UTC
+
+actions:
+       check   <orig>       check folder for changes (status=1 for no changes)
+       content <src>        set timestamps from file content (jpg, tcx, gpx)
+       list    <src>        create a list with optional time information
+       pretty  <kind> <src> rename files to follow centauri rules
+       rename  <src>        rename files based on timestamps
+       set     <dtim> <src> set/create EXIF from arg/name/folder (jpg only)
+       touch   <src>        set timestamps from filenames
+       tree    <orig> [<ddes>|- [<kdes>|- [<nest>] ] ]
+                            build a tree from <orig> for date and/or kind
+
+arguments:
+       <date> 0|1|2|3|4     data format: year-only=0 ... year-to-seconds:=4
+       <dtim>               date/time like '2018-09-20' -or- '2018-09-21 13:05'
+                            -or- '.' for file/folder date -or- '@' for fs date
+       <kind>               cathegory string (must not contain '_'s)  -or-  '-'
+                            to ignore  -or-  '.' to ask for cathegory
+       <offs>               UTC offset: (+|-)hhmm   (example: -0102 adds 1h02m)
+       <orig>               input folder
+       <orig> <ddes> <kdes> origin and destination folders
+       <strt>               numbering start and length '0001'
+       <src>                a list of files and/or folders
+       <type>               'good'=date ok, 'bad'=bad date, 'any'=don't care
+
+formats:
+       The centauri date name format is  <date>[_<time>]_<kind>_<text>  with
+       <date> := <year>[-<month>[-<day>]]     (see --data 0 ... --date 2) and
+       <time> := <hour>-<minute>[-<second>]   (see --date 3 and --date 4).
+
+examples:
+       $CEN_NAME pretty MyKind mydata                  # rename, set "MyKind"
+       $CEN_NAME pretty . mydata --number=001          # rename, ask for kind
+       $CEN_NAME pretty - mydata -C _DSC_/_Telefon_    # rename, ignore kind
+
+       $CEN_NAME -y -C DSC/Telefon content . ; $CEN_NAME -y rename .
+                                                          # make usefull names
+       $CEN_NAME -R set "2018-07-21 14:00" *.jpg mydir # write exif times
+
+       $CEN_NAME tree -F --yes -x Journal Picture/Alle # batch tree build
+       $CEN_NAME tree -F -i Journal Alle Journal ""    # build "Journal" tree
+
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

@@ -1,0 +1,6 @@
+[Unit]
+Description=Run centauricron every hour
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/centauricron --silent --append hourly

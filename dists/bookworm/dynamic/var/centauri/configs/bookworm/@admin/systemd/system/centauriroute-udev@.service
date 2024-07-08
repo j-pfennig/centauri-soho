@@ -1,0 +1,10 @@
+[Unit]
+Description=Udev/dialup handler for centauriroute
+After=network-online.target centaurisecrets.service
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/var/centauri/tools/centauriroute --daemon=0 --syslog=2 udev %I
+

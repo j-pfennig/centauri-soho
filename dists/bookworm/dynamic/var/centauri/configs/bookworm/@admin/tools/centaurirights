@@ -1,0 +1,320 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2023; BSD License"
+CEN_TITLE="Set ownership and protection for files and directories"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -d -i - '0.38:2' || exit 2
+
+# Data
+
+CEN_OPT_LOCAL=              # see --local
+CEN_OPT_ROOT=               # see --root
+CEN_OPT_SILENT=             # see --silent
+CEN_OPT_TYPE="a"            # see --type
+CEN_OPT_GROUP=              # see --group
+CEN_OPT_USER=               # see --user
+
+DAT_ACTION=
+DAT_DIR_MODE=               # see doMode()
+DAT_FILE_MODE=              # see doMode()
+DAT_DEF_USER="smbtrust"     # see doMode() and doUser()
+DAT_DEF_GROUP=              # see doMode() and doUser()
+
+# implied verb on "accessXxxx" invocation
+
+case "$CEN_NAME" in
+*[pP]ublic)
+    DAT_ACTION="public"  ;;
+*[rR]ead*)
+    DAT_ACTION="read"    ;;
+*[wW]rite*)
+    DAT_ACTION="write"   ;;
+*[tT]rusted)
+    DAT_ACTION="trusted" ;;
+*[pP]rivate)
+    DAT_ACTION="private"  ;;
+esac
+
+doCentauri() {
+    [ "${CEN_OPT_GROUP:--}" = '-' ] || return
+
+    # find domain group
+    local grps adom
+    system -q -r -s grps -- getent group 'centauri' 'staff' 'wheel'
+    adom="${grps:-root}" ; CEN_OPT_GROUP="${adom%%:*}"
+}
+
+# ------------------------------------------------------------------------------
+# Helper to set defaults from action
+# ------------------------------------------------------------------------------
+doMode() {
+    case "$1" in
+    "")
+        ;;
+    public)
+        DAT_DEF_GROUP="wheel"
+        DAT_DEF_USER="root"
+        DAT_DIR_MODE=755
+        DAT_FILE_MODE="og-w,og+r,u+rw"
+        ;;
+    read*)
+        DAT_DIR_MODE=750
+        DAT_FILE_MODE="o-rwx,ug-w,ug+r"
+        ;;
+    write*)
+        DAT_DIR_MODE=770
+        DAT_FILE_MODE="o-rwx,ug+rw"
+        ;;
+    trusted)
+        DAT_DIR_MODE=775
+        DAT_FILE_MODE="o-w,o+r,ug+rw"
+        ;;
+    *)
+        DAT_DEF_GROUP="wheel"
+        DAT_DEF_USER="root"
+        CEN_OPT_USER="${CEN_OPT_USER:-root}"
+        DAT_DIR_MODE=770
+        DAT_FILE_MODE="o-rwx,ug+rw"
+        ;;
+    esac
+    doUser
+}
+
+# ------------------------------------------------------------------------------
+# Helper to set group/user
+# ------------------------------------------------------------------------------
+doUser() {
+    if [ -z "$1" ] ; then
+        doCentauri
+        doUser - "$CEN_OPT_USER"
+        doUser - "$CEN_OPT_GROUP"
+        CEN_OPT_GROUP="${CEN_OPT_GROUP:-$DAT_DEF_GROUP}"
+        CEN_OPT_USER="${CEN_OPT_USER:-$DAT_DEF_USER}"
+        [ "${CEN_OPT_USER::1}" = ":" ] && CEN_OPT_USER="$DAT_DEF_USER"
+    else
+        local susr="${2%:*}" sgrp="${2##*:}"
+        [ "$2" = "$sgrp" ] && return
+        [ -n "$susr" ] && CEN_OPT_USER="$susr"
+        [ -n "$sgrp" ] && CEN_OPT_GROUP="$sgrp"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Helper to set properties for a file or folder
+# ------------------------------------------------------------------------------
+runSingle() {
+    # get logical and physical paths
+    local i farg="$1" xmax xrec xdot xver flis
+    folder -r -p "$farg" || return
+
+    # check for special folders
+    for i in / /bin /boot /data /dev /etc /home /lib /lib64 /media /mnt /opt /proc /root /run /sbin /srv /sys /tmp /usr /var ; do
+        if [ "$farg" -ef "$i" ] ; then
+            error "This folder is protected: $farg"
+            return
+        fi
+    done
+
+    # report
+    if [ "$CEN_VERB" -gt 1 ] ; then
+        message -a "current : $farg"
+        [ "$farg" = "$PWD" ] || message -i "physical: $PWD"
+        xver="-c"
+    elif [ -z "$CEN_OPT_SILENT" ] ; then
+        message -a "current: $farg"
+    fi
+
+    # execute
+    #local _sifs="${IFS:-$' \t\n'}" ; IFS=$'\t\n' ; set -f
+
+    if [ -n "$CEN_OPT_LOCAL"  ] ; then
+        xdot="*" ; xmax="-maxdepth 1"
+    else
+        xdot="." ; xrec="-R"
+    fi
+
+    case "$CEN_OPT_TYPE" in
+    a)  system -r -a flis -e find $xmax -type d || return
+        system chown $xver $xrec $CEN_OPT_USER:$CEN_OPT_GROUP $xdot
+        system chmod $xver $xrec $DAT_FILE_MODE $xdot
+        system chmod $xver $DAT_DIR_MODE "${flis[@]}"
+        ;;
+    f)  system -r -a flis -e find $xmax -type f || return
+        system chown $xver $CEN_OPT_USER:$CEN_OPT_GROUP "${flis[@]}"
+        system chmod $xver $DAT_FILE_MODE "${flis[@]}"
+        ;;
+    d)  system -r -a flis -e find $xmax -type d || return
+        system chown $xver $CEN_OPT_USER:$CEN_OPT_GROUP "${flis[@]}"
+        system chmod $xver $DAT_DIR_MODE "${flis[@]}"
+        ;;
+    esac
+    #IFS="$_sifs" ; set +f
+}
+
+# ------------------------------------------------------------------------------
+# action run: <file|folder>...
+# ------------------------------------------------------------------------------
+actionRun() {
+    doMode "$CEN_ACTION"
+
+    # allow "error -q"
+    CEN_DONE=1
+    local fldr=() flis=() xver farg curr="$PWD"
+
+    # check the argument list
+    for farg in "$@" ; do
+        if ! filter -- "$farg" ; then
+            trace -a "Not a matching filter  : $farg"
+        elif [ -d "$farg" ] ; then
+            fldr+=("$farg")
+        elif [ -n "$CEN_OPT_SILENT" ] ; then
+            continue
+        elif [ -e "$farg" ] ; then
+            flis+=("$farg")
+        else
+            error "Folder does not exist: $farg"
+        fi
+    done
+    error -q
+
+    # processing files
+    if [ "$CEN_OPT_TYPE" != "d" -a "${#flis[@]}" -gt 0 ] ; then
+        message -a "Setting '$CEN_ACTION' rights for ${#flis[@]} file(s)..."
+        [ "$CEN_VERB" -gt 1 ] && xver="-c"
+        system chown $xver $CEN_OPT_USER:$CEN_OPT_GROUP "${flis[@]}"
+        system chmod $xver $DAT_FILE_MODE "${flis[@]}"
+    fi
+
+    # processing folders
+    if [ "${#fldr[@]}" -gt 0 ] ; then
+        if [ "${#fldr[@]}" = 1 ] ; then
+            message -a "Setting '$CEN_ACTION' rights for '$fldr' folder..."
+        else
+            message -a "Setting '$CEN_ACTION' rights for ${#fldr[@]} folder(s)..."
+        fi
+        for farg in "${fldr[@]}" ; do
+            folder -r -c "$farg" || continue       # used to normalize logical path name
+            farg="$PWD" ; folder -c -f "$curr"
+            runSingle "$farg"
+            folder -c -f "$curr"
+        done
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    -g|-G|-grp|--gro*)
+        optarg "group"      CEN_OPT_GROUP  -t ;;
+    -L|--loc*)
+        optarg "local"      CEN_OPT_LOCAL ;;
+    -R|--roo*)
+        optarg "root"       CEN_OPT_ROOT ;;
+    -S|--sil*)
+        optarg "silent"     CEN_OPT_SILENT ;;
+    -t|-T|--typ*)
+        optarg "type"       CEN_OPT_TYPE   "[adf]" ;;
+    -u|-U|--usr|--use*)
+        optarg "user"       CEN_OPT_USER   -t ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    "")
+        [ -n "$CEN_OPT_ROOT" ] && context -s ;;
+
+    pub*)
+        invoke "public"  actionRun   1 + ;;
+
+    rea*)
+        invoke "read"    actionRun   1 + ;;
+
+    wri*)
+        invoke "write"   actionRun   1 + ;;
+
+    tru*)
+        invoke "trusted" actionRun   1 + ;;
+
+    pri*)
+        invoke "private" actionRun   1 + ;;
+
+        # implied action if invoked via accessXxxx
+    *)
+        [ -n "$DAT_ACTION" ] || return
+        invoke "$DAT_ACTION" actionRun - - "$@" ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    local gpri
+    [ -z "$CEN_OPT_GROUP$CEN_OPT_USER" ] && gpri="wheel"
+    doMode "$DAT_ACTION"
+    if [ -n "$DAT_ACTION" ] ; then
+        CEN_USE_HEADER="usage: $CEN_NAME <folder|file>..."
+    else
+        CEN_USE_HEADER="${CEN_USE_HEADER/argument/folder|file}"
+    fi
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -G --group  <group>  override group  (group name or id)
+       -U --user   <user>   override user   (user  name or id)
+       -T --type   a|d|f    select targets: all, directories, folders
+
+       -L --local           do not recurse into sub-directories
+       -R --root            try sudo to get root privileges
+       -S --silent          silently skip non-existing arguments
+
+!EOF
+[ -n "$DAT_ACTION" ] && usagecat << !EOF
+defaults:
+       defaults:        owner  = $CEN_OPT_USER:$CEN_OPT_GROUP
+       - rights:        folder = $DAT_DIR_MODE
+                        file   = $DAT_FILE_MODE
+
+       The defaults are are derived from the invocation name:
+
+       ...public        every user/group can read
+
+       ...trusted       members of $CEN_OPT_GROUP can read and write others can read
+       ...readTrusted   members of $CEN_OPT_GROUP can read
+       ...writeTrusted  members of $CEN_OPT_GROUP can read and write
+
+       ...private       members of wheel can read and write
+
+!EOF
+[ -n "$DAT_ACTION" ] || usagecat << !EOF
+       Unless action is "public" or "private" the file/folder ownership is set
+       to '$CEN_OPT_USER:$CEN_OPT_GROUP'.  This can be overridden using --user or --group.
+
+actions:
+       public           every user/group can read
+       trusted          members of '$CEN_OPT_GROUP' can read and write others can read
+       readTrusted      members of '$CEN_OPT_GROUP' can read
+       writeTrusted     members of '$CEN_OPT_GROUP' can read and write
+       private          members of '${gpri:-$CEN_OPT_GROUP}' can read and write
+
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

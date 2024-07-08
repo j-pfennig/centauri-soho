@@ -1,0 +1,22 @@
+All translation tables (*.po files) and the generated run-time binaries (*.mo)
+are contained in a per-country folder. Use this command to create it:
+
+        $ /var/centauri/locale/l10n-tool country <country>
+
+l10n-tool uses "bash --dump-to-strings" and the GNU gettext-tools to localize
+scripts. The process of translating a script is initialized via:
+
+        $ cd /var/centauri/locale/<country>
+        $ ./l10n-tool prepare <name>
+        $ edit <name>.po
+        $ ./l10n-tool build <name>
+
+After script source changes the procedure to update the translations is:
+
+        $ cd /var/centauri/locale/<country>
+        $ ./l10n-tool dump <name>
+        $ edit <name>.po
+        $ ./l10n-tool build <name>
+
+A more convinient update method is to run "l10n-tool update" a 1st time, then
+edit the translations and run "l10n-tool update" a 2nd time.

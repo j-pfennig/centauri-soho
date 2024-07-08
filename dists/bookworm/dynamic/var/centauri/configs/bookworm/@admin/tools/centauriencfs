@@ -1,0 +1,836 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2023; BSD License"
+CEN_TITLE=$"Tool to simplify the use of 'encfs'"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -d -m ext -m win -t -y "$0" "0.35:2" || exit 2
+
+# Options
+CEN_OPT_CRYPT=          # see --cryptdir
+CEN_OPT_IDLE=           # see --idletime
+CEN_OPT_PASSWORD=       # see --password
+CEN_OPT_UPDATE=         # see --update
+
+# Application data
+APP_INFO=".${CEN_NAME}Info"
+APP_MOUNT=              # see do_folders()
+APP_CRYPT=              # ...
+APP_BNAME=              # ...
+APP_PASSWORD=           # see do_password()
+
+APP_NOTARCHIVED='.not-archived'
+APP_PRIVATE='Privat Private'
+
+# Translated strings
+TXT_MOUNT=$"mount"
+TXT_UNMOUNT=$"unmount"
+
+# fix HOME (for sudo):
+[ "$EUID" = "0" ] && HOME="/root"
+[ -d "$HOME" ] || HOME="/home/$USER"
+
+# ------------------------------------------------------------------------------
+# check if mounted: [<name>]
+# ------------------------------------------------------------------------------
+do_is_mounted() {
+    local vmfs vusr vxxx name="${1:-$APP_MOUNT}"
+    while read vmfs vusr vxxx ; do
+        [ "$vmfs" = "encfs" ] || continue
+        [ "$vusr" -ef "$name" ] && return 0
+    done < /proc/mounts
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# check if .encfsXXX.xml exist: [-q]
+# ------------------------------------------------------------------------------
+do_has_encfs() {
+    set -- "$1" "$APP_CRYPT"/.encfs*.xml
+    [ -f "$2" ] && return 0             # has encfs config
+    [ "$1" = "-q" ] || error -a $"Encrypted filesystem not configured"
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# create folders (optionally enfcs): [-i]
+# ------------------------------------------------------------------------------
+do_create() {
+    folder -m -- "$APP_CRYPT" 0700
+    folder -m -- "$APP_MOUNT" 0700
+    error -a -q $"Cannot continue, consider using" "'$CEN_NAME delete $APP_BNAME'."
+
+    if do_is_mounted ; then             # check if mounted
+        if [ "$1" = "-i" ] ; then
+            error $"Cannot create, mountpoint is in use:" "$APP_MOUNT"
+            return 1
+        fi
+    else
+        do_desktop "$APP_MOUNT"         # (re)create mount.desktop
+        if do_has_encfs -q ; then       # existing encfs
+            if [ "$1" = "-i" ] ; then
+                error $"Cannot create, found 'encfs' configuration:" "$APP_MOUNT"
+                return 1
+            fi
+            do_mount
+        else                            # create encfs
+            if ! system encfs --standard -o nonempty "$APP_CRYPT" "$APP_MOUNT" ; then
+                remove -q -- "$APP_CRYPT"/.encfs*.xml
+                fatal $"The 'encfs' program failed (status $?)"
+            fi
+            message $"Created encrypted filesystem:" "$APP_MOUNT"
+        fi
+    fi
+    do_desktop "" "$APP_MOUNT"          # (re)create umount.desktop
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Prepare folder names: <base_name> <info_flag>
+#
+# info_flag:    - (or missing)  no info file, no check
+#               +               read info file if present
+#               ++              like + but also check existence
+# ------------------------------------------------------------------------------
+do_folders() {
+    if [ "${1:--}" = "-" ] ; then
+        local name
+        for name in $APP_PRIVATE ; do
+            APP_MOUNT="$HOME/$name"
+            [ -d "$HOME/.encfs_$name" ] && break
+        done
+    else
+        prettypath -c -s APP_MOUNT -- "$1"
+    fi
+    APP_BNAME="${APP_MOUNT##*/}"
+
+    APP_CRYPT="$HOME/.encfs_$APP_BNAME"
+    [ -n "$CEN_OPT_CRYPT" ] && prettypath -c -s APP_CRYPT -- "$CEN_OPT_CRYPT"
+
+    if [ -n "$2" -a "$2" != "-" -a \
+         -r "$APP_MOUNT/$APP_INFO" -a -z "$CEN_OPT_CRYPT" ] ; then
+        local sifs="$IFS" ; IFS="="
+        while read -e key val ; do
+            [ "$key" = "crypt" ] && APP_CRYPT="$val"
+            [ "$key" = "idle" -a -z "$CEN_OPT_IDLE" ] && CEN_OPT_IDLE="$val"
+        done < "$APP_MOUNT/$APP_INFO"
+        trace -a "Cryptpath read from config: $APP_CRYPT"
+        IFS="$sifs"
+    fi
+
+    if [ "$2" = "++" ] ; then
+        [ -d "$APP_MOUNT" ] || fatal $"Mount folder does not exist:" "$APP_MOUNT"
+        [ -d "$APP_CRYPT" ] || fatal $"Crypt folder does not exist:" "$APP_CRYPT"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Do the mount, uses do_password: [-e]
+# ------------------------------------------------------------------------------
+do_mount() {
+    [ -e "$APP_CRYPT" ] || error -a $"Missing cryptdir:" "$APP_CRYPT"
+    [ -e "$APP_MOUNT" ] || error -a $"Missing mountpoint:" "$APP_MOUNT"
+    do_has_encfs
+    error -a -q $"Cannot continue, consider using" "'$CEN_NAME create $APP_BNAME'."
+    local idle="-i ${CEN_OPT_IDLE:-10}"
+    [ "$CEN_OPT_IDLE" = 0 ] && idle=
+
+    do_password "$1" || return 1
+    system -p encfs -S $idle "$APP_CRYPT" "$APP_MOUNT" -- \
+                    -o nonempty,allow_root <<<"$APP_PASSWORD" && return 0
+    dryrun && return 0
+
+    local xerr=fatal
+    [ "$1" = '-e' ] && xerr=error
+    $xerr $"Mount failed:" "$APP_MOUNT" "$outp"
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# Unmount encfs: [-s]
+# ------------------------------------------------------------------------------
+do_umount() {
+    # check if mounted then unmount
+    if do_is_mounted ; then
+        trace -a "Unmount: $APP_MOUNT"
+    elif [ "$1" = "-s" ] ; then
+        trace -a "Not mounted: $APP_MOUNT"
+        return
+    else
+        message -a $"Folder not mounted:" "$APP_BNAME"
+        return
+    fi
+    system -p fusermount -zu "$APP_MOUNT" && return
+    dryrun && return 0
+    error $"Unmount failed:" "$APP_MOUNT"
+}
+
+# ------------------------------------------------------------------------------
+# Ask for a password: [-e]
+#
+# Password returned in APP_PASSWORD.
+# ------------------------------------------------------------------------------
+do_password() {
+    local mesg
+
+    # use pwd from option
+    [ -n "$CEN_OPT_PASSWORD" ] && APP_PASSWORD="$CEN_OPT_PASSWORD"
+    [ "${APP_PASSWORD:--}" != "-" ] && return 0
+
+    # window mode if no terminal available
+    [ "/dev/fd/0" -ef "/dev/null" ] && windows -i 1
+
+    # simple password question
+    if [ -z "$1" ] ; then
+        mesg=$"Mounting encrypted folder '&'"
+        if [ "$EUID" = '0' ] ; then
+            mesg="${mesg//&/$APP_MOUNT}"
+        else
+            mesg="${mesg//&/${APP_MOUNT#$HOME/}}"
+        fi
+        confirm -s APP_PASSWORD -u -a -m -p + "$mesg" \
+                $"Please enter the EncFS Password"
+        return                                  # return status
+
+    # ask for pwd change
+    else
+        mesg=$"EncFS folder '&' needs a password"
+        mesg="${mesg//&/$APP_MOUNT}"
+        confirm -s APP_PASSWORD -u -a -m -p + "$mesg" \
+            "\n"$"This message may have been caused by one of the following reasons:" "\n " \
+            "\n"$"- the login password has been changed" \
+            "\n"$"- the EncFS password has been changed" "\n " \
+            "\n"$"Enter Password -or- leave empty to change it"
+        return                                  # return status
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Create info and desktop files: <to_mount_flag> <to_crypt_flag> <link_target>
+# ------------------------------------------------------------------------------
+do_desktop() {
+    local suff=".desktop" data
+    local prog="/admin/$CEN_NAME"  # work-around kde header parse limit
+    [ -e "$prog" ] || prog="$CEN_TOOLS/$CEN_NAME"
+    if [ -n "$1" ] ; then
+        create -t -c -- "$1/$TXT_MOUNT$suff" 775 <<!EOF
+#!$prog desktop
+[Desktop Entry]
+Comment[de]=Verschlüsseltes Verzeichnis '$APP_BNAME' einhängen
+Comment=Mount encrypted folder '$APP_BNAME'
+Encoding=UTF-8
+Exec=$prog mount "$APP_MOUNT"
+GenericName[de]=Verzeichnis einhängen
+GenericName=Mount folder
+Icon=encrypted
+MimeType=
+StartupNotify=false
+Terminal=false
+TerminalOptions=
+Type=Application
+X-DBUS-ServiceName=
+X-DBUS-StartupType=
+X-DCOP-ServiceType=
+X-KDE-SubstituteUID=false
+X-KDE-Username=
+!EOF
+        data=("crypt=$APP_CRYPT" "idle=$CEN_OPT_IDLE")
+        create -t -v data -- "$1/$APP_INFO"
+    fi
+
+    if [ -n "$2" ] ; then
+        create -t -c -- "$2/$TXT_UNMOUNT$suff" 775 <<!EOF
+#!$prog desktop
+[Desktop Entry]
+Comment[de]=Verschlüsseltes Verzeichnis '$APP_BNAME' aushängen
+Comment=Unmount encrypted folder '$APP_BNAME'
+Encoding=UTF-8
+Exec=$prog umount "$APP_MOUNT"
+GenericName[de]=Verzeichnis aushängen
+GenericName=Unmount folder
+Icon=encrypted
+MimeType=
+StartupNotify=false
+Terminal=false
+TerminalOptions=
+Type=Application
+X-DBUS-ServiceName=
+X-DBUS-StartupType=
+X-DCOP-ServiceType=
+X-KDE-SubstituteUID=false
+X-KDE-Username=
+!EOF
+        data=("crypt=$APP_CRYPT" "idle=$CEN_OPT_IDLE")
+        create -t -v data -- "$2/$APP_INFO"
+    fi
+
+    if [ -n "$3" ] ; then
+        local dest=~ lnam="${3##*/}"
+        lnam="${lnam%%.*}" ; [ "${lnam:-.}" = "." ] && lnam="$APP_BNAME"
+        if [ -d "$dest/Desktop" ] ; then
+            dest+="/Desktop"
+        elif [ -d "$dest/Arbeitsfläche" ] ; then
+            dest+="$dest/Arbeitsfläche"
+        fi
+        [ -e "$dest/$lnam$suff" ] &&
+            fatal $"The link desktop file already exists:" "$dest/$lnam$suff"
+
+        local icon
+        if windows ; then
+            system -f -s icon -- kdialog --geticon Desktop MimeTypes
+        else
+            read -e -p $"Icon name: " icon
+        fi
+        cat > "$dest/$lnam$suff" <<!EOF
+#!$prog desktop
+[Desktop Entry]
+Comment[de]=Öffnen von '$3'
+Comment=Open '$3'
+Encoding=UTF-8
+Exec=$prog open "$APP_MOUNT" "$3"
+GenericName[de]=Datei oder Verzeichnis öffnen
+GenericName=Open file or folder
+Icon=${icon:-unknown}
+MimeType=
+Name[de]=
+Name=
+Path=
+StartupNotify=false
+Terminal=false
+TerminalOptions=
+Type=Application
+X-DBUS-ServiceName=
+X-DBUS-StartupType=
+X-DCOP-ServiceType=
+X-KDE-SubstituteUID=false
+X-KDE-Username=
+!EOF
+        trace -a "Wrote: " "$dest/$lnam$suff"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# setup encfs folder: <mnt>
+# ------------------------------------------------------------------------------
+actionCreate() {
+    do_folders "$1"
+    [ -e "$APP_CRYPT" ] && message -a $"Existing cryptdir  :" "$APP_CRYPT"
+    [ -e "$APP_MOUNT" ] && message -a $"Existing mountpoint:" "$APP_MOUNT"
+
+    do_create -i
+}
+
+# ------------------------------------------------------------------------------
+# Actions
+# ------------------------------------------------------------------------------
+actionDelete() {
+    do_folders "$1" +
+    local ddir
+    local dlis=()
+    for ddir in "$APP_CRYPT" "$APP_MOUNT" ; do
+        [ -e "$ddir" ] || continue
+        [ -d "$ddir" ] || error $"Not a folder:" "$ddir"
+        dlis+=("$ddir")
+    done
+    [ -e "$APP_MOUNT" ] && do_umount -s
+    error -q
+    if [ -z "$dlis" ] ; then
+        warning $"Nothing to delete"
+    else
+        ddir=$"Delete folders: " ; ddir+="${dlis[@]}"
+        confirm -n "$ddir" || exit 1
+        remove -d -- "${dlis[@]}"
+    fi
+}
+
+#actionExtpass() {
+#    local pass
+#    if windows -i 1 ; then
+#        windialog -p pass -t "password" \
+#            "Encrypted filesystem needs password:" "Mountpoint '$1'. Current user '$USER'"
+#    else
+#        confirm -n -p + -s pass "Enter '$1' encrypted filesystem password (current user '$USER')"
+#    fi
+#    echo "$pass"
+#}
+
+actionPasswd() {
+    if [ "${1::1}" = ":" ] ; then
+        do_folders "${1:1}" ++
+        echo $"This window runs 'encfsctl' to change the EncFS password for:" "$APP_BNAME"
+        echo
+    else
+        do_folders "$1" ++
+        context -c
+    fi
+    trap "quit" INT
+    system -f encfsctl passwd "$APP_CRYPT"
+    trap - INT
+}
+
+actionDesktop() {
+    local xcmd=true sifs="$IFS" ; IFS="="
+    while read -e key val ; do
+        [ "$key" = "Exec" ] || continue
+        eval xcmd=($val) ; break
+    done < "$1"
+    IFS="$sifs"
+    trace "Desktop exec: ${xcmd[@]}"
+    system -f -x "${xcmd[@]}"
+}
+
+actionOpen() {
+    local ocmd
+    sysfind -o -e -s ocmd -- kde-open5 kde-open || return
+    # check if mounted
+    do_folders "$1" ++
+    do_is_mounted || do_mount
+    do_is_mounted || return
+
+    # run if arg exists
+    local targ="$APP_MOUNT/$2"
+    if [ -e "$targ" ] ; then
+        [ "$CEN_ACTION" = "open" ] && system -e -x -- "$ocmd" "$APP_MOUNT/$2"
+        do_desktop "" "" "$2"
+    else
+        error $"Target does not exist:" "$targ"
+    fi
+}
+
+actionMount() {
+    do_folders "$1" +
+    if do_is_mounted ; then
+        message -a $"Already mounted:" "$APP_BNAME"
+        return
+    fi
+    if [ -n "$CEN_OPT_UPDATE" ] ; then
+        if [ ! -d "$APP_MOUNT" ] ; then
+            do_create
+            message -a $"Desktop files created in:" "$APP_MOUNT"
+        fi
+    elif ! do_mount ; then
+        error -t && error -s 5
+    fi
+}
+
+actionUmount() {
+    if [ "$1" = "-" ] ; then
+        do_folders "$1" +
+        [ -d "$APP_MOUNT" -a -d "$APP_CRYPT" ] || return
+    else
+        do_folders "$1" ++
+    fi
+    do_umount
+}
+
+actionInfo() {
+    do_folders "$1" +
+    if [ -n "$CEN_OPT_UPDATE" ] ; then
+        do_umount -s
+        do_create
+        message -a $"Desktop files updated"
+    fi
+    local stat1=$"[missing]"
+    [ -d "$APP_CRYPT" ] && stat1=$"[ok]     "
+    local stat2=$"[missing]"
+    [ -d "$APP_MOUNT" ] && stat2=$"[ok]     "
+    local stat3=$"[missing]"
+    do_has_encfs -q && stat3=$"[ok]     "
+    do_is_mounted && stat2=$"[mounted]"
+    message -n "\n"$"Crypt folder:" "$stat1 $APP_CRYPT" \
+               "\n"$"Mountpoint  :" "$stat2 $APP_MOUNT" \
+               "\n"$"Encfs config:" "$stat3" \
+               "\n"$"Idle time   :" "${CEN_OPT_IDLE:-10}"
+}
+
+# ------------------------------------------------------------------------------
+# Login, called via Xsession.d
+# ------------------------------------------------------------------------------
+actionLogin() {
+    # prompt for manual repair
+    ___manually() {
+        confirm -n -m -y $"Do you want to change the password manually?" \
+            "\n"$"To do so please run this console command:" \
+            "\n'$CEN_NAME passwd $1'  "
+    }
+
+    # try to fix things
+    ___repair() {
+        [ -z "$APP_MOUNT" ] && do_folders "$1" ++
+        do_mount -e && return 0
+
+        confirm -n -m -c ":" -p $" [r|U|i]? " -d $"update" -v $"retry update ignore" \
+            $"Choose an action to fix the problem" \
+            "\n"$"retry  - go back to the password dialog" \
+            "\n"$"update - update the EncFS password" \
+            "\n"$"ignore - ignore the problem (not recommend)"
+
+        case "$?" in
+        0)  return 0 ;;
+        2)  ___manually "$1" && return 1 ; return 0
+        esac
+        embed -m '_centauri_bash_run'
+        terminal "$CEN_TOOLS/$CEN_NAME" passwd ":$1"  # run in console window
+        return 0
+    }
+
+    #  [ -n "$AUTOLOGIN_STARTX" ] && return     # cannot mount
+    do_folders                                  # set APP_xxxx vars
+    [ -d "$APP_CRYPT" ] || return               # not cryto folder
+    [ -d "$APP_MOUNT" ] || do_create            # repair mount folder
+
+    while error -t ; do                         # ask user until mounted
+        if do_is_mounted ; then
+            # repair .cache symlink if we have an encrypted cache
+            local finf="$APP_MOUNT/$APP_NOTARCHIVED/cache"
+            if [ -d "$finf" ] && [ ! "$HOME/.cache" -ef "$finf" ] ; then
+                symlink -x -- "$finf" "$HOME/.cache"
+            fi
+            break
+        fi
+
+        # repair - to init windows mode
+        if [ -n "$DISPLAY" ] && ! windows -i 2 ; then
+            error $"Skipping enfcs mount/repair: cannot init window mode"
+            return
+        fi
+        ___repair || break
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Manage encrypted cache: link|on|off|status
+# ------------------------------------------------------------------------------
+actionCache() {
+    local mode="$1" dnam="$APP_NOTARCHIVED" denc nerr=error finf
+    CEN_AUTOIND=
+
+    # get encrypted name of .not-archived
+    ___encname() {
+        trace -a -c "Get encrypted name" "$dnam"
+        do_password || return 1
+        system -r -s denc encfsctl encode --extpass cat "$APP_CRYPT" "$dnam" <<<"$APP_PASSWORD" || return 1
+        trace -a -c "Encoded cache fldr" "$denc"
+        [ -n "$denc" ] || return 1
+        denc="$APP_CRYPT/$denc" ; return 0
+    }
+
+    # make symlink to XDG_RUNTIME_DIR
+    ___usexdg() {
+        if [ -d "$XDG_RUNTIME_DIR" ] ; then
+            symlink "$XDG_RUNTIME_DIR" "$1"
+        else
+            error -p $"\$XDG_RUNTIME_DIR (%s) is not a folder" "$XDG_RUNTIME_DIR"
+            folder -m "$1" 700
+        fi
+    }
+
+    # fix .cache link
+    ___link() {
+        local fval='m' fdir='d' fenc='n'
+        finf="$APP_MOUNT/$dnam/cache"
+        [ -d "$finf" ] && fenc='y'
+        [ -L "$HOME/.cache" ] && fdir='l'
+        [ -d "$HOME/.cache" ] && fval='v'
+        [ "$fval" = 'm' ] && [ ! -d "${finf%/*}" ] && fdir='x'
+        trace -a "Cache status:" "$fval$fdir$fenc"
+        case "$fval$fdir$fenc" in
+            # we have a valid .cache folder
+            v?n)                                # folder, not encrypted   ok
+                trace -a $"Cache folder valid, not encrypted"
+                ;;
+            vdy)                                # folder, encrypted       bad
+                trace -a $"Cache encrypted removing folder"
+                remove -d "$HOME/.cache" && symlink -r "$APP_MOUNT/$dnam/cache" "$HOME/.cache"
+                ;;
+            vly)                                # link, encrypted         check
+                if [ "$HOME/.cache" -ef "$finf" ] ; then
+                    trace -a $"Cache folder valid, encrypted"
+                else
+                    trace -a $"Fixing cache symlink, encrypted"
+                    symlink "$finf" "$HOME/.cache"
+                fi ;;
+
+            # not valid .cache
+            mln)
+                trace -a $"Creating cache and symlink, encrypted"
+                folder -m "$finf"
+                symlink "$finf" "$HOME/.cache"
+                ;;
+            m?n)
+                trace -a $"Cache in XDG_RUNTIME_DIR, not encrypted"
+                ___usexdg "$HOME/.cache"
+                ;;
+            m?y)
+                trace -a $"Creating cache symlink, encrypted"
+                symlink "$finf" "$HOME/.cache"
+                ;;
+            *)
+                invoke -e "Internal error ($fval$fdir$fenc)"
+        esac
+   }
+
+   # output status info
+   ___status() {
+        local fdir='d' fenc='n' fval='m'
+        finf="$APP_MOUNT/$dnam/cache"
+        [ -d "$finf" ] && fenc='y'
+        [ -L "$HOME/.cache" ] && fdir='l'
+        [ -d "$HOME/.cache" ] && fval='v'
+        case "$fval$fdir$fenc" in
+            # we have a valid .cache folder
+            vdn)                                # folder, not encrypted   ok
+                message -a $"Cache folder valid, not encrypted"
+                return ;;
+            vln)                                # folder, not encrypted   ok
+                message -a $"Cache symlink valid, not encrypted"
+                return ;;
+            vly)                                # link, encrypted         check
+                if [ "$HOME/.cache" -ef "$finf" ] ; then
+                    message -a $"Cache folder valid, encrypted"
+                    return
+                fi
+                ;;
+        esac
+        error -p $"Cache folder invalid, run '%s cache link' to fix" "$CEN_NAME"
+    }
+
+    # run on/off actions on mounted folder
+    ___mounted() {
+        trace -a "Run 'cache $mode' mounted tasks"
+        if [ "$mode" = "on" ] ; then
+            folder -m "$APP_MOUNT/$dnam/cache" || return
+            create -- "$APP_MOUNT/$dnam/WARNING_FOLDER_NOT_ARCHIVED"
+            remove -d "$HOME/.cache" && symlink -r "$APP_MOUNT/$dnam/cache" "$HOME/.cache"
+        else
+            remove -d -q "$APP_MOUNT/$dnam"
+            if [ -h "$HOME/.cache" ] ; then
+                remove "$HOME/.cache"
+                folder -m "$HOME/.cache"
+            fi
+        fi
+    }
+
+    # run on/off actions on crypto folder
+    ___crypto() {
+        trace -a "Run 'cache $mode' crypto tasks"
+        [ -d "$denc" ] || return                # must exist!
+        if [ "$mode" = "on" ] ; then
+            create -- "$denc/WARNING_FOLDER_NOT_ARCHIVED"
+            folder -m "$APP_MOUNT/$dnam"
+            if [ -d "$XDG_RUNTIME_DIR" ] ; then
+                symlink "$XDG_RUNTIME_DIR" "$APP_MOUNT/$dnam/cache"
+            else
+                warning $"XDG_RUNTIME_DIR not valid, using:" "/tmp/runtime-$LOGNAME"
+                folder -m "/tmp/runtime-$LOGNAME"
+                symlink "/tmp/runtime-$LOGNAME" "$APP_MOUNT/$dnam/cache"
+            fi
+        else
+            remove -d -q "$denc"
+        fi
+    }
+
+    case "$mode" in
+        link)       nerr=trace ;;
+        on)         finf=$"Do you want to use an encrypted '.cache' folder" ;;
+        off)        finf=$"Do you want to use an unencrypted '.cache' folder" ;;
+        sta*)       mode="status" ; nerr=message ;;
+        *)          error $"Mode must be one of"": on|off|status|link"
+                    return ;;
+    esac
+
+    do_folders - +
+    if ! [ -d "$APP_CRYPT" -a -d "$APP_MOUNT" ] ; then
+        $nerr -a $"Encrypted folder not found or not configured"
+        [ "$mode" = "link" -o "$mode" = "status" ] || return
+    fi
+
+    if [ "$mode" = "link" ] ; then
+        ___link ; return
+    elif [ "$mode" = "status" ] ; then
+        ___status ; return
+    fi
+
+    context -c
+    if [ -n "$finf" ] ; then
+        confirm -a -y "$finf" || return
+    fi
+    ___encname || return
+
+    if do_is_mounted ; then
+        ___mounted ; do_umount ; ___crypto ; do_mount
+    else
+        ___crypto ; do_mount ; ___mounted
+    fi
+    ___link
+}
+
+# ------------------------------------------------------------------------------
+# Cleanup unused mount, called via xsession: [<user>]
+# ------------------------------------------------------------------------------
+actionCleanup() {
+    local user="${1:--}"
+    [ "$user" = "-" ] && context -s         # multiuser: rerun as root
+
+    system -c -e id loginctl || return
+    if ! [ -d "/run/user" ] ; then
+        warning -a $"No '/run/user/' - need systemd user sessions"
+        return
+    fi
+
+    # --- single user ---
+
+    if [ "$user" != "-" ] ; then
+        do_folders ; do_is_mounted || return
+        local alis item coun=0
+        system -a alis -r -e -p -- loginctl list-sessions --no-pager --no-legend || return
+        for item in "${alis[@]}" ; do
+            set -- $item
+            [ "$3" = "$user" ] && coun=$((coun + 1))
+        done
+        trace -a "Cleanup: user '$user' has $coun session(s)"
+        [ $coun -gt 1 ] || do_umount
+        return
+    fi
+
+    # --- multi user ---
+
+    local vmfs vusr vxxx eusr euid
+    while read vmfs vusr vxxx ; do
+        [ "$vmfs" = "encfs" ] || continue
+        case "$vusr" in
+            /home/*)               eusr="${vusr%/*}" ; eusr="${eusr##*/}";;
+            /root/*)               eusr="root" ;;
+            $CEN_ROOT/vbox/*)      eusr="vbox" ;;
+            */VBox/Home/*)         eusr="vbox" ;;
+            *)                     continue
+        esac
+        system -s euid -r -n -q -- id -u "$eusr"
+        [ -n "$euid" ] || continue
+
+        if [ -d "/run/user/$euid" ] ; then
+            trace -a "User '$eusr' still has a systemd user session"
+            continue
+        fi
+        system -a pids -q -r -- pgrep -u $euid -f "/bin/bash -l"
+        if [ -n "$pids" ] ; then
+            trace -a "User '$eusr' still has a bash login shell"
+            continue
+        fi
+        system -e -p umount -l "$vusr" || continue
+        message -a "Unmounted: $vusr"
+    done < /proc/mounts
+}
+
+# ------------------------------------------------------------------------------
+# Option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+    "")                             # end of option parsing
+        folder -q -c "$HOME"        # run in user's home dir
+        ;;
+    -C|--cry*)
+        optarg "cryptdir"   CEN_OPT_CRYPT  -t ;;            # any text
+    -I|--idl*)
+        optarg "idle"       CEN_OPT_IDLE   -n ;;            # a number
+    -P|--pas*)
+        optarg "password"   CEN_OPT_PASSWORD -t ;;          # any text
+    -U|--upd*)
+        optarg "update"     CEN_OPT_UPDATE ;;               # a simple flag
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    cre*)
+        invoke "create"  -            1 ;;
+    inf*)
+        invoke "info"    -            1 ;;
+    pas*)
+        invoke "passwd"  -            1 ;;
+    mou*)
+        invoke "mount"   -            1 ;;
+    umo*|unm*)
+        invoke "umount"  -            1 ;;
+    del*)
+        invoke "delete"  -            1 ;;
+#    ext*)
+#        invoke "extpass" -            1 ;;
+
+    des*)
+        invoke "desktop" -            1 ;;
+    lin*)
+        invoke "link"    actionOpen   2 ;;
+    ope*)
+        invoke "open"    actionOpen   2 ;;
+
+    cac*)
+        invoke "cache"   -            1 ;;
+    cle*)
+        invoke "cleanup" -          0 1 ;;
+    log*)
+        invoke "login"   -            0 ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -C --cryptdir <enc>  path for encrypted data (autogenerated by default)
+       -I --idletime <min>  minutes to unmount     (0 to disable, default: 10)
+       -P --password <pwd>  specifies the password       (prompted by default)
+       -U --update          update/recreate $APP_INFO and .desktop files
+
+actions:
+       create <mnt>         create new encrypted folder  -or-  repair existing
+       delete <mnt>         delete an encrypted folder
+       passwd <mnt>         change master password for an encrypted folder
+
+       mount  <mnt>         mount a encrypted folder (use '--update' to repair)
+       umount <mnt>         unmount a encrypted folder
+
+       cache  status|on|off|link
+                            manage encryption of the user's '.cache' folder
+       info   <mnt>         print some information   (use '--update' to repair)
+       link   <mnt> <node>  create a desktop icon to open a file or folder
+
+       cleanup <user>       internal use: late unmount
+       login                internal use: for pam-mount
+       open   <mnt> <node>  internal use: open a file or folder
+       desktop              internal use: run a desktop file
+
+       The create action creates a folder for the mount point and a folder to
+       contain the encrypted data (the later folder is hidden, the name can be
+       automatically generated from the mount point name).  The mount point
+       folder contains a hidden file named $APP_INFO that contains the
+       path of the encrypted data. The command also creates desktop files to
+       mount or unmount the filesystem. The --update option can be used with
+       "info" or "mount" to update $APP_INFO and the Desktop files.
+
+arguments:
+       <mnt>                the mount point for decrytion
+       <enc>                the folder to hold the encrypted data
+       <min>                minutes to wait before idle auto unmount
+       <pwd>                password used for encryption
+       <node>               path relative to <mnt>
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

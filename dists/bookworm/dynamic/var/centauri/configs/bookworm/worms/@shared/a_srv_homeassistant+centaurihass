@@ -1,0 +1,179 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Dr. J. Pfenig (c) 2023; BSD License"
+CEN_TITLE=$"Tool to (un)install and run Home Assistant"
+
+# Import the bash library, set name and version 
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -y - '0.10:2' || exit 2
+
+# Data
+DAT_BASE='/srv/homeassistant'
+
+# data for extra options
+CEN_OPT_VERSION='2023.11.2'
+
+# ------------------------------------------------------------------------------
+# Home Assistant service: on|off|status
+# ------------------------------------------------------------------------------
+actionAutorun() {
+    folder -c -f "$DAT_BASE"
+    local word sise
+    if ! listsearch -u -m word -- "${1:-status}" 'on' 'off' 'status' ; then
+        invoke -e "Argument must be one of: on off status" ; return
+    fi
+
+    system -q systemctl is-enabled 'centaurihass.service' && sise='enabled'
+
+    case "$word" in
+    on)     create -- 'centaurihass.enabled'
+            [ -z "$sise" ] && system -e -p systemctl enable "$DAT_BASE/centaurihass.service"  ;;     
+    off)    remove -- 'centaurihass.enabled' ;;     
+    *)      [ -f 'centaurihass.enabled' ] && word='on' || word='off'
+            message -a "$word $sise"
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Home Assistant dependencies: -no args-
+# ------------------------------------------------------------------------------
+actionDeps() {
+    system -e -u - apt-get install -y python3 python3-dev python3-venv \
+        python3-pip bluez libffi-dev libssl-dev libjpeg-dev zlib1g-dev \
+        autoconf build-essential libopenjp2-7 libtiff6 libturbojpeg0-dev \
+        tzdata ffmpeg liblapack3 liblapack-dev libatlas-base-dev
+}
+
+# ------------------------------------------------------------------------------
+# install Home Assistant core step 1: -no args-
+#
+#   step 1: create folder, python, create user (need root)
+#   step 2: build python stuff (must run as homeassistant)
+# ------------------------------------------------------------------------------
+actionInstall() {
+    system -q -r -- getent passwd 'homeassistant' || 
+       system -f -- useradd -rm 'homeassistant'
+    attributes -d -m - -o 'homeassistant:staff' -- "$DAT_BASE"
+    local opts
+    optmake -j opts -b dryrun
+    optmake -j opts -b verbose
+    optmake -j opts -b yesno
+    system -e -r -t -u homeassistant -- "$DAT_BASE/$CEN_NAME" $opts setup
+}
+
+# ------------------------------------------------------------------------------
+# install Home Assistant core step 2: -no args-
+# ------------------------------------------------------------------------------
+actionSetup() {
+    if [ "$USER" != 'homeassistant' ] ; then
+        invoke -e "The current user must be 'homeassistant'" ; return
+    fi
+
+    folder -c -f "$DAT_BASE"
+    system -e -t -- virtualenv "$DAT_BASE"
+    source bin/activate || quit -e "python venv activate failed"
+    system -e -q -- python3 -m pip install wheel 
+    error -t || return
+
+    message -a -m " "$'\n'"Ready to install homeassistant.  This can take a very long time." \
+                  $'\n'"You can stop the installation now and continue later by running:" $'\n' \
+                  $'\n'"    sudo $DAT_BASE/$CEN_NAME install" $'\n'" "
+
+    confirm -y "Continue to install homeassistant" || return
+
+    system -e -- pip3 install homeassistant=="$CEN_OPT_VERSION"
+}
+
+# ------------------------------------------------------------------------------
+# Home Assistant shell: -no args-
+# ------------------------------------------------------------------------------
+actionShell() {
+    folder -c -f "$DAT_BASE"
+    system -e sudo -u homeassistant -H -s
+}
+
+# ------------------------------------------------------------------------------
+# run Home Assistant: -no args-
+# ------------------------------------------------------------------------------
+actionRun() {
+    local verb ; [ "$CEN_VERB" -gt 1 ] && verb='-v'
+    system -e -u homeassistant -x -- "$DAT_BASE/bin/hass" $verb
+}
+
+# ------------------------------------------------------------------------------
+# uninstall Home Assistant: -no args-
+# ------------------------------------------------------------------------------
+actionUninst() {
+    if [ ! -d "$DAT_BASE" ] ; then
+        warning "No known 'Home Assistant' installation" ; return
+    fi
+    folder -c -f "$DAT_BASE"
+    confirm -n "Uninstall Home Assistant" || return
+    remove -d -- bin/ cache/ include/ lib/ share/ pyvenv.cfg LICENSE
+    actionAutorun off
+    message -a "Please remove folder '$DAT_BASE' and user 'homeassistant' manually"
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> [<argument>]
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    -V|--vers*) 
+        optarg 'version'    -       -t ;;       # any text   
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <verb> <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$1" in
+
+    aut*)
+        invoke -r 'autorun' -        0 1 ;;     # one optional arg
+    dep*)
+        invoke -r 'deps'    -          0 ;;
+    ins*)
+        invoke -r 'install' -          0 ;;     # no args
+    run)
+        invoke -r 'run'     -          0 ;;     # no args
+    set*)
+        invoke    'setup'   -          0 ;;
+    sh*|log*)
+        invoke -r 'shell'   -          0 ;;
+    uni*)
+        invoke -r 'uninst'  -          0 ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -o - \
+        -o '-V --version <vers>'  $"homeassistant version (default: $CEN_OPT_VERSION)" \
+
+    usageset \
+        -a 'autorun      <auto>'  $"behaviour of 'centaurihass.service'" \
+        -a 'deps'                 $"install build dependencies" \
+        -a 'install'              $"install homeassistant core" \
+        -a 'run'                  $"run homeassistant 'hass' binary" \
+        -a 'setup'                $"[internal] called by 'install'" \
+        -a 'shell'                $"open a shell as user homeassistant" \
+        -a 'uninstall'            $"uninstall homeassistant" \
+
+    usageset \
+        -p '<auto>'               $"one of: on off status" \
+        
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

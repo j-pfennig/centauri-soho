@@ -1,0 +1,8 @@
+[Unit]
+Wants=dnsmasq.service
+After=dnsmasq.service centauriswitch.service centauri-master.target
+
+[Service]
+NotifyAccess=all
+#ExecStartPre=/usr/bin/sleep 8
+ExecStartPre=/var/centauri/tools/centauriroute --tool wait 2 -- wait 127.0.0.2 53

@@ -1,0 +1,751 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Dr. J. Pfennig (c) 2022; BSD License"
+CEN_TITLE=$"Launcher for GUI or Console Applications"
+CEN_UTL_STIME="$EPOCHREALTIME"
+
+# Import the bash library
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -t - '0.01:1' || exit 2
+
+embed -m _centauri_bash_dbg
+embed -c _centauri_bash_run         # dependency for standalone build
+
+# Data
+CEN_OPT_DESKTOP=                    # see --session
+CEN_OPT_FOLDER=                     # see --folder
+CEN_OPT_HOST=                       # see --host
+CEN_OPT_MODE=                       # see --mode
+CEN_OPT_PORT=                       # see --port
+
+#declare -A x_args _pars
+
+DAT_WEBAPP=
+DAT_WEBDIR=
+DAT_WEBTMP=                         # delete folder/file in quit hook
+DAT_CGIDIR=
+DAT_WEBURL=                         # set by webapp
+DAT_SYNCPIPE=                       # handle of open synchronization pipe
+
+DAT_FOLDER=
+DAT_HOST=                           # remote host (kiosk, browser)
+DAT_PORT=
+DAT_URL=()                          # set by application_url()
+
+DAT_QUIT_LIST=                      # quit hook
+
+### TODO List WebApp
+#
+# webapp options: --appid=i --host=x --port=n --html=f --cgibin=-f
+#
+# webapp setup: register
+#
+#   launcher will create an empty statefile <temp>/<webapp>-<appid>.state
+#   The <appid> will later be passed to the broser.
+#
+#   webapp creates a timestamp after register. launcher calls register
+#   only if timestamp is not current.
+#
+#   Launcher --appid=0 when run as root should be able to detect stale
+#   webapp state files (and pipes, see cgi proxy)
+#
+# webapp run args: run <option>... -- <arg>...
+#
+# webapp cgi call: reconstruct <appid>, load statefile
+
+### TODO webapp cgi proxy
+#
+#   on 'register' the app creates a named proxy in cgi-bin. On the html
+#   side there is no difference if the app get called directly or via
+#   proxy.
+#
+#       cgi_proxy -r <cgibin> <prefix>
+#
+#           <prefix> is <temp>/<webapp- and is static code
+#
+#   the app creates two pipes: <temp>/<webapp>-<appid>.request
+#                              <temp>/<webapp>-<appid>.reply
+#
+#       cgi_proxy -i
+#
+#   The proxy is a non-library script that just opens the pipes, sends
+#   requests to the app and foreward reply data.
+#
+#   the webapp will stay running until stopped be a signal:
+#
+#       cgi_proxy -w <worker>
+
+### TODO List
+#
+#   launcher uses this only when arguments are given.
+#
+#   The app can use the statefile to save args.
+#
+# Launcher: --activate to replace centaurihotkeys
+#
+# _centauri_bash_xtr: override folder, text extraction
+#
+# centauribuilder: text ectraction - white/black list - file ; charset=binary
+#
+# ------------------------------------------------------------------------------
+# Config callback for html - find default html page
+# ------------------------------------------------------------------------------
+launcher_html() {
+    $CEN_DEBUG -c -- "$@"
+    local mode ochk oerr='-e'
+    while [ $# -gt 0 ] ; do
+        case "$1" in
+        --)     shift ; break ;;
+        -f|-q)  oerr="$1" ;;
+        -m)     shift ; mode="$1" ;;
+        -o|-t)  shift ;;
+        -x)    return 0 ;; #### ochk=1 ;;
+        *)
+        esac ; shift
+    done
+
+    # the remaining args are: <application> [---] <args>....
+    local args=() appl="$1" indx ; shift
+
+    # option -x: argument check
+    if [ -n "$ochk" ] ; then
+        [ "$1" = '---' ] && shift
+        [ $# -le 1 ] && return 0
+        error -p $"Only one argument allowed (%s): %s" "${appl##*/}" "$*" ; return 1
+    fi
+
+    # skip command options, use --- to skip everything before
+    if listsearch -c -n indx -- '---' "$@" ; then
+        trace "found --- $indx +" "${@:1:indx}" + "${@:indx+2}"
+        args=("${@:1:indx}") ; shift $((indx+1))
+    # ... or skip all options
+    else
+        while [ $# -gt 0 ] ; do
+            case "$1" in
+            -)      break ;;
+            -*)     args+=("$1") ;;
+            *)      break
+            esac ; shift
+        done
+    fi
+    # the remaining args should be html files or urls
+
+    # search url/file list backwards until an existing file is found
+    local _coun="$#" _indx _strt
+    while ((_coun--)) ; do
+        _indx=$((_coun + 1))
+        _strt="${!_indx}"
+        case "$_strt" in
+            /*)     [ -s "${_strt%#*}" ] && break || _strt= ;;
+            *)      break                       # not a file, use this url
+        esac
+    done
+
+
+    if [ "${_strt:--}" != '-' ] ; then
+        application_url "$_strt" || return 1
+        trace "html url:" "$DAT_URL"
+        args+=("$DAT_URL")
+    fi
+
+    # wait for synchronization pipe - see 'launcher_webapp'
+    if [ -n "$DAT_SYNCPIPE" ] ; then
+        trace -a $"wait for synchronization:" "$DAT_SYNCPIPE"
+        read -t 60 -u "$DAT_SYNCPIPE" || return 1
+    fi
+
+    launcher -x -m "$mode" $oerr -p -- "$appl" "${args[@]}"
+
+    ### BUG Firefox 2nd instance will terminate after passing cmd to 1st instance
+
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Config callback for library
+# ------------------------------------------------------------------------------
+launcher_library() {
+    $CEN_DEBUG -c -- "$@"
+    while [ $# -gt 0 ] ; do
+        case "$1" in
+        --)         shift ; break ;;
+        -m|-o|-t)   shift ;;
+        -x)         return 0 ;;
+        *)
+        esac ; shift
+    done
+    shift                                   # my path ($0))
+
+    local prof stat opts=("$@")
+    [ -z "$opts" ] && opts=(-a)
+    folder -u cache -s prof -g "$CEN_NAME.bashrc" || return
+    tmpfile -f -s CEN_INTERACTIVE
+    create -t -c -h - -- "$prof" <<!EOF
+alias clh='centaurihelp -L'
+alias cth='centaurihelp -T'
+#PS1="\033[7mcentaurilauncher\033[0m \w$ "
+PS1="centaurilauncher \w$ "
+. $CEN_LIBRARY/_centauri_bash_lib ${opts[@]}
+message -p "Library version '%s' loaded" "${CEN_MODULES["_centauri_bash_lib"]}"
+message -a "Options:" "${opts[@]}"
+
+# MODIFIED VERSION FOR LAUNCHER - helper to terminate script: [<exitcode>]
+_cen_exit() {
+    [ \$# != 0 ] && CEN_EXIT="\$1"
+    \$CEN_TRACE -r \$"Exit status:" "\${CEN_EXIT:-0}"
+    [ -n "\$CEN_QUIT_SANE" ] && system -r -q -- stty sane
+    if [ "\$CEN_QUIT_WAIT" = 3 ] ; then
+       sleep 2
+    elif [ "\$CEN_QUIT_WAIT" = 2 ] ; then
+        trap "exit \${CEN_EXIT:-0}" 1 2 3 15
+        read -n1 -p \$"Press any key to close the window..." 2>&1
+    elif [ -n "\$CEN_QUIT_WAIT" ] ; then
+        trap "exit \${CEN_EXIT:-0}" 1 2 3 15
+        read -n1 -p \$"Press any key to continue..." 2>&1
+        echo 2>&1
+    fi
+    #### WRITE EXIT CODE TO FILE ###
+    echo "\${CEN_EXIT:-0}" >"$CEN_INTERACTIVE" ; exit 0 &>/dev/null
+}
+
+message $"Type 'quit' (or 'exit') to terminate centauri-bash-lib shell"
+context -e 0 -v 3
+!EOF
+
+    # TODO remove tmp files of myself and of test shell
+
+    while : ; do
+        stat=0
+        system -r -- bash --rcfile "$prof" || break
+        [ -s "$CEN_INTERACTIVE" ] || break
+        read stat < "$CEN_INTERACTIVE" || break
+        [ "${stat:-0}" -le 2 ] && break
+        printf -v stat $"The centauri-bash-lib shell terminated (status=%s). Restarting..." "$stat"
+        echo "                   " "$stat" >&2
+        >"$CEN_INTERACTIVE"                         # clear old status
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Config callback for httpd
+# ------------------------------------------------------------------------------
+launcher_lighttpd() {
+$CEN_DEBUG -c -- "$@"
+    local oerr orun
+    while [ $# -gt 0 ] ; do
+        case "$1" in
+        --)         shift ; break ;;
+        -f|-q)      oerr="$1" ;;
+        -m|-o|-t)   shift ;;
+        -r)         orun='-r' ;;
+        -x)         return 0 ;;
+        *)
+        esac ; shift
+    done
+
+    if [ -n "$DAT_HTTPD" ] ; then
+        trace $"ignored, already started:" "$1" ; return 0
+    elif [ -n "$DAT_HOST" ] ; then
+        trace $"ignored as --host is set:" "$1" ; return 0
+    fi
+
+    port_find || return 1
+    trace -a "lighttpd $DAT_PORT ($DAT_WEBDIR)"
+    local base conf
+    tmpfile -n -s base -- 'lighttpd' || return 1
+    conf="$base.conf"
+    [ "${DAT_WEBDIR:--}" != '-' ] && base="$DAT_WEBDIR" || DAT_WEBDIR="$base"
+    create $orun $oerr -t -c -- "$conf" 600 <<!EOF || return 1
+server.port          = $DAT_PORT
+server.document-root = "$base"
+server.upload-dirs   = ( "$base" )
+index-file.names     = ( "index.html" )
+mimetype.assign         = (
+    ".html" => "text/html",
+    ".txt" => "text/plain",
+    ".css" => "text/css",
+    ".js" => "application/x-javascript",
+    ".jpg" => "image/jpeg",
+    ".jpeg" => "image/jpeg",
+    ".gif" => "image/gif",
+    ".png" => "image/png",
+    "" => "application/octet-stream"
+)
+server.modules += (
+    "mod_dirlisting",
+    "mod_alias",
+)
+dir-listing.activate = "enable"
+!EOF
+    # enable CGI if we know about a cgi folder
+    if [ "${DAT_CGIDIR:--}" != '-' ] ; then
+        create $orun $oerr -a -c -- "$conf" <<!EOF || return 1
+server.modules += ( "mod_cgi" )
+\$HTTP["url"] =~ "^/cgi-bin/" {
+    cgi.assign = ( "" => "" )
+    alias.url += ( "/cgi-bin/" => "$DAT_CGIDIR/" )
+}
+!EOF
+    fi
+    folder -m -- "$base" || return 1
+
+    ### check previous instance
+        DAT_HTTPD=
+    local time lpid=$!
+    launcher -x -m 3 -q -n -- "$1" -i 86400 -D -f "$conf"
+    if [ "$!" = "$lpid" ] ; then
+        error $"Could not execute:" "$1" ; return 1
+    fi
+
+    # register quit hook to stop server on exit
+    if [ -z "$DAT_QUIT_LIST" ] ; then
+        DAT_QUIT_LIST="$CEN_HOOK_QUIT" ; CEN_HOOK_QUIT='quit_hook'
+    fi
+    DAT_HTTPD=$!
+
+    # wait until server is responding
+    for indx in 1 1 1 2 2 2 4 4 4 5 0 ; do
+        if [ "$indx" = 0 ] ; then
+            error $"Server does not respond:" "$1" ; return 1
+        fi
+        sleep 0.$indx
+        port_check 'localhost' "$DAT_PORT" && break
+        kill -0 $! 2>/dev/null && continue
+        DAT_HTTPD=
+        error $"Stopped unexpectedly:" "$1" ; return 1
+    done
+    return 0
+}
+#    "mod_staticfile",
+#    "mod_redirect",
+#    "mod_access"
+
+# ------------------------------------------------------------------------------
+# Config callback for qmlweb
+# ------------------------------------------------------------------------------
+launcher_qmlweb() {
+$CEN_DEBUG -c -- "$@"
+    local oerr orun _mode _ainf _titl
+    while [ $# -gt 0 ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -f)   oerr='-f' ;;
+        -i)   shift ; splitjoin -s _ainf -d ':' -- "$1" ;; # _oinf="$1" ;;
+        -m)   shift ; _mode="$1" ;;
+        -q)   oerr='-q' ;;
+        -r)   orun='-r' ;;
+        -t)   shift ; _titl="$1" ;;
+        -x)   return 0 ;;
+        esac ; shift
+    done
+
+    $CEN_DEBUG -c -- "$*"
+    local _pqml="$1" _titl ; shift
+    local _file _resx="${1:--}" _resy="${2:--}" _zoom="${3:--}"
+    shift ; shift ; shift
+
+    ### TODO check qt installation
+    #   qt5-qtdeclarative (termux)
+    #   qt5-qml5
+    #   qt5-qtquickcontrols2
+    #   qt5-webengine5
+
+    # search url/file list backwards until an existing file is found
+    local _coun="$#" _indx _strt
+    while ((_coun--)) ; do
+        _indx=$((_coun + 1))
+        _strt="${!_indx}"
+        case "$_strt" in
+            /*)     [ -s "${_strt%#*}" ] && break || _strt= ;;
+            *)      break                       # not a file, use this url
+        esac
+    done
+
+    # qml window geometry
+    [ "${_ainf[0]:--}" != '-' ] && _resx="${_ainf[0]}"
+    [ "${_ainf[1]:--}" != '-' ] && _resy="${_ainf[1]}"
+    [ "${_ainf[2]:--}" != '-' ] && _zoom="${_ainf[2]}"
+    [ "$_resx" = '-' ] && _resx='(Screen.desktopAvailableWidth * 6) / 10'
+    [ "$_resy" = '-' ] && _resy='(Screen.desktopAvailableHeight * 4) / 5'
+    [ "$_zoom" = '-' ] && _zoom='Screen.pixelDensity / 4.5'
+    if [ "${_titl:--}" = '-' ] ; then
+        _titl="$CEN_NAME"
+        [ -n "$CEN_EMBED" ] && _titl="$CEN_EMBED ⸺ $CEN_NAME"
+    fi
+
+    local _qvar='Q''t' _pipe                        # hide Qt to avoid mime type qml
+    tmpfile -n -s _file -- "launcher.qml" || return 1
+
+    # wait for synchronization pipe - see 'launcher_webapp'
+    if [ -n "$DAT_SYNCPIPE" ] ; then
+        local _flag _wurl _dumy
+        trace -a $"wait for synchronization:" "$DAT_SYNCPIPE"
+        read -t 60 -u "$DAT_SYNCPIPE" _flag _wurl _dumy || return 1
+        trace -a $"synchronization message :" "$_flag" "$_wurl"
+        [ "$_flag" = 'OK' ] || return 1
+        if [ "${_wurl:--}" != '-' ] ; then
+            DAT_URL= ; _strt="$_wurl"
+        fi
+    fi
+
+    if [ -z "$DAT_URL" ] ; then
+        trace -a $"generate config for qml :" "$_strt"
+        application_url "$_strt" || return 1
+    fi
+    trace -c $"qml web url" -- "$DAT_URL"
+    create -r -t -c -- "$_file" 400 <<!EOF || return 1
+import ${_qvar}Quick 2.0
+import ${_qvar}Quick.Window 2.0
+import ${_qvar}WebEngine 1.2
+Window {
+    function cen_posx() { return (Screen.desktopAvailableWidth - $_resx) / 2; }
+    function cen_posy() { return (Screen.desktopAvailableHeight - $_resy) / 2; }
+    x: cen_posx() ; y: cen_posy()
+    width: $_resx ; height: $_resy
+    visible: true
+    title: "$_titl"
+
+    WebEngineView {
+        anchors.fill: parent
+        url: "$DAT_URL"
+        focus: true
+        zoomFactor: $_zoom
+        onJavaScriptConsoleMessage: {
+            if (message == 'QUIT') Qt.quit();
+            console.log(message);
+        }
+   }
+}
+!EOF
+
+    case "$_mode" in
+    # mode 1 makes no sense with qml, use mode=0
+    0|1)
+        launcher -x $oerr $orun -m 0 -- "$_pqml" --quiet "$_file" ;;
+    # for mode 2,3 we must wait until qml has read the script file. A pipe as
+    # dummy input file can be used for synchronization ...
+    *)
+        tmpfile -p -s _pipe 'pipe.qml'          # dummy input for qml
+        launcher -x $oerr $orun -m "$_mode" -- "$_pqml" --quiet "$_file" "$_pipe" &&
+            echo 2>/dev/null > "$_pipe"         # this is a blocking write
+    esac
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Callback for service
+# ------------------------------------------------------------------------------
+launcher_service() {
+    $CEN_DEBUG -c -- "$@"
+
+    # we are going to launch 'kiosk' and pass all known options except -x:
+    local orun oerr='-e -p'
+    while [ $# -gt 0 ] ; do
+        case "$1" in
+        --)     shift ; break ;;
+        -f)     oerr='-p -f' ;;
+        -q)     oerr='-q' ;;
+        -r)     orun='-r' ;;
+        -i|-m|-o|-t|-y)
+                shift ;;
+        esac ; shift
+    done
+    timer -m
+    #system $orun $oerr -- "$@"
+}
+
+# ------------------------------------------------------------------------------
+# Callback for webapp: <webapp> <webdir> <cgidir> <syncpipe> <url>
+# ------------------------------------------------------------------------------
+launcher_webapp() {
+    $CEN_DEBUG -c -- "$@"
+
+    # we are going to launch 'kiosk' and pass all known options except -x:
+    local ochk opts=()
+    while [ $# -gt 0 ] ; do
+        case "$1" in
+        --)     shift ; break ;;
+        -f|-q|-r)
+                opts+=("$1") ;;
+        -i|-m|-o|-t|-y)
+                opts+=("$1" "$2") ; shift ;;
+        -x)     ochk=1 ;;
+        esac ; shift
+    done
+
+#message "WEBAPP $*"
+    local wapp="${2:--}" wdir="${3:--}" cdir="${4:--}" pipe="${5:--}" wurl="${6:--}"
+
+    # if no webdir is passed, it must be a temporary one that has to be
+    # deleted on exit ...
+
+    if [ -n "$ochk" ] ; then
+        if [ "$wdir" = '-' ] ; then
+            [ "$wapp" = '-' ] && fatal -- $"<webapp> or <webdir> required"
+            DAT_WEBTMP="${CEN_PATHS[4]}/centauri-webapp-$wapp"
+            folder -f "$DAT_WEBTMP" ; DAT_WEBDIR="$DAT_WEBTMP"
+            # register quit hook to remove temp folder on exit
+            if [ -z "$DAT_QUIT_LIST" ] ; then
+                DAT_QUIT_LIST="$CEN_HOOK_QUIT" ; CEN_HOOK_QUIT='quit_hook'
+            fi
+        else
+            folder -f "$wdir" ; DAT_WEBDIR="$wdir"
+        fi
+       # if [ "$cdir" = '-' ] ; then
+       #     [ -d "$DAT_WEBDIR/cgi-bin" ] && cdir="$DAT_WEBDIR/cgi-bin"
+       # fi
+        DAT_WEBAPP="$wapp" ; DAT_CGIDIR="$cdir" ; DAT_WEBURL="$wurl"
+        return 0
+    fi
+
+    # open synchronization pipe
+    if [ "$pipe" != '-' ] ; then
+        redirect -v DAT_SYNCPIPE -i "$pipe" || return 1
+    fi
+
+
+    if [ "${DAT_CGIDIR}" = '-' ] ; then
+        trace $"needing no web server"
+        application_url "$DAT_WEBURL"               # convert to browser url
+    else
+        trace $"using web server"
+
+        # TODO randomize port_find
+        port_find
+        application_url "$DAT_WEBURL"               # convert to browser url
+
+        launcher -f -m 2 httpd "$DAT_URL" || fatal $"no configured web server"
+    fi
+
+
+    # launcher should either call 'launcher_html' or 'launcher_qmlweb' to make
+    # synchronization work ...
+    launcher "${opts[@]}" kiosk "$DAT_URL"
+}
+
+# ------------------------------------------------------------------------------
+# get default url (into DAT_URL): [<path>]
+# ------------------------------------------------------------------------------
+application_url() {
+    local _wurl="${1:--}"
+
+    # convert argument to url
+    case "$_wurl" in
+        *://*)  DAT_URL="$_wurl" ; _wurl= ;;
+        *.*)    ;;
+        -)      _wurl="index.html" ;;
+        *)      _wurl="$1.html" ;;
+    esac
+    if [ -z "$_wurl" ] ; then
+        :
+    elif [ "$_wurl" != '-' ] ; then
+        if [ -n "$DAT_PORT" ] ; then            # using a web server
+        ### TODO prettypath to string webdir path
+            DAT_URL=("http://${DAT_HOST:-localhost}:$DAT_PORT/$_wurl")
+        else
+            joinpath -s _wurl "$DAT_WEBDIR" "$_wurl"
+            DAT_URL=("file://$_wurl")
+        fi
+
+    # we have a pre-set host or port
+    elif [ -n "$DAT_HOST" -o -n "$DAT_PORT" ] ; then
+        DAT_URL=("http://${DAT_HOST:-localhost}${DAT_PORT:+:$DAT_PORT}")
+    # 1st check: does localhost run a server on 80 and 8080
+    elif port_check 'localhost' 80 ||  port_check 'localhost' 8080 ; then
+        DAT_URL=("http://localhost")
+    # kiosk will try local files next
+    elif [ "$CEN_ACTION" = 'kiosk' -a -e "$CEN_ROOT/html/index.html" ] ; then
+        DAT_URL=("file://$CEN_ROOT/html/index.html")
+    # try configured server
+    elif port_check - 80 || port_check - 8080 ; then
+        DAT_URL=("http://$DAT_HOST/index.html")
+    # kiosk will finally try local files next
+    elif [ "$CEN_ACTION" != 'kiosk' -a -e "$CEN_ROOT/html/index.html" ] ; then
+        DAT_URL=("file://$CEN_ROOT/html/index.html")
+    else
+        DAT_URL=() ; return 0
+    fi
+
+    # url encoding (partial)
+    DAT_URL="${DAT_URL//%/%25}" ; DAT_URL="${DAT_URL// /%20}"
+    DAT_URL="${DAT_URL//(/%28}" ; DAT_URL="${DAT_URL//)/%29}"
+    DAT_URL="${DAT_URL//+/%2B}" ; DAT_URL="${DAT_URL//,/%3C}"
+    DAT_URL="${DAT_URL//;/%3B}" ; DAT_URL="${DAT_URL//@/%40}"
+    DAT_URL="${DAT_URL//\[/%5B}" ; DAT_URL="${DAT_URL//\]/%5D}"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# check if ports listens (sets DAT_HOST): <host>|- <port>
+# ------------------------------------------------------------------------------
+port_check() {
+    local rkey rval host="$1"
+    if [ "$host" = '-' ] ; then
+        if [ -n "$DAT_HOST" ] ; then
+            host="$DAT_HOST"
+        # if we have _centauri_bash_net ...
+        elif isfunction -c netserver ; then
+            host="$CEN_NET_SERVER"
+        # try resolv.conf instead
+        elif [ -r "${CEN_PATHS[2]}/resolv.conf" ] ; then
+            while read rkey rval ; do
+                [ "$rkey" = 'nameserver' ] || continue
+                host="$rval" ; break
+            done <"${CEN_PATHS[2]}/resolv.conf"
+        fi
+        DAT_HOST="$host"
+        [ "$host" = '-' ] && return 1
+    fi
+    dryrun ">/dev/tcp/$host/$2" && return 0
+    echo 2>/dev/null >"/dev/tcp/$host/$2"           # return status
+}
+
+# ------------------------------------------------------------------------------
+# find a free port (returns DAT_PORT)
+# ------------------------------------------------------------------------------
+port_find() {
+    [ "${DAT_PORT:--}" != '-' ] && return 0
+    local temp
+    for temp in {8081..9999} ; do
+        echo > "/dev/tcp/localhost/$temp" && continue
+        DAT_PORT="$temp" ; return 0
+    done 2>/dev/null
+    error $"Found no free port" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# quit hook
+# ------------------------------------------------------------------------------
+quit_hook() {
+    if [ -n "$DAT_HTTPD" ] ; then
+        if ! dryrun $"Stopping HTTP server" ; then
+            kill "$DAT_HTTPD" 2>/dev/null
+        fi
+    fi
+    if [ -n "$DAT_WEBTMP" ] ; then
+        folder -- '/'
+        remove -d -- "$DAT_WEBTMP"
+    fi
+    $DAT_QUIT_LIST "$@"
+}
+
+# ------------------------------------------------------------------------------
+# list: [<mode>]
+# ------------------------------------------------------------------------------
+actionList() {
+    local mode=${1:-exe} indx help=1
+    if ! listsearch -n indx -u -- "$mode" 'all' 'session' 'executable' '-h' ; then
+        error $"allowed 'list' modes are:" 'all session executable' || return
+    fi
+
+    [ "$indx" -lt 3 ] && help= || indx=2
+    launcher -l "$indx" || return 1
+
+    txtsort -a CEN_LAUNCHER -i CEN_LAUNCHER || return
+    local item flds
+    for item in "${CEN_LAUNCHER[@]}" ; do
+        splitjoin -s flds -d $'\a' -- "$item"
+        if [ -n "$help" ] ; then
+            printf -v item "%-8s <arg>...    %s" "${flds[0]}" "${flds[3]}"
+            usageset -t "$item"
+        else
+            printf "%-12s  %-6s  %-40s: %s\n" "${flds[@]::4}"
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# implement option parsing: <option> [<argument>]
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    '')     DAT_FOLDER="$CEN_OPT_FOLDER"
+            DAT_HOST="$CEN_OPT_HOST"
+            DAT_PORT="$CEN_OPT_PORT"
+            ;;
+
+    -D|--des*)
+        optarg 'desktop'    -      -t ;;        # text argument
+
+    -F|--fol*)
+        optarg 'folder'     -      -d ;;        # folder argument
+
+    -H|--hos|--host)
+        optarg 'host'       -      -t ;;        # text argument
+
+    -M|--mod|--mode)
+        optarg 'mode'       - '[0-3]' ;;        # regex
+
+    -P|--por|--port)
+        optarg 'port'       -      -n ;;        # number argument
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# implement action parsing: <verb> <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$1" in
+
+    '')                                         # end processing must be ignored
+        ;;
+
+    lis|list)
+        invoke 'list'   -           0 1 ;;
+
+    *)                              # get list of configured actions
+        local actn list
+        launcher -l 3 -a list || return 1
+        listsearch -m actn -u -- "$1" "${list[@]}" || return 1
+
+        list=() ; shift
+        [ "${CEN_OPT_DESKTOP:--}" != '-' ] && list+=(-y "$CEN_OPT_DESKTOP")
+        [ "${CEN_OPT_MODE:--}" != '-' ] && list+=(-m "$CEN_OPT_MODE")
+
+        # only accept option arguments that are valid for launcher()
+        while [ "${1::1}" = '-' ] ; do
+            case "$1" in
+            --)     shift ; break ;;
+            -f|-q|-r)                           # know flag options ...
+                    list+=("$1") ;;
+            -i|-m|-o|-t|-y)                     # known value options ...
+                    list+=("$1" "$2") ; shift ;;
+            *)      fatal -p $"Option '%s' is invalid (action '%s')" "$1" "$CEN_ACTION" ;;
+            esac ; shift
+        done
+
+        # this calls launcher() as an action
+        invoke "$actn" 'launcher' - - "${list[@]}" -- "$actn" "$@"
+        ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -o "" \
+        -o "-M --mode    <mode>  "$"start mode (run in background)" \
+        -o "-D --desktop <desk>  "$"override desktop configuration to use" \
+
+    usageset \
+        -l $"actions" ; actionList -h ; usageset \
+        -t '' \
+        -t "list     <info>      "$"show detailed information about actions" \
+
+    usageset \
+        -l $"arguments" \
+        -t "<desk>         "$"a desktop name like: tty kde lxqt gnome" \
+        -t "<info>         "$"one out of:"' all session executable' \
+        -t "<mode>         "$"0:wait (default)  1:exec  2:background  3:disown" \
+
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

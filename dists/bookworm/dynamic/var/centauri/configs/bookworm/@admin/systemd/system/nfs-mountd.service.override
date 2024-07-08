@@ -1,0 +1,7 @@
+[Service]
+
+# use fixed port to avoid that randomly generated port numbers
+# fall into some firewall reserved ranges ...
+
+ExecStart=
+ExecStart=/usr/sbin/rpc.mountd --manage-gids --port 32767

@@ -1,0 +1,215 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_atr = centauri-bash-lib: File attribute support
+#
+# Call:     . _centauri_bash_atr [-n]
+#
+# Options:  -none-
+#
+# Copyright Dr. J. Pfennig (c) 2023-2024
+# ------------------------------------------------------------------------------
+
+CEN_MODULES['_centauri_bash_atr']='0.10:2'
+
+# dynamically created by filestat() ...
+#declare -g -A CEN_ATR_FILESTAT_MAP
+
+CEN_ATR_HAVE_STAT=              # 1 := stat builtin loaded, 0 := not available
+
+# ------------------------------------------------------------------------------
+# attributes - Create file/folder, set file/folder attributes
+#
+# Call:     attributes [-o <owner>|-] [-m <mode>|-] [-c|-d] [-f] [-k] [-r] [-s]
+#                      [-x <excl>]... [--] <item>...
+#
+# Options:  -c  create non-exsting items as files
+#           -d  create non-exsting items as directories
+#           -f  make errors fatal
+#           -k  keep existing items unchanged
+#           -o  set owner (use **-** for "$LOGNAME:")
+#           -m  set mode  (use **-** for **664** or **775**)
+#           -r  ignore --dryrun
+#           -s  recurse into sub-folders
+#           -x  exclude matching arguments, repeatable
+#
+# Arguments:<mode>   item mode to be set in any **/usr/bin/chmod** syntax
+#           <owner>  item owner to be set in **/usr/bin/chown** syntax
+#           <excl>   exclude pattern for bash glob
+#
+# Return:   **true** at success or **false** otherwise.
+#
+# Examples: (1) Create file or folders
+#.          attributes -c "hallo"
+#.          attributes -c -o root:staff -m 770 "/.hidden"
+#.          attributes -d -o daemon -m - "/run/x1" "/run/x2"
+#
+#           (2) Set owner/mode recursively
+#.          attributes -s -m "o-w" "/etc"
+#.          attributes -d -s -m 700 -o root "/etc/test"
+#
+#           (3) Exclude patterns
+#.          attributes -x "*.p" -x "*~" -m 664 library/_*
+#
+#+The **/usr/bin/chown** program uses a '<user>:[<group>]' notation for owner. With
+# '<user>**:**' (no group but trailing colon) the user's primary group is used.
+# ------------------------------------------------------------------------------
+attributes() {
+    local _excl=() _erun _kind _ownr=":" _mode _mdef="664" _args=() _item _srec _ferr="-e"
+    while [ "${1::1}" = '-' ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -c)   _kind=" " ;;
+        -d)   _kind="-d" ; _mdef="775" ;;
+        -f)   _ferr="-f" ;;
+        -k)   _keep=1 ;;
+        -o)   shift ; _ownr="$1" ;;
+        -m)   shift ; _mode="$1" ;;
+        -r)   _fdry='-r' ;;
+        -s)   _srec="-R" ;;
+        -x)   shift ; _excl+=("$1") ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+
+    for _item in "$@" ; do
+        if [ -e "$_item" ] ; then
+            [ -n "$_keep" ] && continue
+        elif [ -n "$_kind" ] ; then
+            create $_fdry $_kind -- "$_item" || continue
+        else
+            $CEN_TRACE -a $"No such file/folder:" "$_item" ; continue
+        fi
+        if [ "${#_excl[@]}" = 0 ] ; then    # no excludes...
+            _args+=("$_item") ; continue
+        fi
+        for _erun in "${_excl[@]}" ; do
+            [[ "$_item" == $_erun ]] || continue
+            _item= ; break
+        done
+        [ -n "$_item" ] && _args+=("$_item")
+    done
+
+    [ -n "$_args" ] || return 0
+    [ "${_ownr:--}" = '-' ] && _ownr="${LOGNAME:-$USER}:"
+    [ "$_mode" = '-' ] && _mode="$_mdef"
+    [ -n "$_mode" ] && sysrun $_fdry $_ferr -b -p -- chmod $_srec "$_mode" -- "${_args[@]}"
+    [ "${_ownr:-:}" = ':' ] || sysrun $_fdry $_ferr -b -p -- chown $_srec "$_ownr" -- "${_args[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# filestat - Retrieve file attributes
+#
+# Call:     (1) filestat [-f|-q] [-s|-a <vnam>] -p <file> -- <what>...
+#           (2) filestat [-f|-q] [-s|-a <vnam>] -- <what>...
+#           (3) filestat
+#
+#           Form (1) gets data from the kernel, form (2) works on cached data
+#           and form (3) deletes the cached data. See: CEN_ATR_FILESTAT_MAP
+#
+# Options:  -a  return attributes as array
+#           -f  make errors fatal
+#           -p  filesystem path
+#           -q  no error reporting
+#           -s  return attributes as string (default: CEN_FILESTAT)
+#
+# Arguments:<file>   § a file path
+#           <vnam>   § variable name
+#           <what>   § keyword of an attribute
+#
+# Attributes:
+#           uid      owner's user id   (decimal)
+#           gid      owner's group id  (decimal)
+#           perms    permissions       (in octal)
+#           atime    access time       (epoch seconds)
+#           ctime    attr. change time (epoch seconds)
+#           mtime    modification time (epoch seconds)
+#           size     file size         (in bytes)
+#           nlink    hard link count   (decimal)
+#           inode    filesystem inode  (decimal)
+#           name     file path
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#.Examples: # explicitly get info for a file
+#.          filestat -p '/etc/motd'
+#.          echo "size:" "${CEN_ATR_FILESTAT_MAP[size]}"
+#.          echo "mode:" "${CEN_ATR_FILESTAT_MAP[perms]}"
+#
+#.          # get info one by one (uses CEN_ATR_FILESTAT_MAP internally)
+#.          filestat -p '/etc/motd'
+#.          filestat -s temp size ; echo "size:" "$temp"
+#.          filestat mode         ; echo "mode:" "$CEN_FILESTAT"
+#
+#.          # get info into an array
+#.          filestat -s iarr -p '/etc/motd'
+#.          echo "size:" "${iarr[0]}"
+#.          echo "mode:" "${iarr[1]}"
+#
+#+This function loads the 'stat' bash-builtin which is not compatible with the
+# command line utility **/usr/bin/stat**. While system does not run builtins by
+# default [[sysrun]] just behaves the other way. Be carefull to use 'sysrun -i stat ...'
+# to run the command line version!
+# ------------------------------------------------------------------------------
+CEN_FILESTAT=
+filestat() {
+    if [ $# = 0 ] ; then
+        unset CEN_ATR_FILESTAT_MAP ; return
+    fi
+
+    local _oerr='error' _ferr='-e' _varr _vstr _path _item _cen_atr_tmp
+    while [ "${1::1}" = '-' ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -a)   shift ; _varr="$1" ; _vstr=
+              local -n _cen_atr_arr="$_varr" ; _cen_atr_arr=() ;;
+        -f)   _oerr='fatal' ; _ferr='-f' ;;
+        -p)   shift ; _path="$1" ;;
+        -q)   _oerr='trace' ; _ferr='-q' ;;
+        -s)   shift ; _vstr="$1" ; _varr= ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+
+    if [ -z "$CEN_ATR_HAVE_STAT" ] ; then
+        sysfind -f -b -c -s CEN_ATR_HAVE_STAT -- 'stat'
+        [ "$CEN_ATR_HAVE_STAT" = 'stat' ] && CEN_ATR_HAVE_STAT=1 || CEN_ATR_HAVE_STAT=0
+    fi
+
+    if [ -n "$_path" ] ; then
+        declare -A -g CEN_ATR_FILESTAT_MAP
+        if [ "$CEN_ATR_HAVE_STAT" = 1 ] ; then
+            sysrun $_ferr -b -- stat -A CEN_ATR_FILESTAT_MAP -- "$_path" || return 1
+        else
+            local _indx=0 _flds='f u g a X Y Z b B s d i h N r n'
+            sysrun $_ferr -a _cen_atr_tmp -i -- \
+                   stat --printf="%${_flds// /\\n%}" -- "$_path" || return 1
+            for _flds in type uid gid perms atime ctime mtime blocks \
+                        blksize size device inode nlink link rdev name ; do
+                CEN_ATR_FILESTAT_MAP["$_flds"]="${_cen_atr_tmp[_indx++]}"
+            done
+            # debug CEN_ATR_FILESTAT_MAP
+        fi
+    fi
+    [ -z "$_varr" -a -z "$_vstr" ] &&  _vstr='CEN_FILESTAT' # return 0
+
+    _cen_atr_tmp=()
+    while [ -n "$1" ] ; do
+        _item="${CEN_ATR_FILESTAT_MAP["$1"]}"
+        if [ -n "$_item" ] ; then
+            _cen_atr_tmp+=("$_item")
+        elif [ -n "${1//[a-z]/}" ] ; then
+            $_oerr $"Invalid attribute name:" "$1" ; return 1
+        else
+            _cen_atr_tmp+=('-')
+        fi
+        shift
+    done
+    if [ -n "$_vstr" ] ; then
+        printf -v "$_vstr" '%s' "${_cen_atr_tmp[*]}"
+    else
+        local -n _cen_atr_arr="$_varr" ; _cen_atr_arr=("${_cen_atr_tmp[@]}")
+    fi
+    return 0
+}
+
+# end

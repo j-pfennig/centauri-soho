@@ -1,0 +1,17 @@
+# centaurisysinit.service - created by 'centaurisysinit' - do not edit!
+
+[Unit]
+Description=Centauri initialization
+ConditionPathExists=/var/centauri/default/centaurisysinit
+After=nss-user-lookup.target user.slice modprobe@drm.service
+Before=networking.service
+Wants=centauriissue.service
+
+[Service]
+Type=oneshot
+ExecStart=/var/centauri/tools/centaurisysinit --daemon=0 start
+
+[Install]
+WantedBy=sysinit.target
+
+# end

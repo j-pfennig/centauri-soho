@@ -1,0 +1,119 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2019; BSD License"
+CEN_TITLE="Example oneshot service"
+
+# The lsb-header is used and required on a system without systemd only. It can
+# safely be deleted for a service depends on a systemd environment ...
+
+### BEGIN INIT INFO
+# Provides:          centauriService
+# Required-Start:    $remote_fs
+# Required-Stop:
+# X-Start-Before     networking
+# Default-Start:     3 4 5
+# Default-Stop:
+# Short-Description: Example Service
+# Description:       Example Service demonstrates the coding of a service
+### END INIT INFO
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -v "$0" "0.00:1" || exit 2
+
+# Not setting CEN_SYS_WANTED installs a service with lsb-header in SysV mode
+# even if systemd is installed ...
+CEN_SVC_WANTED_BY=multi-user.target
+
+# A service without a run() function is of type oneshot by default
+# CEN_SVC_TYPE=oneshot
+# A service that automatically stops after start (good for use with a timer).
+# This service type does not use actionStop.
+# CEN_SVC_TYPE=once
+
+# Data
+
+# ------------------------------------------------------------------------------
+# action test - do nothing
+# ------------------------------------------------------------------------------
+actionTest() {
+    message "TODO: implement 'Test' or delete it"
+
+    # dummy to show that custom verbs are supported
+}
+
+# ------------------------------------------------------------------------------
+# action setup: status|install|uninstall <arg>...
+# ------------------------------------------------------------------------------
+actionSetup() {
+    message "TODO: implement 'setup' or delete it"
+
+    # optionally continue with default implementation (CEN_ARGS cleared)
+    CEN_ARGS=
+}
+
+# ------------------------------------------------------------------------------
+# action status - show status: -no args-
+# ------------------------------------------------------------------------------
+actionStatus() {
+    message "TODO: implement 'status' or delete it"
+
+    # optionally continue with the default implementation (CEN_ARGS cleared)
+    CEN_ARGS=
+}
+
+# ------------------------------------------------------------------------------
+# action start - service startup: -no args-
+# ------------------------------------------------------------------------------
+actionStart() {
+    warning "TODO: implement action 'start'"
+
+    # in a oneshot service the method returns after starting but the service
+    # stays running.
+}
+
+# ------------------------------------------------------------------------------
+# action stop - service stop: -no args-
+# ------------------------------------------------------------------------------
+actionStop() {
+    message "TODO: implement 'stop' or delete it"
+
+    # in a oneshot service the default implementation does nothing.
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <verb> <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$1" in
+
+    # service commands (all optional)
+    set*)
+        invoke "setup"  -  0 + ;;
+    start)
+        invoke -        -  0 ;;
+    stop)
+        invoke -        -  0 ;;
+    sta*)
+        invoke "status" -  0 ;;
+
+    # other actions
+    test)
+        invoke "test"   -  0 ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    # custom action(s)...
+    usageset \
+        -a "test                 "$"nothing usefull"
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

@@ -1,0 +1,19 @@
+# This file is used by 'centauriusers' to create 'group.conf'
+
+# custom entries can be added here ...
+
+#*;*;my-user;Al0000-2400; my-group
+# ... 
+
+*;*;%linux-normal;Al0000-2400;cdrom floppy dialout netdev plugdev pulse-access audio video
+*;*;%linux-medium;Al0000-2400;cdrom floppy dialout netdev plugdev pulse-access audio video lpadmin sambashare
+*;*;%linux-power;Al0000-2400; cdrom floppy dialout netdev plugdev pulse-access audio video disk vboxusers vboxsf lpadmin sambashare
+*;*;%linux-admin;Al0000-2400; cdrom floppy dialout netdev plugdev pulse-access audio video disk vboxusers vboxsf lpadmin sambashare wheel shadow staff
+
+*;*;%linux-roaming;Al0000-2400; roaming
+
+# template for entries added by 'centauriusers'
+
+*;*;%USER%;Al0000-2400; %GROUPS%
+
+# end

@@ -1,0 +1,189 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL=$"Dr. J. Pfennig (c) 2022-2024; BSD license"
+CEN_TITLE=$"Grep for (bash) source files"
+
+# Import the bash library, set mix/max arguments
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -t - '0.03:2' || exit 2
+
+# Data
+CEN_OPT_COMMENT=                # see --comment
+CEN_OPT_LIBRARY=                # see --library
+CEN_OPT_NATIVE=                 # see --native
+CEN_OPT_PATH=                   # see --path
+CEN_OPT_RECURSE=                # see --recurse
+CEN_OPT_TOOLS=                  # see --tools
+CEN_OPT_WORD=                   # see --word
+
+# ------------------------------------------------------------------------------
+# The one and only action
+# ------------------------------------------------------------------------------
+run() {
+    # --- <path> argument is a file ---
+
+    if [ -n "$CEN_OPT_PATH" ] && [ -f "$CEN_OPT_PATH" ] ; then
+        CEN_WALK_FILES=("$CEN_OPT_PATH")
+
+    # --- set current path and run walk ---
+
+    else
+        if [ -n "$CEN_OPT_PATH" ] ; then
+            shortpath -f -g -- "$CEN_OPT_PATH"
+            folder -c -f -- "${CEN_SHORTPATH:-$CEN_OPT_PATH}"
+        fi
+
+        # default includes/excludes
+
+        if [ "${#CEN_OPT_INCLEXCL[@]}" = 0 ] ; then
+            if [ "$PWD" -ef "$CEN_LIBRARY" ] ; then
+                CEN_OPT_INCLEXCL=('*_???')
+            elif [ "$PWD" -ef "$CEN_TOOLS" ] ; then
+                CEN_OPT_INCLEXCL=('centauri*')
+            fi
+        fi
+
+        # get file list
+
+        if [ -z "$CEN_OPT_RECURSE" ] ; then
+            walk -c -r -l 1 -- .
+        else
+            walk -c -r -- .
+        fi
+    fi
+
+    # get comment sub-expression
+
+    local cexp expr opts=('-n' '-P')
+    [ -n "$CEN_PAGER" ] && opts+=('--color=always') || opts+=('--color=auto')
+    [ -n "$CEN_OPT_WORD" ] && opts+=(-w)
+
+    case "${CEN_OPT_COMMENT:-bash}" in
+    none)
+        cexp=$'\1' ;;
+    [bd]ash)
+        cexp='[[:space:]]*#' ;;
+    semi|semicolon)
+        cexp='[[:space:]]*;' ;;
+    c|cpp|slash|java)
+        cexp='[[:space:]]*//' ;;
+    *)
+        cexp="$CEN_OPT_COMMENT"
+        if [ -z "${cexp//[a-z]/}" ] ; then
+            error -m $"Option '--comment' should look like a regular expression or" \
+                  $"must be a keyword like:"' bash hash semi semicolon c cpp slash java'
+            quit
+        fi
+        # skip spaces if comment expression is not starting with '^'
+        [ "${cexp::1}" != '^' ] && cexp='[[:space:]]*'"$cexp" || cexp="${cexp:1}"
+    esac
+
+    # assemble grep command and run
+    if [ -n "$CEN_OPT_NATIVE" ] ; then
+        opts=("$@")
+    elif [ $# = 0 ] ; then
+        opts+=('^(?!'"$cexp"').*\K[![:space:]]+')
+    elif [ $# -gt 1 ] ; then
+        splitjoin -j expr -d '|' -- "$@"
+        opts+=('^(?!'"$cexp"').*\K'"($expr)")
+    else
+        opts+=('^(?!'"$cexp"').*\K'"$1")
+    fi
+    system -- grep "${opts[@]}" "${CEN_WALK_FILES[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> <argument>
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    '') # end of option list, check ...
+        optarg "$CEN_OPT_LIBRARY$CEN_OPT_TOOLS${CEN_OPT_PATH:+1}" - -m "--library --tools --path"
+        [ -n "$CEN_OPT_LIBRARY" ] && CEN_OPT_PATH="$CEN_LIBRARY"
+        [ -n "$CEN_OPT_TOOLS" ] && CEN_OPT_PATH="$CEN_TOOLS"
+
+        optarg "$CEN_OPT_NATIVE${CEN_OPT_COMMENT:+1}" - -m "--native --comment"
+
+        # use pager by default
+        [ -z "$CEN_OPT_PAGER" ] && syspager -y -c 'yes'
+        ;;
+
+    -C|--com*)
+        optarg 'comment'    -    -t ;;          # text argument
+    -L|--lib*)
+        optarg 'library'    -       ;;          # simple flag
+    -N|--nat*)
+        optarg 'native'     -       ;;          # simple flag
+    -P|--pat|--path)
+        optarg 'path'       -    -t ;;          # text argument
+    -R|--rec*)
+        optarg 'recurse'    -       ;;          # simple flag
+    -T|--too*)
+        optarg 'tools'      -       ;;          # simple flag
+    -W|--wor|--word)
+        optarg 'word'       -       ;;          # simple flag
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset -u "(1) $CEN_NAME -N <opts>... --- <garg>..." \
+             -u "(2) $CEN_NAME <opts>... [---] <gexp>..." \
+             -u - \
+             -u "$CEN_TITLE. "$"Form (1) passes all non-option arguments" \
+             -u $"to grep. Form (2) mangles all non-option arguments into a perl regular" \
+             -u $"expression that excludes comments. Form (2) also adds the grep options" \
+             -u $"'-n' and '--color'." \
+             -u - \
+             -u $"If the working folder is \$CEN_TOOLS and no '-i/-x' options are used," \
+             -u $"'-i°centauri*' is implied. Similarly for folder \$CEN_LIBRARY '-i°*_???'" \
+             -u $"is implied."
+
+    usageset -o - \
+             -o '-C --comment <cexp>'  $"expression to match comments" \
+             -o '-N --native'          $"pass all options to grep" \
+             -o '-L --library'         $"[*] use \$CEN_LIBRARY as path" \
+             -o '-P --path    <path>'  $"[*] path to use (can be a shortpath)" \
+             -o '-R --recurse'         $"recurse folder" \
+             -o '-T --tools'           $"[*] use \$CEN_TOOLS as path" \
+             -o '-W --word'            $"match only whole words" \
+             -o - \
+             -o '[*] these options are mutually exclusive'
+
+    usageset -p '<cexp>'    $"regular expression or keyword, leading spaces skipped" \
+             -p '<garg>'    $"any argument to be passed to grep" \
+             -p '<gexp>'    $"a perl regular expression" \
+             -p '<path>'    $"a configured shortpath or a path (or ./<path>); this" \
+             -p -           $"parameter can specify a folder or a single file" \
+             -p - \
+             -p $"By default '--comment=bash' and search for '[![:space]]+' apply." \
+             -p $"Use '--comment=none' and search for '.?' to see all text lines." \
+             -p $"The following keywords add predefined <cexp> expressions:" \
+             -p -           '**bash dash  semi semicolon  c cpp java slash**'
+
+    usageset -l $"examples" \
+             -t $"# search for 'black' or 'white' in \$CEN_TOOLS" \
+             -t "$CEN_NAME -P tools black white" \
+             -t - \
+             -t $"# pass non-option arguments to grep" \
+             -t "$CEN_NAME -N --- -i '^.* hello\\.'" \
+             -t - \
+             -t $"# search samba configuration for 'path'" \
+             -t "$CEN_NAME -P /etc/samba -C semicolon -x '*.*dist' 'path'" \
+             -t - \
+             -t $"# list samba/smb.conf without comments" \
+             -t "$CEN_NAME -P /etc/samba/smb.conf -C '[;#]'" \
+             -t - \
+             -t $"# list all text of etc/fstab" \
+             -t "$CEN_NAME -P /etc/samba/smb.conf -C none '.*'" \
+
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

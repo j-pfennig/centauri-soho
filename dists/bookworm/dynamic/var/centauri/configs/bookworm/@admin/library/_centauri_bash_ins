@@ -1,0 +1,1985 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_ins = centauri-bash-lib: Installation helpers
+#
+# Call:     . _centauri_bash_ins
+#
+#+This module contains no public functions, it provides helpers for module
+# [[_centauri_bash_svc]] and [[_centauri_bash_sys]] that are intended for internal
+# use only. These functions are used at library or service installation
+# time. The module also provides some documentation topics.
+#
+# Internal: _cen_ins_canrun     § check if SysV or systemd services are supported
+#           _cen_ins_chksystemd § check if systemd is used by this system
+#           _cen_ins_completion § create _centauri_bash_completion
+#           _cen_ins_config     § install systemd service from library config
+#           _cen_ins_files      § copy library files
+#           _cen_ins_findsvc    § find service/file or unit
+#           _cen_ins_install    § (un)install SysV or systemd service(s)
+#           _cen_ins_isshared   § do we have a shared installation?
+#           _cen_ins_library    § library installation/update remove
+#           _cen_ins_paths      § for _cen_ins_library, paths setup
+#           _cen_ins_proxy      § create library proxy
+#           _cen_ins_rootdefs   § fill CEN_ROOTDEFS from CEN_INSTALL
+#           _cen_ins_rootpath   § add prefix and check a path
+#           _cen_ins_saferm     § safely remove systemd service files
+#           _cen_ins_service    § service setup
+#           _cen_ins_systemd    § systemd configuration
+#           _cen_ins_sysvhdr    § check if file has a SysV header
+#           _cen_ins_tools      § get list of (centauri)tools
+#           _cen_ins_version    § get OS and KDE versions
+#
+# Copyright Dr. J. Pfennig (c) 2019-2023
+# ------------------------------------------------------------------------------
+
+# do not demand an api-version, we get loaded by centauriconfig
+CEN_MODULES["_centauri_bash_ins"]="0.10:2"
+
+embed -c '_centauri_bash_ext'               # dependency
+
+CEN_INS_SYSTEMD=                            # flags that systemd is supported
+CEN_INS_SYSVOK=                             # flags that sysv is supported
+CEN_INS_ETCPATH="${CEN_PATHS[2]}"           # path to /etc
+
+# systemd variables are initialized by _cen_ins_chksystemd
+
+CEN_INS_SOURCES="$CEN_ROOT/systemd"         # systemd service folder (only if installed)
+CEN_INS_SYSVINI="$CEN_INS_ETCPATH/init.d"   # SysV service folder
+CEN_INS_SYSDLST=                            # list of systemd service folders
+CEN_INS_SYSDDIR=                            # custom systemd folder
+
+# ------------------------------------------------------------------------------
+# Check if SysV or systemd services are supported: [-s] [-f|-q]
+#
+#   -s      check for systemd (default is sysv)
+#   -f      errors are fatal
+#   -q      quiet
+#
+# The checks are on run at 1st call. Error messages are not repeated.
+# ------------------------------------------------------------------------------
+_cen_ins_canrun() {
+    local _fout=error _fsdm
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -f)   _fout=fatal ;;
+      -s)   _fsdm=1 ;;
+      -q)   _fout="$CEN_TRACE -a" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # check for systemd support
+    if [ -n "$_fsdm" ] ; then
+        [ "$CEN_INS_SYSTEMD" = "yes" ] && return 0
+        [ "$CEN_INS_SYSTEMD" = "no"  ] && return 1
+        if [ -d "$CEN_INS_SOURCES" ] ; then
+            CEN_INS_SYSTEMD="yes" ; return 0
+        else
+            $_fout $"No 'systemd' support on this machine"
+            CEN_INS_SYSTEMD="no" ; return 1
+        fi
+    fi
+
+    # check for sysv support
+    [ "$CEN_INS_SYSVOK" = "yes" ] && return 0
+    [ "$CEN_INS_SYSVOK" = "no"  ] && return 1
+    if ! [ -d "$CEN_INS_SYSVINI" ] ; then
+        $_fout -p $"No 'SysV' support, missing '%s' folder" "init.d"
+    elif [ "$CEN_INS_SYSVOK" = "yes" ] ; then
+        :                                           # using systemd sysv compat.
+    elif ! system -c "insserv" ; then
+        $_fout $"No 'SysV' support, please install 'insserv'"
+    else
+        CEN_INS_SYSVOK="yes" ; return 0
+    fi
+    CEN_INS_SYSVOK="no" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# check if systemd is used by this system, setup variables
+#
+# - if systemd is not installed this routine does nothing
+#
+# - if the library is installed without CEN_INS_SOURCES systemd
+#   is not supported by the installer
+#
+# - CEN_INS_SYSDDIR and CEN_INS_SYSDLST are only set if systemd is installed
+#   and supported.
+# ------------------------------------------------------------------------------
+_cen_ins_chksystemd() {
+    local _sysf=1 _sysi _sysd="${CEN_PATHS[2]}/systemd"
+    # strong systemd evidence: have systemctl and /etc/systemd
+    if [ -d "$_sysd" ] && sysfind -c 'systemctl' ; then
+        $CEN_TRACE -a -p $"Using 'systemd' (got 'systemctl' and '%s')" "$_sysd"
+        _sysf=0
+
+    # strong systemd evidence: /sbin/init symlink to systemd
+    elif sysfind -c -o -s _sysi -- "$CEN_PATHS/sbin/init" \
+                    "$CEN_PATHS/usr/sbin/init" ; then
+        resolve -s _sysi -c -e -- "$_sysi"
+        if [ "${_sysi##*/}" = 'systemd' ] ; then
+            $CEN_TRACE -a -p $"Using 'systemd' ('%s' is symlink to systemd)" "$_sysi"
+            _sysf=0
+        fi
+    fi
+
+    # have no systemd, return to caller
+    if [ "$_sysf" = 1 ] ; then                          # no systemd ...
+        $CEN_TRACE $"Using 'SysV' init"
+        return 0
+    fi
+
+    # initialize systemd symlink and variables
+
+    if [ ! -d "$CEN_INS_SOURCES" ] ; then
+        remove "$CEN_INS_SOURCES"                       # stale symlink
+        if [ -d "$CEN_ROOT/admin/tools/systemd" -a ! -h "$CEN_ROOT/admin/tools/systemd" ] ; then
+            warning "systemd files should be at:" "$CEN_ROOT/admin/systemd"
+            symlink "$CEN_ROOT/admin/tools/systemd" "$CEN_INS_SOURCES"
+        elif [ -d "$CEN_ROOT/admin/systemd" ] ; then
+            local _conf
+            resolve -e -l -s _conf "$CEN_ROOT/admin"
+            $CEN_TRACE -a -- $"systemd files are at:" "$_conf/systemd"
+            symlink -i -n "$_conf/systemd" "$CEN_INS_SOURCES"
+        else
+            $CEN_TRACE -a -- "no systemd files in configuration"
+        fi
+    fi
+
+    if [ -d "$CEN_INS_SOURCES" ] ; then                 # supporting systemd ...
+        $CEN_TRACE -a -- $"Library installed with systemd support"
+        CEN_INS_SYSDLST=("$CEN_INS_ETCPATH/systemd" "$CEN_PATHS/run/systemd"
+                        "$CEN_PATHS/lib/systemd" "$CEN_PATHS/usr/lib/systemd")
+        CEN_INS_SYSDDIR="$CEN_INS_SYSDLST/system"
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Generate bash input completion: -no args-
+# ------------------------------------------------------------------------------
+_cen_ins_completion() {
+    local _tool _item _func='()'
+    _cen_ins_tools
+    for _item in "${CEN_SYS_TOOLS[@]}" ; do
+        _item="${_item##*/}"
+        [ "$_item" = '_centauri_bash_lib' ] || _tool+=" '$_item'"
+    done
+    create -h 'centauritools' -t -w "$CEN_LIBRARY/_centauri_bash_completion" 664 <<!EOF
+# helper to register alias completion: <alias> <tool>
+export CEN_COMPLETION_ALIAS
+_cen_completion_alias$_func {
+    CEN_COMPLETION_ALIAS+=";\$1:\$2"
+    complete -X '@(.[^/]*|./.*)' -F _cen_completion_func "\$1"
+}
+
+# custom completion function
+_cen_completion_func$_func {
+    # mangle alias names
+    if [ -n "\$CEN_COMPLETION_ALIAS" ] ; then
+        local _temp="\${CEN_COMPLETION_ALIAS#*;\$1:}"
+        if [ "\$CEN_COMPLETION_ALIAS" != "\$_temp" ] ; then
+            _temp="\${_temp%%;*}"
+            [ "\$1" = "\$3" ] && set -- "\$_temp" "\$2" "\$_temp" || set -- "\$_temp" "\$2" "\$3"
+        fi
+    fi
+
+    # completion of options
+    if [ "\${2::1}" = '-' ] ; then
+        local _xall="\$(CEN_COMPLETION=opts \$1 --help) --info --help --verbose --quiet"
+        COMPREPLY=(\$(compgen -W "\$_xall" -- \$2))
+        # no space for option argument
+        if [ "\${#COMPREPLY[@]}" = "1" ] ; then
+            [ "\${COMPREPLY:\${#COMPREPLY}-1}" = "=" ] && compopt -o nospace
+        fi
+
+    # filenames or verbs
+    else
+        compopt -o filenames
+
+        # forced filename completion
+        if [ "\${2::1}" = "." ] ; then
+            :
+        # filename completion after verb (bash bug, needs && here)
+        elif [ -z "\${3//[a-z]/}" ] && [ "\$1" != "\$3" ] ; then
+            :
+        # do verb completion: <prog> <input> <context>
+        else
+            local _xall=\$(CEN_COMPLETION="verb:\$3" \$1 --help)
+            COMPREPLY=(\$(compgen -W "\$_xall" -- \$2))
+            [ -n "\$COMPREPLY" ] && return
+        fi
+
+        local _sifs="\$IFS" ; IFS=\$'\\n'
+        COMPREPLY=(\$(compgen -o default -- "\$2")) ; IFS="\$_sifs"
+    fi
+}
+
+# register the completion function
+complete -X "@(.[^/]*|./.*)" -F _cen_completion_func $_tool
+
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Install systemd service from CEN_TOOLS configuration: <unit>
+# ------------------------------------------------------------------------------
+_cen_ins_config() {
+
+### TODO -c check if in CEN_TOOLS
+### TODO -i install
+### TODO -r remove
+    [ -e "$CEN_INS_SOURCES/$1" ] || return
+### TODO this is incomplete ... wants preset ...
+    local file="$CEN_INS_SYSDDIR/$1"
+    symlink -- "$CEN_INS_SOURCES/$1" "$file"
+}
+
+# ------------------------------------------------------------------------------
+# Copy library files: <dest>
+# ------------------------------------------------------------------------------
+_cen_ins_files() {
+    local _conf _copy _dest="${1:--}" _fldr _fcur _mesg _stat=0
+
+    if [ "${CEN_ROOTDEFS[3]:--}" != '-' ] ; then
+        if [ -d "$CEN_PATHS${CEN_ROOTDEFS[3]}" ] ; then
+            message $"Have repository, no files to copy"
+            return 0
+        else
+            error $"Repository does not exist:" "$CEN_PATHS${CEN_ROOTDEFS[3]}"
+            return 1
+        fi
+    fi
+
+    if ! [ -d 'tools' -a -d 'library' -a -d 'locale' ] ; then
+        error -p $"Current folder '%s' is not a centauri-bash-lib root" "$PWD"
+        return 1
+    fi
+    [ "$_dest" = '-' ] && _dest="$CEN_PATHS$CEN_ROOTDEFS"
+    if [ -e "$_dest" ] ; then               # dest should be a folder
+        folder -- "$_dest" || return 1
+    else                                # must create
+        confirm -a -y $"Install centauri-bash-lib at"" '$_dest'" || return 128
+        _conf=1
+        remove -- "$_dest" || return 1      # remove stale link
+        folder -m "$_dest" || return 1
+    fi
+    if [ "$PWD" -ef "$_dest" ] ; then
+        error -p $"Destination '%s' must not be the current folder" "$_dest"
+        return 1
+    fi
+
+    # use walk with excludes to build file list
+    local _sinc=("${CEN_OPT_INCLEXCL[@]}")
+    CEN_OPT_INCLEXCL=('' '.[dp]$' '' '~$' '' '^_centauri_bash_completion$')
+    walk -c -- tools/* tools/templates/* library/* locale/ locale/* locale/*/* locale/*/LC_MESSAGES/*
+    CEN_OPT_INCLEXCL=("${_sinc[@]}")
+
+    for _item in "${CEN_WALK_FILES[@]}" ; do
+        # do never copy the proxy
+        [ "$_item" = 'tools/_centauri_bash_lib' ] && continue
+
+        # create folder, get copy mode
+        _fldr="${_item%/*}"
+        if [ "$_fldr" != "$_fcur" ] ; then
+            _fcur="$_fldr" ; _full=
+            if [ -d "$_dest/$_fldr" ] ; then
+                _copy=1
+            elif folder -m -- "$_dest/$_fldr" 775 ; then
+                _copy=2
+            else
+                _copy= ; _stat=1
+            fi
+        fi
+
+        # install or update files
+        [ -z "$_copy" ] && continue                 # do not copy
+        if [ "$_copy" = 1 ] ; then                  # updating ...
+            _mesg=$"Update:"
+            if [ ! -e "$_dest/$_item" ] ; then      # skip if not forced
+                [ -z "$CEN_OPT_FORCE" ] && continue
+                _mesg=$"Setup :"
+            fi
+        else
+            _mesg=$"Setup :"
+        fi
+
+        if [ -s "$_dest/$_item" ] ; then
+            [ "$_item" -nt "$_dest/$_item" ] || continue
+        fi
+
+        if [ -z "$_conf" ] ; then
+            confirm -a -y $"Install centauri-bash-lib at"" '$_dest'" || return 128
+            _conf=1
+        fi
+        message -a -d +1 -- "$_mesg" "$_item"
+        copy -a -- "$_item" "$_dest/$_item" || _stat=$?
+    done
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# Find service/file or unit: -i|-s <variable> <name>|<unit>
+#
+# Options:  -s find SysV service
+#           -i find systemd service
+# ------------------------------------------------------------------------------
+_cen_ins_findsvc() {
+    local _curr _inst="system"
+
+    # is it a systemd service?
+    if [ "$1" = "-i" ] ; then
+        for _curr in "$CEN_INS_SOURCES" "${CEN_INS_SYSDLST[@]}" "" ; do
+            [ -d "$_curr" ] || continue
+            _curr+="/$_inst/$3.service"
+            [ -e "$_curr" ] && break
+        done
+
+    # is it a sysv service?
+    elif [ "$1" = "-s" ] ; then
+        [ -x "$CEN_INS_SYSVINI/$3" ] && _curr="$CEN_INS_SYSVINI/$3"
+        [ -x "$CEN_TOOLS/$3" ] && _curr="$CEN_TOOLS/$3"
+    else
+        _cen_abort - "$1"
+    fi
+    local -n _vari="$2" ; _vari="$_curr"
+    [ -n "$_curr" ]                         # return status
+}
+# ------------------------------------------------------------------------------
+# do we have a shared installation?
+# ------------------------------------------------------------------------------
+_cen_ins_isshared() {
+    [ -h "$CEN_ROOT/persistent" ] && return 0
+    [ -h "$CEN_ROOT/transient" ] && return 0
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# Check if file has a SysV header: [<file>]
+# ------------------------------------------------------------------------------
+_cen_ins_sysvhdr() {
+    local file="${1:-${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}}"
+    local line lcnt=0
+
+    # is it a script or a binary
+    read -N 3 line <"$file"
+    [ "$line" = "#!/" ] || return 1                 # is binary
+
+    while [ "$lcnt" -lt 100 ] && read line ; do
+        [ "${line::1}" = "#" ] && ((++lcnt))
+        [ "$line" = "### BEGIN INIT INFO" ] && return 0
+    done < "$file" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# safely remove systemd service files: <name>|<unit>
+# ------------------------------------------------------------------------------
+_cen_ins_saferm() {
+    local file sysv item unit="$1" name="${1%.*}"
+    [ "$name" == "$unit" ] && unit+=".service"  # got a name
+
+    sysv="$CEN_INS_SYSVINI/$name"
+    if [ -e "$sysv" -a ! -h "$sysv" ] ; then
+        error $"Wan't remove service, has 'SysV' file:" "$sysv" ; return 1
+    fi
+
+    file="$CEN_INS_SYSDDIR/$unit"
+    if [ -e "$file" -a ! -h "$file" ] ; then
+        read -N 200 item <"$file"           # written by create()?
+        if [ "${item/do not edit/}" = "$item" ] ; then
+            error $"Wan't remove service, has 'systemd' unit:" "$file" ; return 1
+        fi
+    fi
+
+    # remove ...
+    remove -- "$sysv"
+    remove -d -- "$CEN_INS_SYSDDIR/$name".*
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# (Un)install SysV or systemd service(s): [-r] [-i|-s] <path>...
+#
+# Options:  -r  remove (default is install)
+#           -i  remove/install via SysV (no checks)
+#           -s  remove/install via systemd (no checks)
+#
+# If -i or -s are given, the SysV or systemd mode is set without any heuristics:
+#   No -s option: must be .desktop or have $CEN_TOOLS/.desktop for systemd
+#   No -i option: for a SysV install an lsb-header must be present.
+#
+# Conditions prefixes:
+#       <none>      always install and enable or uninstall
+#       +           skip install if enabled, ignored without systemd
+#       ?           run this tool if it exists with argument 'install' or
+#                   'uninstall' and stop further processing. Recursion is
+#                   is prevented by checking the tool name.
+# ------------------------------------------------------------------------------
+_cen_ins_install() {
+    local _remove _iopt _sysv _verb='install'
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -i|-s)
+             _iopt="$1" ;;
+      -r)   _remove=1 ; _verb='uninstall' ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ -d "$CEN_INS_SOURCES" ] || _sysv=1        # no systemd support
+
+    local farg  fsvc dest labl unit name actn
+    for farg in "$@" ; do
+        actn= ; dest= ; unit=
+
+        # separate action prefix
+        case "$farg" in
+        ++*)    actn='++' ; farg="${farg:2}" ;;
+        +*)     actn='+'  ; farg="${farg:1}" ;;
+        --*)    actn='--' ; farg="${farg:2}" ;;
+        -*)     actn='-'  ; farg="${farg:1}" ;;
+        \?*)    actn='?'  ; farg="${farg:1}" ;;
+        esac
+
+        # handle prefix
+        case "$actn" in
+        '')     ;;
+        +)      ;; # [ -z "$CEN_INS_SYSDDIR" ] && actn= ;;   # no systemd support
+        '?')    [ "$CEN_NAME"  = "${farg##*/}" ] && continue
+                [ "$CEN_EMBED" = "${farg##*/}" ] && continue
+                if system -c "$farg" ; then
+                    message -a $"Running installer:" "$farg" "$_verb"
+                    embed -z -v -- "$farg" "$_verb"
+                    continue
+                else
+                    $CEN_TRACE $"Installer not found:" "$farg"
+                fi ;;
+        *)      warning $"Action prefix not implemented:" "$actn$farg"
+        esac
+
+        # can be a service file, a service name or a script path
+        case "$farg" in
+        /*.service)     fsvc="$farg" ; unit=2
+                        ;;
+        *.service)      if _cen_ins_findsvc -i fsvc "${farg%.*}" ; then
+                            unit=2 ; farg="$fsvc"
+                        fi
+                        ;;
+        /*)             fsvc="$farg"
+                        ;;
+        *.*)            error $"Only .service units are supported:" ; return 1
+                        ;;
+        *)              if _cen_ins_findsvc -i fsvc "$farg" ; then
+                            unit=2 ; farg="$fsvc"
+                        else
+                            _cen_ins_findsvc -s fsvc $farg
+                        fi
+        esac
+
+        [ -n "$unit" -a "$_iopt" = "-i" ] &&        # internal error...
+            fatal -t "unit file and -i:" "$farg"
+        if [ ! -f "$fsvc" ] || [ -z "$unit" -a ! -x "$fsvc" ] ; then
+            error $"Not a service file:" "${fsvc:-$farg}" ; continue
+        fi
+
+        # is it SysV (in CEN_INS_SYSVINI) or systemd (in CEN_INS_SYSDDIR)?
+        name="${farg##*/}"
+        if [ "$_iopt" = "-i" ] ; then
+            dest="$CEN_INS_SYSVINI"
+        elif [ "$_iopt" = "-s" ] ; then
+            dest="$CEN_INS_SYSDDIR"
+        elif [ -n "$unit" ] ; then
+            [ -e "$CEN_INS_SYSDDIR/$name" ] && dest="$CEN_INS_SYSDDIR"
+            [ "$unit" = "2" ] && dest="${fsvc%/*}"
+        else
+            [ -e "$CEN_INS_SYSDDIR/$name.service" ] && dest="$CEN_INS_SYSDDIR"
+            [ -e "$CEN_INS_SYSVINI/$name" ] && dest="$CEN_INS_SYSVINI"
+        fi
+
+        # don't know if SysV or systemd, check lsb-header
+        if [ -z "$dest" ] ; then
+            _cen_ins_sysvhdr "$fsvc" &&
+                dest="$CEN_INS_SYSVINI" || dest="$CEN_INS_SYSDDIR"
+        fi
+
+        # check if we can install it
+        if ! _cen_ins_canrun -q -s ; then
+            if [ "$dest" == "$CEN_INS_SYSDDIR" ] ; then
+                error $"Machine not running 'systemd', cannot install:" "$farg"
+                continue
+            elif ! _cen_ins_canrun -q ; then
+                error $"Need 'SysV' or 'systemd' to install a service" ; return 1
+            fi
+        fi
+
+        if [ "$dest" == "$CEN_INS_SYSVINI" ] ; then
+            labl="(SysV)"
+        else
+            [ -z "$unit" ] && name+=".service"
+            if [ "$actn" = '+' -a -z "$_remove" ] ; then
+                system -r -q -- systemctl --quiet is-enabled "$name" && continue
+            fi
+            labl="(systemd)"
+        fi
+        local fdes="$dest/$name"                # full path of unit file or SysV
+
+        # stop and remove service
+
+        if [ -n "$_remove" ] ; then
+            [ -e "$fdes" ] || continue
+            message -a $"Uninstalling service:" "$name" "$labl"
+            if [ -n "$_sysv" ] ; then
+                system -q -- $dest stop
+                system -e -p -- insserv -r -f "$dest"
+            else
+                # this does not work as documented for debian buster:
+                #system -e -p -- systemctl --now --quiet disable "$farg"
+                system -q -- systemctl --quiet stop "$name"
+                system -e -p -- systemctl --quiet disable "$name"
+            fi
+            if [ "$dest" == "$CEN_INS_SYSDDIR" ] ; then
+                _cen_ins_saferm "$name"         # try to remove service files
+            else
+                [ -h "$fdes" -a "$fdes" -ef "$fsvc" ] && remove -- "$fdes"
+            fi
+            continue
+        fi
+
+        # install/enable service
+
+        if [ -n "$_iopt" ] ; then
+            :
+        elif [ -n "$_sysv" ] ; then                 # single location for SysV
+            [ "$fdes" -ef "$fsvc" ] && continue
+        else
+            [ "$unit" != "2" -a -e "$fdes" ] && continue
+        fi
+        message -a $"Installing service:" "$farg" "$labl"
+
+        if [ "$dest" == "$CEN_INS_SYSVINI" ] ; then
+            symlink -- "$fsvc" "$fdes" || continue
+        else
+### TODO ggf .service file mit _cen_ins_saferm putzen
+     #   [ -n "$dest" ] && symlink -- "$fsvc" "$fdes"
+            :
+        fi
+        if _cen_ins_canrun -s -q ; then
+            # remove old links to make systemd happy
+            remove "$CEN_INS_ETCPATH/systemd/system/$name"
+            system -e -p -- systemctl --quiet enable "$fdes"
+        else
+            system -e -p -- insserv -f "$fdes"
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# For _centauri_bash_svc, service setup: status|install|uninstall
+# ------------------------------------------------------------------------------
+_cen_ins_service() {
+
+    # (re-)create systemd configuration: <unit>
+    ___cen_serv_unit() {
+        local _sstp _fsvc="$1"
+
+        if [ -e "$CEN_INS_SOURCES/$_fsvc" ] ; then  # have config
+            _cen_ins_config "$_fsvc" ; return       # return status
+        else                                        # try to remove service files
+            _cen_ins_saferm "$_fsvc" || return
+        fi
+
+        local _saft="networking.service network-online.target remote-fs.target"
+        local _file="${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}"
+
+        [ -n "$CEN_SVC_WANTS" ] &&
+            _saft+=" $CEN_SVC_WANTS"$'\n'"Wants=$CEN_SVC_WANTS"
+        [ -n "$CEN_SVC_AFTER" ] &&
+            _saft="$CEN_SVC_AFTER"
+
+        [ "${_file::1}" = "/" ] || prettypath -c -e -f -s _file -- "$_file"
+        if [ "$CEN_SVC_TYPE" = "simple" ] ; then
+            _sstp="# a 'simple' service should not set 'ExecStop='"$'\n'
+        else
+            _sstp="ExecStop=$_file --daemon=0  stop"$'\n'
+        fi
+        if [ "$CEN_SVC_TYPE" == "once" ] ; then
+            create -t -h - "$CEN_INS_SYSDDIR/$_fsvc" 644 <<!EOF
+[Unit]
+Description=$CEN_SVC_SHORT
+After=$_saft
+ConditionPathExists=!/run/centauri/${_fsvc%.*}.run
+
+[Service]
+Type=oneshot
+ExecStart=$_file --daemon=0 start
+
+[Install]
+WantedBy=$CEN_SVC_WANTED_BY
+!EOF
+        elif [ "$CEN_SVC_TYPE" == "oneshot" ] ; then
+            create -t -h - "$CEN_INS_SYSDDIR/$_fsvc" 644 <<!EOF
+[Unit]
+Description=$CEN_SVC_SHORT
+After=$_saft
+ConditionPathExists=!/run/centauri/${_fsvc%.*}.run
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$_file --daemon=0 start
+$_sstp
+[Install]
+WantedBy=$CEN_SVC_WANTED_BY
+!EOF
+        else
+            create -t -h - "$CEN_INS_SYSDDIR/$_fsvc" 644 <<!EOF
+[Unit]
+Description=$CEN_SVC_SHORT
+After=$_saft
+ConditionPathExists=!/run/centauri/${_fsvc%.*}.run
+
+[Service]
+Type=$CEN_SVC_TYPE
+PIDFile=/run/centauri/${_fsvc%.*}.pid
+RemainAfterExit=yes
+ExecStart=$_file --daemon=0 start
+$_sstp
+[Install]
+WantedBy=$CEN_SVC_WANTED_BY
+!EOF
+        fi
+    }
+
+    # link service to $CEN_INS_SYSVINI, delete systemd files
+    ___cen_serv_sysv() {
+        _cen_ins_saferm "$1" || return
+        local _file="${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}"
+        symlink -- "$_file" "$CEN_INS_SYSVINI/$1" || return 1
+    }
+
+    # --------------------------------------------------------------------------
+    # main
+    # --------------------------------------------------------------------------
+    local scmd="$1" fsvc falt sysd styp salt isin aerr="warning -a"
+
+    # warnings become errors when installing
+    [ "$scmd" == "install" ] && aerr="error"
+
+    # check if systemd is installed. If not, a lsb-header is needed
+    if ! _cen_ins_canrun -q -s ; then
+        _cen_ins_canrun                         # needing SySV
+        _cen_ins_sysvhdr ||
+            $aerr $"Cannot install in 'SysV' mode: service file has no lsb-header"
+
+    # A service can run in SysV compatibility mode, don't create unit file
+    elif [ -n "$CEN_SVC_WANTED_BY" -o -n "$CEN_SVC_PRESET" ] ; then
+        sysd=1
+    elif [ -e "$CEN_INS_SOURCES/$CEN_NAME.service" ] ; then
+        sysd=1
+    elif ! _cen_ins_sysvhdr ; then
+        sysd=1
+    else
+        _cen_ins_canrun                         # needing SySV
+    fi
+
+    # set defaults and destination
+    if [ -n "$sysd" ] ; then
+        styp="systemd" ; salt="SysV"
+        CEN_SVC_WANTED_BY="${CEN_SVC_WANTED_BY:-multi-user.target}"
+        fsvc="$CEN_INS_SYSDDIR/$CEN_NAME.service"
+        falt="$CEN_INS_SYSVINI/$CEN_NAME"
+    else
+        styp="SysV" ; salt="systemd"
+        fsvc="$CEN_INS_SYSVINI/$CEN_NAME"
+        falt="$CEN_INS_SYSDDIR/$CEN_NAME.service"
+    fi
+
+    # validate the service type
+    case "$CEN_SVC_TYPE" in
+    forking)    ;;
+    once)       ;;
+    oneshot)    ;;
+    simple)     ;;
+    daemon)     $aerr $"Cannot install a daemon as a service" ;;
+    *)          $aerr $"Unsupported service type:" "$CEN_SVC_TYPE"
+    esac
+
+    # installation status: _centauri_bash_lib services always have $fsvc
+    [ -e "$fsvc" ] && isin=1
+    if [ -e "$falt" ] ; then
+        if [ "$scmd" == "install" ] ; then
+            warning -a -p $"Service '%s' installed as (%s) but wants to be (%s)" \
+                          "$CEN_NAME" "$salt" "$styp"
+            return 0
+        fi
+        isin=1 ; fsvc="$falt" ; styp="$salt"
+    fi
+    error -t || return 1
+
+    # install or uninstall SysV or systemd
+    case "$scmd-$styp" in
+    install-SysV)
+        [ -n "$isin" ] && return 0
+        ___cen_serv_sysv "$CEN_NAME" || return 1
+        _cen_ins_install -i "$fsvc" || return 1
+        error -t && scmd=$"was installed" || scmd=$"failed to install"
+        ;;
+    install-systemd)
+        [ -n "$isin" ] && return 0
+        ___cen_serv_unit "$CEN_NAME.service" || return 1
+        _cen_ins_install -s "$fsvc" || return 1
+        error -t && scmd=$"was installed" || scmd=$"failed to install"
+        ;;
+    uninstall-*)
+        [ -n "$isin" ] || return 0
+        _cen_ins_install -r "$fsvc" || return 1
+        error -t && scmd=$"was uninstalled" || scmd=$"failed to uninstall"
+        ;;
+    *)
+        [ -n "$isin" ] && scmd=$"is installed" || scmd=$"is not installed"
+    esac
+    message -a -p $"Service '%s' %s" "$CEN_NAME" "$scmd ($CEN_SVC_TYPE, $styp)"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# For _centauri_bash_sys - library installation: [-n|-r]
+# ------------------------------------------------------------------------------
+_cen_ins_systemd() {
+    local _remove _nosysv
+    [ "$1" = "-n" ] && _nosysv=1
+    [ "$1" = "-r" ] && _remove=1
+
+    # entries in .wants folders: <want> <orig>
+    #___sysd_wants() {
+    #    local skey snam lopt="-r"
+    #    if [ -z "$_remove" ] ; then
+    #       create -d -- "$dest/$fdir" 755 || return
+    #       lopt=
+   #     fi
+
+    #    while read skey snam ; do               # loop over .wants file
+    #        case "$skey" in
+    #        -)  remove -- "$1/$snam" ;;
+    #        +)  if [ -z "$_remove" ] ; then
+    #                symlink -s -- "$2/${snam/@*./@.}" "$1/$snam"
+    #            else
+    #                remove -- "$1/$snam"
+    #            fi ;;
+    #        esac
+    #    done
+    #    [ -n "$_remove" ] && remove -- "$dest/$fdir"
+    #}
+
+    # make links for systemd: user|system
+    ___cen_libr_systemd() {
+        local farg forg fdir fena fchg rpre
+        local orig="$CEN_ROOT/systemd/$1"
+        local dest="$CEN_INS_SYSDLST"           # /etc/systemd
+
+        [ -d "$orig" ] || return 1              # no input folder
+        [ -d "$dest/$1" ] || return 1           # no systemd folder
+        $CEN_TRACE -a $"Systemd setup" "'$dest/$1'"
+
+        # problem: service units and overrides might modify WantedBy statements
+        # so that a service would need to be reenabled unless a .wants file is
+        # properly set up to fix this.
+
+        for farg in "$orig"/*.preset  "$orig"/*.override \
+                    "$orig"/*.service "$orig"/*.timer "$orig"/*.target ; do
+            [ -e "$farg" ] || continue
+            forg="$farg" ; farg="$1/${farg##*/}" ; fena=
+
+            # create preset folder/file
+            if [ "${farg##*.}" = "preset" ] ; then
+                fdir="$1-preset"
+                if [ -n "$_remove" ] ; then
+                    rpre="$dest/$fdir"              # flag folder removal
+                else
+                    create -d -- "$dest/$fdir" 755 || continue
+                fi
+                farg="$fdir/${farg##*/}"
+
+            # create override folder/file
+            elif [ "${farg##*.}" = "override" ] ; then
+                fdir="${farg%.*}.d"
+                farg="$fdir/override.conf"
+
+                if [ -n "$_remove" ] ; then
+                    remove -- "$dest/$farg"
+                    remove -- "$dest/$fdir" ; continue
+                fi
+                create -d -- "$dest/$fdir" 755 || continue
+
+            # unit file
+            elif [ "${farg##*.}" != "target" ] ; then
+                fena=1
+            fi
+
+            # remove links only
+            if [ -n "$_remove" ] ; then
+                [ "$forg" -ef "$dest/$farg" ] || continue
+                remove -- "$dest/$farg" ; fchg=1 ; continue
+            fi
+
+            # skip existing link or if destination is a file
+            [ "$forg" -ef "$dest/$farg" ] && continue
+            [ -e "$dest/$farg" -a ! -L "$dest/$farg" ] && continue
+            $CEN_TRACE -a $"Create systemd link"": $dest/$farg"
+            symlink -s -- "$forg" "$dest/$farg" ; fchg=1
+            [ -n "$fena" ] || continue
+        done
+
+        # remove preset folder
+        remove -q -- "$rpre"
+
+        # add/remove .wants links
+        for farg in "$orig"/*.wants ; do
+            [ -e "$farg" ] || continue
+            forg="$farg" ; farg="$1/${farg##*/}"
+
+            # create wants folder/file
+            fdir="$dest/${farg%.*}.wants"
+            trace -c "Processing" "$farg  =>  $fdir"
+            if [ -z "$_remove" ] ; then
+                create -d -- "$fdir" 755 || return
+            fi
+
+            local skey snam pref
+            while read skey snam ; do                   # loop over .wants file
+                case "$skey" in
+                -)  trace -a -c "... remove" -- "$snam"
+                    remove -- "$fdir/$snam" ;;
+                +)  [ "${snam::1}" = "/" ] && pref="${snam%/*}" || pref="$orig"
+                    snam="${snam##*/}"
+                    if [ -z "$_remove" ] ; then
+                        trace -a -c "... symlink" -- "$pref/${snam/@*./@.} => $snam"
+                        symlink -i -s -- "$pref/${snam/@*./@.}" "$fdir/$snam"
+                    else
+                        trace -a -c "... remove" -- "$snam"
+                        remove -- "$fdir/$snam"
+                    fi ;;
+                esac
+            done < "$CEN_ROOT/systemd/$farg"
+
+            [ -n "$_remove" ] && remove -q -- "$fdir"   # remove empty .want folder
+        done
+
+        if [ -z "$fchg" ] ; then
+            $CEN_TRACE -a "No changes ($1 mode)" ; return 0
+        fi
+
+        #$CEN_TRACE -a "Update systemd ($1 mode, ${#updt[@]} units)"
+        return 0
+    }
+
+    ___cen_libr_systemd 'system'
+    ___cen_libr_systemd 'user'
+    [ -n "$_nosysv" ] && return 0
+    _cen_ins_install ${_remove:+-r} "${CEN_SYS_SERVICE[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# For _centauri_bash_sys library installation/update remove
+#
+# Call:     _cen_ins_library                    # full install
+#           _cen_ins_library -r                 # uninstall
+#           _cen_ins_library -p                 # create/fix paths
+#           _cen_ins_library -t                 # fix paths, ignored if not root
+#           _cen_ins_library [-s|-u]...         # update services|paths
+#
+#           This is the backend for syssetup()
+#
+# Options:  -p  create/fix paths
+#           -r  uninstall
+#           -s  update services only (needs root)
+#           -t  create/fix paths (root only)
+#           -u  update tool links only
+#
+# Returns status 128 if (un)install is cancelled.
+# ------------------------------------------------------------------------------
+_cen_ins_library() {
+    if [ "$EUID" != 0 ] && _cen_ins_isshared ; then
+        error $"Needing root rights to alter a shared installation"
+        return 128
+    fi
+
+    local _remove _update _updsrv
+    local _tools="${CEN_ROOTDEFS[1]:--}" ; [ "$_tools" = '-' ] || _tools="$CEN_PATHS$_tools"
+    local _tlink="${CEN_ROOTDEFS[2]:--}" ; [ "$_tlink" = '-' ] || _tlink="$CEN_PATHS$_tlink"
+    local _owner="${CEN_ROOTDEFS[4]:--}"
+
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -p)   _update="-p" ;;
+      -r)   _remove="-r" ;;
+      -s)   _updsrv="-s" ;;
+      -t)   _update="-t" ;;
+      -u)   _update="-u" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # create new links, remove obsoletes: <path>
+    ___cen_libr_tools() {
+        local farg fdes dest="$1"
+        [ "${dest##*/}" != '-' -a -w "$dest" ] || return
+        for farg in "${CEN_SYS_TOOLS[@]}" ; do
+            fdes="$dest/${farg##*/}"
+            if [ -n "$_remove" ] ; then
+                [ "$farg" -ef "$fdes" ] && remove -- "$fdes"
+            else
+                symlink -i -n -m -s -- "$farg" "$fdes"
+            fi
+        done
+
+        # remove obsolete links
+        for farg in "${CEN_SYS_OBSOLETE[@]}" ; do
+            [ -L "$dest/$farg" ] || continue
+            remove -- "$dest/$farg"
+        done
+    }
+
+    # Link Service Menues
+    ___cen_libr_desktop() {
+        local farg fdes dest
+        for dest in 'kservices6' 'kservices5' 'kde4' '' ; do
+            [ -z "$dest" ] && return
+            dest="$CEN_PATHS/usr/share/$dest/services/ServiceMenus"
+            [ -w "$dest" ] && break
+        done
+        for farg in "$CEN_TOOLS/kde/Services"/*.desktop ; do
+            fdes="$dest/${farg##*/}"
+            if [ -n "$_remove" ] ; then
+                [ "$farg" -ef "$fdes" ] && remove -- "$fdes"
+            else
+                symlink -m -- "$farg" "$fdes"
+            fi
+        done
+    }
+
+    # miscelaneous links
+    ___cen_libr_misc() {
+        [ "$EUID" = 0 ] || return
+        if [ -n "$_remove" ] ; then
+            remove -- "$CEN_INS_ETCPATH/bash_completion.d/_centauri_bash_completion"
+        else
+            create -d "$CEN_INS_ETCPATH/bash_completion.d" 775 "$_owner" || return 1
+            symlink -i -n -m -- "$CEN_LIBRARY/_centauri_bash_completion" \
+                    "$CEN_INS_ETCPATH/bash_completion.d/_centauri_bash_completion"
+        fi
+    }
+
+    if [ -n "$_remove" ] ; then
+        [ -d "$CEN_TOOLS" ] || return 1
+        confirm -a -n $"Do do really want to uninstall 'centauritools'" || return 128
+    elif [ "$_update" = "-s" ] ; then
+        $CEN_TRACE -a $"Update 'centauritools' services"
+        _cen_ins_systemd ; return
+    elif [ "$_update" = "-t" ] ; then
+        _cen_ins_paths ; return
+    elif [ "$_update" = "-u" ] ; then
+        [ -d "$CEN_TOOLS" ] || return 1
+        $CEN_TRACE -a $"Update 'centauritools'"
+        _cen_ins_paths -f -u || return 1
+    elif [ "$_update" = "-p" ] ; then
+        $CEN_TRACE -a $"Path check 'centauritools'"
+        _cen_ins_paths -f -i ; return
+    else
+        confirm -a -y $"Install 'centauritools' to"": $CEN_TOOLS" || return 128
+        _cen_ins_paths -f -i || return 1
+        local _lbas="${_tlink%/*}"
+        if [ "$_tlink" != "-" -a -w "${_lbas:-/}" ] &&
+           [ ! "$CEN_TOOLS" -ef "$_tlink" ] ; then
+            confirm -a -y $"Symlink 'centauritools' to"": $_tlink" &&
+                symlink -- "$CEN_TOOLS" "$_tlink"
+        fi
+    fi
+
+    # do setup
+    folder -c -f -- "$CEN_ROOT"
+
+    _cen_ins_tools
+    $CEN_TRACE -a -p $"Tools setup (%s items)" "${#CEN_SYS_TOOLS[@]}"
+
+    ___cen_libr_misc
+    ___cen_libr_tools "$_tools"
+    ___cen_libr_desktop
+
+    if [ "$EUID" = 0 ] ; then
+        if [ "${#CEN_SYS_SERVICE[@]}" ] || [ -d "$CEN_ROOT/systemd" ] ; then
+            if [ -n "$_updsrv" ] ; then
+                _cen_ins_systemd -n
+            elif [ -z "$_update" ] ; then           # full setup only ...
+                [ -n "$_remove" ] || confirm -a -y $"Configure 'centauritools' services"
+                [ $? = 0 ] && _cen_ins_systemd ${_remove:+-r}
+            fi
+        fi
+    fi
+
+    if [ -n "$_remove" ] ; then
+        [ "$CEN_TOOLS" -ef "$_tlink" ] && remove -- "$_tlink"
+        _cen_ins_paths -f -r
+        if [ -d "$CEN_ROOT" ] &&
+            confirm -a -y $"Remove folder"" '$CEN_ROOT'" ; then
+            folder -c -f '/'
+            remove -d -- "$CEN_ROOT"
+        fi
+    fi
+    return $CEN_EXIT
+}
+
+# ------------------------------------------------------------------------------
+# For _cen_ins_library, paths setup: [-f] [-i|-u] [-r]
+#
+# Options:  -f  force setup of runtime folders
+#           -i  ignored
+#           -r  remove but don't destroy repository
+#           -u  ignored
+#
+#   always
+#       $CEN_ROOT       (folder)
+#       .../default     (symlink to /etc/default EUID=0 only -or- folder)
+#
+#   only for EUID=0
+#       /run/centauri   (folder)
+#       transient       (symlink to /run/centauri)
+#       persistent      (symlink to /var/tmp/centauri)
+#
+#   <repo> is not '-'
+#       library         (symlink to <repo>/library)
+#       locale          (symlink to <repo>/locale)
+#       tools           (symlink to<repo>/tools)
+#
+#   BUG: admin symlink should not be removed !!!!
+# ------------------------------------------------------------------------------
+_cen_ins_paths() {
+    local _repo="${CEN_ROOTDEFS[3]:--}"         # optional repository
+    local _sgrp="${CEN_ROOTDEFS[4]:--}"         # optional group owner
+    local _ffrc _frem
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -f)   _ffrc="-f" ;;
+      -i)   ;;
+      -u)   ;;
+      -r)   _frem="-r" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # condition check
+
+    [ "$_repo" = '-' ] || _repo="$CEN_PATHS$_repo"
+    [ -z "$_ffrc" ] &&
+        if [ "$_repo" != '-' -a ! -d "$_repo" ] ; then
+            $CEN_TRACE -a -p $"Skip setup runtime folders (no %s)" "$_repo" ; return 1
+        elif [ "$EUID" != 0 ] ; then
+            $CEN_TRACE -a $"Cannot setup runtime folders (not running as root)" ; return 0
+        fi
+
+    # setup CEN_ROOT
+
+    local _drun="$CEN_PATHS/run"
+    # fallback to CEN_PATHS[3] (/var) if /nun is missing
+    [ -d "$_drun" ] || _drun="${CEN_PATHS[3]}/run"
+    if [ -n "$_frem" ] ; then
+        remove -d -- "$_drun/centauri" "${CEN_PATHS[3]}/lib/centauri"
+        remove    -- "$CEN_ROOT/transient" "$CEN_ROOT/persistent"
+    else
+        create -d -- "$CEN_ROOT" 775 "$_sgrp" || return 1
+        if [ "$EUID" = 0 ] ; then
+            create -d -- "$_drun/centauri"   775 "$_sgrp" &&
+                symlink -- "$_drun/centauri" "$CEN_ROOT/transient"
+            create -d -- "${CEN_PATHS[3]}/lib/centauri" 775 "$_sgrp" &&
+                symlink -r -- "${CEN_PATHS[3]}/lib/centauri" "$CEN_ROOT/persistent"
+        fi
+    fi
+
+    # make links to repository
+
+    if [ "$_repo" != "-" ] ; then
+        if [ -n "$_frem" ] ; then
+            remove -- "$CEN_TOOLS" "$CEN_ROOT/admin" "$CEN_ROOT/locale" "$CEN_LIBRARY"
+        elif [ -e "$_repo" ] ; then
+            symlink -r -- "$_repo/tools"   "$CEN_TOOLS"
+            symlink -r -- "$_repo/locale"  "$CEN_ROOT/locale"
+            symlink -r -- "$_repo/library" "$CEN_LIBRARY"
+        fi
+    fi
+
+    # create or link CEN_ROOT/default
+
+    if [ -n "$_frem" ] ; then
+        remove -q -- "$CEN_ROOT/default"
+    elif [ -d "$CEN_ROOT/default" ] ; then
+        $CEN_TRACE2 -a -c " keep" -- "$CEN_ROOT/default"
+    elif [ "$EUID" = 0 -a -e "$CEN_INS_ETCPATH/default" ] ; then
+        symlink -r -- "$CEN_INS_ETCPATH/default" "$CEN_ROOT/default"
+    else
+        create -d -- "$CEN_ROOT/default" 775 "$_sgrp"
+    fi
+
+    # cleanup CEN_ROOT (don't destroy repository data)
+
+    if [ -n "$_frem" ] ; then
+        [ "$_repo" = "-" ] &&
+            remove -q -d -- "$CEN_ROOT/locale" "$CEN_ROOT/library"
+        remove -q -- "$CEN_ROOT/html/CACHEDIR.TAG"
+        remove -q -- "$CEN_ROOT/html"               # rm empty folder
+        remove -q -- "$CEN_ROOT/systemd"            # rm empty folder or link
+        remove -q -- "$CEN_ROOT/tools/templates/"*centauri* \
+                     "$CEN_ROOT/tools/templates/_custom_module_usr" \
+                     "$CEN_ROOT/tools/templates/README" \
+                     "$CEN_ROOT/tools/templates/setup"
+        remove -q -- "$CEN_ROOT/tools/templates"    # rm empty folder
+        remove -q -- "$CEN_ROOT/tools/"*centauri* "$CEN_ROOT/tools/"*README*
+        remove -q -- "$CEN_ROOT/tools"              # rm empty folder
+        remove -q -- "$CEN_ROOT/"*README* "$CEN_ROOT/LICENSE" "$CEN_ROOT/setup"
+        remove -q  -- "$CEN_ROOT"                   # rm empty folder
+        return 0
+    fi
+    [ -d "$CEN_ROOT" ]                          # return status
+}
+
+# ------------------------------------------------------------------------------
+# Generate library proxy: <prox>
+# ------------------------------------------------------------------------------
+_cen_ins_proxy() {
+    $CEN_TRACE -a -c " proxy" -- "$CEN_ROOT"
+    local _repo _rexp _prox="$1"
+    _rexp="${CEN_PATH_REXP[*]@A}" ; _rexp="${_rexp#declare -* }"
+
+    [ -n "$_rexp" ] && _rexp=$'\n'"# path replacements from [library] section"$'\n'"$_rexp"
+    [ -n "$_prox" ] && _prox=$'\n'$'\n'"# things from [proxy] section"$'\n'"$_prox"
+    create -c -t -w "$CEN_TOOLS/_centauri_bash_lib" 775 <<!EOF || return 1
+# --- Proxy for _centauri_bash_lib (autogenerated, see centauri-bash-lib) ---
+
+# installation defaults: <root>[:<bin>:<tools>:<repo>:<user>:<group>])
+CEN_INSTALL='${CEN_INSTALL:-$CEN_ROOT}'
+
+# find the library root folder - use readlink if CEN_ROOT is not valid
+if [ "\${CEN_ROOT:-.}" = '.' ] ; then
+    export CEN_ROOT="$CEN_ROOT"
+    export CEN_TOOLS="\$CEN_ROOT/tools"
+    if [ ! "\$CEN_TOOLS/_centauri_bash_lib" -ef "\$BASH_SOURCE" ] ; then
+        CEN_TOOLS=\$(readlink -f "\$(type -p _centauri_bash_lib)")
+        CEN_TOOLS="\${CEN_TOOLS%/*}" ; CEN_ROOT="\${CEN_TOOLS%/*}"
+    fi
+elif [ "\${CEN_TOOLS:--}" = '-' ] ; then
+    export CEN_TOOLS="\$CEN_ROOT/tools"
+fi
+export CEN_LIBRARY="\$CEN_ROOT/library"
+
+# paths that can be installation dependent
+CEN_PATHS=('$CEN_PATHS'      '${CEN_PATHS[1]}' '${CEN_PATHS[2]}' '${CEN_PATHS[3]}' '${CEN_PATHS[4]}' '${CEN_PATHS[5]}')
+$_rexp$_prox
+
+# sanitize environment (bash needs TMPDIR)
+[ -z "\$TMPDIR" ] && export TMPDIR="\${XDG_RUNTIME_DIR:-\${CEN_PATHS[4]:-/tmp}}" ;
+[ -z "\$TMP" ] || export TMP="\$TMPDIR"
+
+# load real lib, use packed version if newer
+if [ "\$CEN_LIBRARY/_centauri_bash_lib.p" -nt "\$CEN_LIBRARY/_centauri_bash_lib" ] ; then
+    . "\$CEN_LIBRARY/_centauri_bash_lib.p" "\$@" || exit 2
+else
+    . "\$CEN_LIBRARY/_centauri_bash_lib" "\$@" || exit 2
+fi
+
+# init transient folder after boot (root only)
+[ "\$EUID" = 0 ] && [ ! -d "\$CEN_ROOT/transient" ] && embed -m '_centauri_bash_sys'
+:
+!EOF
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# fill CEN_ROOTDEFS from CEN_INSTALL: [<defs>]
+# ------------------------------------------------------------------------------
+_cen_ins_rootdefs() {
+    [ -n "$CEN_ROOTDEFS" -a "${1--}" = '-' ] && return 0
+    $CEN_TRACE2 -c 'CEN_ROOTDEFS' -- "call: $1"
+
+    # init install config is expected in CEN_ROOTDEFS
+    [ -n "$CEN_INSTALL" ] && splitjoin -s CEN_ROOTDEFS -d ':' -- "$CEN_INSTALL"
+    # override CEN_ROOTDEFS by call argument
+    if [ "${1:--}" != '-' ] ; then
+        splitjoin -s CEN_ROOTDEFS -d ':' -- "${1//$CEN_PATHS/}"
+        # <root> <bin> <link> <repo> <owner> <group>
+        if [ -n "${CEN_ROOTDEFS[5]}" ] ; then   # join to <owner>:<group>
+            CEN_ROOTDEFS[4]+=":${CEN_ROOTDEFS[5]}"
+            unset 'CEN_ROOTDEFS[5]'
+        fi
+    fi
+
+    # make nice path names
+    [ "${CEN_ROOTDEFS[0]}" = '+' ] && CEN_ROOTDEFS[0]="${CEN_ROOT#$CEN_PATHS}"
+    [ "${CEN_ROOTDEFS[1]}" = '+' ] && CEN_ROOTDEFS[1]="$CEN_PATHS/usr/local/bin"
+    [ "${CEN_ROOTDEFS[2]}" = '+' ] && CEN_ROOTDEFS[2]="/opt/centauritools"
+
+    if [ "${CEN_ROOTDEFS:--}" = '-' ] ; then
+        error -- $"Unknown installation destination"
+        return 1
+    fi
+
+    # try to autodetect default repository
+    [ "${CEN_ROOTDEFS[3]}" = '+' ] && CEN_ROOTDEFS[3]="$CEN_ROOTDEFS/admin"
+    prettypath -s CEN_ROOTDEFS[3]
+    $CEN_TRACE2 -c 'CEN_ROOTDEFS' -- "done:" "${CEN_ROOTDEFS[@]}"
+
+    local _fldr _indx
+    for ((_indx=0 ; _indx<3; _indx++)) ; do     # warning if a folder is not writable
+        _fldr="${CEN_ROOTDEFS[_indx]}"
+        [ "${_fldr:--}" = '-' ] && continue
+        [ "${_fldr::1}" = '/' ] || fatal "Need absolute path:" "$_fldr"
+        _fldr="$CEN_PATHS$_fldr"                # add FS prefix
+        [ -d "$_fldr" -a -w "$_fldr" ] && continue
+        if [ "$_indx" != 0 ] ; then
+            #if [ ! -e "$_fldr" ] && confirm -a -y $"Create missing folder"" '$_fldr'" ; then
+            #    folder -f -m "$_fldr" && continue
+            #fi
+            [ "$_indx" = 2 ] && [ ! -e "$_fldr" ] && continue
+            warning $"Folder not writable, ignoring:" "$_fldr"
+            CEN_ROOTDEFS[_indx]='-'
+            continue
+        fi
+        _fldr="${_fldr%/*}"                     # base folder
+        [ -w "$_fldr" ] && continue
+        [ "$EUID" = 0 ] && fatal $"Folder not writable:" "$_fldr"
+        warning -n $"Install/uninstall without root rights" '\n' \
+                   $"Folder not writable:" "$_fldr"
+    done
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# add prefix and check a path: [-b] [-s] [-w] <path>|-
+# ------------------------------------------------------------------------------
+# Options:  -b  check if parent if writable
+#           -s  save (prefixed) path
+#           -w  check if path is writable
+# ------------------------------------------------------------------------------
+_cen_ins_rootpath() {
+    local _fpar _fwrt _ovar _path _ppar
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -b)   _fpar=1 ;;
+      -s)   shift ; _ovar="$1" ; printf -v "$_ovar" '-'  ;;
+      -w)   _fwrt=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ "${1:--}" = '-' ] && return 1
+    _path="$CEN_PATHS$1"
+    [ -z "$_fwrt" -o -w "$_path" ] || return 1
+    if [ -n "$_fpar" ] ; then
+        _ppar="${_path%/*}"
+        [ -w "${_ppar:-/}" ] || return 1
+    fi
+    [ -n "$_ovar" ] && printf -v "$_ovar" "%s" "$_path"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# get list of (centauri)tools
+# ------------------------------------------------------------------------------
+_cen_ins_tools() {
+    [ -n "$CEN_SYS_TOOLS" ] && return                   # already defined
+    CEN_SYS_TOOLS=("$CEN_TOOLS/_centauri_bash_lib")     # must include proxy
+    local farg fexc
+    for farg in "$CEN_TOOLS"/centauri* ; do             # autoinclude: centauri*
+        for fexc in "${CEN_SYS_EXCLUDE[@]}" ; do
+            [[ "${farg##*/}" == $fexc ]] || continue
+            farg= ; break
+        done
+        [ -n "$farg" ] && CEN_SYS_TOOLS+=("$farg")
+    done
+    for farg in "${CEN_SYS_INCLUDE[@]}" ; do            # add extra includes
+        farg="$CEN_TOOLS/$farg"
+        for fexc in "${CEN_SYS_TOOLS[@]}" ; do
+            [ "$farg" = "$fexc" ] || continue
+            farg= ; break
+        done
+        [ -n "$farg" ] && CEN_SYS_TOOLS+=("$farg")
+    done
+}
+
+# ------------------------------------------------------------------------------
+# For _centauri_bash_sys - get OS and KDE versions: -s|-k|-w [-m|-v]
+# ------------------------------------------------------------------------------
+_cen_ins_version() {
+    $CEN_DEBUG -c -- "$*"
+    local _otra=':' _orun _stat=0
+
+    # get kde/plasma versions: <tool> (using _aver)
+    ___cen_vers_try() {
+        local _aver _alin
+        sysrun -a _aver  -q -- "$1" --version || return 1
+        for _alin in "${_aver[@]}" ; do
+            case "$_alin" in
+                plasmash*)  ___cen_vers_set CEN_SYS_PLASMA  "${_alin##* }" ;;
+                Qt*)        ___cen_vers_set CEN_SYS_QTVERS  "${_alin##* }" ;;
+                KDE*)       ___cen_vers_set CEN_SYS_KDEVERS "${_alin##* }" ;;
+                Plasma*)    ___cen_vers_set CEN_SYS_PLASMA  "${_alin##* }" ;;
+            esac
+        done ; return 0
+    }
+
+    # set sortable version: <varname> x[.y[.z]]
+    ___cen_vers_set() {
+        local -n _verv="$1" ; local _vers="${2//./ }"
+        set -- ${_vers//[! 0123456789]/ }
+        printf -v _vers "%3s.%3s.%3s" "${1:-0}" "${2:-0}" "${3:-0}"
+        _verv="${_vers// /0}"
+    }
+
+    # debian version number from nickname: <varname> <nick>
+    ___cen_vers_deb() {
+        case "$2" in
+            bookworm)   ___cen_vers_set "$1" 12 ;;
+            bullseye)   ___cen_vers_set "$1" 11 ;;
+            buster)     ___cen_vers_set "$1" 10 ;;
+            stretch)    ___cen_vers_set "$1" 9 ;;
+            jessie)     ___cen_vers_set "$1" 8 ;;
+            *)          ___cen_vers_set "$1" ;;
+        esac
+    }
+
+    ___cen_vers_sys() {
+        local _temp _vers
+        CEN_SYS_CONFIG=                         # unknown
+        CEN_SYS_DISTRO='unknown'
+        CEN_SYS_FAMILY='unknown'
+        CEN_SYS_NICKNAME='unknown'
+        CEN_SYS_ALIAS='unknown'
+        CEN_SYS_VERSION='000.000.000'
+
+        if [ -n "$TERMUX_VERSION" ] ; then
+            CEN_SYS_DISTRO="termux"
+            CEN_SYS_FAMILY="debian"
+            _vers="$TERMUX_VERSION"
+        elif [ -d "$CEN_INS_ETCPATH/default" ] ; then  # is debian?
+            CEN_SYS_CONFIG="$CEN_INS_ETCPATH/default"
+            CEN_SYS_FAMILY="debian"
+        fi
+
+        if [ -r "$CEN_INS_ETCPATH/lsb-release" ] ; then
+            . "$CEN_INS_ETCPATH/lsb-release"
+            CEN_SYS_DISTRO="${DISTRIB_ID,,}"
+        elif [ -f "$CEN_INS_ETCPATH/SuSE-release" ] ; then
+            CEN_SYS_DISTRO="suse"
+        elif [ -f "$CEN_INS_ETCPATH/os-release" ] ; then
+            . "$CEN_INS_ETCPATH/os-release"
+            CEN_SYS_DISTRO="${ID,,}"
+            [ ! -f "$CEN_INS_ETCPATH/debian_version" ] && _vers="$VERSION_ID"
+        fi
+
+        # fallbacks for unknown version (use kernel)
+        if [ -z "$_vers" ] ; then
+            if [ -f "$CEN_INS_ETCPATH/debian_version" ] ; then
+                [ "$CEN_SYS_DISTRO" = "unknown" ] && CEN_SYS_DISTRO="debian"
+                _vers=$(<"$CEN_INS_ETCPATH/debian_version")         # should be n.m or nickname
+                [ -n "${_vers//[0-9.]}" ] && _vers="${_vers%%/*}"   # version is nickname
+            else                                                    # fallback to kernel version...
+                _vers=$(</proc/version) ; _vers="${_vers%%(*}"      # should be: xxx yyy n.m-xxx (blabla)
+                _vers="${_vers//[a-zA-z ]/}" ; _vers="${_vers%%[- ]*}"
+            fi
+        fi
+        ___cen_vers_set CEN_SYS_VERSION "$_vers"                    # decode numeric vers
+
+        # get family
+        case "$CEN_SYS_DISTRO" in
+        arch*)
+            CEN_SYS_DISTRO="arch" ; CEN_SYS_FAMILY="arch" ;;
+        *suse*)
+            CEN_SYS_DISTRO="suse" ; CEN_SYS_FAMILY="suse" ;;
+        raspbian|termux|ubuntu)
+            ;;
+        *)
+            CEN_SYS_DISTRO="debian"
+            # for backward compatibility: say raspbian on raspberry hardware
+            if [ -r "/sys/firmware/devicetree/base/model" ] ; then
+                read _temp < "/sys/firmware/devicetree/base/model"
+                _temp="${_temp%% *}"
+                [ "${_temp,,}" = "raspberry" ] && CEN_SYS_DISTRO="raspbian"
+            fi
+        esac
+        [ "$CEN_SYS_FAMILY" = "debian" ] && CEN_SYS_ALIAS=
+
+        # get a nickname
+        case "$CEN_SYS_FAMILY ${_vers%%.*}" in
+            "debian 5")   CEN_SYS_NICKNAME="lenny"      ;;
+            "debian 6")   CEN_SYS_NICKNAME="squeeze"    ;;
+            "debian 7")   CEN_SYS_NICKNAME="wheezy"     ;;
+            "debian 8")   CEN_SYS_NICKNAME="jessie"     ;;
+            "debian 9")   CEN_SYS_NICKNAME="stretch"    ;;
+            "debian 10")  CEN_SYS_NICKNAME="buster"     ;;
+            "debian 11")  CEN_SYS_NICKNAME="bullseye"   ;;
+            "debian 12")  CEN_SYS_NICKNAME="bookworm"   ;;
+            "debian 13")  CEN_SYS_NICKNAME="trixy"      ;;
+            "debian "[a-z]*)
+                          CEN_SYS_NICKNAME="${_vers%%/*}"
+                          ___cen_vers_deb CEN_SYS_VERSION "$CEN_SYS_NICKNAME" ;;
+        esac
+        return 0
+    }
+
+    ___cen_vers_kde() {
+        local _kini
+        if ! sysfind -c -o -s _kini -- kdeinit6 kdeinit5 kdeinit4 ; then
+            CEN_SYS_KDEVERS='-' ; CEN_SYS_PLASMA= ; CEN_SYS_QTVERS=
+            return
+        fi
+        # only try kde checks for wayland or local X11 display
+        [ "${CEN_SYS_KDEVERS:-000.000.000}" = '000.000.000' ] && CEN_SYS_KDEVERS='000.000.000'
+        [ -n "$SUDO_USER" ] && return
+        [ "$CEN_DISPLAY" != 'wayland' -a "${DISPLAY/:[0-9]/-}" != '-' ] && return
+        CEN_SYS_KDEVERS= ; CEN_SYS_PLASMA= ; CEN_SYS_QTVERS=
+
+        # since kde5 (plasmashell crashes for missing display and sudo)
+        ___cen_vers_try "plasmashell"
+
+        # Qt: 4.8.6
+        # KDE Development Platform: 4.14.2
+        # Plasma Desktop Shell: 4.11.13
+        [ -z "$CEN_SYS_PLASMA" ] && ___cen_vers_try "plasma-desktop"
+
+        # Qt: 5.11.3
+        # KDE: 5.54.0
+        [ -z "$CEN_SYS_KDEVERS" ] && ___cen_vers_try "$_kini"
+
+        [ -z "$CEN_SYS_QTVERS"  ] && CEN_SYS_QTVERS='000.000.000'
+        [ -z "$CEN_SYS_PLASMA"  ] && CEN_SYS_PLASMA='000.000.000'
+    }
+
+    ___cen_vers_wrt() {
+        create -h "centauritools" -t -s -w "$CEN_SYS_STATE_FILE" 664 <<!EOF
+CEN_SYS_CONFIG="$CEN_SYS_CONFIG"
+CEN_SYS_DISTRO="$CEN_SYS_DISTRO"
+CEN_SYS_FAMILY="$CEN_SYS_FAMILY"
+CEN_SYS_NICKNAME="$CEN_SYS_NICKNAME"
+CEN_SYS_ALIAS="$CEN_SYS_ALIAS"
+CEN_SYS_VERSION="$CEN_SYS_VERSION"
+
+CEN_SYS_KDEVERS="$CEN_SYS_KDEVERS"
+CEN_SYS_PLASMA="$CEN_SYS_PLASMA"
+CEN_SYS_QTVERS="$CEN_SYS_QTVERS"
+!EOF
+    }
+
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -k)   _orun='kde' ;;
+      -s)   _orun='sys' ;;
+      -w)   _orun='wrt' ;;
+      -m)   _otra='message' ;;
+      -v)   _otra='trace' ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    if [ -n "$_orun" ] ; then
+        ___cen_vers_$_orun || _stat=1
+    fi
+    [ "$_otra" = ':' ] && return $_stat
+
+    $_otra -a -c $"System version"  -- "$CEN_SYS_VERSION ($CEN_SYS_DISTRO $CEN_SYS_NICKNAME)"
+    $_otra -a -c $"System family"   -- "$CEN_SYS_FAMILY"
+    $_otra -a -c $"Bash    version" -- "$BASH_VERSION"
+    $_otra -a -c $"Library version" -- "${CEN_MODULES["_centauri_bash_lib"]}"
+    _cen_ins_isshared && _temp=$"shared" || _temp=$"private"
+    $_otra -a -c $"Library setup"    -- "$_temp"
+
+    if [ "$CEN_SYS_KDEVERS" = '000.000.000' ] ; then
+        $_otra -a -c $"KDE     version" -- $"-unknown-"
+    elif [ "${CEN_SYS_KDEVERS:--}" != '-' ] ; then
+        $_otra -a -c $"KDE     version" -- "$CEN_SYS_KDEVERS"
+        $_otra -a -c $"Qt      version" -- "$CEN_SYS_QTVERS"
+        $_otra -a -c $"Plasma  version" -- "$CEN_SYS_PLASMA"
+    fi
+    $_otra -a -c $"Session type"    -- "${CEN_DISPLAY:-tty}"
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# Service and Daemon + How centauri-bash-lib supports Services and Daemons
+#
+#+General:  The library supports **SysV** and **systemd** system services. Services can be
+#           installed and removed via [[syssetup()]], which is implemented as **setup**
+#           verb. Other service verbs are **start**, **stop**, **restart** and **status**.
+#
+#+          Additionally **daemons** are supported. In contrast to a service, a daemon
+#           is not installed and can be used without root privileges. Daemons share
+#           the **start**/**stop** semantics of services. In fact services can be run outside
+#           the control of **SysV** or **systemd** as stand-alone daemons.
+#
+#+          The library simplifies the coding of services, the service script itself
+#           contains the necessary configuration. For **systemd** the unit file will be
+#           autogenerated, optional **SysV** support needs a **LSB-Header**.
+#
+#+          The **SysV** compatibility mode of **systemd** is supported. Services having
+#           a **LSB-Header** can be installed as **SysV** services. Pure **SysV** should
+#           work too.
+#
+#+          The documentation contained in this module describes the details:
+#
+#,          [[Service Types]]   - Supported Service Types
+#,          [[Service Config]]  - Writing a Service (LSB-Header, Config Variables)
+#,          [[Service Setup]]   - Installing a Service
+#,          [[Systemd Config]]  - Overriding the Configuration of systemd Services
+#
+#,          [[Library Proxy]]   - The _centauri_bash_lib Proxy
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Service Types + Supported Service Types
+#
+#+General:  Services can show different activation behaviour at start time. The
+#           library uses the CEN_SVC_TYPE variable to configure this. The types
+#           used are similar to the **systemd** ServiceType.
+#
+#+Instance: **systemd** runs as a system and as a per-user instance. Services belong
+#           either to the system instance or are started per-user. Currently user
+#           instances are not supported.
+#
+#+Types:    Five execution modes are implemented (for **SysV** and **systemd**). These are
+#           the valid settings of the CEN_SVC_TYPE variable:
+#
+#           daemon  cannot be installed as a service, is started like a normal
+#                   program.
+#
+#           forking SysV legacy; actionStart will fork a separate process. After
+#                   forking actionStart should return. A PIDFile= statement is
+#                   added to the .service file but the PIDFile is not created.
+#                   If actionStart creates one, it is not necessary to have
+#                   actionStop as systemd (or [[_centauri_bash_svc]]) send a
+#                   **SIGTERM** signal to the forked process.
+#
+#           simple  Under SysV this mode behaves like "forking". Otherwise
+#                   systemd does the forking. The actionStart code should not
+#                   return before actionStop. No ExecStop= statement is added
+#                   to the .service file, systemd sends a **SIGTERM** signal. This
+#                   is trapped and causes actionStop to run (if implemented).
+#
+#           oneshot Just runs actionStart to do something relatively short. The
+#                   code must return from actionStart. By default actionStop does
+#                   nothing. Adds a RemainAfterExit= statement to the .service
+#                   file. A ExecStop= statement should be used if actionStop
+#                   is implemented.
+#
+#           once    Like oneshot but no RemainAfterExit= is generated. Such a
+#                   service is no longer running after actionStart returns. No
+#                   actionStop should be implemented.
+#
+# Requirements:
+#,          - use **_centauri_bash_lib -v** (enables service verbs and help)
+#,          - implement either [[actions()]] or [[run()]]
+#,          - the default is CEN_SVC_TYPE=oneshot if [[actions()]] is defined
+#,          - the default is CEN_SVC_TYPE=simple if [[run()]] is defined
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Service Config + Writing a Service (LSB-Header, Config Variables)
+#
+#+General:  The existence of a **SysV** header makes a script a **SysV** service. For
+#           **systemd** a unit file can be auto-generated at installation time.
+#
+#+          The service code tries to auto-detect the required service type.
+#           This is based on the presence of [[run()]], **actionStart()** and
+#           **actionStop()** functions. This happens if CEN_SVC_TYPE is not set
+#           or has a value of **auto**.
+#
+#+          The CEN_SVC_TYPE variable can be set to override auto-detect, see
+#           [[Service Types]].
+#
+#+          The service module provides more details on configuration variables,
+#           see [[_centauri_bash_svc]].
+#
+#+          Further documentation is provided in the form of templates, see
+#           **centauriDaemon** and **centauriService**.
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Service Setup + Installing a Service
+#
+#+General:  Services have a **setup** action verb that takes **install**, **uninstall** or
+#           **status** as argument. Root rights are needed for most service verbs.
+#
+#+SysV:     When **systemd** is not installed, **SysV** is used automatically. In the
+#           other case **SysV** compatibility is optional (via LSB-header). The header
+#           defines the **SysV** service dependencies, but these are not used with
+#           **systemd**. If a service has a LSB-header but no CEN_SVC_TYPE value, it
+#           will be installed in **SysV** compatibility mode:
+#
+#.          # Installing 'hellosysv' via SysV
+#.
+#.          > hellosysv setup install
+#.
+#.          # The library makes a symlink to /etc/init.d/hellosysv and calls insserv
+#.          # or systemctl to complete the installation.
+#
+#+systemd:  For a **systemd** service a .service unit can be autogenerated via **setup**.
+#           The value of the variable CEN_SVC_WANTED_BY will end up in a **WantedBy** in
+#           the **[Install]** section (the default value is **multi-user**).
+#
+#.          # Installing a service via systemd
+#.
+#.          > hellosvc1 setup install
+#.
+#.          # The library creates /etc/systemd/system/hellosvc1.service and calls
+#.          # systemctl to complete the installation.
+#
+#+          For a more complex configuration a unit file and other custom files can
+#           be provided. See [[systemd Config]] for details:
+#
+#.          # the custom unit file for service hellosvc2 ($CEN_TOOLS/hellosvc) is
+#.          # $CEN_ROOT/systemd/system/hellosvc2.service
+#.
+#.          > hellosvc2 setup install
+#.
+#.          # The library makes a symlink to /etc/systemd/system/hellosvc2.service
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# systemd Config + Support for overriding the systemd configuration
+#
+#+General:  To support centauri-bash-lib services, [[syssetup()]] can modify the
+#           **systemd** configuration.
+#
+#+          This is done by making symlinks into **/etc/systemd**. Although it is
+#           possible to have private versions of systemd units, preferably
+#           overrides should be used.
+#
+#+Data:     Configuration data is kept in **$CEN_ROOT/systemd/user** for user
+#           mode services and in **$CEN_ROOT/systemd/system** for system mode
+#           services. The data in these folders might be:
+#
+#           (1) Some **.service** units. Such units are linked into the **/etc/systemd**
+#               hierarchie and by default the services are installed and enabled.
+#           (2) Some **.target** units. They are linked like **.service** units and
+#               installed.
+#           (3) Files for **.override** statements. For them **.d** folders are created
+#               and these files are linked into their corresponding folder.
+#           (4) The **.wants** files belong to target or service units and cause
+#               the creation of **.wants** folders. The file contains line by line
+#               ''<key> <path>'' definitions that cause units to be symlinked or
+#               existing symlinks to be removed from the corresponding folder.
+#
+#+          For installing services and targets no other configuration is needed.
+#           When running an uninstall the actions of install are reverted.
+#
+#+Wants:    In some cases service dependencies are known in advance and can be
+#           implemented using **WantedBy** statements. When this is not possible,
+#           in particular for target units, a folder containing symlinks to unit
+#           files is required. The library supports these via **.wants** files
+#           that contain lines in the form ''<key> <path>''. Empty lines and lines
+#           starting with **#** are ignored. The following keys are defined:
+#
+#           # Links a (dependent) service or target from $CEN_TOOLS
+#           **+** ''<service_name>''**.service**
+#           **+** ''<service_name>''**.target**
+#
+#           # Links an external (dependent) service or target
+#           **+** ''/<folder>.../<service_name>''**.service**
+#           **+** ''/<folder>.../<service_name>''**.target**
+#
+#           # Removes an existing service or target link
+#           **-** ''<service_name>''**.service**
+#           **-** ''<service_name>''**.target**
+#
+#           # Removes an external (dependent) service or target at install
+#           # time and links it again at uninstall. This behaviour is used
+#           # to restore the default behaviour of units after uninstalling
+#           # overrides
+#           **!** ''/<folder>.../<service_name>''**.service**
+#           **!** ''/<folder>.../<service_name>''**.target**
+#
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Installation + Install/Update/Uninstall and Configuration
+#
+#+Install:  For simplicity an example setup script is provided (see [[centauricreate]]
+#           template). Just unpack the source tar archive or use a cloned repository
+#           and run **setup**. Do not install as root user unless you want a 'shared'
+#           system-wide installation (see [[private°or°shared]]). **centauri-bash-lib**
+#           itself needs no setup program, you can do a manual install by running any
+#           of the included tools with **--info°install**.
+#
+#+tar-file: From **https://github.com/j-pfennig/centauri-bash-lib** you may download
+#           the current tar file and run the included **setup** script:
+#
+#.          tar -xaf centauri-bash-lib_X.XX.tgz
+#.          # sudo -i                               # only for shared installation
+#.          centauri_bash_lib_X.XX/setup            # automatic install -or- do a
+#.                                                  # manual install, see below...
+#
+#           The **setup** script can also be used to update an existing installation.
+#
+#+git-hub:  Otherwise just clone the repository (later in this text a ''repository''
+#           installation mode will be discussed):
+#
+#.          git clone https://github.com/j-pfennig/centauri-bash-lib.git
+#.          # sudo -i                               # only for shared installation
+#.          centauri-bash-lib/setup                 # automatic install -or- do a
+#.                                                  # manual install, see below...
+#
+#+Manual:   This section explains how to do a manual installation.
+#
+#           (1.a) System-wide 'shared' installation (using **root** rights):
+#
+#.          sudo -i                             # root always installs shared
+#.          arch="centauri_bash_lib.tgz"        # what to install
+#.          dest="/usr/local/shared/centauri"   # where to install (CEN_ROOT)
+#.
+#.          mkdir -p "$dest"
+#.          tar -C "$dest" -xaf "$arch" --skip-components=1
+#.          "$dest"/tools/centauricreate --info install
+#
+#           (1.b) 'Private' installation (only without **root** rights):
+#
+#.          arch="centauri_bash_lib.tgz"        # what to install
+#.          dest=~/.centauri                    # where to install (CEN_ROOT)
+#.
+#.          mkdir -p "$dest"
+#.          tar -C "$dest" -xaf "$arch" --skip-components=1
+#.          "$dest"/tools/centauricreate --info install
+#.          ln -s "$dest" ~/centauritools
+#.          PATH+=":~/centauritools"            # add this to your ~/.bashrc
+#
+#           (2) Finish a manual install by running the following steps:
+#
+#.          # (2.1) enable loadable bash builtins (please after installing the
+#.          #       bash-builtins package of your distribution):
+#.          $dest/library/autoload --builtin
+#
+#.          # (2.2) preprocess bash sources for a little speed-up:
+#.          $dest/library/uglify -D -U
+#
+#.          # (2.3) create a initial configuration file from a template:
+#.          centauricreate --template=config -
+#
+#+Uninstall:To remove [[_centauri_bash_lib]] completely type one of those:
+#
+#.          centauricreate --info uninstall         # uninstall with prompt
+#
+#.          centauricreate --info uninstall --yes   # uninstall without prompt
+#
+#           **WARNING: uninstall will remove the whole $CEN_ROOT tree.**
+#
+#+Customize:The **setup** script and --info **setup** can install to custom
+#           locations by passing a colon separated argument string of up to five
+#           fields:
+#
+#,          - DEST     The installation root $CEN_ROOT (should be the path of the
+#,            °        installation folder).
+#,          - TOOLS    <empty> -or- folder to symlink user scripts (a folder contained in
+#,            °        $PATH simplifies calling user scripts).  This field is ignored
+#,            °        if the folder is not writable.
+#,          - ALIAS    <empty> -or- symlink to **$CEN_ROOT/tools** (just an  alias that should
+#,            °        be easy to remember). This field is ignored if the base folder is
+#,            °        not writable.
+#,          - REPO     An optional repository path -or- <empty> for no repository. A value
+#,            °        of '+' tries **$CEN_ROOT/admin**. The setup code will symlink **tools**,
+#,            °        **library** and **locale** to an existing repository.
+#,          - USER     <empty> or a [user][:group], sets the ownership of created folders.
+#
+#.          DEST=/var/centauri      # $CEN_ROOT hierarchie path
+#.          TOOLS=/usr/bin          # optional: symlink tools to bin folder
+#.          ALIAS=/opt/centauri     # optional: symlink $CEN_ROOT/tools
+#.          REPO=<repository>       # optional: path of your repository
+#
+#.          setup $DEST:$TOOLS      # examples ...
+#.          setup $DEST:$TOOLS:$ALIAS
+#.          setup $DEST:$TOOLS:$ALIAS:$REPO
+#
+#+Repository: When using git or something similar, updates are simplified using
+#           the repository installation mode. After installation the $CEN_ROOT
+#           hierarchy will contain symlinks into the repository folder, e.g. the
+#           library files and tools are not copied ...
+#
+#.          DEST=/var/centauri      # $CEN_ROOT hierarchie path
+#.          TOOLS=/usr/bin          # optional: symlink tools to bin folder
+#.          ALIAS=/opt/centauri     # optional: symlink $CEN_ROOT/tools
+#.          REPO=<repository>       # path of your repository
+#
+#.          # using setup ...
+#.          $REPO/setup $DEST:$TOOLS:$ALIAS:$REPO
+#
+#.          # ... or manual mode
+#.          $REPO/tools/centauricreate --info install $DEST:$TOOLS:$ALIAS:$REPO
+#
+#+Non-FHS:  Most Linux systems follow the FSH standard. For other implementations or
+#           to install into a non-root FS, for running scripts the CEN_PATHS array
+#           variable is provided. It is initialized by [[_centauri_bash_lib]] and has
+#           five elements:
+#
+#,          [0] non-FSH root prefix  (empty on FSH conformant systems)
+#,          [1] GNU corebin folder   (usually **/usr/bin**)
+#,          [2] system configuration (usually **/etc**)
+#,          [3] system var folder    (usually **/var**)
+#,          [4] temporary files      (usually **/tmp**)
+#,          [5] library folder       (usually **/usr/lib**)
+#
+#+          At [[_centauri_bash_lib]] load time, it checks "${CEN_PATHS[1]/bash}".
+#           If this is not executable (e.g. not FSH compliant) the "$BASH" variable
+#           is used to get some prefix (path before "/usr/bin" or "/bin"). Using this
+#           prefix the library tries to locate "/etc", "/var" and "/tmp". The prefix
+#           itself is saved to "$CEN_PATHS" (which is identical to "${CEN_PATHS[0]}").
+#
+#+          The GNU core utilities can be installed either at "$CEN_PATHS/usr/bin" or at
+#           "$CEN_PATHS/bin". The auto detected path is stored as "${CEN_PATHS[1]}". With
+#           **termux** (Linux for Android) the $PREFIX variable is not needed.
+#
+#+Proxy:    Loading [[_centauri_bash_lib]] into a user script always invokes a proxy,
+#           see [[Library°Proxy]] for details. This proxy contains minimal configuration
+#           information used to locate the library itself (a $CEN_ROOT hint for example).
+#           If **$PATH** includes no folder that contains the proxy or a symlink to it, all
+#           folders containing  [[_centauri_bash_lib]] user scripts must contain a symlink
+#           to the proxy.
+#
+#+          The proxy at **$CEN_ROOT/tools** is recreated by the installation process.
+#           If you are using multiple user script folders symlink the proxy rather than
+#           creating copies. After some changes in the [[Library Configuration]] file
+#           **centauri-bash-lib** it might be necessary to recreate the proxy:
+#
+#.          centauricreate --info install           # this also recreates the proxy
+#
+#+Folders:  Parts of the folder tree shown below are added by [[_centauri_bash_sys]].
+#           An automatic setup of the tree is done on the 1st execution (as root
+#           user) if the **persistent** symlink is missing. The folders for **persistent**
+#           and **transient** are only of interest for tools that run as **root** anyhow:
+#
+#.          $CEN_ROOT
+#.             ├── default     # dynamic, link or folder
+#.             ├── html        # static, documentation
+#.             ├── library     # static, _centauri_bash_lib code
+#.             ├── locale      # static, translations
+#.             ├── persistent  # dynamic, persistent cache
+#.             ├── systemd     # optional, systemd files
+#.             ├── tools       # static, user scripts ($CEN_TOOLS)
+#.             └── transient   # dynamic, volatile cache
+#
+#+          The tree shown above should be complete after (automatic) setup. The
+#           **default** leaf is a symlink to **/etc/default** on Debian or a folder of
+#           its own otherwise. It can be used for user defined configuration data.
+#
+#+          The following commands can be run to force a (repair) setup:
+#
+#.          centauricreate --info install         # setup with prompts
+#.          centauricreate --info install --yes   # setup without prompts
+#
+#+Updates:  If you add own scripts to the **tools** folder, symlinks to the
+#           binary folder (like **/usr/local/bin**) are created this way:
+#
+#.          centauricreate --info update          # update binary symlinks
+#
+#+As mentioned above, there is no separate installation program. Every
+# script that calls [[_centauri_bash_lib]] [[main()]] has the --info option and
+# can be used (**centauricreate** was just used as an example).
+#
+#+Verbs and options following --info must be typed exactly as documented
+# above. They cannot be abbreviated and must appear in that order.
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Private or Shared + Installation Types
+#
+#+General:  From the beginning **centauri-bash-lib** was written to support system
+#           services. These require a so called 'Shared Installation' that needs
+#           root privileges at install time.
+#
+#+          Alternatively non-root 'Private Installations' are possible. These have
+#           no support for system services but are still supporting user services.
+#
+#+Shared:   This type is system-wide and is shared by all users. Only one version of
+#           centauri-bash-lib can be installed at a time in shared mode. The
+#           **centauritools** are usually symlinked to **/usr/local/bin**.
+#
+#+          The folders $CEN_TOOLS**/transient** and $CEN_TOOLS**/transient** exist
+#           only for this type and are used by tools running as root to setup shared
+#           caches. Configuration files are usually stored in $CEN_TOOLS**/default**
+#           which can be a symlink to **/etc/default** on Debian like systems.
+#
+#+          At installation time the root user (e.g **$EUID°=°0**) unconditionally
+#           creates a shared installation.
+#
+#+Private:  Any number of private installations even of different versions can
+#           exist in parallel. Private installations are completely isolated from
+#           each other. No system services are supported by this installation
+#           type, $CEN_ROOT**/default** is always a folder and caches are usually
+#           located in **~/.cache/centauri-bash-lib_N.MM/** (N.MM being a library
+#           version).
+#
+#+          At installation time a non-root user (e.g **$EUID°!=°0**) automatically
+#           does a private installation. Of coarse multiple users can use the same
+#           private installation if they have read access permission to the
+#           installation's $CEN_ROOT.
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Library Proxy + The centauri-bash-lib Proxy
+#
+#+General:  The proxy sets some configuration variables and locates the main library
+#           module. The main module must not be loaded directly, using the proxy
+#           is mandatory. This is why it should be sym-linked to "/usr/local/bin" in
+#           a shared installation. More details are covered by the [[Initialization]]
+#           and [[Installation]] topics.
+#
+#+          A customized proxy is generated at installation time, see [[Installation]]
+#           and [[syssetup()]]. The installation path is:
+#
+#.          **$CEN_TOOLS/_centauri_bash_lib**
+#
+#+Environment:°At loading time the proxy always sets the following variables to
+#           fixed values that were set at proxy creation time:
+#
+#,          CEN_INSTALL         # installation defaults
+#,          CEN_ROOT            # library root/installation folder
+#,          CEN_LIBRARY         # _centauri_bash_lib modules
+#,          CEN_TOOLS           # centauri tools (or user scripts)
+#,          CEN_PATHS           # an array of paths used by the library
+#,          CEN_PATH_REXP       # definitions for [[prettypath()]]
+#,          **TMPDIR**          # sanitized temp folders ...
+#,          **TMP**
+#
+#+          The locations referenced by CEN_LIBRARY and CEN_TOOLS usually are sub-folders
+#           of CEN_ROOT but are symlinks into the repository for a repository installation.
+#
+#+Embedding:CEN_ROOT and CEN_TOOLS can be overridden by environment variables. If CEN_ROOT
+#           is non-empty and has any other value than "." it is neither validated nor
+#           replaced. This method is used by [[embed()]] and the example **setup** script.
+#
+#+Bootstrap:A special proxy version comes with the installation sources. It's sole purpose
+#           is to provide CEN_INSTALL defaults for an **--info°setup** manual installation.
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Localization + Adding support for translations (l10n)
+#
+#+General:  Bash and [[_centauri_bash_lib]] support localization. Translations are
+#           implemented using the GNU gettext-tools. A little helper script is
+#           provided to simplify the translation process.
+#
+#+Setup:    A translated script uses the -t option when loading the library:
+#
+#.          PATH+=":${0%/*}" . _centauri_bash_lib -t ... "$0" "0.11:1" || exit 2
+#
+#+          Translatable strings are prefixed with a $ (example: $"Hello").
+#
+#+          Read "$CEN_ROOT/locale/l10n --help" on how to generate the binary
+#           translation tables used by bash/GNU gettext. All translation data
+#           resides in the following tree:
+#
+#.          $CEN_ROOT
+#.             ├── locale               # translation data
+#.             │   ├── de               # german translations
+#.             │   │   └── LC_MESSAGES  # binaries for gettext
+#.             │   └── ...              # more languages
+#.             ├── ...                  # other stuff
+#.             └── tools                # user scripts ($CEN_TOOLS)
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Module Init
+# ------------------------------------------------------------------------------
+
+:
+
+# end

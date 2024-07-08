@@ -1,0 +1,454 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2017-2023; BSD License"
+CEN_TITLE="Partition a hard disk and install centauri linux"
+
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -m bat -r -y - '0.26:2' 0 4 || exit 2
+
+# Data
+CEN_OPT_BIOS=                   # see --bios
+CEN_OPT_DEVICE=                 # see --device
+CEN_OPT_MSDOS=                  # see --msdos
+CEN_OPT_FILE=                   # see --swap
+CEN_OPT_FSOPT=                  # see --fs2fs --ext4
+CEN_OPT_PART=                   # see --part
+CEN_OPT_RASPI=                  # see --raspi
+CEN_OPT_USAGE=                  # see --usage
+CEN_OPT_VOLUME=                 # see --volume
+
+DAT_SYS_NAME=                   # system name from restore files
+DAT_NO_BOOT=
+DAT_ARCH_BOOT=
+DAT_PREFIX=                     # see do_prefix
+DAT_PREFIX_DISK=
+DAT_CLONE_BOOT=                 # boot partion label (if random)
+DAT_CLONE_DISK=                 # root partion label (if random)
+
+DAT_PART_EFI=
+DAT_PART_GRUB=
+DAT_PART_WIND=
+DAT_PART_SWAP=
+DAT_PART_VOL0=
+DAT_PART_VOL1=
+
+DAT_MOUNT_BOOT=
+DAT_MOUNT_VOL0=
+DAT_HOOK_QUIT=
+
+# ------------------------------------------------------------------------------
+# make 6 char random string not starting with lower case letter
+# ------------------------------------------------------------------------------
+do_prefix() {
+    [ -n "$DAT_PREFIX" ] && return
+    local pref
+    while : ; do
+        read -r -N 16 pref </dev/urandom || fatal "Cannot read from /dev/urandom"
+        system -f -p -r -s pref base64 <<<$pref
+        [ "${#pref}" -gt 10 ] && break
+    done
+    pref="${pref//\//%}"
+    pref="${pref:3:6}" ; DAT_PREFIX="${pref^}"
+}
+
+# ------------------------------------------------------------------------------
+# Create Partition table: mbr|msdos efi|bios
+# ------------------------------------------------------------------------------
+do_partition() {
+    local spar="${1,,}" styp="${2,,}" parts offs=0 pars=0 parb=1 parf="boot"
+    local fsys="${CEN_OPT_FSOPT:-none}" ppre
+    blkdevice -n 9 -- "$CEN_OPT_DEVICE" ; ppre="${CEN_BLKDEVICE[1]%9}"
+    DAT_PART_EFI=
+    DAT_PART_GRUB=
+    DAT_PART_WIND=
+    DAT_PART_SWAP=
+    DAT_PART_VOL0=
+    DAT_PART_VOL1=
+    local boos=512              # minimum size of boot partition [MB]
+    if [ "$CEN_OPT_FILE" = "0" ] ; then
+        boos=$((boos + 4096))
+    elif [ -n "$CEN_OPT_FILE" ] ; then
+        boos=$((boos + (CEN_OPT_FILE+7) / 8 * 8))
+    fi
+
+    # add partition to parts string: <name> <type> <size>
+    ___add_part() {
+        local ptyp="$2" pbeg="${offs}MiB" pend ; offs=$((offs + $3))
+        [ "$pbeg" = "0MiB" ] && pbeg="0%"
+        pend="${offs}MiB" ; [ "$3" = 0 ] && pend="${CEN_OPT_USAGE:-100}%"
+        [ "$ptyp" = "vfat" ] && ptyp="fat32"
+        [ "$ptyp" = "f2fs" ] && ptyp=
+        parts+="mkpart $1 $ptyp $pbeg $pend " ; pars=$((pars + 1))
+    }
+
+    message -a "Creating $1 partition table..."
+
+    if [ "$spar" = "gpt" ] ; then
+        if [ "$styp" = "efi" ] ; then
+            ___add_part "_boot" "fat32" $boos ; DAT_PART_EFI="${ppre}1"
+        fi
+        if [ -n "$styp" ] ; then
+            ___add_part "_grub" "" 8 ; DAT_PART_GRUB="$ppre$pars"
+        fi
+        if [ -n "$CEN_OPT_PART" ] ; then
+            ___add_part "_swap" "linux-swap" $(((CEN_OPT_PART*1024+7) / 8 * 8))
+            DAT_PART_SWAP="$ppre$pars"
+        fi
+        ___add_part "_vol0" "$fsys" 0 ; DAT_PART_VOL0="$ppre$pars"
+        if [ "$styp" = "efi" ] ; then
+            parts+="set 1 esp  on set 2 bios_grub on "
+        elif [ -n "$styp" ] ; then
+            parts+="set 1 bios_grub on "
+        fi
+     elif [ "$spar" = "msdos" ] ; then
+         if [ "$styp" = "efi" ] ; then
+             offs=2
+             ___add_part "primary" "fat32" $boos ; DAT_PART_EFI="${ppre}1" ; parf="esp"
+         elif [ -n "$CEN_OPT_RASPI" ] ; then
+            ___add_part "primary" "fat32" $CEN_OPT_RASPI ; DAT_PART_EFI="${ppre}1" ; parf="lba"
+         fi
+         if [ -n "$CEN_OPT_PART" ] ; then
+             ___add_part "primary" "linux-swap" $(((CEN_OPT_PART*1024+7) / 8 * 8))
+             DAT_PART_SWAP="$ppre$pars"
+             [ "$styp" != "efi" ] && parb=2
+         fi
+         ___add_part "primary" "$fsys" 0 ; DAT_PART_VOL0="$ppre$pars"
+         [ -n "$styp" -a -n "$parf" ] && parts+="set $parb $parf on"
+    else
+        fatal "Bad do_partition arg: $spar"
+    fi
+
+    # zerofill 32MByte before parted to prevent udisk from mounting garbage
+    system -e -p -- dd if=/dev/zero of="$CEN_OPT_DEVICE" bs=1M count=32
+    system -e -p parted --script -a optimal "$CEN_OPT_DEVICE" mklabel "$spar" $parts
+    error -t || return
+
+    if ! dryrun "sleep 1" ; then
+        sleep 1
+        [ -b "$DAT_PART_VOL0" ] || sleep 1
+    fi
+
+    # format boot partion (EFI and RASPBERRY) ...
+    local btyp
+    [ "$styp" = "efi" ] && btyp='EFI'
+    [ -n "$CEN_OPT_RASPI" ] && btyp="BOOT"
+    if [ -n "$btyp" ] ; then
+        message -a -p "Formatting %s partition..." "$btyp"
+        local labl="${DAT_PREFIX_DISK:-$CEN_OPT_NAME}_boot"
+        if [ "${#labl}" -gt 11 ] ; then
+            do_prefix ; labl="${DAT_PREFIX}_boot"
+            DAT_CLONE_BOOT="$DAT_PREFIX"
+            trace -a "VFAT label too long, using random prefix:" "$labl"
+        fi
+        system -p -e mkfs -t vfat -n "$labl" "$DAT_PART_EFI"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Boot partion: <boot> <root>
+# ------------------------------------------------------------------------------
+do_boot() {
+    if [ "${DAT_ARCH_BOOT:--}" != '-' ] ; then
+        message -a "Restoring boot data ..."
+        local opts=()
+        optmake -a opts -n 'boot' -v "$1"
+        if [ "$CEN_OPT_NAME" != "$DAT_SYS_NAME" ] ; then
+            optmake -a opts -n 'clone' -v "$CEN_OPT_NAME"
+        fi
+        embed -z -y -v centaurirestore "${opts[@]}" "$DAT_ARCH_BOOT"
+        error -t || return
+    fi
+
+    if [ -z "$DAT_NO_BOOT" ] ; then
+        message -a "Installing BIOS grub ..."
+        local item targ snam gdes="$1" pref
+        [ "$CEN_OPT_FSOPT" = 'btrfs' ] && pref='/Volumes/Root'
+        [ "$mode" = 'BIOS' ] && gdes="$1$pref/boot"
+        folder -r -m "$gdes"
+
+        if [ -n "$CEN_OPT_BIOS" ] ; then
+            for item in "$gdes/grub" "$gdes/grub" "$gdes/kernel-package" ; do
+                [ -h "$item"  ] && remove -q -- "$item"
+            done
+            remove -q -- "$gdes/kernel-cmdline"
+        fi
+        system -e -p \
+            grub-install --target=i386-pc --boot-directory="$gdes" "$CEN_OPT_DEVICE"
+        error -t || return
+        [ -f "$gdes/grub/grub.cfg" -o -n "$CEN_OPT_DRYRUN" ] ||
+            warning -a "Missing grub config:" "$gdes/grub/grub.cfg"
+    fi
+
+    if [ -n "$CEN_OPT_FILE" ] ; then
+        if [ "$DAT_NO_BOOT" = 1 ] ; then
+            warning -a "Will not create swapfile on data volume, use --partition"
+        elif [ "$1/Volumes/Root" = "$2" ] ; then
+            warning -a "Cannot create swapfile on BTRFS volume"
+        else
+            trace -a "Creating swap file..."
+            snam='swapfile' ; [ "$1" = "$2" ] && snam='.swapfile'
+            targ="/mnt/boot/$snam"
+            embed -y centauriswap --base="$2" --target="$targ" \
+                               legacy "$1/$snam" "$CEN_OPT_FILE"
+        fi
+    elif [ -n "$CEN_OPT_PART" ] ; then
+        message -a "Creating swap partition..."
+        if [ "$DAT_NO_BOOT" != 1 ] ; then
+            system -e -p mkswap -L "${CEN_OPT_NAME}_swap" "$DAT_PART_SWAP"
+        else
+            targ="/dev/disk/by-label/${CEN_OPT_NAME}_swap"
+            embed -y centauriswap --base="$2" --target="$targ" \
+                                    swap "$DAT_PART_SWAP" "${CEN_OPT_NAME}_swap"
+        fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Installer: <mode> <arch> ...
+# ------------------------------------------------------------------------------
+do_install() {
+    local lopt="-l" fvol fboo mode="$1" ; shift
+    local labl="${DAT_PREFIX_DISK:-$CEN_OPT_NAME}_vol0"
+    folder -r -f -m -s fboo -t "${CEN_NAME}_$$_boot"
+    folder -r -f -m -s fvol -t "${CEN_NAME}_$$_vol0"
+    DAT_MOUNT_BOOT="$fboo" ; DAT_MOUNT_VOL0="$fvol"
+    local froo="$fvol"
+
+    if error -t ; then
+        system -q wipefs --all "$DAT_PART_VOL0"
+        if [ "$CEN_OPT_FSOPT" = 'btrfs' ] ; then
+            message -a "Initializing BTRFS partition..."
+            [ "$DAT_NO_BOOT" = 1 ] && labl="${labl/_vol0/_vol1}"
+            local sopt=("-xVBox" "-xBackup" "-xArchive" "-xSnapshots")
+            [ "$DAT_NO_BOOT" = 1 ] && sopt=("-iBackup" "-iArchive" "-xRoot" "-xHome" "-xSnapshots")
+            embed -z -y centaurisnapshot prep "${sopt[@]}" "$fvol" "$DAT_PART_VOL0" "$labl" "$CEN_OPT_VOLUME"
+            froo+="/Volumes/Root"
+        else
+            message -a "Initializing ${CEN_OPT_FSOPT^^} partition..."
+            [ "$CEN_OPT_FSOPT" = "vfat" ] && lopt="-n"
+            [ "$CEN_OPT_FSOPT" = "ext4" ] && lopt="-L"
+            [ "$DAT_NO_BOOT" = 1 ] && labl="${labl%_*}_vol1" || labl="${labl%_*}_root"
+            system -e -p -t -- mkfs -t "${CEN_OPT_FSOPT:-ext4}" $lopt "$labl" "$DAT_PART_VOL0"
+            system -e -p -t -- mount "$DAT_PART_VOL0" "$fvol"
+        fi
+    fi
+
+    if error -t && [ "${1:--}${2:--}${3:--}" != "---" ] ; then
+        message -a "Restoring system data ..."
+        local opts=()
+        optmake -a opts -n 'mount' -v "$fvol" ; optmake -a opts -n 'unmount' -f 1
+        if [ "$CEN_OPT_NAME" != "$DAT_SYS_NAME" ] ; then
+            optmake -a opts -n 'clone' -v "$CEN_OPT_NAME"
+            optmake -a opts -n 'clone' -v "${DAT_CLONE_BOOT:-+}"
+            optmake -a opts -n 'clone' -v "${DAT_CLONE_DISK:-+}"
+        fi
+        embed -z -y -v centaurirestore "${opts[@]}" "$@"
+    fi
+
+    if error -t ; then
+        if [ -z "$DAT_PART_EFI" ] ; then
+            do_boot "$fvol" "$froo"
+        else
+            system -e -p mount "$DAT_PART_EFI" "$fboo"
+            do_boot "$fboo" "$froo"
+        fi
+    fi
+
+    do_umount ; error -t && message -a "Done."
+}
+
+# ------------------------------------------------------------------------------
+# unmount targer: <no args>
+# ------------------------------------------------------------------------------
+do_umount() {
+    if [ -n "$DAT_MOUNT_BOOT" -o -n "$DAT_MOUNT_VOL0" ] ; then
+        system -q umount "$DAT_MOUNT_BOOT" ; system -q umount "$DAT_MOUNT_VOL0"
+        system -r -q rmdir "$DAT_MOUNT_BOOT" "$DAT_MOUNT_VOL0"
+    fi
+    DAT_MOUNT_BOOT= ; DAT_MOUNT_VOL0=
+}
+
+# ------------------------------------------------------------------------------
+# The one and only action
+# ------------------------------------------------------------------------------
+# create backup report: <input>
+run() {
+    [ "${#CEN_CMDOPTS[@]}" = 0 -a "$#" = 0 ] && main --help
+    [ -n "$CEN_OPT_FILE" -a -n "$CEN_OPT_PART" ] &&
+        quit -e "Options '--part' and '--swap' are exclusive"
+
+    if [ -n "$CEN_OPT_RASPI" ] ; then                   # raspberry /boot
+        CEN_OPT_BIOS=1 ; CEN_OPT_MSDOS=1 ; DAT_NO_BOOT=2
+        if [ "$CEN_OPT_RASPI" -lt 256 ] ; then
+            CEN_OPT_RASPI=256
+            warning -a -p "Boot partition size minimum is %s MByte" "$CEN_OPT_RASPI"
+        fi
+    fi
+
+    if [ -n "$CEN_OPT_USAGE" ] ; then
+        [ "$CEN_OPT_USAGE" -lt 1 -o "$CEN_OPT_USAGE" -gt 100 ] &&
+            quit -e "Option '--usage' value must be in range 1..100"
+        [ "$CEN_OPT_USAGE" = 100 ] && CEN_OPT_USAGE=
+    fi
+
+    local args=() bfil bdir rena
+    [ -z "$CEN_OPT_DEVICE" ] && quit -e "Missing '--device' option"
+    blkdevice -d -e -- "$CEN_OPT_DEVICE" || return
+    CEN_OPT_DEVICE="$CEN_BLKDEVICE"
+
+    [ -z "$CEN_OPT_FSOPT" ] && CEN_OPT_FSOPT='btrfs'
+
+    # check backup files, get name
+    for bfil in "$@" ; do
+        args+=("$bfil")
+        [ "${bfil:--}" = '-' -o "$bfil" = "+" ] && continue
+        [ -r "$bfil" ] || error "Cannot read: $bfil"
+        if [ -z "$DAT_SYS_NAME" ] ; then
+            bdir="${bfil%/*}" ; [ "$bdir" = "$bfil" ] && bdir="."
+            bfil="${bfil##*/}"
+            DAT_ARCH_BOOT="$bdir/${bfil/_*_/_boot_}"
+            DAT_SYS_NAME="${bfil%%_*}"
+        fi
+    done
+
+    if [ "$1$2$3" = '-' ] ; then
+        message -a "Creating a non-bootable data volume"
+        DAT_NO_BOOT=1
+        [ -z "$CEN_OPT_VOLUME" ] && CEN_OPT_VOLUME='-'
+    else
+        [ "${1:--}${2:--}${3:--}" = "---" ] && warning -a "No system restore data"
+
+        [ -n "$4" -a "$4" != "+" ] && DAT_ARCH_BOOT="$4"
+        [ "$4" = '-' ] && DAT_ARCH_BOOT=
+        if [ -z "$DAT_ARCH_BOOT" ] ; then
+            [ -z "$CEN_OPT_BIOS" ] && warning -a "No EFI restore data"
+            [ -n "$CEN_OPT_RASPI" ] && warning -a "No RASPBERRY boot data"
+        elif [ "${4:--}" != '-' ] ; then
+            [ -n "$CEN_OPT_BIOS" ] && error "EFI restore data with '--bios'"
+        else
+            [ -n "$CEN_OPT_BIOS" -a -z "$CEN_OPT_RASPI" ] && DAT_ARCH_BOOT=
+        fi
+        [ -n "$DAT_ARCH_BOOT" -a ! -r "$DAT_ARCH_BOOT" ] && error "Cannot read:" "$DAT_ARCH_BOOT"
+    fi
+
+    error -q ; context -r -t +
+    DAT_HOOK_QUIT="$CEN_HOOK_QUIT" ; CEN_HOOK_QUIT="hook_quit"
+
+    # get name
+    [ -z "$CEN_OPT_NAME" ] && CEN_OPT_NAME="$DAT_SYS_NAME"
+    [ -z "$CEN_OPT_NAME" ] && error "No system name (need '--name' option)"
+    error -t || return
+
+    if [ "$CEN_OPT_NAME" = "$HOSTNAME" ] ; then
+        warning -a "Destination name equal to hostname (consider using '--name')"
+        if confirm -a -q "Do you want to continue using random disk labels" ; then
+            do_prefix
+            DAT_CLONE_BOOT="$DAT_PREFIX"
+            DAT_CLONE_DISK="$DAT_PREFIX"
+            DAT_PREFIX_DISK="$DAT_PREFIX"
+            rena=" (using label prefix '$DAT_PREFIX')"
+        fi
+    elif [ "$CEN_OPT_NAME" != "$DAT_SYS_NAME" ] ; then
+        rena=" (renamed from '$DAT_SYS_NAME')"
+    fi
+
+    # make partitions and call installer
+    local styp="EFI" spar="GPT"
+    [ -n "$CEN_OPT_MSDOS" ] && spar="MSDOS"
+    [ -n "$CEN_OPT_BIOS"  ] && styp='BIOS'
+    [ -n "$DAT_NO_BOOT"   ] && styp=
+    [ -n "$CEN_OPT_RASPI" ] && styp="RASPBERRY"
+
+    confirm -a "Create ${styp:--}/$spar partitions on '$CEN_OPT_DEVICE'" || quit -t
+    do_partition "$spar" "$styp"
+    error -t || return
+
+    [ -n "$DAT_SYS_NAME" ] &&
+         message -a "Installing '$CEN_OPT_NAME'$rena to '$CEN_OPT_DEVICE' (type=$styp)"
+    do_install "$styp" "${@:1:3}"
+    CEN_HOOK_QUIT="$DAT_HOOK_QUIT"
+}
+
+# capture quit to unmount device
+hook_quit() {
+    do_umount ; $DAT_HOOK_QUIT "$@"
+}
+
+# ------------------------------------------------------------------------------
+# option parsing
+# ------------------------------------------------------------------------------
+options() {
+
+    case "$1" in
+
+    -0|--vfa|--vfat)
+        optarg "vfat"   CEN_OPT_FSOPT -f "vfat" ;;
+    -2|--fs2*)
+        optarg "fs2fs"  CEN_OPT_FSOPT -f "f2fs" ;;
+    -4|--ext|--ext4)
+        optarg "ext4"   CEN_OPT_FSOPT -f "ext4" ;;
+    -B|--bio|--bios)
+        optarg "bios"   -                  ;;   # simple flag
+    -D|--dev*)
+        optarg "device" -              -t  ;;   # text
+    -M|--mbr|--dos|--msdos)
+        optarg "msdos"  -                  ;;
+    -N|--nam|--name)
+        optarg "name"   -              -t  ;;   # text
+    -P|--par*)
+        optarg "part"   -              -n  ;;   # number
+    -R|--ras*)
+        optarg "raspi"  -              -n  ;;   # number
+    -S|--swa|--swap)
+        optarg "swap"   CEN_OPT_FILE   -n  ;;   # number
+    -U|--usa*)
+        optarg "usage"  -              -n  ;;   # number
+    -V|--vol*)
+        optarg "volume" -              -t  ;;   # text
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -0 --vfat            create vfat filesysterm (special purpose only)
+       -2 --fs2fs           create fs2fs filesystem (default is btrfs)
+       -4 --ext4            create ext4 filesystem  (default is btrfs)
+       -B --bios            non-EFI configuration
+       -D --device  <disk>  disk to be initialized
+       -M --msdos           MSDOS (MBR) partion table
+       -N --name    <name>  change system name
+       -P --part    <gbyt>  create swap partition
+       -R --raspi   <mbyt>  create BIOS/raspiberry boot partition
+       -S --swap    <mbyt>  create swap file in boot partition
+       -U --usage   <perc>  max disk usage percent  (default is 100%)
+       -V --volume  <volu>  set default volume      (btrfs only)
+
+examples:
+       $CEN_NAME -D sdx -P8 -Nmyname root.tgz      # efi btrfs restore rename
+       $CEN_NAME -D/dev/sdx -                      # create date volume
+
+       $CEN_NAME -D/dev/sdx -S0 -Vshared root.tgz  # efi, btrfs, restore
+       $CEN_NAME -D/dev/sdx -P8 -M - - - boot.tgz  # efi, btrfs, swap, boot
+       $CEN_NAME -D/dev/sdx -B -M -4 root.tgz      # non-efi, ext4, restore
+       $CEN_NAME -D/dev/xxx -R 320 -4 -P2 root.tgz # raspiberry restore
+
+Up to 4 archives are passed as arguments: <root> <usr> <home> <boot>. The first
+3 args are optional and can be replaced by - or + as placeholders. The fourth
+arg is restored to the efi partition. All args are handled by centaurirestore.
+
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

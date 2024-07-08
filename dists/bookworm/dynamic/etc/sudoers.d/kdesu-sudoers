@@ -1,0 +1,4 @@
+# Workaround for KDE bug https://bugs.kde.org/452532
+# To be installed with permissions root:root 440 in /etc/sudoeors.d/
+
+Defaults!/usr/lib/*/libexec/kf5/kdesu_stub !use_pty

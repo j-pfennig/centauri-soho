@@ -1,0 +1,6 @@
+status=on
+target=/usr/sbin/sshd
+divert() {
+    [ -d /run/sshd ] || mkdir /run/sshd
+    exec /usr/sbin/sshd.distrib "$@"
+}

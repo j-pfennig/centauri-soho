@@ -1,0 +1,30 @@
+# ---------------------------------------------------------------------------------------
+# /etc/udev/rules.d/99-centauriroute.rules
+#
+# Keep modem mager away from some modems or phones. See the documentation in:
+#   /etc/udev/rules.d/01-centauriroute.rules
+# ---------------------------------------------------------------------------------------
+
+# HUAWAI modem
+# ---------------------------------------------------------------------------------------
+ATTRS{idVendor}=="12d1", ATTRS{idProduct}=="1001", GOTO="usb_modem_match" 
+
+# Android Phones
+# ---------------------------------------------------------------------------------------
+ENV{PRODUCT}=="fce/?1da/*",  GOTO="usb_modem_match"
+ENV{PRODUCT}=="fce/?1f9/*",  GOTO="usb_modem_match"
+ENV{PRODUCT}=="22b8/2e2?/*", GOTO="usb_modem_match"
+ENV{PRODUCT}=="4e8/686?/*",  GOTO="usb_modem_match"
+ENV{PRODUCT}=="18d1/4ee?/*", GOTO="usb_modem_match"
+ENV{PRODUCT}=="18d1/4ee?/*", GOTO="usb_modem_match"
+
+# end tethering phones
+GOTO="usb_modem_next"
+
+# modem-manager should ignore this device
+# ---------------------------------------------------------------------------------------
+LABEL="usb_modem_match"
+ENV{ID_MM_DEVICE_IGNORE}="1"
+ENV{ID_MM_CANDIDATE}=""
+
+LABEL="usb_modem_next"

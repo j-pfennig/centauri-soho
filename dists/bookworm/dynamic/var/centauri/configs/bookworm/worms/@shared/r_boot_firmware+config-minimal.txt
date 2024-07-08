@@ -1,0 +1,36 @@
+# Minimal firmware/kernel hardware support (for low memory)
+# see config-default.txt for comments on parameters
+
+# These are essential settings, do not disable ...
+
+auto_initramfs=1
+disable_fw_kms_setup=1
+arm_64bit=1
+arm_boost=1
+
+# Model specific settings ...
+
+[cm4]
+otg_mode=1
+[pi0]
+gpu_mem=16
+[pi3]
+gpu_mem=64
+[all]
+
+# Features that can be turned off ...
+
+#dtparam=i2c_arm=on
+#dtparam=i2s=on
+#dtparam=spi=on
+#dtparam=audio=on
+#camera_auto_detect=1
+#display_auto_detect=1
+#dtoverlay=vc4-kms-v3d
+#max_framebuffers=2
+#disable_overscan=1
+
+disable-splash=1
+dtoverlay=disable-bt
+#dtoverlay=disable-wlan
+

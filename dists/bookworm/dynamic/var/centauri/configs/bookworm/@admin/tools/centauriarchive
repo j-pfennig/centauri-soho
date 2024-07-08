@@ -1,0 +1,967 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2015-2023; BSD License"
+CEN_TITLE="Tool to manage sets of backup files grouped by tags"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -f -m bat -i -y - "0.39:2" || exit 2
+
+# data definitions
+CEN_OPT_DRYRUN=         # see --dryrun
+CEN_OPT_EXEC=           # see --exec
+CEN_OPT_FOLDER=         # see --folder
+CEN_OPT_HOST=
+CEN_OUT_OUTPUT=         # see --output
+CEN_OPT_LOCAL=          # see --local
+CEN_OPT_SILENT=         # see --silent
+CEN_OPT_WRITE=          # see --write
+
+CEN_OPT_NOT=            # see --not
+CEN_OPT_COND=           # see --cond
+CEN_OPT_MONTHS=         # see --months
+CEN_OPT_PARITY=         # see --parity
+CEN_OPT_REVERSE=        # see --reverse
+CEN_OPT_SIZE=           # see --size
+CEN_OPT_TAG=()          # see --tag
+CEN_OPT_LEVEL=0         # see --level
+
+APP_TAG_MINCNT=         # used in filter_tags
+APP_TAG_EXTRA=
+
+APP_GROUP_LIST=         # set by check_filter
+APP_GROUP_FRST=
+APP_GROUP_LAST=
+
+APP_CURR_FOLDER=        # used by "show"
+APP_CURR_HOST=
+
+APP_SIZE_ARG=           # arg for "du" utility, see --size
+
+APP_REDU_BEST=          # used by filter_reduce
+APP_REDU_GROUP=
+
+
+APP_DIR_DELETED=
+APP_OUT_ARCHIVE=        # set in check_output
+APP_OUT_ROOT=           # ...
+APP_OUT_NAME=           # ...
+
+CEN_OPT_MINAGE=         # see --minage
+CEN_OPT_MAXAGE=         # see --maxage
+
+APP_DAT_VALAGE="[0-9]+|[12][0-9][0-9][0-9]-[012][0-9]-[0-3][0-9]"
+
+# ------------------------------------------------------------------------------
+# Helper functions
+# ------------------------------------------------------------------------------
+
+# get index output path: <host|id> [<root>]
+check_output() {
+    if [ "${1:--}" = "-" ] ; then
+        error "Empty <host> or <id> not allowed"
+        return 1
+    fi
+    APP_OUT_NAME="$1"
+    APP_OUT_ROOT="$2"
+
+    local path="${CEN_OPT_OUTPUT:-archived}"
+    embed -s path centauripaths --logical --error "$path" || return 1
+    path+="/$1"
+    trace "Index output: $path"
+    if [ -s "$path" ] ; then
+        confirm -a -q -y "Replace existing index '$path'" || return 1
+    fi
+    APP_OUT_ARCHIVE="$path"
+    return 0
+}
+
+# get a default server name
+check_server() {
+    [ -n "$CEN_OPT_HOST" ] && return
+
+    # Get the default server name
+    embed -s CEN_OPT_HOST centauriname
+    [ -n "$CEN_OPT_HOST" ] ||
+        fatal "No known server. Please use --host <server>"
+}
+
+# convert min/max age: <name>
+convert_age() {
+    declare -n nvar="$1"
+    local pack="${nvar//-/}"
+    if [ "$pack" = "$nvar" ] ; then
+        system -s nvar -f -p -- date --date "$nvar days ago"  +%Y%m%d
+    else
+        nvar="$pack"
+    fi
+    #trace -i "$1 -> $nvar"
+}
+
+# ------------------------------------------------------------------------------
+# find folder:   [-c|-d] <var> <args_to_message> ...
+# ------------------------------------------------------------------------------
+# find folder by path (start with ./|/)  -or-  logical name
+#
+# Options:      -c      change to folder
+#               -d      deleted folder
+# ------------------------------------------------------------------------------
+find_folder() {
+    local fchg fdel
+    case "$1" in
+    -c)  shift ; fchg="-c" ;;
+    -d)  shift ; fdel=1 ;;
+    esac
+    local -n vref="$1" ; shift
+    local path="$vref"
+
+    if [ -n "$fdel" ] ; then
+        embed -s path centauripaths --deleted --error . || return 1
+    else
+        case "$path" in
+        /*|./*)     folder $fchg "$path" || return 1    ;;
+        .|"")       path="$PWD" ;;
+        *)          embed -s path centauripaths --logical --error "$path" || return 1
+                    folder $fchg -f "$path"
+        esac
+    fi
+    vref="$path"
+    [ $# -gt 0 -a -z "$CEN_OPT_DRYRUN" -a -z "$CEN_OPT_SILENT" ] && message "$@" "$path"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# check if arg is a number: <value> <argnum> <variable>
+# ------------------------------------------------------------------------------
+check_number() {
+    [ -z "$1" ] && return 0
+    if [ -z "${1//[0-9]/}" ] ; then
+        declare -n vref="$3" ; vref="$1"
+        return 0
+    fi
+    error "Argument #$2 is not a number: $1"
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# check filter list
+# ------------------------------------------------------------------------------
+check_filter() {
+    APP_GROUP_FRST= ; APP_GROUP_LAST=
+
+    # range specification
+    local marg
+    case "$1 $2 $3" in
+    [0-9]*\ ..\ *[0-9]*) marg=3
+                         check_number "$1" 1 APP_GROUP_FRST
+                         check_number "$3" 3 APP_GROUP_LAST ;;
+    [0-9]*\ ..\ *)       marg=2
+                         check_number "$1" 1 APP_GROUP_FRST ;;
+    ..\ [0-9]*)          marg=2
+                         check_number "$2" 2 APP_GROUP_LAST ;;
+    esac
+    if [ -n "$marg" ] ; then
+        [ "$marg" != $# ] && error "Wrong argument count ($marg expected)"
+        error -t || return 1
+        APP_GROUP_LIST= ; return 0
+    fi
+
+    # list specification
+    local slis stat=0
+    APP_GROUP_LIST=("$@")
+    for slis in ${APP_GROUP_LIST[*]} ; do
+        [ "${slis//[0-9]/}" = "" ] && continue
+        error "List items must be numeric or '..': $slis"
+        stat=1
+    done
+    return "$stat"
+}
+
+# ------------------------------------------------------------------------------
+# filter by sequence number: <sequence> <groupidx>
+# ------------------------------------------------------------------------------
+filter_sequence() {
+    # by list
+    if [ -n "$APP_GROUP_LIST" ] ; then
+        local slis=
+        for slis in ${APP_GROUP_LIST[*]} ; do
+            [ "$1" = "$slis" ] && return "$_df_ok"
+        done
+        return "$_df_bad"
+    fi
+
+    # 1st/last per group
+    local isok=0
+    if [ -n "$APP_GROUP_FRST" ] ; then
+        [ "$2" -lt "$APP_GROUP_FRST" ] && return "$_df_bad"
+        isok="$_df_ok"
+    fi
+    if [ -n "$APP_GROUP_LAST" ] ; then
+        [ "$2" -gt "$APP_GROUP_LAST" ] && return "$_df_bad"
+        isok="$_df_ok"
+    fi
+    return "$isok"
+}
+
+# ------------------------------------------------------------------------------
+# filter by date: <year> <month> <day>
+# ------------------------------------------------------------------------------
+filter_date() {
+    if [ -n "$CEN_OPT_MAXAGE" ] ; then
+        [ "$1${2:-12}${3:-31}" -lt "$CEN_OPT_MAXAGE" ] && return 1
+    fi
+    if [ -n "$CEN_OPT_MINAGE" ] ; then
+        [ "$1${2:-1}${3:-1}" -gt "$CEN_OPT_MINAGE" ] && return 1
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# filter by odd/even: <month>
+# ------------------------------------------------------------------------------
+filter_parity() {
+    [ -n "$CEN_OPT_COND" ] && return 0          # not used as condition
+
+    local isok=0
+    if [ "$CEN_OPT_PARITY" = "odd" ] ; then
+        case "$1" in
+            02|04|06|08|10|12)   return "$_df_bad" ;;
+        esac
+        isok="$_df_ok"
+    elif [ "$CEN_OPT_PARITY" = "even" ] ; then
+        case "$1" in
+            01|03|05|07|09|11)   return "$_df_bad" ;;
+        esac
+        isok="$_df_ok"
+    fi
+    return "$isok"
+}
+
+# ------------------------------------------------------------------------------
+# filter to reduce density:  <tags> <year> <month> <day> ...
+#
+# Return values:
+#       0  : call worker on current data
+#       1  : call worker on saved data and save data
+#       2  : save data
+#       3  : do nothing
+# ------------------------------------------------------------------------------
+filter_reduce() {
+    local tags="$1" year="$2" month="${3:-1}" week=4 day="$4"
+    month="${month#0}"
+
+    # check --parity: <val>
+    ____parity() {
+        if [ "$CEN_OPT_PARITY" = "even" ] ; then
+            [ "$(($1 & 1))" = 1 ] && return 1
+        elif [ "$CEN_OPT_PARITY" = "odd" ] ; then
+            [ "$(($1 & 1))" = 0 ] && return 1
+        fi
+        return 0
+    }
+
+    ____week() {
+        if   [ "${day:-0}" -le  8 ] ; then   week=1
+        elif [ "${day:-0}" -le 16 ] ; then   week=2
+        elif [ "${day:-0}" -le 24 ] ; then   week=3
+        fi
+        [ "$APP_REDU_GROUP" = "$year.$month.$week.$tags" ] && return 3
+        APP_REDU_GROUP="$year.$month.$week.$tags"
+        return 1
+    }
+
+    ____month() {
+        [ "$APP_REDU_GROUP" = "$year.$month.$tags" ] && return 3
+        APP_REDU_GROUP="$year.$month.$tags"
+        return 1
+    }
+
+    ____quart() {
+        local quar=$(((month - 1) / 3))
+        if [ "$APP_REDU_GROUP" = "$year.$quar.$tags" ] ; then
+            [ "$APP_REDU_BEST" = "0" ] && return 3      # 3 do nothing
+            ____parity "$month" || return 3             # 3 do nothing
+            APP_REDU_BEST="0" ; return 2                # 2 save data
+        fi
+
+        # new group
+        APP_REDU_GROUP="$year.$quar.$tags"
+        ____parity "$month"
+        APP_REDU_BEST="$?"
+        return 1
+    }
+
+    ____half() {
+        local half=$(((month - 1) / 6))
+        if [ "$APP_REDU_GROUP" = "$year.$half.$tags" ] ; then
+            [ "$APP_REDU_BEST" = "0" ] && return 3      # 3 do nothing
+            ____parity "$month" || return 3             # 3 do nothing
+            APP_REDU_BEST="0" ; return 2                # 2 save data
+        fi
+
+        # new group
+        APP_REDU_GROUP="$year.$half.$tags"
+        ____parity "$month"
+        APP_REDU_BEST="$?"
+        return 1
+    }
+
+    ____year() {
+        if [ "$APP_REDU_GROUP" = "$year.$tags" ] ; then
+            [ "$APP_REDU_BEST" = "0" ] && return 3      # 3 do nothing
+            ____parity "$month" || return 3             # 3 do nothing
+            APP_REDU_BEST="0" ; return 2                # 2 save data
+        fi
+
+        # new group
+        APP_REDU_GROUP="$year.$tags"
+        ____parity "$month"
+        APP_REDU_BEST="$?"
+        return 1                                # 1 flush saved data and save data
+    }
+
+    case "$CEN_OPT_COND" in
+    wee*)       ____week  ; return $? ;;
+    mon*)       ____month ; return $? ;;
+    qua*)       ____quart ; return $? ;;
+    hal*)       ____half  ; return $? ;;
+    yea*)       ____year  ; return $? ;;
+    esac
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# filter by tags: <tag>
+# ------------------------------------------------------------------------------
+filter_tags() {
+    [ -z "$CEN_OPT_TAG" ] && return 0                   # not used
+    local tcnt=0
+
+    ____tagcnt() {
+        local ctag
+        for ctag in "${CEN_OPT_TAG[@]}" ; do
+            [ "$1" != "$ctag" ] && continue
+            tcnt=$((tcnt + 1)) ; return 0               # tag ok
+        done
+        [ -n "$APP_TAG_EXTRA" ]                         # ok, ignore extra
+    }
+
+    while [ -n "$1" ] ; do
+        ____tagcnt "$1" || return 1
+        shift ; shift
+    done
+    [ "$tcnt" =   "$APP_TAG_MINCNT" ]                   # return status
+}
+
+# ------------------------------------------------------------------------------
+# Workers
+# ------------------------------------------------------------------------------
+
+# helper for printf: <frmt> <dest> <file>...
+printf_helper() {
+    local frmt="$1" dest="$2" file ; shift 2
+    for file in "$@" ; do
+        printf "${frmt}\n" "$file" "$dest"
+    done
+ }
+
+# run a system command: <cmd> <dest> <file>...
+system_command() {
+    local outp vopt xcmd="$1" dest="$2" ; shift 2
+    [ "$CEN_VERB" -gt 1 ] && vopt="-v"
+    if system -e -s outp -q -- $xcmd $vopt "$@" "$dest" ; then
+        [ -z "$CEN_OPT_WRITE" ] ||
+            printf_helper "$CEN_OPT_WRITE" "$dest" "$@"
+        return 0
+    fi
+    message -i -n "$outp"
+    return 1
+}
+
+copy_move_link() {
+    local fdry file xcmd="error" list=()
+    if [ "$1" = "-d" ] ; then
+        shift ; fdry=1
+    fi
+
+    for file in "$@" ; do
+        if [ -z "$CEN_OPT_FORCE" -a -e "$CEN_OPT_OUTPUT/${file##*/}" ] ; then
+            trace -i "# skip existing file:   $CEN_OPT_OUTPUT/${file##*/}"
+        else
+            list+=("$file")
+        fi
+    done
+    [ -z "$list" ] && return
+
+    case "$CEN_ACTION" in
+    copy)       xcmd="cp -p" ;;
+    move)       xcmd="mv" ;;
+    link)       xcmd="ln" ;;
+    esac
+    [ -n "$CEN_OPT_FORCE" ] && xcmd+=" -f"
+
+    if [ -n "$fdry" ] ; then
+        printf_helper "$xcmd %-60s %s" "$CEN_OPT_OUTPUT" "${list[@]}"
+    else
+        if [ "${#list[@]}" = 1 ] ; then
+            confirm -a -q -n "${CEN_ACTION^} file: $list" || return
+        else
+            confirm -a -q -n "${CEN_ACTION^} ${#list[@]} files(s)" || return
+        fi
+        system_command "$xcmd" "$CEN_OPT_OUTPUT" "${list[@]}"
+    fi
+}
+
+run_copy() {
+    [ -n "$3" ] && trace -i
+    shift 4
+    copy_move_link "$@"
+}
+
+run_delete() {
+    [ -n "$3" ] && trace -i
+    confirm -a -q -n "Delete: #$1 $4" || return
+    shift 4
+    if [ -n "$APP_DIR_DELETED" ] ; then
+        system_command "mv -f" "$APP_DIR_DELETED" "$@"
+    else
+        system_command "rm" "--" "$@"
+    fi
+}
+
+run_link() {
+    [ -n "$3" ] && trace -i
+    shift 4
+    copy_move_link "$@"
+}
+
+run_move() {
+    [ -n "$3" ] && trace -i
+    shift 4
+    copy_move_link "$@"
+}
+
+run_list() {
+    [ -n "$1" ] && echo
+    local file slis indx=0 ; shift
+    if [ -n "$APP_SIZE_ARG" ] ; then
+        system -e -p -a slis du -D -s $APP_SIZE_ARG "$@" || return
+    fi
+    for file in "$@" ; do
+        if [ -z "$APP_OUT_ROOT" ] ; then
+            splitjoin -j file "$APP_OUT_NAME" "${file%/*}" "${file##*/}" "${slis[$indx]}"
+        else
+            splitjoin -j file "$APP_OUT_NAME" "$APP_OUT_ROOT" "${file##*/}" "${slis[$indx]}"
+        fi
+        echo "$file"
+        ((indx += 2))
+    done
+}
+
+run_show() {
+    local fldr="${5%/*}"
+    if [ "$fldr" != "$APP_CURR_FOLDER" ] ; then
+        message -i -m '' "Folder: $fldr" ''
+        APP_CURR_FOLDER="$fldr"
+    elif [ -n "$3" ] ; then
+        message -i
+    fi
+
+    if [ -n "$APP_SIZE_ARG" ] ; then
+        local slis
+        system  -e -p -a slis -- du -D -c $APP_SIZE_ARG "${@:5}" || return
+        message -i -p "%-3s %5s  %s\n" "#$1" "${slis[-2]}" "$4"
+    else
+        message -i -p "%-4s %-4s %s\n" "#$1" "[$2]" "$4"
+    fi
+}
+
+run_upload() {
+    [ -n "$3" ] && trace -i
+    confirm -a -q -n "Upload: #$1 $4" || return
+    shift 4
+    [ -h ~/.ssh -a ! -e ~/.ssh/id_rsa ] && embed centauriencfs -q mount -
+    system -e scp -p "$@" "$CEN_OPT_HOST:$CEN_OPT_OUTPUT"
+}
+
+run_exec() {
+    [ -n "$3" ] && trace -i
+    if [ -n "$CEN_OPT_EXEC" ] ; then
+        confirm -a -q -n "${CEN_OPT_WRITE:-Execute}: $4" || return
+    fi
+    local outp file ; shift 4
+    for file in "$@" ; do
+        if [ -n "$CEN_OPT_EXEC" ] ; then
+            system -e -s outp -q -- $CEN_OPT_EXEC "$file" $CEN_OPT_OUTPUT
+            message -i -m "$outp"
+        else
+            echo "$file" $CEN_OPT_OUTPUT
+        fi
+    done
+}
+
+dry_copy() {
+    [ -n "$3" ] && message -i
+    shift 4
+    copy_move_link -d "$@"
+}
+
+dry_delete() {
+    [ -n "$3" ] && message -i
+    shift 4
+    if [ -n "$APP_DIR_DELETED" ] ; then
+        printf_helper "mv -f %-60s %s" "$APP_DIR_DELETED" "$@"
+    else
+        printf_helper "rm %s%.0s" - "$@"
+    fi
+}
+
+dry_link() {
+    [ -n "$3" ] && message -i
+    shift 4
+    copy_move_link -d "$@"
+}
+
+dry_move() {
+    [ -n "$3" ] && message -i
+    shift 4
+    copy_move_link -d "$@"
+}
+
+dry_upload() {
+    [ -n "$3" ] && message -i
+    shift 4
+    printf_helper "scp -p %-60s %s" "$CEN_OPT_HOST:$CEN_OPT_OUTPUT" "$@"
+}
+
+dry_exec() {
+    [ -n "$3" ] && message -i
+    shift 4
+    printf_helper "${CEN_OPT_EXEC:-echo} %-60s %s" "$CEN_OPT_OUTPUT" "$@"
+}
+
+# <sequ> <sgrp> <year> <month> <day> <ext> [<tag> <file>]...
+call_worker() {
+    [ "$#" -le 7 ] && return
+    local sequ="$1" sgrp="$2" host="$3" year="$4" month="$5" day="$6" ; ext="$7"
+    shift 7
+    local newl
+    [ "$sgrp" = "1" -o "$host" != "$APP_CURR_HOST" ] && newl=1
+    APP_CURR_HOST="$host"
+
+    # save arguments for run_xxxx
+    local ltag=() lfil=() disp date
+    while [ -n "$1" ] ; do
+        ltag+=("$1") ; shift
+        lfil+=("$1") ; shift
+    done
+
+    if [ -n "${ltag[1]}" ] ; then
+        disp="_{${ltag[*]}}" ; disp="${disp// /|}"
+    elif [ "$ltag" = "-" ] ; then
+        disp=
+    else
+        disp="_$ltag"
+    fi
+
+    date="${year}"
+    [ "${month}" != "-" ] && date+="-${month}"
+    [ "${day}"   != "-" ] && date+="-${day}"
+
+    # call run_xxx worker ...
+    if [ "$CEN_ACTION" = "list" ] ; then
+        run_$CEN_ACTION "$newl" "${lfil[@]}"
+    elif [ -n "$CEN_OPT_DRYRUN" -a  "$CEN_ACTION" != "show" ] ; then
+        dry_$CEN_ACTION "$sequ" "$sgrp" "$newl" \
+                        "${host}${disp}_${date}.$ext" "${lfil[@]}"
+    else
+        run_$CEN_ACTION "$sequ" "$sgrp" "$newl" \
+                        "${host}${disp}_${date}.$ext" "${lfil[@]}"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# create a backup listing
+# ------------------------------------------------------------------------------
+create_list() {
+    APP_CURR_HOST=                      # for call_worker
+    APP_REDU_GROUP=                     # for filter_reduce
+    APP_TAG_MINCNT=0                    # used in filter_tags
+    APP_TAG_EXTRA=
+
+    # use qualified names to make sure that vars are visible in ____file:
+    local _df_sequ=0                    # running sequence of backup sets
+    local _df_ngrp=0                    # running number of group
+    local _df_sgrp=0                    # sequence of set in current group
+    local _df_chg=0                     # from _centauri_bash_bak
+    local _df_this _df_chos _df_curr _df_list
+
+    local _df_gfil=() _df_ginf=() _df_save=() _df_pend=() _df_ok=0 _df_bad=1
+    if [ -n "$CEN_OPT_NOT" ] ; then
+        _df_ok=1 ; _df_bad=0
+    fi
+
+    # per-group callback
+    ____group() {
+        [ -z "$_df_ginf" ] && return 0                  # no current group
+
+        # filter sequence# against argument list
+        _df_sequ=$((_df_sequ + 1)) ; _df_sgrp=$((_df_sgrp + 1))
+        filter_sequence "$_df_sequ" "$_df_sgrp" || return 0
+
+        # filter by date min/max and odd/even
+        local host="${_df_ginf[0]}" year="${_df_ginf[1]}"
+        local month="${_df_ginf[2]}" day="${_df_ginf[3]}"
+        filter_date "$year" "$month" "$day" || return 0
+        filter_parity       "$month"        || return 0
+        filter_tags "${_df_ginf[@]:5}"      || return 0
+        filter_reduce "$_df_ngrp" "$year" "$month" "$day"
+        # 0  : call worker on current data
+        # 1  : next     call worker on saved data and save data
+        # 2  : replace  save data
+        # 3  : ignore   do nothing
+
+        case "$?${CEN_OPT_NOT:+-}" in
+        0*)
+            call_worker "$_df_sequ" "$_df_sgrp" "${_df_ginf[@]}" ;;
+        1)
+            call_worker "${_df_save[@]}"
+            _df_save=("$_df_sequ" "$_df_sgrp" "${_df_ginf[@]}") ;;
+        2)
+            _df_save=("$_df_sequ" "$_df_sgrp" "${_df_ginf[@]}") ;;
+
+        1-) call_worker "${_df_save[@]}"
+            _df_save=()
+            _df_pend=("$_df_sequ" "$_df_sgrp" "${_df_ginf[@]}")
+            ;;
+        2-) call_worker "${_df_save[@]}"
+            _df_save=()
+            call_worker "${_df_pend[@]}"
+            _df_pend=("$_df_sequ" "$_df_sgrp" "${_df_ginf[@]}")
+            ;;
+        3-)
+            call_worker "${_df_save[@]}"
+            _df_save=("$_df_sequ" "$_df_sgrp" "${_df_ginf[@]}") ;;
+        esac
+        error -t                                # return status
+    }
+
+    # per-file callback, place files into groups, call ____group for each group
+    ____file() {
+        local file="$1" host="$2" ftag="$3" year="$4" month="$5" day="$6" ext="$7"
+        _df_chg="$9"    # 4    # extension changed
+                        # 3    # date changed
+                        # 2    # host changed
+                        # 1    # folder changed
+        if [ "$_df_chg" -gt 0 -a "$_df_chg" -lt 4 ] ; then      # group changed
+            ____group || return 2
+            _df_ginf=("$host" "$year" "$month" "$day" "$ext")
+            if [ "$_df_chg" -lt 3 ] ; then      # new group
+                _df_ngrp=$((_df_ngrp + 1))
+                _df_sgrp=0                      # restart set count
+                APP_REDU_GROUP=                 # new group in filter_reduce
+            fi
+        fi
+        _df_ginf+=("$ftag" "$file")
+        return 1                                # do not add to CEN_BAK_FIND[]
+    }
+
+    # implement --size option
+    case "$CEN_OPT_SIZE" in
+    "")      APP_SIZE_ARG= ;;
+    h|H)     APP_SIZE_ARG="-h" ;;
+    b|B)     APP_SIZE_ARG="--block-size=1" ;;
+    *)       APP_SIZE_ARG="--block-size=$CEN_OPT_SIZE"
+    esac
+
+    # implement --tag option
+    local ctag
+    for ctag in "${CEN_OPT_TAG[@]}" ; do
+        if [ "$ctag" = "+" ] ; then
+            APP_TAG_EXTRA=1
+        else
+            APP_TAG_MINCNT=$((APP_TAG_MINCNT + 1))
+        fi
+    done
+
+    # find files, use very relaxed filter pattern
+    if [ -n "$CEN_OPT_LOCAL" ] ; then
+        backup -t "$CEN_OPT_LEVEL" -i $CEN_OPT_REVERSE -f ____file "$CEN_OPT_LOCAL"
+    else
+        backup -t "$CEN_OPT_LEVEL" -i $CEN_OPT_REVERSE -f ____file "" -
+    fi
+
+    # process the final set of files
+    _df_chg=0
+    ____group
+    call_worker "${_df_save[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# Action "run" - listings and operations on backups
+# ------------------------------------------------------------------------------
+actionRun()
+{
+    check_filter "$@" || return
+
+    find_folder -c CEN_OPT_FOLDER "Using backup folder:" || return
+    APP_CURR_FOLDER="$CEN_OPT_FOLDER"
+
+    case "$CEN_ACTION" in
+    delete)
+        if [ "$CEN_OPT_OUTPUT" = "-" ] ; then
+            APP_DIR_DELETED=
+        elif [ -n "$CEN_OPT_OUTPUT" ] ; then
+            APP_DIR_DELETED="$CEN_OPT_OUTPUT"
+            find_folder APP_DIR_DELETED -i "Using delete folder:" || return
+        else
+            find_folder -d APP_DIR_DELETED -i "Using delete folder:" || return
+        fi
+        [ "$APP_DIR_DELETED" -ef "." ] && fatal "Delete and Backup folder are equal"
+        ;;
+    copy|link|move)
+        [ -z "$CEN_OPT_OUTPUT" ] && quit -e "No path, use '--output=xxx'"
+        find_folder CEN_OPT_OUTPUT -i "Using output folder:" || return
+        ;;
+    upload)
+        check_server
+        local fdes="${CEN_OPT_OUTPUT:-$CEN_OPT_FOLDER}"
+        local farr
+        splitpath -a farr -p -- "$fdes"             # get base and folder
+        farr="/root/${farr[0]##*/}/${farr[1]}"      # simple path
+        if [ "$fdes" -ef "$farr" ] ; then           # use simple path
+            CEN_OPT_OUTPUT="$farr"
+        else
+            embed -s CEN_OPT_OUTPUT -- centauripaths --logical "$fdes"
+            [ -z "$CEN_OPT_OUTPUT" ] && CEN_OPT_OUTPUT="$fdes"
+        fi
+        [ -z "$CEN_OPT_DRYRUN" -a -u "$CEN_OPT_SILENT" ] &&
+            message -i "Upload destination : $CEN_OPT_HOST:$CEN_OPT_OUTPUT"
+        ;;
+    exec|show|list)
+        ;;
+    *)
+        fatal "no implemented: $CEN_ACTION"
+    esac
+
+    # do the real work
+    APP_OUT_NAME="${CEN_OPT_HOST:-$HOSTNAME}"
+    create_list
+}
+
+# ------------------------------------------------------------------------------
+# Action "drive" - create index of a (removable) drive
+# ------------------------------------------------------------------------------
+actionDrive() {
+    check_output "$1" "/" || return
+
+    CEN_ACTION="list"
+    APP_SIZE_ARG=
+    APP_DIR_DELETED=
+
+    # did we get a folder or a block device?
+    local bdev fldr="$2"
+    if [ -b "/dev/$fldr" ] ; then
+        bdev="/dev/$fldr"
+    elif [ -b "$fldr" ] ; then
+        bdev="$fldr"
+    else
+        find_folder -c fldr "Using backup folder:" || return
+        create_list > "$APP_OUT_ARCHIVE"
+        return
+    fi
+
+    # mount/unmount block device
+    message "Using block device: $bdev"
+        folder -t -m -f "_$$_${bdev##*/}"
+        fldr="$CEN_FOLDER"
+    trace -i "Mounting '$bdev' at '$fldr'"
+        system -f -p mount "$bdev" "$fldr" -o ro
+        find_folder -c fldr && create_list > "$APP_OUT_ARCHIVE"
+        cd ..
+    trace -i "Unounting '$bdev', deleting '$CEN_FOLDER'"
+        system -f -p umount "$CEN_FOLDER"
+        system -e -p rmdir "$CEN_FOLDER"
+}
+
+# ------------------------------------------------------------------------------
+# Action "index" - create index of local backups
+# ------------------------------------------------------------------------------
+actionIndex() {
+    check_output "${CEN_OPT_HOST:-$HOSTNAME}" || return
+
+    CEN_ACTION="list"
+    APP_SIZE_ARG=
+    APP_DIR_DELETED=
+
+    local fldr
+    for fldr in "$@" ; do
+        find_folder -c fldr "Using backup folder:" || return
+        create_list
+    done > "$APP_OUT_ARCHIVE"
+}
+
+# ------------------------------------------------------------------------------
+# Option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    # HACK to mount the 'Private' fs if running upload as batch
+    "")
+        CEN_FEATURE_F="-f --force           replace existing destinations"
+        [ "${CEN_OPT_BATCH:-none}" != "none" -a "${CEN_CMDARGS[0]::3}" = "upl" ] &&
+           [ -h ~/.ssh -a ! -e ~/.ssh/id_rsa ] && embed centauriencfs -q mount -
+        ;;
+
+    -B|--min*)
+        optarg "minage" CEN_OPT_MINAGE    "$APP_DAT_VALAGE" ;;
+    -C|--con*)
+        optarg "cond"   CEN_OPT_COND      "wee(k)?|mon[a-z]*|qua[a-z]*|hal(f)?|yea(r)?" ;;
+    -D|-d|--dry*)
+        optarg "dryrun" CEN_OPT_DRYRUN     ;;
+    -E|--max*)
+        optarg "maxage" CEN_OPT_MAXAGE    "$APP_DAT_VALAGE" ;;
+    -F|--fol*)
+        optarg "folder" CEN_OPT_FOLDER  -t ;;
+    -H|--hos*)
+        optarg "host"   CEN_OPT_HOST    -t ;;
+    -L|--loc*)
+        optarg "local"  CEN_OPT_LOCAL   - "$HOSTNAME" ;;
+    -N|--not)
+        optarg "not"    CEN_OPT_NOT        ;;
+    -O|--out*)
+        optarg "output" CEN_OPT_OUTPUT  -t ;;
+    -P|--par*)
+        optarg "parity" CEN_OPT_PARITY  "odd|even|any" ;;
+    -R|--rev*)
+        optarg "reverse" CEN_OPT_REVERSE   ;;
+       --sil*)
+        optarg "silent" CEN_OPT_SILENT     ;;
+    -S|--siz*)
+        optarg "size"   CEN_OPT_SIZE    "[bBkKmMgGhH]" ;;
+    -T|--tag)
+        optarg "tag"    CEN_OPT_TAG[]   "[a-z\-]+|\+" ;;
+    -V|--lev*)
+        optarg "level"  CEN_OPT_LEVEL   -n ;;
+    -W|--wri*)
+        optarg "write"  CEN_OPT_WRITE   -t ;;
+    -X|--exe*)
+        optarg "exec"   CEN_OPT_EXEC    -t ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    "") [ -n "$CEN_OPT_MINAGE" ] && convert_age CEN_OPT_MINAGE
+        if [ -n "$CEN_OPT_MAXAGE" ] ; then
+            convert_age CEN_OPT_MAXAGE
+            if [ -n "$CEN_OPT_MINAGE" ] ; then
+                [ "$CEN_OPT_MINAGE" -lt "$CEN_OPT_MAXAGE" ] &&
+                    error -- "--minage behind --maxage"
+            fi
+        fi
+
+        if [ -z "$CEN_OPT_REVERSE" ] ; then
+            CEN_OPT_REVERSE="-r"
+        else
+            CEN_OPT_REVERSE=
+        fi
+        ;;
+
+    cop*)
+        invoke "copy"   actionRun 0 + ;;
+    del*|rem*)
+        invoke "delete" actionRun 0 + ;;
+    dri*)
+        invoke "drive"  actionDrive 2 ;;
+    exe*)
+        invoke "exec"   actionRun 0 + ;;
+    ind*)
+        invoke "index"  actionIndex 1 + ;;
+    lin*)
+        invoke "link"   actionRun 0 + ;;
+    lis*)
+        invoke "list"   actionRun 0 + ;;
+    mov*)
+        invoke "move"   actionRun 0 + ;;
+    sho*)
+        invoke "show"   actionRun 0 + ;;
+    up*)
+        invoke "upload" actionRun 0 + ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    check_server
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -B --minage  <days>  Minimum backup age
+       -C --cond    <cond>  Use only groups matching a condition
+       -D --dryrun          no action, show what would be done
+       -E --maxage  <days>  Maximum backup age
+       -F --folder  <name>  try to match <name> with a known backup folder
+       -H --host    <host>  host name (see upload)
+       -L --local           select only files for '$HOSTNAME'
+       -N --not             Invert effect of --condition
+       -O --output  <name>  output folder on upload (default destination: \$PWD)
+                            override for backup on delete, use - for no backup.
+       -P --parity  <pari>  prefer odd/even (used as condition if no --cond=xxx)
+       -R --reverse         reverse sort order
+          --silent          do not show current/delete folder
+       -S --size    <unit>  include file/group size in output
+       -T --tag     <tag>   array: allow/require tag in set, use "+" for any
+       -V --levels  <lmax>  limit folder nesting level to <lmax>
+       -W --write   <mesg>  per file printf format (args: <src> <des>)
+       -X --exec    <prog>  program to be used by exec
+
+actions:
+       list     [<list>]    list the backups that match the filter
+       show     [<list>]    like list but in a more compact format
+       index    <dir>...    create backup index for folders
+       drive    <id> <dsrv> create backup index for a drive
+
+       copy     [<list>]    copy files, needs --output
+       delete   [<list>]    delete all backups that match the filter
+       exec     [<list>]    run program: <proc> FILE [<output>]
+       link     [<list>]    hard-link files, needs --output
+       move     [<list>]    move files, needs --output
+       upload   [<list>]    upload all matching backups (default host: $CEN_OPT_HOST)
+
+arguments:
+       <cond>   "week|month|quar|half|year" pick a single entry per period
+       <days>   number of days (positiv integer)
+       <host>   host name
+       <list>   is one of:  <n>... | <n> ".." | ".." <n> | <n> ".." <m>
+                a sequence of integers specifying group numbers  -or-  start
+                at group <n>  -or-  end at groups <n>  -or-  group <n> to <m>
+       <name>   path if starting with "." or "/", try centauripaths otherwise
+       <pari>   condition  "odd", "even"  to select odd/even months  -or- "any"
+       <tag>    a tag name like "root", "usr", "home"
+       <unit>   size format: 'h' (human), 'k|M|G' (kilo, mega, giga) 'b' (byte)
+
+examples:
+       $CEN_NAME -i alpha2 show .. 3                    # show newest 3 sets
+       $CEN_NAME upload .. 1                            # upload newest sets
+       $CEN_NAME delete 4 5 8                           # delete set 4, 5, 8
+       $CEN_NAME delete 4 ..                            # keep 3 newest sets
+       $CEN_NAME show -P odd -C quarter -E 365          # show sets to keep
+       $CEN_NAME del  -P odd -C quarter -E 365 -N .. 3  # reduce sets
+       $CEN_NAME show -T root -T usr -T home -T +       # show constrained set
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit

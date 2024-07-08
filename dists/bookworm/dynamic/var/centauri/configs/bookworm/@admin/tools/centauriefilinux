@@ -1,0 +1,1284 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Dr. J. Pfennig (c) 2021-2024; BSD License"
+CEN_TITLE="Tool to manage EFI boot and to create systemd-boot menu and UKI"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -y - '0.23:2' || exit 2
+
+CEN_OPT_BASE=           # see --base, EFI partition mount point
+CEN_OPT_IMAGE=          # see --image, kernel efi image, relative to DAT_EFIDIR
+CEN_OPT_NICKNAME=       # see --nickname, suffix for image folder and loader entries
+CEN_OPT_PLAIN=          # see --plain (<empty>:=shim+mok  1:=shim 2:mok 3:=nothing)
+CEN_OPT_ROOT=           # see --root
+
+# --- Data ---
+
+# used by do_shim
+DAT_EFI_BOOTDIR='EFI/BOOT'
+DAT_EFI_DISTDIR='EFI/grub'
+DAT_EFI_MEMTDIR='EFI/memtest'
+DAT_EFI_SYSDDIR='EFI/systemd'
+
+DAT_SYSD_LOADER='loader'
+DAT_SYSD_ENTRIES="$DAT_SYSD_LOADER/entries"
+DAT_SYSD_CONFIG="$DAT_SYSD_LOADER/loader.conf"
+
+DAT_UKINAME='linux.efi'         # name of unified kernel+initrd+efistub image
+DAT_IMAGE=                      # kernel image, relative to DAT_EFIDIR
+DAT_MOUNT=
+DAT_SUBVOL='/Volumes/Root'      # btrfs subvolume: bootflags=subvol=...
+DAT_UKIPATH=                    # set by do_suffix $DAT_MOUNT$/DAT_IMAGE
+DAT_SUFFIX=                     # see --nickname and do_suffix
+
+DAT_CMDLINE='cmdline'           # (extra) kernel parameters
+DAT_PACKAGE='package'           # flag for update-initramfs calls
+
+# --- relative to CEN_OPT_ROOT ---
+
+# dirs in installation root
+DAT_BOOTDIR='/boot'             # folder of distro kernel image
+DAT_DKMSDIR='/var/lib/dkms'     # links to MOK for dkms signing
+DAT_ROOTDIR=                    # prefix, see --root
+DAT_ETCDIR='/etc'
+DAT_LIBDIR='/usr/lib'           # centauri MOK, see setup
+DAT_MOKDIR='/etc/mok'           # centauri MOK, see setup
+
+# hook for update-initramfs to rebuild UKI
+DAT_UPDTHOOK="/etc/initramfs/post-update.d/$CEN_NAME"
+
+# used by do_shim
+DAT_DIST_GRUB='/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed'
+DAT_DIST_SHIM='/usr/lib/shim/shimx64.efi.signed'
+DAT_DIST_FB='/usr/lib/shim/fbx64.efi.signed'
+DAT_DIST_MM='/usr/lib/shim/mmx64.efi.signed'
+DAT_DIST_STUB='/usr/lib/systemd/boot/efi/linuxx64.efi.stub'
+DAT_DIST_SYSD='/usr/lib/systemd/boot/efi/systemd-bootx64.efi'
+
+# repository paths
+DAT_REPO_PRIVATE='/var/centauri/private'
+DAT_REPO_SHARED='/var/centauri/shared'
+
+# prefix these names with CEN_OPT_ROOT
+DAT_PREFIX=(DAT_ROOTDIR DAT_BOOTDIR DAT_DKMSDIR DAT_ETCDIR DAT_LIBDIR DAT_MOKDIR
+            DAT_UPDTHOOK DAT_DIST_FB DAT_DIST_GRUB DAT_DIST_MM DAT_DIST_SHIM
+            DAT_DIST_STUB DAT_DIST_SYSD DAT_REPO_PRIVATE DAT_REPO_SHARED)
+
+# ------------------------------------------------------------------------------
+# helper
+# ------------------------------------------------------------------------------
+
+# helper for 'update' to install legacy grub: <no args>
+do_bios() {
+    confirm -n -q "install grub for legacy bios at '$CEN_MOUNT_DEV'" || return
+    system -z grub-install --target=i386-pc --boot-directory="$DAT_MOUNT" "$CEN_BLKDEVICE"
+}
+
+# helper to parse kernel cmdline: <file> [<vxtr>]
+do_cmdline() {
+    local _pars _item _xtra _xpar=() _file="$1"
+    inpfile -e -- "$_file" || return 1
+    read -a _pars <"$_file"
+    for _item in "${_pars[@]}" ; do
+        _xtra='[*]'
+        case "$_item" in
+        BOOT_IMAGE=*)       ;;
+        fsck.repair=*)      ;;
+        root=*)             ;;
+        rootflags=*)        ;;
+        centauriswitch=*)   ;;
+        loglevel=*)         ;;
+        lsm=*)              ;;
+        mitigations=off)    ;;
+        net.ifnames=0)      ;;
+        resume=*)           ;;
+        security=)          ;;
+        quiet|ro|nosplash|splash) ;;
+        *)  _xtra='   ' ; _xpar+=("$_item")
+        esac
+        [ -z "$2" ] && message -a "$_xtra $_item"
+    done
+    if [ -z "$2" ] ; then
+        pluralize -a -c 2 -z -p "%s extra %s: ""$_file" "${#_xpar[@]}" "parameter"
+    else
+        printf -v "$2" "%s" "${_xpar[*]}"
+    fi
+    return 0
+}
+
+# helper to set loader default: <path> [<wait>]
+do_default() {
+    local path="$1" wait="${2:--}" ; [ "$wait" = '-' ] && wait=0
+    create -h - -t -- "$DAT_MOUNT/$DAT_SYSD_CONFIG" <<!EOF
+default ${path%% *}*
+timeout $wait
+!EOF
+    local srel='type1'
+    create -v srel -- "$DAT_MOUNT/$DAT_SYSD_LOADER/entries.srel"
+
+    # create -- "$DAT_MOUNT/$DAT_SYSD_LOADER/random-seed"
+    # bootctl random-seed
+}
+
+# helper to check for EFI boot: <no args>
+do_efichk() {
+    if [ ! -d '/sys/firmware/efi' ] ; then
+        if [ -z "$CEN_OPT_FORCE" ] ; then
+            if [ "${CEN_CMDARGS::3}" = 'hoo' ] ; then
+                trace $"This computer was not booted via EFI. Quit for action 'hook'."
+                quit
+            fi
+            quit -e $"This computer was not booted via EFI. Use --force to run this tool"
+        fi
+        [ -z "$CEN_OPT_SILENT" ] &&
+            warning $"This computer was not booted via EFI. Some commands may not work"
+    fi
+
+    case "$CEN_CMDARGS" in
+    cmd*|cre*|mok|set*)  ;;
+    *)  if [ ! -s "$DAT_UKIPATH" ] ; then
+            quit -e -m -p $"No unified kernel image: %s\nPlease run '%s' or '%s' first." \
+                        "$DAT_UKIPATH" "$CEN_NAME create" "$CEN_NAME setup"
+        fi
+    esac
+}
+
+# helper to make systemd boot entry: <prio> <text> <file> <args>...
+#
+#       do_entry [-]                    # remove '[0-9]0' entries
+#
+#       <text>      -                   # use UKI path
+#       <text>      [!/]*               # use /image-...
+#       <text>      /*                  # path relative to DAT_MOUNT
+#
+# priority '[0-9]0' creates default entries (not automatically overriden)
+do_entry() {
+    local prio="${1:--}" text="$2" file="$3" ; shift ; shift ; shift
+    local entr trun
+
+    # generate entry file name
+    entr="$prio-${text,,}" ; entr="${entr//[[:space:]]/-}"
+    [ "${prio:1:1}" != 0 ] && trun='-t' # truncate non-default entries
+
+    # remove all default entries
+    if [ "$prio" = '-' ] ; then
+        remove -- "$DAT_MOUNT/$DAT_SYSD_ENTRIES"/[0-9]0-*
+        return
+    fi
+
+    # create entry
+    if [ "$file" = '-' ] ; then
+        text="Linux $text"
+        entr+="$DAT_SUFFIX"
+        file="${DAT_UKIPATH:${#DAT_MOUNT}}"
+    elif [ "${file::1}" != '/' ] ; then
+        text="Linux $text ($file)"
+        entr+="-$file"
+        file="/image-$file/linux.efi" ; trun='-t'
+    elif [ ! -f "$DAT_MOUNT/$file" ] ; then
+        return
+    fi
+    entr="$DAT_MOUNT/$DAT_SYSD_ENTRIES/${entr//[\/\\#:@.]/-}.conf"
+
+    # disabled entry (like MS-Windows which systemd adds automatically)
+    [ "$prio" = 10 ] && entr+='.off'
+
+    if dryrun ; then
+        message -- "$entr"
+        message -a "title   $text"
+        message -a "efi     $file"
+        [ $# -gt 0 ] && message -a "options $*"
+    elif [ $# -gt 0 ] ; then
+        create $trun -h - -- "$entr" <<!EOF
+title   $text
+efi     $file
+options $*
+!EOF
+    else
+        create $trun -h - -- "$entr" <<!EOF
+title   $text
+efi     $file
+!EOF
+    fi
+}
+
+# helper to check package install: <file> <name>
+do_file() {
+    [ -e "$1" ] && return 0
+    error -p "Please install package '%s'\nMissing file: %s" "$2" "$1" ; return 1
+}
+
+# create hook scriptlet to handle kernel updates
+do_hook() {
+    create -d "${DAT_UPDTHOOK%/*}" || return 1
+    create -c -t "$DAT_UPDTHOOK" 770 <<!EOF || return 1
+#!$BASH
+[ "\$2" -ef '/boot/initrd.img' ] || exit 0
+$CEN_TOOLS/$CEN_NAME hook update
+!EOF
+}
+
+# helper to create UKI: <idir> <path> <message>
+do_image() {
+    system -c -f objcopy objdump awk
+
+    local idir="$1" imag="$2" mesg="$3"
+    local ibmp="$idir/splash.bmp"
+    local cmdl="$idir/$DAT_CMDLINE"
+    local ipkg="${idir##*/}/$DAT_CMDLINE"
+
+    # backward compatibility: migrate old-style kernel-cmdline
+    [ -e "$idir/kernel-cmdline" ] && move -o -q -- "$idir/kernel-cmdline" "$cmdl"
+
+    ### TODO: the loader cannot override a built-in cmdline if SecureBoot is on
+
+    if [ -e "$cmdl" ] ; then
+        if [ -h "$DAT_BOOTDIR/efi" -o -d "$DAT_BOOTDIR/efi" ] ; then
+            symlink -i -n "efi/$ipkg" "$DAT_BOOTDIR/$DAT_CMDLINE"
+        else
+            symlink -n "/mnt/boot/$ipkg" "$DAT_BOOTDIR/$DAT_CMDLINE"
+        fi
+    else
+        warning -n $"No kernel command-line:" "$cmdl" \
+                   $'\n'"consider running: $CEN_NAME cmdline copy"
+    fi
+
+    if [ "$mesg" != '-' ] ; then
+        sysfind -q magick || mesg='-'
+    elif [ ! -e "$ibmp" ] && sysfind -q magick ; then
+        mesg="Booting Debian ${DAT_SUFFIX:1}"
+    fi
+    [ "$mesg" != '-' ] && system -e -p magick -background black -fill white -pointsize 22 \
+                                 -font /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
+                                 "label:$mesg ..." "$ibmp"
+    [ -e "$ibmp" ] || ibmp='/sys/firmware/acpi/bgrt/image'
+
+    message -a "Generating EFI Linux image:" "$imag"
+    local opts=() offs alig size acmd
+    inpfile -- "$DAT_DIST_STUB" || return 1         # linuxx64.efi.stub
+    tmpfile -r -f
+
+    system -r -e -z objdump -h "$DAT_DIST_STUB" > "$CEN_TMPFILE" || return 1
+    acmd='NF==7 {size=strtonum("0x"$3); offset=strtonum("0x"$4)} END {print size + offset}'
+    system -r -e -p -s offs awk "$acmd" < "$CEN_TMPFILE" || return 1
+
+    function ___uki_add() {
+        # ((offs += alig - (offs % alig)))
+        opts+=(--add-section "$1=$2" --change-section-vma "$1=$offs")
+        system -r -f -p -s size -- stat '-Lc%s' "$2" ; ((offs += size))
+    }
+
+    local pvml pini
+    matchpath -s pvml -e -o -- "$DAT_BOOTDIR/vmlinuz" '/vmlinuz' ||
+        quit "No kernel image found:" "$DAT_BOOTDIR/vmlinuz"
+    matchpath -s pini -e -o -- "$DAT_BOOTDIR/initrd.img" '/initrd.img' ||
+        quit "No initrd found:" "$DAT_BOOTDIR/initrd.img"
+
+    [ -n "$CEN_OPT_PLAIN" ] &&  ___uki_add '.cmdline' "$cmdl"
+                                ___uki_add '.osrel'   "$DAT_LIBDIR/os-release"
+    [ -s "$ibmp" ] &&           ___uki_add '.splash'  "$ibmp"
+                                ___uki_add '.linux'   "$pvml"
+                                ___uki_add '.initrd'  "$pini"
+
+    opts+=("$DAT_DIST_STUB")                        # linuxx64.efi.stub
+    system -e -p -z -- objcopy "${opts[@]}" "$imag" && return 0
+    dryrun                                          # ok for --dryrun
+}
+
+# install memtest86 in EFI partition
+do_memt() {
+    local file='memtest86+x64.efi'
+    if [ -e "$DAT_BOOTDIR/$file" ] ; then
+        message -a -c "Setup folder" "$PWD/$DAT_EFI_MEMTDIR"
+        folder -f -m "$DAT_EFI_MEMTDIR"
+        copy -s -- "$DAT_BOOTDIR/$file" "$DAT_EFI_MEMTDIR"
+    else
+        message -a -c "Not installed" "$file"
+    fi
+    return 0
+}
+
+# helper to check MOK folder/key: [-c|-d|-s]
+do_mokcheck() {
+    local fmoc mode
+
+    # do we have a mok folder?
+    if [ ! -d "$DAT_MOKDIR" ] ; then
+        case "$1" in
+        -c)     folder -c -f -m -- "$DAT_MOKDIR" || return 1 ;;
+        -d)     return 0 ;;
+        -s)     system -q -s mode mokutil --sb-state || mode="no mokutil"
+                message -a "No MOK folder," "$mode" ; return 1 ;;
+        *)      invoke -e "No MOK folder, use '$CEN_NAME mok create'"
+                return 1
+        esac
+    fi
+
+    # do we have a MOK key (0:=empty  1:=invalid  2:=decypted key missing  3:=ok)
+    if matchpath -e "$DAT_MOKDIR/MOK.priv" "$DAT_MOKDIR/MOK.pem" "$DAT_MOKDIR/MOK.der" ; then
+        if [ "${#CEN_MATCHPATH[@]}" = 3 ] ; then
+            [ -e "$DAT_MOKDIR/MOK.key" ] && fmoc=3 || fmoc=2
+        else
+            fmoc=1
+        fi
+    else
+        [ -e "$DAT_MOKDIR/MOK.key" ] && fmoc=1 || fmoc=0
+    fi
+
+    # status option
+    if [ "$1" = '-s' ] ; then
+        [ "$fmoc" != 3 ] && fmoc="no MOK key" || fmoc="have MOK key"
+        system -q -s mode mokutil --sb-state || mode="no mokutil"
+        message -a -p "Existing MOK folder, %s, %s" "$fmoc" "$mode"
+        return 0
+    fi
+
+    # create/delete option
+    if [ "$1" = '-c' ] ; then
+        [ "$fmoc" = 3 ] && return 0                     # mok is ok
+        [ "$fmoc" = 2 ] && return 2                     # need decrypt
+        return 1                                        # create new mok
+    elif [ "$1" = '-d' ] ; then
+        [ "$fmoc" = 0 ] && return 0                     # no mok present
+        confirm -n -y "Remove existing MOK key" || return 1
+        do_mokenroll -d
+        remove -- "${CEN_MATCHPATH[@]}" "$DAT_MOKDIR/MOK.key" || return 2
+        return 0
+    fi
+
+    # not creating/deleting, we should have a valid mok key ...
+    case "$fmoc" in
+    0)  invoke -e "No MOK key, use '$CEN_NAME setup' or '$CEN_NAME mok create'" ;;
+    1)  invoke -e "Incomplete MOK key, use '$CEN_NAME mok delete'" ;;
+    2)  invoke -e "No decrypted MOK key, use '$CEN_NAME mok decrypt'" ;;
+    *)  return 0
+    esac
+    return 1
+}
+
+# helper to create a MOK: <no args>
+do_mokcreate() {
+    do_mokcheck -c
+    case "$?" in
+        0)  confirm -y "Keep existing valid MOK key" && return 0 ;;
+        2)  confirm -y "MOK exists, decrypt key only" || return 1
+            do_mokdecrypt -k ; return ;;    # decrypt key, register with dkms
+    esac
+
+    message -a "Creating MOK key (with pass phrase) ..."
+    remove "$DAT_MOKDIR"/*
+    # get domain name via kernel, network may be not yet configured
+    local sdom
+    read sdom </proc/sys/kernel/domainname || warning "Cannot get domain name"
+    [ -z "$sdom" ] && sdom='unknown' || sdom="${sdom%%.*}"
+    # use openssl -nodes to avoid pass phrase
+    system -e -p openssl req -new -x509 -newkey rsa:2048 -keyout "$DAT_MOKDIR/MOK.priv" \
+        -outform DER -out "$DAT_MOKDIR/MOK.der" -days 36500 -subj "/CN=${sdom^}/" || return 1
+    system -e -p openssl x509 -inform der -in "$DAT_MOKDIR/MOK.der" \
+                                          -out "$DAT_MOKDIR/MOK.pem" || return 1
+    do_mokdecrypt -k                            # decrypt key, register with dkms
+}
+
+# helper to decrypt the private key of a MOK certificate: [-k]
+do_mokdecrypt() {
+    do_mokcheck -c
+    case "$?" in
+    0|2)    ;;
+    *)      invoke -e "No valid MOK key, use '$CEN_NAME mok create'" ; return 1
+    esac
+
+    if [ "$DAT_MOKDIR/MOK.priv" -nt "$DAT_MOKDIR/MOK.key" ] ; then
+        message -a "Decrypting MOK private key ..."
+        rem"$DAT_DISK""$DAT_DISK"ove -- "$DAT_MOKDIR/MOK.key"
+        system -z openssl rsa -in "$DAT_MOKDIR/MOK.priv" -out "$DAT_MOKDIR/MOK.key"
+        if ! [ -s "$DAT_MOKDIR/MOK.key" ] ; then
+            remove -- "$DAT_MOKDIR/MOK.key"
+            invoke -e "Failed to decrypt" ; return 1
+        fi
+    fi
+    message -a "Decrypted MOK private key is:" "$DAT_MOKDIR/MOK.key"
+
+    # create symlinks for dkms
+    if [ "$1" != '-k' ] || [ ! -d "$DAT_DKMSDIR" ] ; then
+        message -a "This MOK is not registered with DKMS"
+        return 0
+    fi
+    message -a "Registering MOK with DKMS ..."
+    symlink -n "${DAT_MOKDIR:${#DAT_ROOTDIR}}/MOK.key" "$DAT_DKMSDIR/mok.key"
+    symlink -n "${DAT_MOKDIR:${#DAT_ROOTDIR}}/MOK.der" "$DAT_DKMSDIR/mok.pub"
+    return 0
+}
+
+# helper to enroll/delete a MOK: [-d]
+do_mokenroll() {
+    if system -q -r -- mokutil --test-key "$DAT_MOKDIR/MOK.der" ; then
+        [ "$1" = '-d' ] && return 0             # not enrolled
+        message -a "Enrolling MOK at next boot, enter a password..."
+        system -e mokutil --import "$DAT_MOKDIR/MOK.der" || return 1
+        return 2
+    else
+        [ "$1" = '-d' ] || return 0             # not to be deleted
+        message -a "Removing MOK at next boot, enter a password..."
+        system -e mokutil --delete "$DAT_MOKDIR/MOK.der" || return 1
+    fi
+    return 0
+}
+
+# get efi folder: [-h]
+do_mount() {
+    if [ -n "$CEN_OPT_BASE" ] ; then
+        local base="${CEN_OPT_BASE%/[eE][fF][iI]}"
+        if folder -c -q "$CEN_OPT_BASE/efi" ; then
+            DAT_MOUNT="${PWD%/*}"
+        elif folder -c -q "$base" ; then
+            DAT_MOUNT="${PWD%/*}"
+        fi
+    else
+        local list
+        matchpath -a list -d -o \
+            /efi/[eE][fF][iI] /boot/efi/[eE][fF][iI] /mnt/boot/[eE][fF][iI]
+        DAT_MOUNT="${list%/*}"
+    fi
+
+    [ "$1" = '-h' ] && return
+    [ -z "$DAT_MOUNT" ] &&
+        quit -e $"Found no compatible EFI folder, use" "'--base=<efi-folder>'"
+    [ "${CEN_OPT_IMAGE::1}" = '/' ] &&
+        quit -e $"Path must not be absolute" "'--image=$CEN_OPT_IMAGE'"
+}
+
+# helper for 'update' to get efi binaries right: <path>
+do_plain() {
+    local spre scmd sefi spst sdef="$DAT_MOUNT/$DAT_EFI_BOOTDIR/bootx64.efi"
+    local xpre xcmd xpst xdev="$CEN_BLKDEVICE"
+
+    folder -c -f ${CEN_OPT_FORCE:+-m} "$DAT_MOUNT/$1"
+    if matchpath -o -e shimx64* fbx64* *.CSV ; then
+        confirm -a -y -q "Remove SecureBoot '${1##*/}' components" &&
+            remove *.efi *.EFI *.CSV
+    fi
+
+    message -a -c "Setup folder" "$PWD/$1"
+    if [ "$1" = "$DAT_EFI_BOOTDIR" ] ; then
+        :
+
+    elif [ "$1" = "$DAT_EFI_DISTDIR" ] ; then
+        do_file "$DAT_LIBDIR/grub/x86_64-efi" grub-efi-amd64-bin || return 1
+        spre="install grub library at '$CEN_MOUNT_DEV'"
+
+        xpre=(grub-install --no-nvram --target=x86_64-efi \
+                --efi-directory="$DAT_MOUNT" "$xdev")
+
+        sefi="grubx64.efi"
+        scmd="build custom grub loader"
+        xcmd=(grub-mkimage -d "$DAT_LIBDIR/grub/x86_64-efi"
+                -o "$sefi" -p '/grub' -O x86_64-efi
+                fat exfat ext2 btrfs iso9660 part_gpt part_msdos efifwsetup
+                boot linux multiboot loopback chain reboot  configfile normal
+                test loadenv keystatus  cat echo ls sleep search search_label
+                search_fs_uuid search_fs_file  font efi_gop efi_uga gfxterm
+                gfxterm_background gfxterm_menu all_video)
+
+        spst="make grub the default boot loader"
+        xpst=("$sefi" "$sdef" "$sdef")      # <src> <dest> [<folder>]
+
+    else
+        do_file "$DAT_DIST_SYSD" systemd-boot-efi || return 1
+        scmd="install systemd boot"
+
+        sefi="systemd-bootx64.efi"
+        xcmd=(cp -a "$DAT_DIST_SYSD" "$sefi")
+
+        spst="make systemd the default boot loader"
+        xpst=("$DAT_DIST_SYSD" "$sdef" "$sdef")
+    fi
+
+    if [ -n "$spre" ] && confirm -n -q "$spre" ; then
+        system -z -- "${xpre[@]}"
+        [ "$1" = "grub" ] && scmd=
+    fi
+    if [ -n "$scmd" ] && confirm -n -q "$scmd" ; then
+        system -z -- "${xcmd[@]}"
+    fi
+    if [ -n "$spst" ] && confirm -n -q "$spst" ; then
+        [ -n "${xpst[2]}" ] && folder -f -m -- "${xpst[2]}"
+        copy -a -- "${xpst[0]}" "${xpst[1]}"
+    fi
+}
+
+# helper to copy from repository: <repo> [<dest>|- [<mesg>|-]]
+do_repo() {
+    local repo dest="${2:--}"
+    local path="${1%/*}" file="${1##*/}"
+    local name="${path//\//_}+$file"
+    [ "$dest" = '-' ] && { dest="$DAT_ROOTDIR/$1" ; dest="${dest/\/\//\/}" ; }
+
+    if matchpath -o -e -s repo -- "$DAT_REPO_PRIVATE"/?$name \
+                                  "$DAT_REPO_SHARED"/?$name ; then
+        folder -m -- "${dest%/*}"
+        copy -a -- "$repo" "$dest"
+    elif [ "$3" = '-' ] ; then
+        warning -p "No source for '%s', create manually" "$dest"
+    elif [ -n "$3" ] ; then
+        warning -p "No source for '%s' %s" "$dest" "$3"
+    fi
+}
+
+# helper for 'update' to get shim components right: <path>
+
+# ├── EFI
+# │   ├── BOOT              # default boot entry ...
+# │   │   ├── BOOTX64.EFI   # debian's shim64.efi
+# │   │   ├── mmx64.efi     # debian's signed MOK manager
+# │   │   └── fbx64.efi     # debian's signed boot fallback manager
+# │   ├── grub
+# │   │   ├── BOOTX64.CSV   # fallback, points to shimx64
+# │   │   ├── grub.cfg      # delegate to /grub/grub.cfg
+# │   │   ├── grubx64.efi   # debian's signed grub
+# │   │   ├── mmx64.efi     # debian's signed MOK manager
+# │   │   └── shimx64.efi   # debian's signed shim
+# │   └── systemd
+# │       ├── BOOTX64.CSV   # fallback, points to shimx64
+# │       ├── grubx64.efi   # renamed systemd bootx64.efi, MOK signed
+# │       ├── mmx64.efi     # debian's signed MOK manager
+# │       └── shimx64.efi   # debian's signed shim
+
+do_shim() {
+    do_file "$DAT_DIST_SHIM" shim-signed || return 1
+    system -c iconv || return 1                     # used for CSV entries
+    message -a -c "Setup folder" "$PWD/$1"
+
+    folder -m -f -- "$DAT_MOUNT/$1"
+    remove -- "$1"/*.[eE][fF][iI] "$1"/*.[cC][sS][vV]
+
+    if [ "$1" = "$DAT_EFI_BOOTDIR" ] ; then
+        copy -s -- "$DAT_DIST_SHIM" "$1/BOOTX64.EFI"
+        copy -s -- "$DAT_DIST_MM"   "$1/mmx64.efi"
+        copy -s -- "$DAT_DIST_FB"   "$1/fbx64.efi"
+
+    elif [ "$1" = "$DAT_EFI_DISTDIR" ] ; then
+        do_file "$DAT_DIST_GRUB" grub-efi-amd64-signed || return 1
+        copy -s -- "$DAT_DIST_GRUB" "$1/grubx64.efi"
+        copy -s -- "$DAT_DIST_MM"   "$1/mmx64.efi"
+        copy -s -- "$DAT_DIST_SHIM" "$1/shimx64.efi"
+        copy -s -- "$DAT_DIST_FB"   "$1/fbx64.efi"
+        do_text csv "$1" "Grub boot (fallback)" ; do_text grub "$1"
+
+        folder -f -m "$DAT_MOUNT/grub/fonts"
+        copy -q "$DAT_ROOTDIR/usr/share/grub/unicode.pf2" "$DAT_MOUNT/grub/fonts"
+
+        if [ -e "$DAT_MOUNT/grub/grub.cfg" ] ; then
+            trace -a "existing configuration:" "$DAT_MOUNT/grub/grub.cfg"
+        else
+            do_repo "/boot/grub/grub.cfg" "$DAT_MOUNT/grub/grub.cfg" -
+        fi
+
+        do_repo "/etc/kernel/postrm.d/zz-update-grub"
+        do_repo "/etc/kernel/postinst.d/zz-update-grub"
+    else
+        do_file "$DAT_DIST_SYSD" systemd-boot-efi || return 1
+        do_sign    "$DAT_DIST_SYSD" "$1/grubx64.efi"        # rename as grubx64 !
+        copy -s -- "$DAT_DIST_MM"   "$1/mmx64.efi"
+        copy -s -- "$DAT_DIST_SHIM" "$1/shimx64.efi"
+        copy -s -- "$DAT_DIST_FB"   "$1/fbx64.efi"
+        do_text csv "$1" "Systemd boot (fallback)"
+
+        do_repo "/etc/kernel/postrm.d/zz-systemd-boot" - -
+        do_repo "/etc/kernel/postinst.d/zz-systemd-boot" - -
+    fi
+    return 0
+}
+
+# helper to sign: <efibin> [<output>]
+do_sign() {
+    if [ -e "$DAT_MOKDIR/MOK.key" ] ; then
+        local opts=(-p sbsign --key "$DAT_MOKDIR/MOK.key")
+    elif [ -e "$DAT_MOKDIR/MOK.priv" ] ; then
+        local opts=(sbsign --key "$DAT_MOKDIR/MOK.priv")
+    else
+        error "No MOK key found" ; return 1
+    fi
+    opts+=(--cert "$DAT_MOKDIR/MOK.pem")
+
+    local otmp oout="$2"
+    tmpfile -f -s otmp
+
+    if ! system -e "${opts[@]}" --output "$otmp" "$1" ; then
+        remove -- "$otmp" ; return 1
+    elif [ -z "$2" ] ; then
+        move -- "$otmp" "$1.signed"
+    elif [ "$oout" = '.' ] ; then
+        move -s -- "$otmp" "$1"
+    elif [ "$oout" = '-' ] ; then
+        rename -- "$1" "$1.unsigned" && move -s -- "$otmp" "$1"
+    else
+        move -s -- "$otmp" "$oout"
+    fi
+    return 0
+}
+
+# helper to create a text file: csv|grub <fldr> [<text>]
+do_text() {
+    if [ "$1" = 'csv' ] ; then
+        echo "shimx64.efi,$3,,fallback boot entry" |
+            system -e -p iconv -o "$2/BOOTX64.CSV" -t UTF-16
+    else
+        text="configfile /grub/grub.cfg"
+        create -v text -- "$2/grub.cfg"
+    fi
+}
+
+# get suffix for image folder and loader entries
+do_suffix() {
+    local fcom
+    if [ -z "$CEN_OPT_NICKNAME" ] ; then
+        sysversion -u || return
+        CEN_OPT_NICKNAME="$CEN_SYS_NICKNAME"
+        DAT_SUFFIX="-$CEN_SYS_NICKNAME"
+        fcom=1                                      # compatibility flag
+    elif [ "$CEN_OPT_NICKNAME" = '-' ] ; then
+        CEN_OPT_NICKNAME=
+    else
+        DAT_SUFFIX="-$CEN_OPT_NICKNAME"
+    fi
+    DAT_IMAGE="image$DAT_SUFFIX/$DAT_UKINAME"
+
+    if [ -n "$CEN_OPT_IMAGE" ] ; then
+        joinpath -s DAT_IMAGE -e 'efi' -- "$CEN_OPT_IMAGE"
+    elif [ -n "$fcom" ] ; then                      # fallback to 'image'
+        joinpath -- "$DAT_MOUNT" 'image'
+        if [ -d "$CEN_JOINPATH" ] && [ ! -d "$CEN_JOINPATH$DAT_SUFFIX" ] ; then
+            DAT_IMAGE="image/$DAT_UKINAME"
+            DAT_SUFFIX=
+            trace "Fallback to compatibility mode:" "$DAT_IMAGE"
+        fi
+    fi
+    joinpath -s DAT_UKIPATH -- "$DAT_MOUNT" "$DAT_IMAGE"
+}
+
+# remove unwanted systemd configuration data
+do_unconf() {
+    local   mach base="$DAT_MOUNT/$DAT_EFI_BOOTDIR"
+    case "$1" in
+    machine-id) [ -r "$DAT_ETCDIR/machine-id" ] || return
+                read mach < "$DAT_ETCDIR/machine-id" || return
+                [ -n "$mach" ] || return
+                remove -d "$DAT_MOUNT/$mach"    # remove folder
+                remove    "$DAT_MOUNT/$DAT_SYSD_ENTRIES"/$mach* ;;
+    debian)     remove -d "$base/$1" ;;         # remove folder
+    grub)       [ -d "$DAT_BOOTDIR/$1" ] && remove -d "$DAT_BOOTDIR/$1"
+                [ -h "$DAT_BOOTDIR/$1" ] || symlink -n "/mnt/boot/grub" "$DAT_BOOTDIR/$1" ;;
+    *)          remove    "$base/$1"/*          # remove content
+    esac
+}
+
+# remove debian hooks used to update the boot folder
+do_unhook() {
+    trace -c "$CEN_ACTION" "Remove update-grub and systemd-boot hooks"
+    remove  "$DAT_ETCDIR/kernel/postinst.d/zz-systemd-boot" \
+            "$DAT_ETCDIR/kernel/postrm.d/zz-systemd-boot" \
+            "$DAT_ETCDIR/initramfs/post-update.d/systemd-boot"
+    do_repo "/etc/kernel/postrm.d/zz-systemd-boot"
+    do_repo "/etc/kernel/postinst.d/zz-systemd-boot"
+    do_repo "/etc/initramfs/post-update.d/systemd-boot"
+
+    remove  "$DAT_ETCDIR/kernel/postinst.d/zz-update-grub" \
+            "$DAT_ETCDIR/kernel/postrm.d/zz-update-grub"
+    do_repo "/etc/kernel/postrm.d/zz-update-grub"
+    do_repo "/etc/kernel/postinst.d/zz-update-grub"
+}
+
+# ------------------------------------------------------------------------------
+# run systemd boot manager: <args>...
+# ------------------------------------------------------------------------------
+actionBootctl() {
+    local verb="$1" ; shift
+    case "$verb" in
+    lis*)   verb='list' ;;
+    sta*)   verb='status' ;;
+    esac
+    system -z -- bootctl --esp-path="$DAT_MOUNT" $verb "$@"
+}
+
+# ------------------------------------------------------------------------------
+# action cmdline: [boot|copy|edit|show]
+# ------------------------------------------------------------------------------
+actionCmdline() {
+    local fnam="image$DAT_SUFFIX/$DAT_CMDLINE"
+    local file="$DAT_MOUNT/$fnam"
+    case "$1" in
+    boo|boot)       file='/proc/cmdline' ;;
+    cop|copy)       outfile -- "$file" || return
+                    copy '/proc/cmdline' "$file"
+                    symlink -n "efi/$fnam" "$DAT_BOOTDIR/$DAT_CMDLINE" ; return ;;
+    edi|edit)       system -e -x editor "$file" ;;
+    ext*)           local xtra
+                    do_cmdline "$file" xtra || return
+                    message "Extra parameters:" "${xtra:--none-}" ; return ;;
+    sho|show|'')    ;;
+    *)      invoke -e "Valid sub-commands are:" "boot, copy, edit, show"
+            return ;;
+    esac
+    message "Kernel parameters - [*] indicates a default value:"
+    do_cmdline "$file"
+}
+
+# ------------------------------------------------------------------------------
+# action create: [<image>|- [<message>|-]]
+# ------------------------------------------------------------------------------
+actionCreate() {
+    local idir imag="${1:--}" mesg="${2:--}"
+    [ "$imag" = '-' ] && imag="$DAT_UKIPATH" ; imag="${imag%/}"
+    if [ -d "$imag" ] ; then
+        idir="$imag" ; imag+="/$DAT_UKINAME"
+    elif [ ! -d "${imag%/*}" ] ; then
+        error "Not a folder:" "${imag%/*}" ; return
+    else
+        idir="${imag%/*}"
+    fi
+
+    do_image "$idir" "$imag" "$mesg" || return      # make uki image
+
+    do_hook || return
+    do_unhook || return
+    if [ -z "$CEN_OPT_PLAIN" ] ; then
+        message -a "Signing EFI image with MOK:" "$imag"
+        do_sign "$imag" . || return
+    fi
+
+    local irel="efi/image$DAT_SUFFIX/${imag##*/}"
+    if [ -h "$DAT_BOOTDIR/efi" -o -d "$DAT_BOOTDIR/efi" ] ; then
+        symlink -i -n -- "$irel" "$DAT_PACKAGE"
+    else
+        symlink -n -- "/mnt/boot/${irel#*/}" "$DAT_PACKAGE"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# run efi boot manager: <args>...
+# ------------------------------------------------------------------------------
+actionEfimgr() {
+    if ! findmount -- - "$DAT_MOUNT" ; then
+        error "Could not find device for mount:" "$DAT_MOUNT" ; return
+    fi
+    local pefi pmen pref
+    case "$1 $2" in
+    add*)   arguments 3 - "$@" || return ; shift ; set -- -c -L "$1" -l "${2//\//\\}" ;;
+    del*)   arguments 2 - "$@" || return ; shift ; set -- -b "$1" -B ;;
+    ent*\ gru*)
+            arguments 2 - "$@" || return ; shift
+            pmen="Grub boot menu" ; pref="$DAT_MOUNT/$DAT_EFI_DISTDIR"
+            matchpath -s pefi -e -o -- "$pref/shimx64.efi" "$pref/grubx64.efi" '.' ;;
+    ent*\ sys*)
+            arguments 2 - "$@" || return ; shift
+            pmen="Systemd boot menu" ; pref="$DAT_MOUNT/$DAT_EFI_SYSDDIR"
+            matchpath -s pefi -e -o -- "$pref/shimx64.efi" "$pref/systemd-bootx64.efi" '.' ;;
+    ord*)   arguments 2 - "$@" || return ; shift ; set -- -o "$@" ;;
+    [a-z]*) invoke -e "Valid sub-commands are:" "add, delete, entry grub|systemd, order"
+            return ;;
+    esac
+
+    if [ "$pefi" = '.' ] ; then
+        invoke -e "No bootable efi binary found" ; return
+    elif [ -n "$pefi" ] ; then
+        pefi="${pefi:${#DAT_MOUNT}}"
+        set -- -c -L "$pmen" -l "${pefi//\//\\}"
+    fi
+    local verb ; [ "$CEN_VERB" -gt 1 ] && verb='-v'
+    system -z -- efibootmgr $verb --disk "$CEN_MOUNT_DEV" "$@"
+}
+
+# ------------------------------------------------------------------------------
+# action hook: <event>
+# ------------------------------------------------------------------------------
+actionHook() {
+    case "$1" in
+    cre*)   do_hook || return
+            do_unhook || return
+            ;;
+    rem*)   remove "$DAT_UPDTHOOK"
+            ;;
+    upd*)   # the DAT_PACKAGE symlink serves as a flag for update-initramfs calls
+            [ -e "$DAT_PACKAGE" ] || return
+            actionCreate                        # make new image
+            ;;
+    *)      invoke -e "Invalid event: %s" "$1"
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action kernel: [<curr> [<back>]]
+# ------------------------------------------------------------------------------
+actionKernel() {
+    local item stat ncur nbak curr back
+    folder -f -c "$DAT_BOOTDIR"
+
+    if [ "$1" = '-' ] ; then
+        confirm -y "Make kernel/initrd links in /boot" || return
+        matchpath -e "$DAT_ROOTDIR/vmlinuz" "$DAT_ROOTDIR/vmlinuz.old" \
+                     "$DAT_ROOTDIR/initrd.img" "$DAT_ROOTDIR/initrd.img.old"
+        for item in "${CEN_MATCHPATH[@]}" ; do
+            resolve -l -s curr -- "$item" || continue
+            remove -- "$item"
+            symlink -n "${curr#boot/}" "$DAT_ROOTDIR/boot/${item##*/}"
+        done
+        create -t -c "$DAT_ROOTDIR/etc/kernel-img.conf" <<!EOF
+# Kernel image management overrides
+# See kernel-img.conf(5) for details
+do_symlinks = yes
+do_bootloader = no
+do_initrd = yes
+link_in_boot = yes
+!EOF
+        return
+    fi
+
+    for item in vmlinuz-* ; do
+        [ "${item/$1/}" = "$item" ] || ncur="$item"
+        [ "${item/$2/}" = "$item" ] || nbak="$item"
+
+        if [ "$item" -ef "vmlinuz" ] ; then
+            curr="$item" ; stat="[current]"
+        elif [ "$item" -ef "vmlinuz.old" ] ; then
+            back="$item" ; stat="[old]"
+        else
+            stat=
+        fi
+        [ $# = 0 ] && message -a -p "%-20s %s" "$item" "$stat"
+    done
+    [ $# = 0 ] && return                # list only
+
+    # selected new kernel but no backup
+    if [ -n "$ncur" -a -z "$nbak" -a "$curr" != "$ncur" ] ; then
+        nbak="$curr"
+    fi
+
+    [ -z "$ncur" ] && ncur="$curr"
+    [ -z "$nbak" ] && nbak="$back"
+    [ "$nbak" = "$ncur" ] && nbak=
+
+    if [ -z "$ncur" ] ; then
+        error "No current kernel selected" ; return
+    fi
+
+    if [ "$curr" != "$ncur" -o "$back" != "$nbak" ] ; then
+        message -a "Set current kernel:" "$ncur"
+        message -a "    old     kernel:" "${nbak:-(none)}"
+        confirm -y -q "Apply kernel changes" || return
+    else
+        message "No kernel changes" ; return
+    fi
+
+    ___set_kernel() {
+        symlink -f "$1" "vmlinuz$2"
+        local init="initrd.img${1#vmlinuz}"
+        symlink -f "$init" "initrd.img$2"
+    }
+
+    [ "$curr" != "$ncur" ] && ___set_kernel "$ncur"
+    [ "$back" != "$nbak" ] && ___set_kernel "$nbak" ".old"
+}
+
+# ------------------------------------------------------------------------------
+# generate entries in EFI boot menu
+#   (1) menu [<host|- [<volu>|- [<dist>]]]          # setup to defaults
+#   (2) menu <numb> create <labl> <netw|-> <arg>... # create custom entry
+#   (2) menu <numb> default [<time>]                # set boot default
+#   (3) menu <numb> delete                          # delete boot entry
+# ------------------------------------------------------------------------------
+actionMenu() {
+    local volu appl host='-' root='-' dist='-'
+
+    case "$1" in
+    ''|-)       root="${2:--}" dist="${3:--}" ;;
+    [a-z]*)     host="${1:--}" root="${2:--}" dist="${3:--}" ;;
+    [1-9][0-9]) appl="$1" ;;
+    [0-9]*)     invoke -e "Not a valid boot entry number:" "$1" ; return ;;
+    *)          invoke -e "Not a valid hostname:" "$1" ; return
+    esac
+
+    [ "$host" = '-' ] && host="$HOSTNAME"
+    if ! nethost "$host" ; then
+        [ -z "$CEN_OPT_SILENT" ] && invoke -w "host unknown:" "$host"
+    fi
+
+    if [ -n "$appl" ] ; then
+        case "$2" in
+        cre*)   ;;
+        def*)   do_default "${appl}-" "$3" ; return ;;
+        del*)   remove "$DAT_MOUNT/$DAT_SYSD_ENTRIES/${appl}-"* ; return ;;
+        *)      invoke -e "Argument #2 must be one of: create default delete" ; return
+        esac
+        shift ; shift
+    elif [ -d "$DAT_MOUNT/$DAT_SYSD_ENTRIES" ] ; then
+        confirm -a -q -y "Replace existing systemd-boot entries" || return
+        do_unconf machine-id                # remove debian config
+        do_entry -                          # delete defaults
+    else
+        confirm -a -q -y "Create systemd-boot entries" || return
+        folder -f -m "$DAT_MOUNT/$DAT_SYSD_ENTRIES"
+    fi
+
+    if [ "$root" = '-' ] ; then
+        if [ -e "/dev/disk/by-label/${host}_vol0" ] ; then
+            root="LABEL=${host}_vol0"
+        elif [ -e "/dev/disk/by-label/${host}_root" ] ; then
+            root="LABEL=${host}_root"
+        else
+            invoke -e "Please specify a boot device" ; return
+        fi
+    fi
+
+    volu="${root##*_}"
+    if [[ "$volu" == vol[0-9] ]] ; then
+        root+=" rootflags=subvol=/Volumes/Root"
+        if [ "$dist" = '-' ] ; then
+            [ -d "/mnt/$volu/Volumes/Root$DAT_SUFFIX" ] && root+="$DAT_SUFFIX"
+        else
+            root+="-$dist"
+        fi
+    fi
+    trace -a -c "Kernel root is" "$root"
+    root="root=$root ro fsck.repair=yes"
+
+    local netw='centauriswitch=simple'
+    local opt1='mitigations=off security= quiet'
+    local opt2='splash loglevel=3'
+    local resu="resume="
+
+    netoption 'sysdnames' "$host" || opt1="net.ifnames=0 $opt1"
+
+    # entry for appliance
+    if [ -n "$appl" ] ; then
+        local labl="$1" ; shift
+        [ "$1" != '-' ] && netw="$1" ; shift
+        do_entry "$appl" "$labl" "$dist" "$root" "$resu" "$netw" "$opt1" "$opt2" "$@"
+        return
+    fi
+
+    # network menu for: router switch repeater (see centauristartup)
+    local nmen=:
+    if   netoption 'router' "$host" ; then
+        nmen=do_entry
+    elif netoption 'switch' "$host" ; then
+        nmen=do_entry
+    elif netoption 'repeater' "$host" ; then
+        nmen=do_entry
+    fi
+
+    # add extra options from kernel cmd line (to opt1 only)
+    local xtra xfil="$DAT_MOUNT/image$DAT_SUFFIX/$DAT_CMDLINE"
+    if [ -f "$xfil" ] && do_cmdline "$xfil" xtra && [ -n "$xtra" ] ; then
+        confirm -a "Add extra parameters ""($xtra)" && opt1+=" $xtra"
+    fi
+    [ -e "/dev/disk/by-label/${host}_swap" ] && resu="resume=LABEL=${host}_swap"
+
+    local mode="workstation"
+    if [ "$host" = "${CEN_NET_SERVERS[0]}" -o "$host" = "${CEN_NET_SERVERS[1]}" ] ; then
+        mode="server mode"
+        netw='centauriswitch=static'
+        if netoption "apoint" "$HOSTNAME" ; then
+            mode+=" with WLAN AP"
+            netw+=":apoint"
+        else
+            netw+=":server"
+        fi
+    elif nethost "${host}-0" ; then
+        netw='centauriswitch=smart'
+    elif nethost "${host}-1" ; then
+        netw='centauriswitch=smart'
+    fi
+
+    local grub='/EFI/grub/shimx64.efi'
+    [ -e "$DAT_MOUNT$grub" ] || grub='/EFI/grub/grubx64.efi'
+
+    do_entry 90 "$mode"             "$dist" "$root" "$resu"   "$netw" "$opt1" "$opt2"
+    do_entry 50 "maintenance mode"  "$dist" "$root" 'resume=' "$netw" "$opt1" \
+                                    'nosplash systemd.show_status=1 systemd.unit=runlevel2.target'
+    $nmen    40 "networking menu"   "$dist" "$root" 'resume=' "centauriswitch=router" "$opt1" \
+                                    'nosplash centaurilogin=local systemd.unit=runlevel2.target'
+    do_entry 30 "Memory test"       '/EFI/memtest/memtest86+x64.efi'
+    do_entry 20 "Boot via GRUB"     "$grub"
+    do_entry 10 "Windows"           '/EFI/Microsoft/boot/bootmgfw.efi'
+
+    # update loader config
+    #   we use no file-name suffix when deleting or searching entries. For multiple distros
+    #   alternate entries should be manually renamed to "[0-9][1-9].conf".
+    local path="$DAT_MOUNT/$DAT_SYSD_ENTRIES"
+    matchpath -e -o -s path -- "$path"/9?-* "$path"/8?-* "$path"/*
+    path="${path##*/}" ; path="${path%.conf}" ; [ -z "$path" ] && path='*'
+    confirm -a -q -y "Update loader default to '$path'" || return
+    do_default "$path"
+}
+
+# ------------------------------------------------------------------------------
+# generate a mok key:   <cmd> <arg>...
+# ------------------------------------------------------------------------------
+actionMok() {
+    case "${1:-status}" in
+    cre*)   do_mokcreate ;;
+    dec*)   do_mokdecrypt ;;
+    del*)   do_mokcheck -d ;;
+    imp*)   do_mokcheck && do_mokenroll ;;
+    sig*)   do_mokdecrypt && do_sign "${@:2}" ;;
+    sta*)   do_mokcheck -s ;;
+    *)      invoke -e "Valid sub-commands are: create decrypt delete import sign status"
+    esac
+ }
+
+# ------------------------------------------------------------------------------
+# setup secure boot
+# ------------------------------------------------------------------------------
+actionSetup() {
+    if [ -n "$CEN_OPT_PLAIN" ] ; then
+        invoke -e "SecureBoot disabled or shim not installed"
+        return
+    fi
+    system -c -f mokutil sbsign openssl
+    folder -m -p -f "$DAT_MOKDIR"
+
+    message "Preparing the MOK ..."
+    embed centauriconfig put MOK.der -- put MOK.pem -- put MOK.priv
+    if ! [ -f "$DAT_MOKDIR/MOK.priv" ] ; then
+        invoke -e "Got no MOK key from repository, try '$CEN_NAME mok create'"
+        return
+    fi
+
+    # decrypt MOK private key, register with dkms
+    do_mokdecrypt -k
+
+    message "Create menu entries for systemd-boot ..."
+    actionMenu
+
+    message "Preparing SecureBoot ..."
+    do_mokenroll
+    case "$?" in
+    0)  message -a "Done." ;;
+    2)  confirm -a "Run '$CEN_NAME update -' to update EFI boot" && actionUpdate -
+        message -a "Done, please reboot to enroll the MOK!" ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# update boot loaders: [bios|grub|systemd|-]
+# ------------------------------------------------------------------------------
+actionUpdate() {
+    if findmount -- - "$DAT_MOUNT" ; then
+        blkdevice -m -e -- "$CEN_MOUNT_DEV" || return
+    else
+        error "Could not find device for mount:" "$DAT_MOUNT" ; return
+    fi
+    local curr="$PWD" ; folder -c -f -- "$DAT_MOUNT"
+
+    # remove debian config
+    do_unconf   machine-id
+    do_unconf   boot
+    do_unconf   debian
+    do_unconf   grub
+    do_unconf   systemd
+
+    if [ -z "$CEN_OPT_PLAIN" ] ; then
+        message "Configure for secure-boot"
+        case "$1" in
+        -)      do_shim "$DAT_EFI_BOOTDIR" &&
+                do_shim "$DAT_EFI_DISTDIR" &&
+                do_shim "$DAT_EFI_SYSDDIR" &&
+                do_memt ;;
+        bios)   do_bios ;;
+        boot)   do_shim "$DAT_EFI_BOOTDIR" ;;
+        grub)   do_shim "$DAT_EFI_DISTDIR" ;;
+        mem*)   do_memt ;;
+        sys*)   do_shim "$DAT_EFI_SYSDDIR" ;;
+        *)
+                invoke -e "Invalid argument:" "$1"
+        esac
+    else
+        message "No secure-boot support"
+        case "$1" in
+        -)      do_plain "$DAT_EFI_BOOTDIR" &&
+                do_plain "$DAT_EFI_DISTDIR" &&
+                do_plain "$DAT_EFI_SYSDDIR" &&
+                do_memt ;;
+        bios)   do_bios ;;
+        boot)   do_plain "$DAT_EFI_BOOTDIR" ;;
+        grub)   do_plain "$DAT_EFI_DISTDIR" ;;
+        mem*)   do_memt ;;
+        sys*)   do_plain "$DAT_EFI_SYSDDIR" ;;
+        *)
+                invoke -e "Invalid argument:" "$1"
+        esac
+    fi
+    folder -c -f -- "$curr"
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> [<argument>]
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    '')     if [ -n "$CEN_OPT_ROOT" ] ; then
+                [ -z "$CEN_OPT_BASE" ] &&
+                    quit -e -p "Cannot use '%s' without '%s'" '--root=<root>' '--base=<efi-folder>'
+                local name root="${CEN_OPT_ROOT%/}"
+                for name in "${DAT_PREFIX[@]}" ; do
+                    [ -n "$name" ] && eval printf -v $name '%s' $root\$$name
+                done
+                trace -a -c 'Kernel folder' "$DAT_BOOTDIR"
+            fi
+
+            do_mount ; do_suffix ; do_efichk            # helpers may call quit
+            DAT_PACKAGE="$DAT_BOOTDIR/$DAT_PACKAGE"
+            if [ -z "$CEN_OPT_PLAIN" ] ; then           # check for shim and mok ...
+                if [ -f "$DAT_DIST_SHIM" ] ; then
+                    [ -e "$DAT_MOKDIR/MOK.key" ] || CEN_OPT_PLAIN=1
+                else
+                    CEN_OPT_PLAIN=3
+                    [ -e "$DAT_MOKDIR/MOK.key" ] && CEN_OPT_PLAIN=2
+                fi
+            else
+                CEN_OPT_PLAIN=3
+            fi
+            [ -n "$CEN_OPT_PLAIN" ] && trace "Option '--plain' implied (info=$CEN_OPT_PLAIN)"
+            ;;
+
+    -B|--bas|--base)    optarg 'base'        -   -d  ;;     # folder
+    -I|--img|--ima*)    optarg 'image'       -   -t  ;;     # text
+    -N|--nic*)          optarg 'nickname'    -   -t  ;;     # text
+    -P|--pla*)          optarg 'plain'       -   -f  ;;     # flag
+    -R|--roo|--root)    optarg 'root'        -   -d  ;;     # folder
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <verb> <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$1" in
+
+    boo*)
+        invoke -r 'bootctl'  -           ;;
+    cmd*)
+        invoke -r 'cmdline'  -       0 1 ;;                 # 0 .. 1 args
+    cre*)
+        invoke -r 'create'   -       0 2 ;;                 # 0 .. 2 args
+    efi*)
+        invoke -r 'efimgr'   -           ;;
+    hoo|hook)
+        invoke    'hook'     -         1 ;;                 # one arg
+    ker*)
+        invoke -r 'kernel'   -       0 2 ;;                 # 0 .. 2 args
+    men|menu)
+        invoke -r 'menu'     -           ;;
+    mok)
+        invoke -r -          -           ;;
+    set*)
+        invoke -r 'setup'    -           ;;
+    upd*)
+        invoke -r 'update'   -       1 2 ;;                 # one or two args
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    do_mount -h ; do_suffix
+    usageset \
+        -o - \
+        -o "-B --base     <path> "$"EFI mount point or EFI folder (default: $DAT_MOUNT)" \
+        -o "-I --image    <file> "$"relative linux EFI image path (default: $DAT_IMAGE)" \
+        -o "-N --nickname <nick> "$"force distribution nick name  (default: $CEN_OPT_NICKNAME)" \
+        -o "-P --plain           "$"ignore secure boot shim, mok and signing" \
+        -o "-R --root     <path> "$"root file sytem to be used    (default: /)"
+
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+actions:
+       bootctl [list|...]   run bootctl on EFI partition
+       cmdline copy|edit    copy current /proc/cmdline or edit saved
+       cmdline [show|boot]  show saved settings or show current boot status
+       create [<image>|- [<message>|-]]
+                            create UKI (unified kernel image) EFI binary
+       efimgr  --- <arg>... run efibootmgr on EFI partition
+       efimgr  add <label> <path>
+                            add a boot entry, <path> is relative
+       efimgr  delete <n>   delete boot entry <n>
+       efimgr  entry grub|systemd
+                            add a boot entry for grub or systemd boot
+       efimgr  order <n>[,<n>]...
+                            set boot order
+       hook    <event>      handle update-initramfs events
+       kernel               show bootable kernels
+       kernel  <curr> [<back>]
+                            set current and failsafe kernel and initrd
+       kernel  -            make kernel links in /boot folder
+       menu    [<host|- [<volu>|- [<nick>]]]
+                            generate default entries in EFI boot menu
+       menu    <numb> create <label> <netw|-> <arg>...
+                            create custom boot entry
+       menu    <numb> default [<time>]
+                            set default boot entry and menu timeout
+       menu    <numb> delete
+                            delete boot entry (implies 'menu 90 default')
+       mok     [status]     show MOK (machine owner key) status
+       mok     sign <ebin> [-|.]
+                            sign an EFI binary, see 'sbsign', use '.' for in-place
+       mok     create|delete|decrypt|import
+                            MOK management, see 'mokutil'
+       setup                MOK setup, repository, enrollment, dkms
+       update  [boot|bios|grub|memtest|systemd|-]
+                            update boot loaders, use '-' for all except bios
+
+arguments:
+       <event>              update (by update-initramfs)  remove (uninstall hook)
+       <curr> <back>        a kernel version
+       <dflt>               boot preset: default workstation menu maintenance
+       <ebin>               path of an efi binary to be signed
+       <host>               override current host name
+       <image>              image folder/path         (default: image-<nick>)
+       <label>              label text for boot entry
+       <message>            text in systemd boot logo (default: Booting Debian <nick>)
+       <netw>               network mode/config, see centauriswitch
+       <nick>               distribution name, '-' for no path suffixes
+       <numb>               2 digit boot entry number
+       <volu>               root path, suffix, '+' for nick (default: $DAT_SUBVOL)
+
+examples:
+       # setup ...
+       $CEN_NAME setup              # automatic setup from repository
+       $CEN_NAME update -           # grub/systemd installation/update
+       $CEN_NAME create -- menu     # systemd kernel image and boot menu
+       $CEN_NAME menu t1 t1_root    # boot menu for 't1' with LABEL=t1_root
+       $CEN_NAME menu - - bookworm  # boot menu entries for bookworm distro
+
+       # MOK keys ...
+       $CEN_NAME mok                # show secure boot status
+       $CEN_NAME mok import         # enroll key, needs reboot
+       $CEN_NAME mok sign "/EFI/memtest/memtest86+x64.efi" .
+
+       # update EFI variables ...
+       $CEN_NAME efi delete 4       # delete boot entry
+       $CEN_NAME efi add "memory test" "/EFI/memtest/memtest86+x64.efi"
+       $CEN_NAME efi entry systemd  # add systemd entry
+       $CEN_NAME efi order 2,1,0    # set boot order
+
+       # list systemd boot config
+       $CEN_NAME boot list
+!EOF
+}
+#Besides
+#       an EFI boot configuration a BTRFS labeled '<host>_root' and a '$DAT_SUBVOL'
+#       sub-volume are recommended for root. Otherwise 'loader/entries/*.conf' files
+#       need to be edited manually.
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

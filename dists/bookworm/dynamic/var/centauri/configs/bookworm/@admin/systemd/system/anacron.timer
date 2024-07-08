@@ -1,0 +1,11 @@
+# /lib/systemd/system/anacron.timer
+[Unit]
+Description=Trigger anacron every hour
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h 
+RandomizedDelaySec=90
+
+[Install]
+WantedBy=multi-user.target

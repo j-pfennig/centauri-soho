@@ -1,0 +1,14 @@
+[Unit]
+# run only if sddm is not installed
+ConditionPathExists=!/usr/bin/sddm
+
+[Service]
+#BusName=
+ExecStartPre=
+ExecStart=
+ExecStart=/var/centauri/tools/centauristartx -S lightdm -M-
+RuntimeDirectory=lightdm-data
+
+[Install]
+Alias=
+WantedBy=graphical.target

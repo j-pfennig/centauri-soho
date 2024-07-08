@@ -1,0 +1,460 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Dr. Jürgen Pfennig (c) 2021; all rights reserved"
+CEN_TITLE=$"Demonstrates CGI programming using the XML module" 
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -t "$0" "0.10:1" || exit 2
+
+# Data
+DAT_BASEFOLDER=                 # folder for html etc. files
+DAT_QUIT_LIST=
+
+DAT_DIR_CGIBIN="/usr/lib/cgi-bin"
+DAT_DIR_HTML="/var/www/html"
+
+declare -A DAT_MAP_REPLY        # set by cgiHandler
+
+resolve -m -s DAT_SELF -- "$0"  # path to script
+
+# ------------------------------------------------------------------------------
+# create html folder, css and js: <folder>
+# ------------------------------------------------------------------------------
+do_basefolder() {
+    if [ -z "$1" ] ; then
+        [ -z "$DAT_BASEFOLDER" ] || return 0
+        folder -r -s DAT_BASEFOLDER -m -c -u cache "$CEN_NAME" || return 1
+    else
+        folder -s DAT_BASEFOLDER -m -c "$1" || return 1
+    fi
+    trace -a "Setup base folder:" "$DAT_BASEFOLDER"
+    DAT_QUIT_LIST="$CEN_HOOK_QUIT"      # save top of list
+    CEN_HOOK_QUIT=do_cleanup            # hook
+
+    # ---------------------------------------------------------------------------
+    create -c -t "standard.css" <<!EOF
+.function    { font-weight: bold; color: blue; background-color:
+               rgb(220,220,220); border: 1px solid rgb(128,128,128);
+               padding: 2pt }
+.section     { font-size: large; font-weight: bold; margin-top: 6mm; margin-bottom: 3mm }
+.tabenum     { margin-left: 8mm }
+.fontfat     { font-size: 12pt; font-weight: bold }
+.infobox     { margin-left: 4mm; margin-right: 4mm; background-color: rgb(248,248,240); border: 1px solid rgb(128,128,128); padding: 3pt }
+.block       { text-align: justify; margin-left: 4mm; margin-right: 4mm }
+.fancy       { font-weight: bold; font-style: italic; color: darkred }
+.warning     { color: darkred }
+.center      { display: flex; justify-content: center; align-items: center;
+               height: 9cm; border: 0.2em solid green; }
+
+caption      { font-size: large; font-weight: bold; margin-bottom: 4mm; }
+h2           { margin-top: 1cm; }
+li           { font-size: 11pt; margin-top: 3; margin-bottom: 3pt; }
+.big         { font-size: 12pt; font-weight:bold }
+
+@media screen { .navi { } }
+@media print  { .navi { display: none; }  .index { display: none; } }
+!EOF
+    # ---------------------------------------------------------------------------
+
+    # ---------------------------------------------------------------------------
+    local legl ; xml_text -v legl -- "$CEN_LEGAL"           # xml escape
+    create -c -t "navigation.js" <<!EOF
+function navispan(text, link) {
+  return (link.length > 0)
+    ? "<span><a href='" + link + "'>" + text + "</a></span>"
+    : "<span style='color:gray'>" + text + "</span>";
+}
+
+function navigation(edat, home, prev, next) {
+  var obj = document.getElementById("pagehdr");
+  if(obj != null) obj.innerHTML =
+    "<h1 class='function' align='center'>" + document.title + "</h1>" +
+    "<p align='center'><i>" + edat + "$legl" + "</i></p>"
+
+  var nav =  "<p class='navi' align='center'>"
+    + navispan("home", home) + " "
+    + navispan("previous", prev) + " "
+    + navispan("next", next) + "</p>";
+  obj = document.getElementById("navitop");  if(obj != null) obj.innerHTML = nav;
+  obj = document.getElementById("navibot");  if(obj != null) obj.innerHTML = nav;
+}
+
+!EOF
+    # ---------------------------------------------------------------------------
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# quit hook to remove html folder
+# ------------------------------------------------------------------------------
+do_cleanup() {
+    if [ -n "$DAT_BASEFOLDER" ] ; then
+        trace -a "Remove base folder:" "$DAT_BASEFOLDER"
+     #####   remove -d -r "$DAT_BASEFOLDER"
+    fi
+    $DAT_QUIT_LIST "$@"
+}
+
+# ------------------------------------------------------------------------------
+# create an HTML page: <page> <prev> <next> <head>
+# ------------------------------------------------------------------------------
+do_demopage() {
+    local auth ; xml_text -v auth -- $"Author"
+    local page="$1" ; isfunction "$page" || page="page${page^}"
+    local navi="navigation('$auth ','/$CEN_NAME/index.html','$2${2:+.html}','$3${3:+.html}')"
+    local opts=(-5 -t "$4" -i 1 -c "/$CEN_NAME/standard.css" -s "/$CEN_NAME/navigation.js")
+    [ -n "$DAT_BASEFOLDER" ] && opts+=(-o "$DAT_BASEFOLDER/$1.html")
+    xml_document -b "${opts[@]}" "onload=\"$navi\""
+    xml_element div       -a "id='navitop'"
+    xml_element div -n    -a "id='pagehdr'"
+
+    xml_element div -i -n -a "id='content'" -c 'center' -f "$page"
+
+    xml_element div -n    -a "id='navibot'"
+    xml_document -e
+}
+
+# ------------------------------------------------------------------------------
+# Content page
+# ------------------------------------------------------------------------------
+pageIndex() {
+    #xml_element style -n "td:first-child { text-align: right; width: 30%; };"
+    ___xtra() {
+        xml_element caption -n -t -- "$1"
+        xml_element colgroup -i -n -b
+            xml_element col
+            xml_element col -s "width: 3%;"
+            xml_element col -s "background-color: wheat; width: 40%; min-width: 15em;"
+            xml_element col
+        xml_element colgroup -u -n -e
+    }
+    ___rows() {
+        local link
+        case "$2" in
+            0)  xml_anchor -v link -u "demo1.html" "Show 1st Demo Page" ;;
+            1)  xml_anchor -v link -u "demo2.html" "Show 2nd Demo Page" ;;
+            2)  xml_anchor -v link -u "demo3.html" "Show 3rd Demo Page" ;;
+            *)  return 1
+        esac
+        CEN_XML_ARGS=("" "$(($2 + 1))." "$link" "") ; return 0
+    }
+    xml_table -l -n -t "Example Pages" -x ___xtra -r ___rows -a "style='width: 90%;'"
+}
+
+# ------------------------------------------------------------------------------
+# Content page
+# ------------------------------------------------------------------------------
+pageDemo1() {
+    local sfnm="John" slnm="Doe"
+
+    # reply processing is done by this page
+    if [ "${#DAT_MAP_REPLY[@]}" -gt 0 ] ; then
+        if [ -n "${DAT_MAP_REPLY["clear"]}" ] ; then
+            sfnm= ; slnm=
+        else
+            sfnm="${DAT_MAP_REPLY["fname"]}" ; slnm="${DAT_MAP_REPLY["lname"]}"
+        fi
+    fi
+
+    # row callback function to fill the table
+    ___rows() {
+        CEN_XML_ARGS=("" "" "" "")
+        case "$2" in
+            # columns definitions (no table row generated as CEN_XML_ARGS is empty)
+            0)  xml_element caption -n -t -- "$1"
+                xml_element colgroup -i -n -b
+                    xml_element col -s "width: 30%;"
+                    xml_element col -s "width: 10%; min-width: 10em;"
+                    xml_element col
+                    xml_element col -s "width: 30%;"
+                xml_element colgroup -u -n -e
+                ;;
+
+            # generate some table rows ...
+            1)  xml_input label#fname    -v CEN_XML_ARGS[1] -- "First name:"
+                xml_input text#fname     -v CEN_XML_ARGS[2] -- "$sfnm"
+                CEN_XML_ARGS="&nbsp;"
+                ;;
+            2)  xml_input label#lname    -v CEN_XML_ARGS[1] -- "Last name:"
+                xml_input text#lname     -v CEN_XML_ARGS[2] -- "$slnm"
+                ;;
+
+            # empty table row
+            3)  CEN_XML_ARGS="&nbsp;"
+                ;;
+
+            # submit buttons (use hidden#page to process cgi reply via this page)
+            4)  xml_input submit#clear   -v CEN_XML_ARGS[1] -- "Reset"
+                xml_input submit         -v CEN_XML_ARGS[2] -- "Accept"
+                xml_input hidden#page    -v CEN_XML_ARGS[3] -- "demo1"
+                ;;
+
+            # table rows generated - stop
+            *)  return 1
+        esac
+        return 0
+    }
+
+    # generate a table based form
+    xml_element form -i -n -b -a "action='/cgi-bin/$CEN_NAME.cgi' accept-charset='utf-8'"
+    xml_table -l -t "Simple Form" -r ___rows -a "style='width: 90%;'"
+    xml_element form -u -n -e
+}
+
+# ------------------------------------------------------------------------------
+# Content page
+# ------------------------------------------------------------------------------
+pageDemo2() {
+    # extra callback function to set caption/columns
+    ___xtra() {
+        xml_element caption -n -t -- "$1"
+        xml_element colgroup -i -n -b
+            xml_element col -s "width: 30%;"
+            xml_element col -s "width: 10%; min-width: 10em;"
+            xml_element col
+            xml_element col -s "width: 30%;"
+        xml_element colgroup -u -n -e
+    }
+
+    # row callback function to fill the table
+    ___rows() {
+        CEN_XML_ARGS=("" "" "" "")
+        # TODO: CEN_XML_STYLES()
+        case "$2" in
+            0)  xml_input label#fname    -v CEN_XML_ARGS[1] -- "First name:"
+                xml_input text#fname     -v CEN_XML_ARGS[2] -- "John"
+                CEN_XML_ARGS="&nbsp;"
+                ;;
+            1)  xml_input label#lname    -v CEN_XML_ARGS[1] -- "Last name:"
+                xml_input text#lname     -v CEN_XML_ARGS[2] -- "Doe"
+                ;;
+            2)  xml_input checkbox#adult -v CEN_XML_ARGS[1] -a "checked=''"
+                xml_input label#adult    -v CEN_XML_ARGS[2] -- "My age is above 18"
+                ;;
+            3)  CEN_XML_ARGS="&nbsp;"
+                ;;
+            4)  xml_input submit         -v CEN_XML_ARGS[2] -- "OK"
+                ;;
+            *)  return 1
+        esac
+        return 0
+    }
+
+    # generate a table based form
+    xml_element form -i -n -b -a "action='/cgi-bin/$CEN_NAME.cgi' accept-charset='utf-8'"
+    xml_table -l -t "Another Form" -x ___xtra -r ___rows -a "style='width: 90%;'"
+    xml_element form -u -n -e
+}
+
+replyDemo2() {
+    local skey list=()
+    for skey in "${!DAT_MAP_REPLY[@]}" ; do
+        list+=("$skey=${DAT_MAP_REPLY["$skey"]}")
+    done
+    xml_list dl -d "=" -n -- "${list[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# Content page
+# ------------------------------------------------------------------------------
+pageDemo3() {
+    xml_text    -n "Hallo $1"
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+actionRegister() {
+    folder "$DAT_DIR_CGIBIN"
+    folder "$DAT_DIR_HTML"
+    error -t || return
+    actionRun "$DAT_DIR_HTML/$CEN_NAME"
+    error -t || return
+    symlink "$DAT_BASEFOLDER/index.html" "$DAT_DIR_HTML/$CEN_NAME.html"
+    DAT_BASEFOLDER=
+    symlink "$DAT_SELF" "$DAT_DIR_CGIBIN/$CEN_NAME.cgi"
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+actionUnregister() {
+    remove -q -d "$DAT_DIR_HTML/$CEN_NAME"
+    remove -q    "$DAT_DIR_CGIBIN/$CEN_NAME.cgi"
+}
+
+# ------------------------------------------------------------------------------
+# Create HTML pages: <folder>
+# ------------------------------------------------------------------------------
+actionRun() {
+    do_basefolder "$1" || return
+
+    do_demopage index ''    ''    "centauri-bash-lib CGI Example"
+    do_demopage demo1 ''    demo2 "1st Demo Page"
+    do_demopage demo2 demo1 demo3 "2nd Demo Page"
+    do_demopage demo3 demo2 ''    "3rd Demo Page"
+}
+
+actionTest() {
+    xml_document -b -5 -i 1
+
+    ___elem() {         # args: <note> <elem> <data>...
+        local args elem="$2" ; shift 2
+        xml_element "$elem" -a "$CEN_XML_ATTR" -b -i -n
+        while [ -n "$1" ] ; do
+            splitjoin -s args -d '=' "$1" ; shift
+            xml_element dt    -- "$args"
+            xml_element dd -n -- "${args[1]}" ;
+        done
+        xml_element "$elem" -e -u -n
+    }
+    xml_sequence dl#test -c hugo -d '|' -e ___elem -n -- "water=flows|wind=blows" "fire=burns"
+
+    xml_list ol -n -- eins zwei drei
+    xml_list dl -n -d '=' -- "1=one" "2=two" 3 three
+    xml_list div -g p -n -- "Text number 1" "Text number 2"
+
+    ___item() {         # args: <note> <counter> <data>
+        local argi=$(($2 + 3)) ; CEN_XML_ARGS="${!argi}"
+        case "$2" in
+            0)   CEN_XML_ATTR="style='width:3cm; text-align:left;'" ;;
+            1)   ;;
+            2)   CEN_XML_ATTR="style='width:3cm; text-align:right;'" ;;
+            *)   return 1
+        esac ; return 0
+    }
+    xml_sequence div -s "width:3cm; text-align:center" -f ___item -n -- left center right
+
+    xml_element "" -i
+        xml_element p -n -- "hello"
+    xml_element "" -u
+
+    xml_element "article#top" -b -n -i
+         xml_element "div#item-header" -b -t -- "$mesg - "
+         xml_anchor -u "index.html" "tool"
+         xml_element "div" -e -n
+    xml_element article -e -n -u
+xml_element a -a href='index.html' -t -- tool
+    xml_document -e
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+cgiHandler() {
+    # strip '.cgi' extension from script name
+    CEN_NAME="${CEN_NAME%.cgi}"
+
+    # helper to save key/value pairs
+    ___cgi_pairs() {
+        local skey="${1%%=*}"
+        local sval="${1#*=}"
+        [ -n "$skey" ] && DAT_MAP_REPLY["$skey"]="$sval"
+    }
+
+    # convert URL to key/value pairs
+    local line="${QUERY_STRING//+/ }"
+    line="${line//&/$'\n'}"
+    printf -v line "${line//%/\\x}"
+    splitjoin -x ___cgi_pairs -d '\n' -- "$line"
+
+    # get calling page and build result page name
+    local page="${HTTP_REFERER##*/}" ; page="${page%%.*}"
+    [ -n "${DAT_MAP_REPLY["page"]}" ] && page="${DAT_MAP_REPLY["page"]}"
+    local func="reply${page^}"
+    isfunction -- "$func" || func="page${page^}"
+
+    # report to syslog if options -v is used
+    if [ "$CEN_VERB" -gt 1 ] ; then
+        isservice
+        CEN_OPT_SYSLOG=2
+        message -- "CGI $page: $QUERY_STRING"
+    fi
+
+    # check for errors
+    local errs=()
+    [ -n "$HTTP_REFERER" ] || errs+=("The 'HTTP_REFERER' variable must be set")
+    [ -n "$QUERY_STRING" ] || errs+=("The 'QUERY_STRING' varibale must be set")
+    isfunction -- "$func"  || errs+=("Refered page is invalid ($func)")
+
+    if [ -z "$errs" ] ; then
+        # helper to save key/value pairs
+        ___cgi_pairs() {
+            local skey="${1%%=*}"
+            local sval="${1#*=}"
+            [ -n "$skey" ] && DAT_MAP_REPLY["$skey"]="$sval"
+        }
+
+        # convert URL to key/value pairs
+        local line="${QUERY_STRING//+/ }"
+        line="${line//&/$'\n'}"
+        printf -v line "${line//%/\\x}"
+        splitjoin -x ___cgi_pairs -d '\n' -- "$line"
+
+        # call result page and quit
+        do_demopage $func '' '' "Result"
+        quit
+    fi
+
+    # report errors and quit
+    ___cgi_error() {
+        xml_list ul -n -c "warning" -- "${errs[@]}"
+    }
+    do_demopage ___cgi_error '' '' "A CGI Error has occured"
+    quit
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> <args>...
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    # the main() function will pass the '--help' option if called without an
+    # argument. We use this to catch CGI calls ...
+    --help)
+        [ -n "$QUERY_STRING$REQUEST_URI" ] && cgiHandler ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <verb> <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$1" in
+
+    "") ;;
+
+    reg*)
+        invoke -s "register"      -           0 ;;     # no args
+    run)
+        invoke    -               -           0 ;;     # no args
+    unr*)
+        invoke -s "unregister"    -           0 ;;     # no args
+    test)
+        invoke    -               -           0 ;;     # no args
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    #usageset \
+    #    -o "" \
+    #    -o "-X --extra  <text>   "$"DEMO (text)"
+    usageset \
+        -a "run                  "$"Launch browser and run demo"
+    #usageset \
+    #    -l $"arguments" \
+    #    -t "<number>             "$"any positive number"
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

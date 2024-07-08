@@ -1,0 +1,7 @@
+status=on
+target=/usr/sbin/shutdown
+
+divert() {
+    [ -x /var/centauri/tools/centauripower ] && exec /var/centauri/tools/centauripower shutdown
+    exec systemctl --no-wall reboot "$@"
+}

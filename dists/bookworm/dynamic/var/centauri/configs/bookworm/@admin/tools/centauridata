@@ -1,0 +1,980 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2005-2024; BSD License"
+CEN_TITLE="High level tool to manage backups and network mount points"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m bat -s -y - "0.51:2" || exit 2
+
+# Data
+
+DAT_DIR_AUTOSAVE=       # see findFolders
+DAT_DIR_BACKUP=         # ...
+DAT_DIR_HISTORY=        # ...
+DAT_DIR_NETWORK=
+
+DAT_DATE_GLOB="%Y[-_]%m[-_]%d"          # glob for ISO like date
+
+DAT_ARCH_DIR="$CEN_ROOT/archived"       # for list action
+
+DAT_TIMESTAMP="$CEN_ROOT/persistent/$CEN_NAME"
+
+# ------------------------------------------------------------------------------
+# action backup - forward to centauribackup: <target>...
+# ------------------------------------------------------------------------------
+actionBackup() {
+    findFolders
+    local targ ddir
+    for targ in "$@" ; do
+        # get storage folder
+        case "$1" in
+        dis|disk|boo|boot|roo|root|usr|win*)
+            ddir="$DAT_DIR_BACKUP/disk" ;;
+        *)
+            ddir="$DAT_DIR_BACKUP/data" ;;
+        esac
+        if [ -z "$DAT_DIR_BACKUP" -o ! -d "$ddir" ] ; then
+            error "No backup folder for '$targ': $ddir"
+            return
+        fi
+
+        # prune deleted files and run backup...
+        embed centauriremove --silent --purge --yes "$ddir"
+        embed centauribackup --storage "$ddir" run "$targ"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# action day - make backups and set permissions: -no args-
+# ------------------------------------------------------------------------------
+actionDay() {
+    banner "Setting permissions ..."
+    # adjust permissions
+    findFolders
+
+    walk -d true -f false -r -l 1 -- "$DAT_DIR_AUTOSAVE"
+    walk -d true -f false -a      -- "$DAT_DIR_BACKUP" "$DAT_DIR_HISTORY"
+    local fdir adir="${DAT_DIR_AUTOSAVE:-/dev/null}"
+    for fdir in "${CEN_WALK_DIRS[@]}" ; do
+        trace -c -a "Processing" "$fdir"
+        case "$fdir" in
+            $adir)
+                attributes -m 771 -o root:wheel -- "$fdir" ;;
+            $adir/vbox)
+                attributes -m 771 -o vbox:vboxusers -- "$fdir" ;;
+            $adir/*)
+                attributes -m 771 -o root:wheel -- "$fdir" ;;
+            *)  embed -i centaurirights --silent private "$fdir"
+        esac
+    done
+
+    # fixups
+    system -e -p chmod 755 /
+    if [ -d "/var/lib/apt" ] ; then
+       folder -m "/var/lib/apt/lists/partial"
+       folder -m "/var/cache/apt/archives/partial"
+    fi
+
+
+    # run backups
+    if checkAutoSave ; then
+        # do we have a daily folder?
+        fdir="$DAT_DIR_AUTOSAVE/daily"
+        if [ -d "$fdir" ] ; then
+            banner "Run daily backup ..."
+
+            # prune deleted files and run backup...
+            embed centauriremove --silent --purge --yes "$fdir"
+            system -e -p \
+                   find "$fdir" -maxdepth 1 -name "*_*_20*.*" -mtime +10 -delete
+            embed centauribackup --storage "$fdir" run daily || CEN_EXIT=5
+        fi
+
+        # run ldap, rsnapshot and vbox backups
+        runLdapSave "$fdir"
+        runVBoxSave
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# action week - make backups: -no args-
+# ------------------------------------------------------------------------------
+actionWeek() {
+    findFolders
+    checkAutoSave || return
+
+    # do we have a weekly folder?
+    local fdir="$DAT_DIR_AUTOSAVE/weekly"
+    [ -d "$fdir" ] || return
+    local fday="$DAT_DIR_AUTOSAVE/daily"
+
+    # prune deleted files and run backup...
+    banner "Run weekly backup ..."
+    embed centauriremove --silent --purge --yes "$fdir"
+
+    # remove older backups and create links ...
+    system -e -p \
+           find "$fdir" -maxdepth 1 -name "*_*_20*.*" -mtime +27 -delete
+    if [ -d "$fday" ] ; then
+        local glob=$(date +"$DAT_DATE_GLOB")
+        system -e -p \
+           find "$fday" -maxdepth 1 -name "*_*_$glob*.*" -exec ln -f {} "$fdir" \;
+    fi
+
+    # weekly backup
+    embed centauribackup --storage "$fdir" run daily weekly || CEN_EXIT=5
+    runLdapSave "$fdir" "$fday"
+}
+
+# ------------------------------------------------------------------------------
+# action month - make backups: -no args-
+# ------------------------------------------------------------------------------
+actionMonth() {
+    findFolders
+    checkAutoSave || return
+
+    # do we have a monthly folder?
+    local fdir="$DAT_DIR_AUTOSAVE/monthly"
+    [ -d "$fdir" ] || return
+    local fday="$DAT_DIR_AUTOSAVE/daily"
+    local fwee="$DAT_DIR_AUTOSAVE/weekly"
+
+    # remove older backups
+    banner "Run monthly backup ..."
+    if purgeBackups "$fdir" - 2 ; then          # got deleted folder
+        embed centauriremove --silent --purge --yes "$fdir"
+    else                                        # no deleted folder
+        system -e -p -- \
+               find "$fdir" -maxdepth 1 -name "*_*_20*.*" -mtime +60 -delete
+    fi
+
+    local glob=$(date +"$DAT_DATE_GLOB")
+    [ -d "$fday" ] &&
+        system -e -p -- \
+               find "$fday" -maxdepth 1 -name "*_*_$glob*.*" -exec ln -f {} "$fdir" \;
+    [ -d "$fwee" ] &&
+        system -e -p -- \
+               find "$fwee" -maxdepth 1 -name "*_*_$glob*.*" -exec ln -f {} "$fdir" \;
+
+    # monthly backups
+    embed centauribackup --storage "$fdir" run daily weekly monthly
+    runLdapSave "$fdir" "$fday"     # week may not exist for the current day
+
+    # merge if we have a backup folder
+    mergeBackups "$fdir" "$DAT_DIR_BACKUP/data"
+}
+
+# ------------------------------------------------------------------------------
+# Show folder information: -no args-
+# ------------------------------------------------------------------------------
+actionInfo() {
+    findFolders
+    local back base="${DAT_DIR_BACKUP%/Backup}"
+    if matchpath -o -e -s back -- /mnt/vol?/Volumes/backup &&
+        [ "$base" -ef "$back" ] ; then
+            back="sub-volume"
+    elif findmount -d -- "$base" ; then
+        back="$CEN_MOUNT_FS volume"
+    elif [ -h "$base" ] ; then
+        bask="sym-link"
+    else
+        back="folder"
+    fi
+
+    # <base> <subfolder>
+    ___info_print1() {
+        local base="$1"
+        printf "            %-16s %s\n" "$2" "${base:-<none>}"
+        [ -z "$base" ] && return
+        shift ; shift
+        while [ -n "$1" ] ; do
+            [ -d "$base/$1" ] && printf "                %-12s %s\n" "$1" "$base/$1"
+            shift
+        done
+    }
+
+    # backup name might have shortpath names
+    ___info_print2() {
+        local base="$1" darr
+        if [ -z "$base" ] ; then
+            printf "            %-16s %s\n" "$2" "<none>"
+            return
+        else
+            printf "            %-16s %-24s (%s)\n" "$2" "$base" "$back"
+        fi
+        shift ; shift
+        while [ -n "$1" ] ; do
+            shortpath -a darr -n 'empty' -g -- "$1"
+            if [ -n "$darr" ] ; then
+                printf "                %-12s %s\n" "$1" "$darr"
+            elif [ -d "$base/$1" ] ; then
+                printf "                %-12s %s\n" "$1" "$base/$1"
+            fi
+            shift
+        done
+    }
+
+    [ -z "$CEN_OPT_SILENT" ] && create -c <<!EOF
+
+Backups that are usually tar files should be stored in folders that are children of
+a backup root. This root folder might contain Autosave, Backup and History folders.
+The backup root can be a mount or simple a folder. Possible locations are searched
+is this order: '/mnt/backup' (mounted volume), '/shared/backup' and '/backup'. See
+'$CEN_ROOT/default/centauri-bash-lib' for shortnames and their paths.
+!EOF
+
+    create -c <<!EOF
+
+        Backup locations on $HOSTNAME
+$(___info_print1 "$DAT_DIR_AUTOSAVE" 'Autosave' 'daily' 'weekly' 'monthly')
+$(___info_print2 "$DAT_DIR_BACKUP"   "Backup" 'data' 'disk' 'phys' 'vbox' 'other')
+$(___info_print1 "$DAT_DIR_HISTORY"  'History'  'data' 'disk' 'phys' 'vbox' 'other')
+
+        Network imports on $HOSTNAME
+            Network          ${DAT_DIR_NETWORK:-<none>}
+
+!EOF
+    [ -z "$CEN_OPT_SILENT" ] && create -c <<!EOF
+Use '$CEN_NAME init' to create folders (interactive when run whithout arguments).
+
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# create folders: <base> <auto> <back> <hist> <mirr>
+# ------------------------------------------------------------------------------
+actionInit() {
+    findFolders
+    local yeno base
+    if [ "${1:--}" != '-' ] ; then
+        base="$1"
+    else
+        matchpath -o -s base -d -e -- '/mnt/'[bB]ackup || base='/mnt/Backup'
+    fi
+    if [ ! -d "$base" ] ; then
+        if [ -e "$base" -o -h "$base" ] ; then
+                confirm -n $"Remove non-directory item:" "$base" || return
+                remove -- "$base" || return
+        fi
+
+        if [ "${1:--}" != '-' ] ; then
+            confirm -y -f "Create '%s' backup root folder" "$base" || return
+            folder -m -- "$base" 770 'root:wheel' || return
+        fi
+    fi
+    shift
+
+    # create folders: <name> <base> <subfolder>...
+    ___initInit() {
+        local name="$1" curr="$2" temp ; shift ; shift
+        if [ -n "$curr" ] ; then
+            [ -z "$CEN_OPT_FORCE" ] && return
+        else
+            curr="$base/${name^}" ; curr="${curr//\/\//\/}"
+            if [ -d "$curr" -a -z "$CEN_OPT_FORCE" ] ; then
+                [ -z "$CEN_OPT_SILENT" ] && message -a -p \
+                    "Skip '%s' folder, use option '--force' no modify" "${name^}"
+                return
+            fi
+            confirm -q -y -f "Create '%s' base folder" "$name" || return
+            folder -f -m -- "$curr" 770 'root:wheel'
+        fi
+        for temp in "$@" ; do
+            if [ "${temp::1}" = '-' ] ; then
+                yeno='-n -b' ; temp="${temp:1}"
+            else
+                yeno='-y'
+            fi
+            [ -d "$curr/$temp" ] && continue
+            confirm $yeno -f -i "Create '%s' sub-folder" "$temp" || continue
+            folder -f -m -- "$curr/$temp" 770 'root:wheel'
+        done
+        folder -f -m -- "$base/Deleted" 770 'root:wheel'
+        return
+    }
+
+    # create btrfs volume
+    if [ ! -d "$base" ] ; then
+        matchpath -o -s base -d -e -- '/shared' || base='/'
+        if [ -d '/mnt/vol0/Volumes' ] ; then
+            if [ -d '/mnt/vol0/Volumes/Backup' ] ; then
+                warning $"Found a 'Backup' btrfs subvolume that is not mounted"
+            elif confirm -y -a $"Create a 'Backup' btrfs subvolume" ; then
+                embed -v -y -z -- centaurisnapshot --yes --base='/mnt/vol0' create 'Backup' || return
+            fi
+            base='/mnt/vol0/Volumes/Backup'
+            [ -z "$CEN_OPT_SILENT" ] && message -a -m '' \
+                "Before the 'Backup' volume can be used it must be mounted. If you" \
+                "are using 'centaurimounter' restart it. Otherwise add this volume" \
+                "to '/etc/fstab' or create a systemd mount unit and reboot." ''
+        fi
+    fi
+    [ -z "$CEN_OPT_SILENT" ] && message -i "The 'Backup' root folder is:" "$base"
+
+    ___initdirs() {
+        local darg name dest dirs indx=0
+        local what=('autosave' "$DAT_DIR_AUTOSAVE" 'daily:-weekly:-monthly'
+                    'backup'   "$DAT_DIR_BACKUP"   'disk:data:-phys:-vbox'                                 'history'  "$DAT_DIR_HISTORY"  'disk:data:-phys:-vbox'
+                    '')
+        while [ -n "${what[indx]}" ] ; do
+            darg="$1" ; shift
+            name="${what[indx++]}"
+            dest="${what[indx++]}"
+            splitjoin -s dirs -d ':' -- "${what[indx++]}"
+            [ "${darg:--}" = '-' ] && continue
+            [ "$darg" = '+' ] && darg="$dest"
+            trace -a -c "init name" -- "$name" "${darg:--}" "${dirs[*]}"
+            ___initInit "$name" "$darg" "${dirs[@]}"
+        done
+    }
+
+    if [ $# = 0 ] ; then
+        ___initdirs + + + ; return
+    else
+        ___initdirs "$@" ; return
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# make links: [<server>|-]
+# ------------------------------------------------------------------------------
+actionLinks() {
+    ___otherStuff() {
+        folder -c -q "$DAT_DIR_NETWORK" || return
+
+        # refresh desktop file
+        embed -i -v -y centauriexecute -O refresh -H "Update network hosts" make --- \
+                                --message --root exec centauridata refresh
+        # kerberos ticket desktop file
+        system -c kinit &&
+            embed -i -v -y centauriexecute -O get-ticket -H "Get Kerberos Ticket" make --- \
+                                run centaurikerberos init
+    }
+
+    findFolders
+    if usingMounter ; then                          # centaurimounter service used ...
+        ___otherStuff ; return
+    fi
+
+    ___listShares() {
+        local -n varr="$1" ; varr=()
+        local finp="${CEN_PATHS[2]}/fstab"          # might be: /etc/fstab
+        [ -r "$finp" ] || return
+
+        local mnam marg mxxx
+        while read mnam marg mxxx ; do
+            [ -z "$mnam" -o "${mnam::1}" = '#' ] && continue
+            case "$marg" in
+                /)      ;;
+                /dev/*) ;;
+                /home)  ;;
+                /media/*) ;;
+                /proc)  ;;
+                /run)   ;;
+                *)      varr+=("${HOSTNAME}_${marg##*/}")
+            esac
+        done < "$finp"
+    }
+
+    local serv="$1" list item host share path last xhom
+    CEN_AUTOIND=
+
+    # Get the default server name and computer role
+    netStatus || return
+    [ "${serv:--}" = '-' ] || DAT_NET_MASTER="$1"
+    [ -n "$DAT_NET_MASTER" ] ||
+       fatal "No known server, pass the server name as 1st arg"
+
+    create -t "$DAT_TIMESTAMP"
+
+    # remove existing network folder
+    if [ -d "$DAT_DIR_NETWORK" ] ; then
+        message -a "Removing old links from '$DAT_DIR_NETWORK' ..."
+        system -a list -e -p -r -- find "$DAT_DIR_NETWORK" -depth -maxdepth 2
+        for item in "${list[@]}" ; do
+            [ "$item" = "$DAT_DIR_NETWORK" ] && continue
+            [ "${item::12}" = "$DAT_DIR_NETWORK/.samba" ] && continue
+            ### [ "${item::10}" = "$DAT_DIR_NETWORK/home" ] && continue
+            remove -s "$item"           # DO NOT RECURSE
+        done
+    fi
+    error -q
+    if [ "$serv" = '-' ] ; then
+        message -a "Emptied '$DAT_DIR_NETWORK' only, stopping now." ; return
+    fi
+
+    # create new automount and network folders
+    folder -m -c -r "$DAT_DIR_NETWORK" 775
+    error -q
+
+    message -a "Making links in '$DAT_DIR_NETWORK' and '/mnt' ..."
+
+    ___listShares list
+    for item in "${list[@]}" ; do
+        item="${item##*/}"
+        host="${item%%_*}"
+        [ "$host" = "*" ] && continue
+        share="${item#*_}"
+        [ "$share" = "*" ] && continue
+
+        if [ "$last" != "$host" ] ; then
+            trace    -p "Creating: %-9s %s\n"  "$host" "$share"
+        else
+            trace -a -p "Creating: %-9s %s\n"  "$host" "$share"
+        fi
+
+        ### local ###
+        if [ "$HOSTNAME" = "$host" ] ; then
+            if [ "$last" != "$host" ] ; then
+                system -e -p -- install -d -m 755 "$host"
+                symlink -s "$host" "local"
+                symlink -s "/mnt" "$host/.mount"    # see centauripaths abstract links
+                last="$host"
+            fi
+
+            # search mount point
+            for path in "/mnt/$share" "/$share" "" ; do
+                [ -e "$path" ] || continue
+                [ -h "$path" ] || break
+            done
+            if [ -z "$path" ] ; then
+                warning -a "Cannot find mount point for '$item' at '$host'"
+                continue
+            fi
+
+            # make links to /mnt or /
+            if [ "$path" = "/mnt/$share" ] ; then
+                [ "$share" = "shared" -o "$share" = "archive" ] && symlink -s "$path" "/$share"
+            else
+                symlink -s "$path" "/mnt/$share"
+            fi
+
+            # make links to $DAT_DIR_NETWORK/$host
+            [ "$share" = "export" -o "$share" = "archive" -o "$share" = "shared" ] &&
+                symlink -s "$path" "$host/$share"
+
+        ### remote ###
+        else
+            if [ "$last" != "$host" ] ; then
+                folder -m -- "$host" 755
+                last="$host"
+            fi
+        fi
+    done
+
+    ___otherStuff               # efi boot, network folder desktop files
+    actionUpdate                # show/hide hosts in network folder
+}
+
+# ------------------------------------------------------------------------------
+# Purge/Merge data: <maxage> <keep>
+# ------------------------------------------------------------------------------
+actionPurge() {
+    findFolders
+# purge:
+#    Purging /mnt/bak1/Backup/data -> /mnt/bak1/Deleted
+#    Purging /mnt/bak1/Backup/disk -> /mnt/bak1/Deleted
+#    Purging /mnt/bak1/Backup/phys -> /mnt/bak1/Deleted
+
+# history:
+###  Linking /mnt/bak1/Backup/data -> /mnt/bak1/History/data
+#    Purging /mnt/bak1/History/data -> /mnt/bak1/Deleted
+###  Linking /mnt/bak1/Backup/disk -> /mnt/bak1/History/disk
+#    Purging /mnt/bak1/History/disk -> /mnt/bak1/Deleted
+###  Linking /mnt/bak1/Backup/phys -> /mnt/bak1/History/phys
+#    Purging /mnt/bak1/History/phys -> /mnt/bak1/Deleted
+
+    # must have backups
+    local dfldr mesg hist maxa="${1:--}" keep="${2:--}"
+    [ "$maxa" != '-' -a -n "${maxa//[0-9]/}"  ] && fatal "<maxage> is not a number: $maxa"
+    [ "$keep" != '-' -a -n "${keep//[0-9]/}"  ] && fatal "<keep> is not a number: $keep"
+
+    if [ -z "$DAT_DIR_BACKUP" ] ; then
+        message -a "${CEN_ACTION^} skipped (no 'Backup' folder found)"
+        return
+    fi
+
+    # check prerequisites
+    if [ "$CEN_ACTION" = "purge" ] ; then
+        embed -r -s dfldr centauripaths "$DAT_DIR_BACKUP" --deleted
+        mesg="Purge backups ..."
+    else
+        if [ -z "$DAT_DIR_HISTORY" ] ; then
+            message -a "${CEN_ACTION^} skipped (no 'History' folder found)"
+            return
+        fi
+        embed -r -s dfldr centauripaths "$DAT_DIR_HISTORY" --deleted
+        hist=1
+        mesg="Merge backups to history ..."
+    fi
+    if [ -z "$dfldr" ] ; then
+        message -a "${CEN_ACTION^} skipped (no 'Deleted' folder found)"
+        return
+    fi
+    banner "$mesg"
+
+    # loop over folders in backup
+    local sfldr hfldr kind phys="$DAT_DIR_BACKUP/phys"
+    for kind in data disk phys vbox ; do
+        if [ "$kind" = "vbox" ] ; then
+            sfldr="$DAT_DIR_AUTOSAVE/images"
+        else
+            sfldr="$DAT_DIR_BACKUP/$kind"
+        fi
+        [ -d "$sfldr" ] || continue
+
+        # silently move "disk/*.img.*" to "phys"
+        [ "$kind" = "disk" -a -d "$phys" ] &&
+            system -e -p -- find "$sfldr" -type f -name "*.img.*" -exec mv {} "$phys" \;
+
+        # move from backup to deleted ...
+        [ "$keep" = '-' ] && keep=3
+        if [ -z "$hist" ] ; then
+            message -i "Purging $sfldr -> $dfldr"
+            [ "$maxa" = '-' ] && maxa=120
+            runTimeline "$sfldr" "$dfldr" "$maxa" "$keep"
+        else
+        # copy/move to history ...
+            hfldr="$DAT_DIR_HISTORY/$kind"
+            [ -d "$hfldr" ] || continue
+            message -i "Linking $sfldr -> $hfldr"
+            mergeBackups "$sfldr" "$hfldr"
+
+            # move from history to deleted ...
+            message -i "Purging $hfldr -> $dfldr"
+            runTimeline "$hfldr" "$dfldr" "$maxa" "$keep"
+        fi
+    done
+
+    # free disk space
+    [ -n "$dfldr" ] && embed -z centauriremove --silent --purge --anypath --yes "$dfldr"
+}
+
+# ------------------------------------------------------------------------------
+# action list - make catalogues: <medium> <folder>...
+# ------------------------------------------------------------------------------
+actionList() {
+    findFolders
+
+    local arch medi="$1" ; shift
+    [ "${medi:--}" = '-' ] && medi="$HOSTNAME"
+    netStatus || return
+    arch="$DAT_ARCH_DIR/${DAT_NET_DOMAIN%.*}"
+    folder -m "$arch"
+
+    if [ -n "$1" ] ; then
+        message "Creating '$medi' catalogue ..."
+        runList "$arch/$medi" "$medi" "$@"
+        return
+    fi
+
+    if [ -n "$DAT_DIR_HISTORY" -o -n "$DAT_DIR_BACKUP" ] ; then
+        message "Creating archive catalogue ..."
+        runList "$arch/$medi" - "$DAT_DIR_BACKUP" "$DAT_DIR_HISTORY"
+    fi
+
+    [ -n "$DAT_DIR_AUTOSAVE" ] || return
+    message "Creating backup catalogue ..."
+    runList "$DAT_ARCH_DIR/@autosave" - "$DAT_DIR_AUTOSAVE/daily" \
+            "$DAT_DIR_AUTOSAVE/weekly" "$DAT_DIR_AUTOSAVE/monthly"
+}
+
+# ------------------------------------------------------------------------------
+# action timeline: [<folder> [<maxage>|0|- [<keep>|0|-] ] ]
+# ------------------------------------------------------------------------------
+actionTimeline() {
+    local fldr="${1:-.}" maxa="${2:--}" keep="${3:--}" fdel
+    [ "$maxa" != '-' -a -n "${maxa//[0-9]/}"  ] && fatal "<maxage> is not a number: $maxa"
+    [ "$keep" != '-' -a -n "${keep//[0-9]/}"  ] && fatal "<keep> is not a number: $keep"
+
+    embed -r -s fldr centauripaths --fatal "$fldr"
+    message "Timeline path: $fldr"
+    folder -c -f -r "$fldr"
+    embed -r -s fdel centauripaths --fatal --deleted .
+    [ "${fdel:--}" = '-' ] && return 1
+    runTimeline "$PWD" "$fdel" "$maxa" "$keep"
+}
+
+# ------------------------------------------------------------------------------
+# update hosts in network folder: <role> <server> <nick>
+#-no args- DAT_NET_NICK DAT_NET_MASTER DAT_NET_MODE and DAT_NET_DOMAIN
+# ------------------------------------------------------------------------------
+actionUpdate() {
+    if usingMounter ; then
+        if [ "$CEN_ACTION" != 'refresh' ] ; then
+            trace -a "Action '$CEN_ACTION' ignored, using centaurimounter"
+        elif system -e -p -- systemctl --no-block restart centaurimounter ; then
+            message -a "centaurimounter service restarted"
+        fi
+        return
+    fi
+    findFolders                         # this will spin-up disks
+
+    ___update_data() {
+        local foff host="$1"
+        if [ "${host::1}" = "." ] ; then
+            foff="$host" ; host="${host:1}"
+        fi
+        if sysrun -q -r -- ping -c1 -W1 -q "$host" ; then
+            [ -z "$foff" ] && return
+            trace -a -c "Enable  host" -- "$host"
+            rename "$foff" "$host"
+        else
+            [ -z "$foff" ] || return
+            trace -a -c "Disable host" -- "$host"
+            rename "$host" ".$host"
+        fi
+    }
+
+    # update the '$DAT_DIR_NETWORK/home' link: <local-flag>
+    ___update_home() {
+        # network offline
+        if [ -n "$1" ] ; then
+            [ "${DAT_NET_NICK:--}" = '-' ] || remove "$DAT_NET_NICK"
+            symlink -s "/home" "home" ; return
+        fi
+
+        # network online
+        [ "$DAT_NET_MASTER" != "$DAT_NET_NICK" -a "$DAT_NET_MASTER" != '-' ] &&
+            [ -d "$DAT_NET_MASTER" ] && symlink -s "$DAT_NET_MASTER" "$DAT_NET_NICK"
+
+        if [ "$DAT_NET_MASTER" = '-' ] ; then
+            symlink -s "/home" "home" ; return
+        fi
+
+        folder -m ".samba"
+        system -e -p -- chmod 775 "." ".samba"
+        symlink -s ".samba" "home"
+    }
+
+    local item nonl=0 noff=0
+    system -c -e ping || return
+    folder -c -q "$DAT_DIR_NETWORK" || return
+
+    if [ $# = 3 -a "$2" != '-' -a "$3" != '-' ] ; then
+        DAT_NET_MODE="$1"
+        DAT_NET_MASTER="${2%%.*}"
+        DAT_NET_DOMAIN="${2#*.}"
+        DAT_NET_NICK="${3%%.*}"
+    else
+        netStatus || return
+    fi
+
+    local nsta="${DAT_NET_MODE^^}"
+    if [ "${nsta:-CLIENT}" = "UNKNOWN" -o "$nsta" = "SINGLE" ] ; then
+        message -a "No host can be reached (unknown network)"
+        for item in [a-z]* ; do
+            [ "$item" = "$HOSTNAME" -o "$item" = "home" ] && continue
+            if [ -h "$item" ] ; then
+                [ ! -e "$item" ] && remove "$item"
+                continue
+            fi
+            [ -d "$item" ] || continue
+            trace -a "Disable host: $item"
+            rename "$item" ".$item"
+        done
+        ___update_home 1
+        return
+    else
+    :
+    fi
+
+    for item in [a-z]* .[a-z]* ; do
+        [ "$item" = "$HOSTNAME" -o "$item" = "home" ] && continue
+        [ -h "$item" ] && continue
+        [ -d "$item" ] || continue
+        ___update_data "$item" &
+    done
+    wait
+    ___update_home
+
+    for item in [a-z]* .[a-z]* ; do
+        [ "$item" = "$HOSTNAME" -o "$item" = "home" ] && continue
+        [ -h "$item" ] && continue
+        [ -d "$item" ] || continue
+        if [ "${item::1}" = "." ] ; then
+            noff=$((noff + 1))
+        else
+            nonl=$((nonl + 1))
+        fi
+    done
+    message -a "Hosts online: $nonl  offline: $noff"
+}
+
+# ------------------------------------------------------------------------------
+# helpers
+# ------------------------------------------------------------------------------
+banner() {
+    [ "$CEN_AUTOIND" = "1" ] && message -a
+    message -- "$*"
+    message -a
+}
+
+# check if the autosave folder exists: -no args-
+checkAutoSave() {
+   [ -n "$DAT_DIR_AUTOSAVE" ] && return 0
+   trace -a -c "Autosave skipped" "no 'Autosave' folder"
+   return 1
+}
+
+# make a backup list: <output> <host> <arg>...
+runList() {
+    local fout="$1" host="${2:--}" hopt sopt floc ; shift 2
+    [ "$host" != '-' ] && hopt="--host=$host"
+    [ "$CEN_VERB" -le 1 ] && sopt="--silent"
+
+    ___list() {
+        for floc in "$@" ; do
+            [ -d "$floc" ] || continue
+            embed -r centauriarchive list $hopt $sopt --size=b --folder="$floc"
+        done
+    }
+
+    if [ -n "$CEN_OPT_DRYRUN" ] ; then
+        ___list "$@"
+    else
+        2>/dev/null >"$fout" ||
+            { error "Cannot create list output: $fout" ; return 1 ; }
+        ___list "$@" > "$fout"
+    fi
+}
+
+# ldap backup: <dest> <dalt>
+runLdapSave() {
+    local dest="$1"                     # destination dir for tgz
+    local dalt="$2"                     # alternate dest, inhibits tgz creation
+    local slct slpd="/etc/ldap"
+    [ -d "$slpd" ] || return
+
+    sysfind -s slct -- 'slapcat' || return
+    banner "Run ldap backup ..."
+
+    if [ -z "$CEN_OPT_DRYRUN" ] ; then
+        [ -f "$slpd/slapd_data.ldif" ] && mv -f "$slpd/slapd_data.ldif" "$slpd/slapd_data.ldif.bak"
+        $slct > "$slpd/slapd_data.ldif"
+        chmod 400 "$slpd/slapd_data.ldif"
+    fi
+    [ -d "$dest" ] || return                    # no dest dir
+    [ -n "$dalt" -a -e "$dalt" ] && return      # other dir exists
+
+    embed centauribackup archive -T ldap -S "$dest" -B "$slpd" "slapd_data.ldif"
+}
+
+# back-up vbox state and images: -no args-
+runVBoxSave() {
+    #local fdir="$DAT_DIR_AUTOSAVE/vbox"
+    #if [ -x "$CEN_TOOLS/virtualbox/vbox" -a -d "$fdir" ] ; then
+    #    banner "Save vbox state ..."
+    #    embed centauriremove --silent --purge --yes "$fdir"
+    #    embed "virtualbox/vbox" save
+    #fi
+
+    local fdir="$DAT_DIR_AUTOSAVE/images"
+    if [ -x "$CEN_TOOLS/virtualbox/backup-manager" -a -d "$fdir" ] ; then
+        banner "Save vbox disks ..."
+        embed centauriremove --silent --purge --yes "$fdir"
+        embed "virtualbox/backup-manager" --yes update
+        purgeBackups "$fdir"
+    fi
+}
+
+runTimeline() {
+    local fldr="${1:-.}" fdel="$2" maxa="${3:--}" keep="${4:--}" pari="any"
+
+   case "$fldr" in
+   */History/data)  pari="even" ; set -- --tag=home --tag=+ ;;
+   */History/disk)  pari="odd"  ; set -- --tag=home --tag=root --tag=usr --tag=+ ;;
+   */data)          [ "$maxa" = '-' ] && maxa=366 ;
+                    pari="even" ; set -- --tag=home --tag=+ ;;
+   */disk)          [ "$maxa" = '-' ] && maxa=366
+                    pari="odd"  ; set -- --tag=home --tag=root --tag=usr --tag=+ ;;
+   *)               set --
+   esac
+
+   local snam="${CEN_EMBED:-$CEN_NAME}: " ; snam="${snam//?/ }"
+   local opts=(--yes --silent --force --folder="$fldr" --output="$fdel" --write="${snam}Delete: %s%.0s" "$@")
+
+   [ "$keep" != '-' -a "$keep" != "0" ] && opts+=(".." "$keep")
+   [ "$maxa" != '-' -a "$maxa" != "0" ] &&
+       embed -z -v -y centauriarchive move "${opts[@]}" --not --min=$((maxa + 1))
+
+   embed -z -v -y centauriarchive move "${opts[@]}" --not --cond=month
+   embed -z -v -y centauriarchive move "${opts[@]}" --not --min=150 --max=479 --cond=quarter --parity="$pari"
+   embed -z -v -y centauriarchive move "${opts[@]}" --not --min=480 --max=719 --cond=half
+   embed -z -v -y centauriarchive move "${opts[@]}" --not --min=720           --cond=year
+}
+
+# keep only a limited number of backups: <source> <dest> [<keep> [<args>...]]
+purgeBackups() {
+    local fsrc="$1" fdes="${2:--}" keep="${3:-3}"
+    if [ "$fdes" = '-' ] ; then
+        embed -r -s fdes centauripaths --deleted "$fsrc"
+        [ "${fdes:--}" = '-' ] && return 1
+    fi
+    [ "${2:--}" = '-' ] && message -i "Purge old Backups: $fsrc -> $fdes"
+    shift ; shift ; shift
+
+    local snam="${CEN_EMBED:-$CEN_NAME}: " ; snam="${snam//?/ }"
+    embed -z centauriarchive --yes --quiet --write "${snam}Delete: %s%.0s" \
+                             --folder "$fsrc" --output "$fdes" --not move "$@" .. "$keep"
+}
+
+# merge with history: <source> <dest>
+mergeBackups() {
+    local fsrc="$1" fdes="$2" farr verb="link"
+    [ -d "$fdes" ] || return 1
+
+    system -q -a farr -r -- \
+           stat --dereference --printf="%m\n" "$fsrc" "$fdes" || return 1
+    [ "${farr[0]}" = "${farr[1]}" ] || verb="copy"
+    local snam="${CEN_EMBED:-$CEN_NAME}: " ; snam="${snam//?/ }"
+
+    embed -z centauriarchive --yes --quiet --write "${snam}Merge: %s%.0s" \
+                             --folder "$fsrc" --output "$fdes" $verb --cond month --maxage 365
+}
+
+# ------------------------------------------------------------------------------
+# Set DAT_NET_NICK DAT_NET_MASTER DAT_NET_MODE and DAT_NET_DOMAIN
+# ------------------------------------------------------------------------------
+netStatus() {
+    [ -n "$DAT_NET_MODE" ] && return 0  # was called before
+    local ares
+    embed -r -a ares -- centauriname --nick --active --mode --domain
+    DAT_NET_NICK="${ares[0]}"
+    DAT_NET_MASTER="${ares[1]}"
+    DAT_NET_MODE="${ares[2]}"
+    DAT_NET_DOMAIN="${ares[3]}"
+    [ -n "$DAT_NET_MODE" ]              # return statustus
+}
+
+# ------------------------------------------------------------------------------
+# Find backup folders: autosave, backup, history: <-q>
+# ------------------------------------------------------------------------------
+findFolders() {
+    [ -n "$DAT_DIR_NETWORK" ] && return 0
+    local darr
+    shortpath -a darr ${1:--f} -n "empty" -- autosave backup history network
+
+    DAT_DIR_AUTOSAVE="${darr[0]}"
+    DAT_DIR_BACKUP="${darr[1]}"
+    DAT_DIR_HISTORY="${darr[2]}"
+    DAT_DIR_NETWORK="${darr[3]:-/network}"
+
+    [ -n "$DAT_DIR_NETWORK" ]                   # return status
+}
+
+# ------------------------------------------------------------------------------
+# Check if this system is using centaurimouter service
+# ------------------------------------------------------------------------------
+usingMounter() {
+    set -- /etc/systemd/system/*.wants/centaurimounter.service
+    [ -e "$1" ]
+}
+
+# ------------------------------------------------------------------------------
+# action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    # all actions need root
+    da[iy]*)
+        invoke -r 'day'     -           0   ;;
+    wee|week)
+        invoke -r 'week'    -           0   ;;
+    mon*)
+        invoke -r 'month'   -           0   ;;
+    inf*)
+        invoke -r 'info'    -           0   ;;
+    ini|init)
+        invoke -r 'init'    -           0 4 ;;
+    lin*)
+        invoke -r 'links'   -           0 1 ;;
+    lis|list)
+        invoke -r 'list'    -           0 + ;;
+    pur*)
+        invoke -r 'purge'   -           0 2 ;;
+    his*)
+        invoke -r 'history' actionPurge  0 2 ;;
+    ref*)
+        invoke -s 'refresh' actionUpdate 0 3 ;;     # use sudo
+    tim*)
+        invoke -r 'timeline' -          1 3 ;;
+    upd*)
+        invoke -s 'update'  -           0 3 ;;      # use sudo
+
+    # forward to centauribackup
+    ba[ck]*)
+        invoke    'backup'  -           1 + ;;
+    [a-z]*)
+        invoke    'backup'  -           1 + "$@" ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    findFolders -q          # get folders, no error on load
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+actions:
+       ••• actions for network mounts •••
+       links  [<server>|-]  manage symlinks in $DAT_DIR_NETWORK for samba and nfs
+       update               update $DAT_DIR_NETWORK folder (ignored for centaurimounter)
+       refresh              update $DAT_DIR_NETWORK folder (restarts centaurimounter)
+
+       ••• actions for backup folders •••
+       info                 show backup and network folder status
+       init   [<rbak>|- [<auto>|-|+ [<back>|-|+ [<hist>|-|+]]]]
+                            setup backup volume and folders
+
+       ••• actions to manage backups •••
+       day                  [*] backup most important data
+       week                 [*] backup some archives
+       month                [*] backup things that change infrequently
+       list     [<medium>|- [<folder>...]]
+                            create backup catalogue file
+       purge    [<maxage> [<keep>]]
+                            purge the backup folder(s)        (defaults: 120 3)
+       history  [<maxage> [<keep>]]
+                            merge to history and purge          (defaults: 0 3)
+       timeline <path> [<maxage> [<keep>]]
+                            expunge backups creating a timeline (defaults: 0 0)
+       [backup] <name>...   forward to centauribackup
+
+       [*] These actions should be called run via cron or timer regularly. Backups are
+           made only if the corresponding 'Autosave' folder exists. See action 'info'.
+
+arguments:
+       <auto> <back> <hist> base folders for Autosave Backup and History
+       <maxage>             max age of backups [days] to retain  (0 := forever)
+       <keep>               recent backups to retain, overrides <maxage>
+       <path>               path (starts with . or /)  -or-  centauripath key
+       <name>               a valid group/target for centauribackup
+       <rbak>               root folder or sub-volume for backup data
+
+backups:
+       Autosave             populated via centauribackup daily|weekly|monthly
+       Backup               manually via centauribackup disk|data|phys|vbox
+       History              managed via $CEN_NAME purge|history
+
+       Backups and Snapshots are different things. While Snapshots protect against
+       human or software failures, Backups protect against hardware problems. Use
+       'centauriarchive' to copy backups to a safe location.
+
+examples:
+       $CEN_NAME purge 1 3     # keep 3 most recent backups
+       $CEN_NAME purge 730     # expunge backups, create 2 year timeline
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

@@ -1,0 +1,18 @@
+# centauri-public.target
+[Unit]
+Description=Public network mode
+
+Conflicts=centauri-master.target centauri-slave.target centauri-member.target centauri-trusted.target
+After=network-online.target centauriswitch.service 
+Wants=network-online.target centauriswitch.service
+
+# Stop some things started by centauri-network and others
+Conflicts=winbind.service smbd.service nmbd.service centaurinmbd.service
+Conflicts=cups-browsed.service dnsmasq.service
+Conflicts=gmediarender.service minidlna.service
+Conflicts=centauri-network.service
+
+# Stops centauri-master services
+Conflicts=centauriwsdd.service ntpsec.service samba-ad-dc.service
+Conflicts=cyrus-imapd.service exim4.service openvpn@server.service squid.service lighttpd.service
+Conflicts=nfs-mountd.service rpcbind.service rpc-gssd.service nfs-server.service 

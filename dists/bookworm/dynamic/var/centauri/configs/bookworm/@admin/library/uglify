@@ -1,0 +1,928 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2024; BSD License"
+CEN_TITLE="Pack centauri-bash-lib sources, create packaged script"
+
+# TODO optimize case statements
+# TODO function '(){'
+
+# cannot use autoload - might autolod .p before being written completely ...
+PATH+=":${0%/*}" . _centauri_bash_lib -d -f -m ext -r -y - '0.25:2' || exit 2
+
+embed -m _centauri_bash_iom -o
+embed -m _centauri_bash_utl
+
+# Data
+#CEN_RUN_MIN_ARGS=1              # min arg count, see arguments()
+#CEN_RUN_MAX_ARGS=+              # max arg count
+
+CEN_OPT_CONFIG=                 # see --config
+CEN_OPT_DOCU=                   # see --docu
+CEN_OPT_NODEPS=                 # see --nodeps
+CEN_OPT_EXTRACT=                # see --extractor
+CEN_OPT_UGLY=                   # see --uglify
+
+DAT_FLG_PACKAGE=                # build a self-contained package
+DAT_DEC_PACKAGE=                # declare -A statements
+
+DAT_FLG_MODARGS=                # flags module arguments
+DAT_FLG_DYNAMIC=                # set in do_libarg (-a option)
+DAT_FLG_LOCALE=                 # ...              (-t option)
+DAT_FLG_MOVED=                  # see do_special
+
+DAT_LIB_USER="_*_*_usr"         # glob pattern for user libraries
+
+declare -A DAT_MAP_EMBED        # map for external apps
+declare -A DAT_MAP_MODULE       # map for module status
+
+# script parser, state engine
+DAT_INP_STATE=1                 # 1:=search _centauri_bash_lib
+                                # 2:=search 1st function
+                                # 3:=search main/quit
+                                # 4:=found main/quit
+                                # 5:=cancel main/quit
+                                # 6:=data section
+
+DAT_INP_STATIC=()               # array of static code
+DAT_INP_SCRIPT=()               # ... script code (functions)
+DAT_INP_FOOTER=()               # ... footer (for main/quit)
+DAT_INP_LIBARG=                 # arg string for _centauri_bash_lib
+DAT_INP_COMMENT=                # capture comment block
+DAT_INP_DATA=()                 # data section
+
+DAT_CONF_FILE=                  # config file
+DAT_CONF_LINES=()               # config array
+DAT_CONF_LNMOD=                 # index of 'modules' line
+DAT_CONF_LNEMB=                 # index of 'embeded' line
+DAT_CONF_EXTRA=                 # extra modules
+
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+
+# simplify white spaces (using rlin)
+do_simple() {
+    rlin="${rlin//    / }"      # no quotes, simplify
+    rlin="${rlin//  / }"
+    rlin="${rlin//  / }"
+    rlin="${rlin// && /\&\&}"
+    rlin="${rlin// || /||}"
+    rlin="${rlin// ;/;}"
+    rlin="${rlin//; /;}"
+}
+
+# top level line parser
+do_parser() {
+    # ----------------------------------------------------------------------
+    # inline comment - take care of quotes
+    # ----------------------------------------------------------------------
+
+    if [ "${rlin/ \#/}" != "$rlin" ] ; then
+        # ok if right side has no quotes
+        local ncom="${rlin##* \#}"                      # get right side
+        if [ "${ncom/[\'\"]/}" = "$ncom" ] ; then       # ok, no quotes
+            #$CEN_TRACE2 -a -c "COMMENT1 $nlin" -- "$rlin"
+            trimjoin -s ncom -- "${rlin%% \#*}"         # strip and trim
+            rlin="$ncom" #; do_simple
+
+        # ok if left side has no quotes
+        else
+            trimjoin -s ncom -- "${rlin%% \#*}"         # strip and trim
+            if [ "${ncom/[\'\"]/}" = "$ncom" ] ; then   # ok, no quotes
+                #$CEN_TRACE2 -a -c "COMMENT2 $nlin" -- "$rlin"
+                rlin="$ncom" #; do_simple
+
+            # could not remove a comment
+            else
+                $CEN_TRACE -a -c "COMMENT3 $nlin" -- "$rlin"
+            fi
+        fi
+    fi
+
+
+    # ----------------------------------------------------------------------
+    # no single/double quote and no escape - just simplify spaces
+    # ----------------------------------------------------------------------
+
+    local ftwo fone fesc tmp1 tmp2
+    case "$rlin" in
+    *\\\'*) fesc="'"
+            ;;
+    *\\\"*) fesc='"'
+            ;;
+    *\'*)   fone=1 ; [ "${rlin/\"/}" != "$rlin" ] && ftwo=1
+            ;;
+    *\"*)   ftwo=1 ; [ "${rlin/\'/}" != "$rlin" ] && fone=1
+            ;;
+    *)      $CEN_TRACE2 -a -c "SIMPLE   $nlin" -- "$rlin"
+            do_simple ; return
+    esac
+
+    if [ "$fesc" ] ; then
+        tmp1="${rlin%%\\${fesc}*}"              # left side
+        tmp2="${rlin#*\\$fesc}"                 # right side
+        rlin="$tmp1" ; do_simple ; rlin+="\\$fesc$tmp2"
+        $CEN_TRACE2 -a -c "ESCAPE   $nlin" -- "$rlin"
+        return
+    fi
+
+    # ----------------------------------------------------------------------
+    # weird quoting, catch some special cases
+    # ----------------------------------------------------------------------
+
+    if [ -n "$ftwo" ] ; then
+        case "$rlin" in
+            *\[*\"]*\}\"*)                          # catch "${y["a   b"]::1}"
+                $CEN_TRACE2 -a -c "WEIRD    $nlin" -- "$rlin"
+                return ;;
+            *'$(<'*)
+                $CEN_TRACE2 -a -c "HEREFILE $nlin" -- "$rlin"
+                return ;;
+        esac
+    fi
+
+    # ----------------------------------------------------------------------
+    # got mixed strings, simplify left side only
+    # ----------------------------------------------------------------------
+
+    if [ -n "$fone" -a -n "$ftwo" ] ; then
+
+        # simple cases - mixed string quoting but not nested
+
+        # "bla" "bla" 'quak' 'quak'
+        tmp1="${rlin#*\'}"                      # right side
+        if [ "${tmp1/\"/}" = "$tmp1" ] ; then
+            $CEN_TRACE2 -a -c "FINE1    $nlin" -- "$rlin"
+            do_regex                            # more string processing
+            return
+        fi
+
+        # 'quak' 'quak'  "bla" "bla"
+        tmp1="${rlin#*\"}"                      # right side
+        if [ "${tmp1/\'/}" = "$tmp1" ] ; then
+            $CEN_TRACE2 -a -c "FINE2    $nlin" -- "$rlin"
+            do_regex                            # more string processing
+            return
+        fi
+
+        # a full parsing of bash expressions would be too expensive, regex
+        # are quite slow. try to uglify text before 1st string only:
+
+        local quot=${rlin//[!\'\"]/}            # not to be quoted!
+        while [ -n "$quot" ] ; do               # search nested strings
+            case "$quot" in
+
+                    # mixed  but not nested is ok
+
+            \"\"*)  quot="${quot:2}" ;;
+            \'\'*)  quot="${quot:2}" ;;
+
+                    # do_regex cannot handle nested strings!
+
+            *)      tmp1="${rlin%%[\'\"]*}"     # left side
+                    tmp2="${rlin:${#tmp1}}"     # right side
+                    rlin="$tmp1" ; do_simple ; rlin+="$tmp2"
+                    $CEN_TRACE -a -c "NESTED   $nlin" -- "$rlin"
+                    return
+            esac
+        done
+        $CEN_TRACE2 -a -c "FINE3    $nlin" -- "$rlin"
+    fi
+
+    do_regex                                    # try more string processing
+}
+
+# recursive regex (using rlin)
+do_regex() {
+    # --------------------------------------------------------------------------
+    # recursive handling of strings
+    # --------------------------------------------------------------------------
+
+    # handle some single quote cases
+    if [ "${rlin/\'/}" != "$rlin" ] ; then
+        if [[ "$rlin" =~ (.*)(\'[^\']*\')(.*) ]] ||
+            [[ "$rlin" =~ (.*)(\'\\\\[a-z0-9]*\')(.*) ]] ; then
+            local _tmp1="${BASH_REMATCH[1]}"
+            local _tmp2="${BASH_REMATCH[2]}"
+            local _tmp3="${BASH_REMATCH[3]}"
+   #         $CEN_TRACE2 -a -c "SINGLE   $nlin" -- "$_tmp1|$_tmp2|$_tmp3"
+            $CEN_TRACE2 -a -c "SINGLE   $nlin" -- "$_tmp2"
+
+            [[ "$_tmp2" == \'[[:alnum:]/:+-]\' ]] && _tmp2="${_tmp2:1:1}"
+
+            rlin="$_tmp1" ; do_regex ; _tmp1="$rlin"
+            rlin="$_tmp3" ; do_regex ; _tmp3="$rlin"
+            rlin="$_tmp1$_tmp2$_tmp3"
+        else
+            do_simple
+        fi
+        return
+    fi
+
+    # handle some double quote cases
+    if [[ "$rlin" =~ (.*[^\$]|^)(\$?\"[^\"]*\")(.*) ]] ; then
+        local _tmp1="${BASH_REMATCH[1]}"
+        local _tmp2="${BASH_REMATCH[2]}"
+        local _tmp3="${BASH_REMATCH[3]}"
+   #     $CEN_TRACE2 -a -c "DOUBLE   $nlin" -- "$_tmp1|$_tmp2|$_tmp3"
+
+        # convert simple strings to single quotes (slightly faster in bash)
+        case "$_tmp2" in
+            \$*)            ;;
+            \"\$[@0-9]\")   ;;
+            *\$*)           ;;
+            *[\{\}\[\]]*)   ;;
+            *\"*[^\\]\"*)  _tmp2="${_tmp2//\"/\'}"
+                           $CEN_TRACE2 -a -c "GOOD     $nlin" -- "$_tmp2"
+        esac
+
+        [[ "$_tmp2" == \'[[:alnum:]/:+-]\' ]] && _tmp2="${_tmp2:1:1}"
+
+        rlin="$_tmp1" ; do_regex ; _tmp1="$rlin"
+        rlin="$_tmp3" ; do_regex ; _tmp3="$rlin"
+        rlin="$_tmp1$_tmp2$_tmp3"
+    else
+        do_simple
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# echo line of code without comments: <code>
+# ------------------------------------------------------------------------------
+do_ugly() {
+    local rlin feof nlin=0
+    local flib='-l' sifs="$IFS" ; IFS=$'\n'
+    [ "$1" = "lib" ] && flib=
+
+    while read -r rlin ; do
+        ((++nlin))
+
+        # not in !EOF block
+        if [ -z "$feof" ] ; then
+            if [ "${rlin::1}" = "#" ] ; then        # full line comment
+                [ -z "$DAT_FLG_PACKAGE" ] && echo
+                continue
+            fi
+
+            if [ -n "$flit" ] ; then                # continuation line(s)
+                echo "$rlin"
+                [ "${rlin:${#rlin}-1}" = "\\" ] || flit=
+                continue
+            fi
+
+            trimjoin -s rlin -l -- "$rlin"          # trim left
+            if [ "${rlin::1}" = '#' ] ; then        # indented comment
+                [ -z "$DAT_FLG_PACKAGE" ] && echo
+                continue
+            fi
+
+            case "$rlin" in                         # bash glob for speed
+            '')         [ -z "$DAT_FLG_PACKAGE" ] && echo
+                        continue ;;
+            *\\)        flit=1 ;;                   # detect continuation
+            *[\'\"\#]*) do_parser ;;
+            *)          do_simple                   # no quotes, simplify
+                        rlin="${rlin%% # *}"
+            esac
+
+            [ "${rlin::1}" = " " ] && rlin="${rlin:1}"
+            if [ -n "$DAT_FLG_PACKAGE" ] ; then     # collect map declares
+                do_special -l "$rlin"
+                [ -n "$DAT_FLG_MOVED" ] && continue
+            fi
+            echo "$rlin"
+
+            rlin="${rlin// /}"
+            if [ "${rlin/<<!EOF/}" != "$rlin" ] ; then
+                feof=1
+            fi
+
+        # copy here document until !EOF
+        else
+            [ "$rlin" = '!EOF' ] && feof=
+            printf "%s\n" "$rlin"
+        fi
+    done
+    IFS="$sifs"
+}
+
+# ------------------------------------------------------------------------------
+# generate text for packaged script: header|footer|data <file>
+# ------------------------------------------------------------------------------
+do_package() {
+    local line
+
+    if [ "$1" = 'data' ] ; then
+        [ "${#DAT_INP_DATA[@]}" = 0 ] && return 0
+        trace -a -p "Adding %s data lines" "${#DAT_INP_DATA[@]}"
+        create -a -v DAT_INP_DATA -- "$2"
+        return 0
+    fi
+
+    if [ "$1" = 'header' ] ; then
+        create -t -c -- "$2" <<!EOF
+#!${CEN_PATHS[1]}/bash
+$(do_deco "centauri-bash-package of:" "${CEN_INPFILE##*/}")
+
+# get installation folder and command name
+CEN_NAME="\$BASH_SOURCE"
+[ -h "\$CEN_NAME" ] && CEN_NAME=\$(readlink -f -- "\$CEN_NAME")
+CEN_ROOT="\${CEN_NAME%.*}"
+CEN_NAME="\${CEN_ROOT##*/}"
+!EOF
+
+    if [ -n "$CEN_OPT_EXTRACT" ] ; then
+        create -a -c -- "$2" <<!EOF
+
+# need self-extract cache folder for locale
+CEN_ROOT="\$CEN_XTR_RUNTIME"
+if [ -z "\$CEN_ROOT" ] ; then
+    CEN_ROOT="\${XDG_CACHE_DIR:-\$HOME/.cache}/\$CEN_NAME-runtime"
+    [ "\$CEN_ROOT/.timestamp" -nt "\$BASH_SOURCE" ] && CEN_XTR_RUNTIME="\$CEN_ROOT" || CEN_ROOT="\$PWD"
+fi
+!EOF
+    else
+        create -a -c -- "$2" <<!EOF
+[ "\${CEN_ROOT::1}" = '/' ] || CEN_ROOT="\$PWD/\${CEN_ROOT#./}"
+CEN_ROOT="\${CEN_ROOT%/*}"
+!EOF
+    fi
+        [ -n "$DAT_FLG_LOCALE" ] && create -a -c -- "$2" <<!EOF
+
+# setup locale support
+TEXTDOMAIN="\$CEN_NAME"
+TEXTDOMAINDIR="\$CEN_ROOT/locale"
+!EOF
+        create -a -c -- "$2" <<!EOF
+
+# arguments passed to _cen_bash_load_lib
+_CEN_BASH_ARGS=($DAT_INP_LIBARG)
+
+$(do_deco "the 'static' script code before the 'main' call goes into this wrapper")
+_cen_bash_init() {
+!EOF
+
+    if [ "$DAT_INP_STATE" -gt 2 ] ; then
+        create -a -v DAT_INP_STATIC -- "$2"
+    else
+        create -a -c -- "$2" <<!EOF
+    CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2020-2024; BSD License"
+    CEN_TITLE="Example of a packaged _centauri_bash_lib script"
+
+    # PATH+=":${0%/*}" . _centauri_bash_lib -d -r - '0.0' || exit 2
+
+    CEN_RUN_MIN_ARGS=1              # min arg count, see arguments()
+    CEN_RUN_MAX_ARGS=+              # max arg count
+!EOF
+    fi
+
+    create -a -c -- "$2" <<!EOF
+}
+
+$(do_deco "main part of script (subroutines only) needs not to be modified")
+!EOF
+    [ "$DAT_INP_STATE" -le 2 ] && DAT_INP_SCRIPT=(
+        'run() {' '    message "It works! Arguments: \$*"' '}'
+        )
+    create -a -v DAT_INP_SCRIPT -- "$2"
+    create -a -c -- "$2" <<!EOF
+
+$(do_deco "execute the script, this replaces the original 'main ... quit'")
+_cen_bash_main() {
+    main "\$@" ; quit
+}
+
+$(do_deco "the packed code of library modules follows below")
+
+!EOF
+    elif [ "$1" = "footer" ] ; then
+        create -a -c -- "$2" <<!EOF
+
+$(do_deco "simplified '--info' implementation")
+_cen_bash_info() {
+    local _mesg _call ; system -q -s _call -- readlink -f "\$0"
+    _mesg=\$"<unknown author/license>"
+    _mesg="\${CEN_LEGAL:-\$_mesg}"
+    echo "\${_call:-\$0}; \$CEN_VERSION; \$_mesg [packaged]" ; exit
+}
+
+$(do_deco "centauri-bash-package main")
+export CEN_ROOT CEN_TOOLS="\$CEN_ROOT" CEN_LIBRARY="\$CEN_ROOT"
+PATH+=":\$CEN_ROOT"
+[ -n "\$TMP" ] || export TMP="\${XDG_RUNTIME_DIR:-/tmp}" ;
+[ -n "\$TMPDIR" ] || export TMPDIR="\$TMP"
+
+CEN_PACKAGE=1
+$DAT_DEC_PACKAGE
+[ -z "\$_CEN_BASH_ARGS" ] && _CEN_BASH_ARGS=("\$0" "0.00")
+_cen_bash_load_lib "\${_CEN_BASH_ARGS[@]}" || exit 2
+_cen_bash_init "\$@"
+$3_cen_bash_main "\$@"
+
+$(do_deco "end of centauri-bash-package")
+!EOF
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# decorated comment
+# ------------------------------------------------------------------------------
+do_deco() {
+    local line="=== $* ==="
+    local lpad=$((78 - ${#line}))
+    if [ $lpad -gt 0 ] ; then
+        local llef=$((lpad / 2))
+        local lrig=$((lpad - llef))
+        printf -v lpad "%${llef}s%%s%${lrig}s" "" ""
+        lpad="${lpad// /=}"
+        printf "# $lpad\n" "$line"
+    else
+        echo "# $line"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Check for 'embed -[cmq]' and 'declare -A': <flag> <line>
+# ------------------------------------------------------------------------------
+do_special() {
+    DAT_FLG_MOVED=
+
+    case "$2" in
+    declare\ -A\ *) DAT_DEC_PACKAGE+="$2"$'\n'
+                    DAT_FLG_MOVED=1 ; return ;;
+    embed\ *)       ;;
+    *)              return
+    esac
+
+    local flib="$1" fmod frun sifs="$IFS"
+    set -f ; IFS=" \"'" ; set -- $2 ; set +f ; IFS="$sifs"
+    shift                                       # ignore: embed
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -a|-s|-d|-u)    shift ;;                # options with argument
+        -c|-m|-q)       fmod=1 ;;               # module load flag
+        -r)             frun=1 ;;               #  -r flags: ignore dependency
+        esac ; shift
+    done
+
+    if [ -z "$fmod" ] ; then
+        [ "$flib" = '-l' ] && return            # not in library modules
+        DAT_MAP_EMBED["$1"]=1                   # save external dependency
+        trace -a -c "- External" -- "$1"
+        return
+    elif [ -n "$frun" ] ; then
+        trace -a -c "- Ignoring" -- "$1" "(option -r)"
+        return
+    fi
+                                                # --nodeps option
+    [ "$flib" = '-l' -a -n "$CEN_OPT_NODEPS" ] && return
+
+    local snam="${1#_centauri_bash_}"           # short module name
+    if [ "$snam" = "$1" ] ; then
+        trace -a -c "- Custom" -- "$1"
+        return
+    fi
+
+    if [ "$snam" = 'ins' -o "$snam" = 'sys' ] ; then
+        if [ "$flib" = '-l' ] ; then
+            trace -a -c "- Ignoring" -- "$1" "(system module)"
+            return
+        fi
+    else
+        trace -a -c "- Module" -- "$1"
+    fi
+    DAT_MAP_MODULE["$snam"]=1
+}
+
+# ------------------------------------------------------------------------------
+# Parser/state engine for package script
+# ------------------------------------------------------------------------------
+
+# state engine: <line>
+do_state() {
+    local rlin
+    trimjoin -s rlin -l -- "$1"                 # trim left
+    [ "${rlin::1}" = "#" ] && return 0          # ignore comment
+
+    do_special - "$rlin"                        # check embed/declare
+
+    # wait for _centauri_bash_lib statement
+    if [ "$DAT_INP_STATE" = 1 ] ; then
+        [ "${#rlin}" -lt 18 ] && return 0       # too short
+        local temp="${rlin#* . _centauri_bash_lib }"
+        [ "$temp" = "$rlin" ] && return 0
+        do_libarg $temp
+        DAT_INP_STATE=2 ; return 1
+
+    # wait for function
+    elif [ "$DAT_INP_STATE" = 2 ] ; then
+        [ "${#rlin}" -lt 3 ] && return 0        # too short
+        local temp="${rlin//[-_a-zA-Z0-9]}"
+        [ "${temp::2}" = "()" ] || return 0
+        DAT_INP_STATE=3 ; return 1
+
+    # wait for main
+    elif [ "$DAT_INP_STATE" = 3 ] ; then
+        [ "${rlin::5}" = "main " ] || return 0
+        DAT_INP_STATE=4 ; return 1
+
+    # cancel state 4 if non-empty
+    else
+        [ -z "$rlin" ] && return 0
+        DAT_INP_STATE=5 ; return 1
+    fi
+}
+
+# input callback for 'configfile': <line>
+do_input() {
+    if [ "$DAT_INP_STATE" = 6 ] ; then
+        DAT_INP_DATA+=("$1") ; return 0
+    fi
+    local rlin="$1" sold="$DAT_INP_STATE"
+
+    case "$rlin" in
+    \#) [ "${#DAT_INP_STATIC[@]}" = 0 ] && return 0 # ignore she-bang and 1st comments
+        DAT_INP_COMMENT+=("$rlin") ; return 0       # defer comments
+        ;;
+    '') if [ -n "$DAT_INP_COMMENT" ] ; then
+            DAT_INP_COMMENT+=('') ; return 0
+        fi
+        ;;
+    !!!DATA!!!)
+        DAT_INP_STATE=6 ; DAT_INP_DATA+=("$rlin")
+        trace "Found !!!DATA!!! section" ; return 0
+        ;;
+    esac
+
+    # block comments, check for stat change
+    if ! do_state "$rlin" ; then
+        [ "$DAT_INP_STATE" = 2 ] && rlin="# $rlin"
+    fi
+
+    # discard defered comments at state change
+    [ "$sold" != "$DAT_INP_STATE" ] && DAT_INP_COMMENT=()
+
+    # 'declare -A' statements must be moved
+    [ -n "$DAT_FLG_MOVED" ] && rlin="# MOVED: $rlin"
+
+    if [ "$DAT_INP_STATE" = 1 ] ; then
+        DAT_INP_STATIC+=("${DAT_INP_COMMENT[@]}" "$rlin")
+    elif [ "$DAT_INP_STATE" = 2 ] ; then
+        DAT_INP_STATIC+=("${DAT_INP_COMMENT[@]}" "$rlin")
+    elif [ "$DAT_INP_STATE" = 3 ] ; then
+        DAT_INP_SCRIPT+=("${DAT_INP_COMMENT[@]}" "$rlin")
+    elif [ "$DAT_INP_STATE" = 4 ] ; then
+        DAT_INP_FOOTER+=("${DAT_INP_COMMENT[@]}" "$rlin")
+    else
+        DAT_INP_SCRIPT+=("${DAT_INP_COMMENT[@]}" "${DAT_INP_FOOTER[@]}" "$rlin")
+        DAT_INP_FOOTER=()
+        DAT_INP_STATE=3                 # back to script
+    fi
+    DAT_INP_COMMENT=() ; return 0
+}
+
+# parse _centauri_bash_lib arguments: <arg>...
+do_libarg() {
+    DAT_INP_LIBARG=
+    while [ -n "$1" ] ; do
+        case "$1" in
+        -a)   [ -z "$DAT_FLG_MODARGS" ] && DAT_FLG_DYNAMIC=1
+              DAT_MAP_MODULE["dyn"]=1 ;;
+        -g)   DAT_MAP_MODULE["con"]=1 ; DAT_MAP_MODULE["win"]=1 ; DAT_MAP_MODULE["run"]=1 ;;
+        -m)   DAT_INP_LIBARG+="$1 " ; shift ; DAT_MAP_MODULE["$1"]=1 ;;
+        -t)   DAT_FLG_LOCALE=1 ;;
+        -v)   DAT_MAP_MODULE["svc"]=1 ;;
+        -w)   DAT_MAP_MODULE["web"]=1 ;;
+        -*)   ;;
+        [\'\"\$0-9]*) ;;
+        *)    break
+        esac ; DAT_INP_LIBARG+="$1 " ; shift
+    done
+    DAT_INP_LIBARG="${DAT_INP_LIBARG% }"
+    # trace "LIBARG '$DAT_INP_LIBARG'"
+}
+
+# configuration reader, called by configfile
+do_config_reader() {
+    DAT_CONF_LINES+=("$1")
+    local text
+    splitjoin -s text -d " \t" -- "$1"
+    if [ "$text" = 'modules' ] ; then
+        DAT_CONF_EXTRA="${text[*]:1}"
+        message "Extra modules from config:" "${DAT_CONF_EXTRA:-<none>}"
+    elif [ "$text" = 'locales' ] ; then
+        DAT_CONF_LNMOD="${#DAT_CONF_LINES[@]}"
+    elif [ "$text" = 'embeded' ] ; then
+        DAT_CONF_LNEMB="${#DAT_CONF_LINES[@]}"
+    fi
+    return 0
+}
+
+# compare current/new value of a config line: <lnum> <key> <val>
+do_config_compare() {
+    local tnew
+    printf -v tnew "%-11s %s" "$2" "$3"
+    [ "${DAT_CONF_LINES[$1-1]}" = "$tnew" ] && return 0
+    DAT_CONF_LINES[$1-1]="$tnew" ; return 1
+}
+
+# udpate configuration file after packaging
+do_config_update() {
+    [ -z "$DAT_CONF_FILE" ] && return 1
+    [ -z "$DAT_FLG_LOCALE" ] && set --                  # no l10n, clear list
+    do_config_compare "$DAT_CONF_LNMOD" 'locales' "${*##_centauri_bash_}" &&
+    do_config_compare "$DAT_CONF_LNEMB" 'embeded' "${!DAT_MAP_EMBED[@]}" && return 1
+    create -t -v DAT_CONF_LINES -- "$DAT_CONF_FILE"
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+do_docu() {
+    if [ -n "$CEN_DOC_BLOCK" ] ; then
+        local _leng="${#CEN_DOC_BLOCK[@]}" ; ((_leng -= 1))
+        if [ "$_leng" -gt -0 ] ; then
+            echo "$CEN_DOC_BLOCK:-$_leng"
+            printf "%s\n" "${CEN_DOC_BLOCK[@]:1}"
+        fi
+        CEN_DOC_BLOCK=()
+    fi
+    printf "%s\n" "${@:2}"
+}
+
+# ------------------------------------------------------------------------------
+# The one and only action
+# ------------------------------------------------------------------------------
+run() {
+    local item list=() finp="$1"
+
+    if [ -n "$DAT_CONF_EXTRA" ] ; then                  # extra modules
+        set -- "$@" $DAT_CONF_EXTRA
+    fi
+    if [ -n "$CEN_OUTFILE" ] ; then                     # package input
+        [ ! -s "$finp" ] &&                             # auto prepend ...
+            [ -s "$CEN_TOOLS/$finp" ] && finp="$CEN_TOOLS/$finp"
+        inpfile -c -l -- "$finp" || return
+        DAT_FLG_PACKAGE=1 ; shift
+        [ $# -gt 0 ] && DAT_FLG_MODARGS=1
+        configfile -l do_input -n "$CEN_INPFILE"
+
+        if [ "$DAT_INP_STATE" != 4 -a "$DAT_INP_STATE" != 6 ] ; then
+            warning "Could not parse input - edit output manually"
+        fi
+    fi
+    folder -c -f "$CEN_LIBRARY"                         # set library folder
+
+    if [ "${finp:--}" = '-' ] ; then
+        [ $# -gt 1 ] && fatal "Extra arguments"
+        set -- _centauri_bash_??? $DAT_LIB_USER
+    fi
+
+    # --- select modules ---
+
+    for item in "$@" ; do
+        if [ -e "$item" ] ; then
+            list+=("$item")                             # add to result
+        elif [ -e "_centauri_bash_$item" ] ; then
+            list+=("_centauri_bash_$item")              # add to result
+        elif [ "$item" != "$DAT_LIB_USER" ] ; then
+            error "No such module:" "$item"
+        fi
+    done
+    error -t || return                                  # stop on error
+
+    # --- package processing ---
+
+    if [ -n "$DAT_FLG_PACKAGE" ] ; then
+        local load mdyn mods=() msta=1
+
+        # mark static modules ...
+
+        if [ -n "$CEN_OPT_EXTRACT" ] ; then
+            list=(_centauri_bash_lib _centauri_bash_ext _centauri_bash_xtr "${list[@]}")
+        else
+            list=(_centauri_bash_lib "${list[@]}")
+        fi
+
+        for item in "${list[@]}" ; do
+            DAT_MAP_MODULE["${item##*_}"]=1
+            if [ "$item" = '_centauri_bash_xtr' ] ; then
+                load+="[ -z \"\$CEN_XTR_RUNTIME\" ] && embed -m $item"$'\n'
+            elif [ "$item" != '_centauri_bash_lib' ] ; then
+                load+="embed -m $item"$'\n'
+            fi
+        done
+
+        # uglify modules ...
+
+        do_package header "$CEN_OUTFILE"
+        while [ -n "$list" ] ; do
+            for item in "${list[@]}" ; do
+                DAT_MAP_MODULE["${item##*_}"]=2
+                if [ "$item" = '_centauri_bash_dyn' ] ; then
+                        mdyn=1 ; continue
+                elif [ -n "$msta" ] ; then
+                    message -a -c "Processing" -- "$item" "(static)"
+                else
+                    message -a -c "Processing" -- "$item"
+                fi
+                if ! [ -f "$item" -a -r "$item" ] ; then
+                    warning "No such module:" "$item" ; continue
+                fi
+                dryrun && continue
+                {   echo "_cen_bash_load_${item##*_}(){"
+                    do_ugly "${item##*_}" <"$item"
+                    echo "}"
+                } >> "$CEN_OUTFILE"
+            done
+
+            # any added modules?
+            mods+=("${list[@]}") ; list=() ; msta=
+
+            for item in "${!DAT_MAP_MODULE[@]}" ; do
+                [ "${DAT_MAP_MODULE["$item"]}" = 2 ] && continue
+                item="_centauri_bash_$item"
+                trace -a -c "Add module" -- "$item"
+                list+=("$item")
+            done
+        done
+
+        # finally customize the dyn module
+        if [ -n "$mdyn" ] ; then
+            item='_centauri_bash_dyn'
+            message -a -c "Processing" -- "$item"
+            if ! [ -f "$item" -a -r "$item" ] ; then
+                error "No such module:" "$item" ; return
+            fi
+
+            local ddat dlin dmod
+            sysrun -a ddat -n -- do_ugly "${item##*_}" <"$item"
+            trace -a "Filtering ${#ddat[@]} autoload lines"
+            do_deco "packed module: $item"
+            echo "_cen_bash_load_${item##*_}(){"
+                                                        # Filtering ...
+            for dlin in "${ddat[@]}" ; do
+                if [[ "$dlin" == *\ _cen_dyn_load\ * ]] ; then
+                    dmod="${dlin#*_cen_dyn_load }"
+                    dmod="${dmod%% *}"
+                    [ "$dmod" = 'lib' ] && continue     # always static
+                    [ -n "$CEN_OPT_EXTRACT" ] &&        # static if ...
+                        [ "$dmod" = 'ext' ] && continue
+                    [ "${#dmod}" ] && dmod="_centauri_bash_$dmod"
+                    listsearch -- "$dmod" "${mods[@]}" || continue
+                fi
+                echo "$dlin"
+            done
+            echo "}"
+        fi >> "$CEN_OUTFILE"
+
+        do_package footer "$CEN_OUTFILE" "$load"
+        do_package data   "$CEN_OUTFILE"
+
+        [ "${CEN_OUTFILE::5}" = '/dev/' ] || sysrun -e -p chmod 775 -- "$CEN_OUTFILE"
+        [ "${#DAT_MAP_EMBED[@]}" -gt 0 ] &&
+            message -a -c "External scripts" -- "${!DAT_MAP_EMBED[@]}"
+        [ -n "$DAT_FLG_DYNAMIC" -a -z "$CEN_OPT_CONFIG" ] &&
+            message -a -c "Dynamic loading" "extra modules must be added to argument list"
+        do_config_update "${mods[@]}"
+
+    # --- library processing ---
+
+    else
+        [ -n "$CEN_OPT_DOCU" ] && embed -m '_centauri_bash_doc'
+
+        local spre sdoc
+        for item in "${list[@]}" ; do
+            [ -z "$CEN_OPT_UGLY" ] && spre= || spre=" (uglify)"
+            [ -z "$CEN_OPT_DOCU" ] && sdoc= || sdoc=" (docu)"
+            if [ -z "$CEN_OPT_FORCE" ] ; then
+                [ -n "$spre" ] && [ "$item.p" -nt "$item" ] && spre=
+                [ -n "$sdoc" ] && [ "$item.d" -nt "$item" ] && sdoc=
+            fi
+            [ -z "$spre" -a -z "$sdoc" ] && continue
+
+            message -a -c "Processing" -- "$item" "$spre$sdoc"
+            if [ -n "$spre" ] && ! dryrun "do_ugly $item >$item.p" ; then
+                do_ugly <"$item" >"$item.p"
+            fi
+            if [ -n "$sdoc" ] && ! dryrun "do_docu $item >$item.d" ; then
+                remove "$item.d"
+                if documentation do_docu "$item" >"$item.d$$" ; then
+                    move "$item.d$$" "$item.d"
+                else
+                    remove "$item.d$$"
+                fi
+            fi
+        done
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> <argument>
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    "")
+        if [ -n "$CEN_OPT_DOCU" -o -n "$CEN_OPT_UGLY" ] ; then
+            [ -z "$CEN_OUTFILE" ] || optarg - - -m '--output --docu|--uglify'
+        elif [ -z "$CEN_OUTFILE" ] ; then
+            CEN_OPT_UGLY=1
+        fi
+        if [ -n "$CEN_OPT_CONFIG" ] ; then
+            if [ -z "$CEN_OUTFILE" ] ; then
+                optarg 'output' '' -e "is required"
+            else
+                configfile -l do_config_reader -i true -n "$CEN_OPT_CONFIG" &&
+                    DAT_CONF_FILE="$CEN_CONFIGFILE"
+            fi
+        fi ;;
+
+    -C|--con*)
+        optarg 'config' -   -w  ;;      # any text
+
+    -D|--doc*)
+        optarg 'docu'   -   -f  ;;      # simple flag
+
+    -N|--nod*)
+        optarg 'nodeps' -   -f  ;;      # simple flag
+
+    -U|--ugl*)
+        optarg 'ugly'   -   -f  ;;      # simple flag
+
+    -X|--ext*)
+        optarg 'extract' -  -f  ;;      # simple flag
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat <<!EOF
+usage: (1)  $CEN_NAME <option>... -|<module>...
+       (2)  $CEN_NAME [-N] [-X] --output <packed> <script> [<module>...]
+
+       This tool removes comments and extra spaces from bash sources. Modules
+       with large comments load a little bit faster when 'uglified'. The proxy
+       of centauri-bash-lib and the embed function load stripped files if they
+       are up to date (newer than the source).
+
+       A simalar pre-processing can be done to speed up centaurihelp. This is
+       implemented by removing the script code and saving only documentation.
+
+       Usage (1) creates packed <module>.p and/or <module.d> files:
+
+           $ $CEN_NAME -U             # use all modules, uglify only
+           $ $CEN_NAME -D -U          # also process documentation
+           $ $CEN_NAME -D             # only process documentation
+
+       To generate <module>.p or .d files for some modules only use:
+
+           $ $CEN_NAME <module>...    # where <module> is a file name
+           $ $CEN_NAME -D <module>...
+
+       Usage (2) packs a script and the used modules (stripped) into a single
+       file. Modules that are not auto-detected can be specified as arguments.
+       The centauribuild tool runs $CEN_NAME for building stand-alone scripts.
+
+$CEN_USE_OPTIONS
+
+       -C --config <file>   (packaging) use a configuration file
+       -N --nodeps          (packaging) ignore "embed -[cmq]" in library modules
+       -X --extractor       (packaging) add self-extractor (_centauri_bash_xtr)
+
+       -D --docu            (pre-processing) create *.d files for centaurihelp
+       -U --uglify          (pre-processing) create *.p files for faster loading
+
+       Option --uglify is implied if no other option is specified
+
+arguments:
+       <module>             a module name (3 letter or full name)
+       <file>               configuration file, see centaurilauncher
+       <packed>             generated packed script
+       <script>             a script to be packaged with centauri-bash-lib
+
+limits:
+       $CEN_NAME does not understand full bash syntax. Here some of the limits:
+
+       - multi-line strings are not supported
+       - inline documents must use "!EOF" as senteniel
+       - lines with nested strings will not be optimized
+
+dependencies:
+       Form (2) tries to auto-detect module dependencies (see --nodeps). To hide
+       a dependency use 'embed -r ...' with '-r' being the 1st option. To add a
+       dependency without actually initializing the module use 'embed -c ...'.
+       Custom modules are always ignored but can be added using command args.
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

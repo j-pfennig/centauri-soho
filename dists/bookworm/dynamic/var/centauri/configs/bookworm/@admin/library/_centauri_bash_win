@@ -1,0 +1,1064 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_win = centauri-bash-lib: GUI windowing Support
+#
+# Call:     . _centauri_bash_win
+#
+# Options:  -n  no initialization at all
+#           -s  minimal mode, no GUI windows for message(), confirm() etc
+#
+#+This module adds the --windows command line option to a script.  It can be
+# explicitly loaded or by using the --gui option (see **_centauri_bash_lib -g**).
+#
+#+Trying to load **_centauri_bash_win** at the same time as **_centauri_bash_con**
+# causes a conflict and raises a fatal error.
+#
+#+Windowing support is quite limited: message boxes, input/output dialogs,
+# a progress bar, console windows and browser are supported. Mostly via KDE
+# tools, namely **kdialog** (currently **zenity** is not supported).
+#
+#+The module can redirect [[message()]],  [[error()]], [[warning()]] and [[confirm()]]
+# to GUI dialog windows. Using the output functions with "-d +3" will create a
+# popup notification with a timeout of 3 seconds. The following examples work
+# in windows and in console mode:
+#
+#.          [ "$1" = "42" ] || quit "This is not the answer"
+#.          message -d bold "Now, what was the question?"
+#
+#.          confirm -a -d "$USER" -p " [default: $USER] > " -u \
+#.          °       "Please enter your name" || quit
+#.          message -d +3 "Hello" "$CEN_CONFIRM"
+#
+#+In GUI mode the -d option of [[message()]] has the following extra functionality:
+#
+#,          -d ?        # show cancel button in message box dialog
+#,          -d -        # force a text message, don't display a message box
+#,          -d +<time>  # show notification popup window for <time> seconds
+#
+# Copyright Dr. J. Pfennig (c) 2015-2024
+# ------------------------------------------------------------------------------
+
+CEN_MODULES['_centauri_bash_win']='0.47:2'
+
+embed -c '_centauri_bash_ext'       # reference modules ...
+embed -c '_centauri_bash_txt'
+embed -c '_centauri_bash_utl'       #  ... see: listsearch timer
+
+CEN_KDE_VERSION=
+CEN_WINDOWS=
+CEN_OPT_WINDOWS=        # see --windows
+
+CEN_WIN_PROGRESS=       # see progess()
+CEN_WIN_PROGTEXT=       # "  current label text
+CEN_WIN_PROGVALU=       # "  progress value to be shown
+CEN_WIN_PROGVCUR=       # "  currently show progress value
+CEN_WIN_PROGTOTAL=      # "
+CEN_WIN_PROGSTEPS=      # "
+CEN_WIN_APPQDBUS=       # "
+
+CEN_WIN_PATH=           # dialog tool path, see _cen_windcheck
+CEN_WIN_NAME=           # dialog tool name
+CEN_WIN_GUISTAT=        # ...
+
+CEN_WIN_USE_TITLE=      # option for window title
+CEN_WIN_DLG_TITLE=      # option for dialog title
+CEN_WIN_DLG_CAPTION=    # use "--caption <title>'"
+
+CEN_WIN_HOOK_GETLINE=   # hook and flag for initialization
+CEN_WIN_HOOK_MESSAGE=
+
+_cen_win_input=         # used by input dialog
+
+# ------------------------------------------------------------------------------
+# windows - init/check GUI mode, launch GUI application
+#
+# Call:     windows [-g <gui>] [-i <mode>] [-m]        # init GUI mode
+#           windows [-c <feature>|-] [-e]              # test for GUI/feature
+#           windows [-t <title>] -l|-w <app> <args>... # launch application
+#
+# Options:  -c  check for a GUI feature
+#           -e  error message if init to GUI is not possible
+#           -f  error are fatal
+#           -g  set GUI to be used (default is "kde")
+#           -i  initialize GUI mode if possible
+#           -l  launch GUI application in background
+#           -m  minimal, don't use GUI for [[message()]], [[confirm()]] etc
+#           -t  set application title (with -l or -w)
+#           -w  launch GUI application and wait for termination
+#
+# Arguments:<mode>      **0**=disable GUI mode   **1**=enable GUI mode   **2**=auto (default)
+#           <gui>       **-** do not use GUI  **+** use any  -or- supported GUI name
+#           <title>     Window title for a launched application
+#           <app>       path or name or generic name "browser" "editor" "console"
+#           <feature>   GUI feature, see below. Use - to check for full support
+#
+#+Init:     initialization is controlled via option -i. If not used explicitly to turn
+#           GUI-Mode on/off (-i°1 or -i°0) the automatic detection mode (-i°2) is run
+#           implicitly. Auto detection calls **context°-q** and may run **xsetroot** to
+#           create an X11 root window.
+#
+#+Support:  Currently only **kde** is fully supported (**kdialog** must be installed).
+#           Using **-g°-** or **-g°+** will not check the GUI, e.g. if **kdialog**
+#           is missing no error is raised. While **-g°-** unconditionally disables
+#           GUI support for [[message()]] and [[confirm()]], **-g°+** will enable
+#           GUI support if possible.
+#
+#+          Even without GUI support GUI applications can be launched, see -l
+#           and -w. When a generic name is used, command and default options
+#           depend on the installed GUI and version.
+#
+#+Feature:  The following features are required by message functions:
+#
+#,          - msgbox sorry error passivepopup
+#
+#           The [[confirm()]] function additionally needs:
+#
+#,          - inputbox password yesno yesnocancel
+#
+#           Finall [[progress()]] depends on:
+#
+#,          - progressbar
+#
+#.Examples: # windows mode is implicitly initialized on 1st output call
+#.          message "This is a GUI message (for --windows=1)"
+#.          windows -e -i 1 || return
+#.          message "This is a GUI message"
+#.          windows -i 0
+#.          message "This is text only"
+#
+#.          # use win module without any hook, just run a gui application
+#.          embed -m _centauri_bash_win -n
+#.          windows -e -m -l -- kcalc
+#
+#.          # disable message/confirm hooks (before 1st output)
+#.          windows -m || message "Cannot run GUI apps"
+# ------------------------------------------------------------------------------
+windows() {
+    # debug -c -- "$*"
+    # parse options
+    local _titl _ferr _frun _fchk _fgui _emsg='error'
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -c)   shift ; _fchk="$1" ;;
+      -e)   _ferr=1 ;;
+      -f)   _emsg='fatal' ;;
+      -g)   shift ; _fgui="$1" ;;
+      -i)   shift ; CEN_WINDOWS="$1" ; CEN_WIN_NAME= ;;
+      -l)   _frun=0 ;;
+      -m)   _fgui='-' ; CEN_WINDOWS=1 ; CEN_WIN_NAME='-' ;;
+      -t)   shift ; _titl="$1" ;;
+      -w)   _frun=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # implicit initialization
+    if [ "${CEN_WINDOWS:-2}" -gt 1 ] ; then
+        CEN_WINDOWS=0
+        case "$CEN_OPT_WINDOWS" in
+        0)      return 0 ;;                             # disable win mode
+        1)      CEN_WINDOWS=1 ; _ferr=1 ;;
+        *)      context -q                              # console check ...
+                case $? in
+                1)  CEN_WINDOWS=1 ;;
+                2)  CEN_WINDOWS=1                       # x11 start, no xroot win?
+                    sysrun -q -- xsetroot -gray ;;      # just try, dont worry on error
+                esac
+        esac
+    fi
+
+    if [ -n "$_fchk" ] ; then
+        if [ "$CEN_WINDOWS" = 1 ] ; then
+            windialog -c "$_fchk" && return 0
+            [ -n "$_ferr" ] && $_emsg $"insuffient window support, please install 'kdialog'"
+        else
+            [ -n "$_ferr" ] && $_emsg $"window mode not initialized"
+        fi
+        return 1
+    fi
+
+    # is DISPLAY set?
+    if [ "$CEN_WINDOWS" = 1 ] ; then
+        if [ -n "$CEN_WIN_NAME" ] ; then                # init is valid
+            [ -z "$_frun" ] && return 0                 # return or launch application
+            _cen_win_launch $_frun "$_titl" "$@" ; return
+        elif [ "${CEN_DISPLAY:-tty}" = 'tty' ] ; then   # must have display server
+            CEN_WINDOWS=0 ; CEN_WIN_NAME='-'
+            [ -n "$_ferr" ] && $_emsg $"could not initialize window mode"
+            return 1
+        fi
+    else
+        [ -n "$_ferr" ] && $_emsg $"window mode not initialized"
+        CEN_WIN_NAME='-' ; return 1
+    fi
+
+    if [ "$_fgui" != '-' ] ; then
+        if _cen_windcheck "${_fgui:-kde}" ; then        # do we have this gui?
+            [ -z "$CEN_WIN_HOOK_GETLINE" ] &&
+                _cen_win_hook                           # register hooks for in/out/quit
+        else
+            CEN_WINDOWS=0                               # GUI not installed
+            CEN_WIN_NAME='-' ; return 1
+        fi
+    fi
+
+    # return ok if in windowing mode, set TERM
+    [ "$TERM:dumb" = "dumb" ] && export TERM="xterm"
+    [ -z "$_frun" ] && return 0                 # return or launch application
+    _cen_win_launch $_frun "$_titl" "$@"        # return status
+}
+
+# ------------------------------------------------------------------------------
+# wrapper for progress dialog: _cen_win_pdlg [-c|-i|-q] [<arg>...]
+#
+# Options:  -c   close dialog
+#           -i   show dialog
+#           -q   close and quit()
+# ------------------------------------------------------------------------------
+_cen_win_pdlg() {
+    local _fini _fqui _cncl
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -c)   _fqui=1 ;;
+        -i)   _fini=1 ;;
+        -q)   _fqui=2 ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+
+    if [ -n "$_fini" ] ; then
+        if [ -z "$CEN_WIN_PROGRESS" ] ; then
+            sysfind -f -s CEN_WIN_APPQDBUS -- 'qdbus'   # check and save path
+            windialog -l CEN_WIN_PROGRESS -- - " "      # set minimum size
+            [ -z "$CEN_WIN_PROGRESS" ] && fatal $"Failed to init progress dialog"
+            _cen_win_pdlg showCancelButton 1
+        fi
+
+        CEN_WIN_PROGVCUR=0 ; CEN_WIN_PROGTEXT="$*"
+        _cen_win_pdlg setLabelText "$CEN_WIN_PROGTEXT"
+        [ -n "$CEN_WIN_PROGVALU" ] && _cen_win_pdlg value "$CEN_WIN_PROGVALU"
+        return 0
+
+    elif [ -n "$_fqui" ] ; then
+        if [ -n "$CEN_WIN_APPQDBUS" -a -n "$CEN_WIN_PROGRESS" ] ; then
+            "$CEN_WIN_APPQDBUS" $CEN_WIN_PROGRESS "close" &>/dev/null
+        fi
+        CEN_WIN_PROGRESS= ; CEN_WIN_PROGVCUR= ; CEN_WIN_PROGTEXT= ; CEN_WIN_PROGVALU=
+        [ "$_fqui" = 2 ] && quit -s 2 -- "$*"
+        return 0
+    fi
+
+    # check for cancel and send command to dialog
+    [ -z "$CEN_WIN_PROGRESS" ] && return 1
+    if [ "$1" = "value" ] ; then
+        [ "$2" = "$CEN_WIN_PROGVCUR" -a "$2" != "99" ] && return 0
+        CEN_WIN_PROGVCUR="$2"
+    fi
+
+    # run qdbus, use compound to avoid extra process caused by redirection
+    { _cncl=$("$CEN_WIN_APPQDBUS" $CEN_WIN_PROGRESS wasCancelled) ; } 2>/dev/null
+    # kde5 closes window on cancel, wasCancelled does never return true
+    if [ "$_cncl" = 'false' ] ; then
+        "$CEN_WIN_APPQDBUS" $CEN_WIN_PROGRESS "$@" &>/dev/null && return 0
+    fi
+    _cen_win_pdlg -q $"Cancelled by user"
+}
+
+# ------------------------------------------------------------------------------
+# helper for progress: <prog> <fdel> <fend> <flin> <ftxt> <foff> <step> <fmt>...
+#
+#     <prog>   (-c) incremental
+#     <fdel>   (-d) debug delay
+#     <fend>   (-e) end progress, keep output
+#     <step>   (-s) numeric step
+#     <ftxt>   (-t) line output
+#     <fmt>    printf format
+#     ...      printf arguments
+#
+# called from progress() in _centauri_bash_pro
+# ------------------------------------------------------------------------------
+_cen_win_prog() {
+    [ "${CEN_WINDOWS:-0}" = 0 ] && return 1     # not in windows mode
+    local _prog="$1" _fdel="$2" _fend="$3" _flin="$4" _step="$5" _ftxt="$6"
+    shift 6
+    local _mesg
+
+    # line mode uses popup
+    if [ -n "$_flin" ] ; then
+        windialog -u 1 "$1" "$2"
+        return
+    fi
+
+    # reopen progress window
+    if [ -z "$CEN_WIN_PROGRESS" -a -n "$CEN_WIN_PROGTEXT" ] && [ -n "$_prog$_step" ] ; then
+        _cen_win_pdlg -i "$CEN_WIN_PROGTEXT" || return 1
+        if [ -n "$CEN_WIN_PROGVALU" ] ; then
+            _cen_win_pdlg value "$CEN_WIN_PROGVALU" || return 1
+        fi
+    fi
+
+    # increment by steps
+    if [ -n "$_step" ] ; then
+        if [ "$_step" = "-" ] ; then
+            CEN_WIN_PROGTOTAL="${1:-100}" ; CEN_WIN_PROGSTEPS=0 #; return
+            _step=0 ; shift
+        elif [ "${_step/:/}" != "$_step" ] ; then
+            CEN_WIN_PROGTOTAL="${_step##*:}" ; CEN_WIN_PROGSTEPS=0
+            _step="${_step%%:*}" ; [ -z "$_step" ] && _step=0
+        fi
+        [ -z "$CEN_WIN_PROGTOTAL" ] && CEN_WIN_PROGTOTAL=100
+        [ -z "$CEN_WIN_PROGSTEPS" ] && CEN_WIN_PROGSTEPS=0
+        ((CEN_WIN_PROGSTEPS += _step))
+        _prog=$((CEN_WIN_PROGSTEPS * 100 / CEN_WIN_PROGTOTAL))
+        [ "$_prog" -gt 99 ] && _prog=99
+        [ -n "$*" ] && _ftxt=1                          # imply option -t
+    fi
+
+    # implied -p and -t
+    if [ -z "$_prog$_ftxt" ] ; then
+        [ -n "${1//[0-9]/}" ] && _mesg="$1"
+        _prog="$1" ; shift
+        _mesg+="$*" ; [ "${#_mesg}" -gt 3 ] && _ftxt=1
+    fi
+
+    # printf formatting
+    [ "$_ftxt" = 2 ] && printf -v _mesg "$@"
+
+    # increment progress bar
+    if [ -n "$_prog" ] ; then
+        if [ -z "${_prog//[0-9]/}" ] ; then
+            CEN_WIN_PROGVALU="$_prog"
+        elif [ ${CEN_WIN_PROGVALU:-0} -le 30 ] ; then
+            CEN_WIN_PROGVALU=$((CEN_WIN_PROGVALU+10))
+        elif [ ${CEN_WIN_PROGVALU:-0} -le 60 ] ; then
+            CEN_WIN_PROGVALU=$((CEN_WIN_PROGVALU+5))
+        else
+            CEN_WIN_PROGVALU=$((CEN_WIN_PROGVALU+1))
+        fi
+        if [ -n "$_ftxt" ] ; then
+            [ -z "$_mesg" ] && _mesg="$*"
+            _cen_win_pdlg -i "$_mesg" || return 1
+        fi
+        if [ -n "$CEN_WIN_PROGVALU" ] ; then
+            _cen_win_pdlg value "$CEN_WIN_PROGVALU" || return 1
+        fi
+    # set the label of existing dialog
+    elif [ -n "$_ftxt" ] ; then
+        [ -z "$_mesg" ] && _mesg="$*"
+        _cen_win_pdlg setLabelText "$_mesg" || return 1
+    # close progress window
+    elif [ -z "$*" ] ; then
+        _cen_win_pdlg -c
+    # open a new progress window -or- set label
+    else
+        _cen_win_pdlg -i "$*" || return 1
+    fi
+
+    [ -n "$_fdel" ] && timer -w "$_fdel"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# windialog - show a GUI message box or dialog window
+#
+# Call:     °                                           # message box
+#           windialog [-e|-f|-w] [-r] [-t <title>] <header> <msg>...
+#                                                       # yes|no|cancel box
+#           windialog **-2**|**-3** <label>|- [-r] [-t <title>] <header> <msg>...
+#                                                       # input|password|progress
+#           windialog -i|-l|-p <var> [-r] [-t <title>] <header> <msg>...
+#                                                       # multiple|single selection list
+#           windialog -m|-s <var> [-r] [-t <title>] <header> [<dflt>] <item>...
+#                                                       # popup notification
+#           windialog -u <time>|**-** [-n <icon>] [-r] [-t <title>] <header> <msg>...
+#                                                       # check if dialog is available
+#           windialog -c <kind>
+#                                                       # low level (kdialog only)
+#           windialog -k <kind> [-i <var>] [-t <title>] <arg>...
+#
+# Options:  -e  [*]    show an error box
+#           -f  [*]    show a fatal error box
+#           -i  [*]    input box, <var> contains default text on call
+#           -l  [*][#] launch progress box, return dbus ref
+#           -m  [*][-] multiple selection list (checkbox list)
+#           -p  [*]    show a password entry box
+#           -u  [*]    popup notification window
+#           -k  [*][#] dialog box of type <kind> (no text preprocessing)
+#           -s  [*][-] single selection list
+#           -w  [*]    show a warning box
+#
+#           -c         check if <kind> is supported
+#           -n         add an icon
+#           -r         show real name (see --embed option)
+#           -t         window title (prefixed with CEN_NAME)
+#           -2         show two message box buttons   (kind: yesno)
+#           -3     [#] show three message box buttons (kind: yesnocancel)
+#
+#               [*]    These options are mutually exclusive
+#               [#]    Supported by kdialog only
+#               [-]    Not yet implemented
+#
+# Arguments:<kind>     dialog type, see below
+#           <label>    button labels, left to right
+#           <time>     time in [s] to display the popup window
+#           <icon>     icon for popup
+#           <title>    window title (not fully supported by **kdialog**)
+#           <var>      sets input variable (for "-" CEN_CONFIRM is used)
+#           <header>   header text for message -or- empty, show as bold
+#           <msg>...   body text for message
+#           <dlft>     an optiona <item> number to set the default selection
+#           <item>     list item, see below
+#
+#+Return:   **0** = OK|Yes  **1** = No  **2** = Cancel. Variable CEN_CONFIRM receives
+#           any input if <var> is set to - or if -k is used.
+#
+# Kinds:    Known dialog <kind> arguments and their associated options are:
+#
+#,          - msgbox                sinple messagebox, see [[message()]]
+#,          - sorry         -w      warning message, see [[warning()]]
+#,          - error         -e|-f   error message, see [[error()]] and [[fatal()]]
+#,          - yesno         -2      messagebox with 2 buttons
+#,          - yesnocancel   -3      messagebox with 3 buttons
+#,          - progressbar   -l      launch progressbar dialog
+#,          - passivepopup  -u      system tray message
+#,          - inputbox      -i      text input box
+#,          - password      -p      password input box
+#,          - single        -s      single selection listbox
+#,          - multiple      -m      multi selection listbox
+#
+#+Lists:    For -m|-s each list item is made of 2 or 3 colon separated fields:
+#
+#           <item> := [<rslt>:]<text>           # single selection (option -s)
+#           <item> := [[<rslt>:]<mode>:]<text>  # multi selection  (option -m)
+#           <mode> := "0"|"off"|"1"|"on"
+#
+#+          The <rslt> values of seletected items are returned to the caller. If
+#           <rslt> is not specfied the item line number is used.
+#
+#.Examples: windialog -- "Hello world"
+#.          windialog -u 3 -n face-angry -- "My Message is:" "It's raining today"
+#.          windialog -i rslt -- "Please enter something..."
+#.          windialog -k getsavefilename . "GPX files (*.gpx);;All files (*.*)"
+#
+#+This function is a wrapper for **kdialog** and is used by **_centauri_bash_lib**
+# for **ALL** GUI messages and dialogs. Currently only KDE's minimalistic **kdialog**
+# is supported.
+#
+#+Some special chars like **<**, **>**, **&**, ''<tab>'' and ''<lf>'' are HTML-escaped before
+# being passed to **kdialog**.  But **printf** escape sequences (like **\n**) are NOT
+# interpreted!
+# ------------------------------------------------------------------------------
+windialog() {
+    local _sbtn _stit _inam _labl
+    local _snam="${CEN_EMBED:-$CEN_NAME}" _args=() _kopt _kflg _klst _icon _popw
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -)    break ;;
+        -c)   shift ; _kopt="$1" ; _kflg=2 ;;
+        -e)   _kopt="error" ; _stit=$"Error" ;;
+        -f)   _kopt="error" ; _stit=$"Fatal" ;;
+        -i)   shift ; _inam="$1"
+              if [ -z "$_kopt" ] ; then
+                _kopt="inputbox" ; _stit=$"Input"
+              fi ;;
+        -k)   shift ; _kopt="$1" ; _kflg=1 ;
+              [ -z "$_inam" ] && _inam="-" ;;
+        -l)   shift ;_inam="$1" ; _kopt="progressbar" ; _stit=$"Progress" ;;
+        -m)   shift ; _inam="$1" ; _kopt="checklist" ; _klst=2 ; _stit=$"Options" ;;
+        -n)   shift ; _icon="$1" ;;
+        -p)   shift ; _inam="$1" ; _kopt="password" ; _stit=$"Password" ;;
+        -r)   [ -n "$CEN_EMBED" ] && _snam="$CEN_EMBED[$CEN_NAME]" ;;
+        -s)   shift ; _inam="$1" ; _kopt="menu" ; _klst=1 ; _stit=$"Selection" ;;
+        -t)   shift ; _stit="$1" ;;
+        -u)   shift ; _popw="$1" ; _kopt="passivepopup" ;;
+        -w)   _kopt="sorry" ; _stit=$"Warning" ;;
+        -2)   shift ; _labl="$1" ; _sbtn="yesno" ;;
+        -3)   shift ; _labl="$1" ; _sbtn="yesnocancel" ;;
+        *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    windows || fatal $"Not available in console mode:" "$FUNCNAME"
+    [ "$_inam" = "-" ] && _inam="CEN_CONFIRM"
+
+    # msgbox is the default dialog
+    if [ -z "$_kopt" ] ; then
+        _kopt='msgbox' ; [ -z "$_stit" ] && _stit=$"Message"
+    fi
+
+    # currently only kdialog will work in all cases
+    local _good=0
+    if [ "$CEN_WIN_NAME" = 'zenity' ] ; then
+        listsearch -c -- "${_sbtn:-$_kopt}" 'msgbox' 'sorry' 'error' \
+                         'passivepopup' 'inputbox' 'password' 'yesno' || _good=1
+    elif [ "$CEN_WIN_NAME" != 'kdialog' ] ; then
+        listsearch -c -- "${_sbtn:-$_kopt}" 'msgbox' 'sorry' 'error' || _good=1
+    fi
+    [ "$_kflg" = 2 ] && return $_good               # minimum check
+
+    if [ "$_good" != 0 ]  ; then
+        _good="($_kopt) '$CEN_WIN_NAME' "$"not supported, please install 'kdialog'"
+        _cen_win_dialog - 'fatal' "$_snam" $"Fatal" - "$_good"
+        fatal -t -- "$_good"
+    fi
+
+    # literal dialog call
+    if [ "$_kflg" ] ; then
+        _cen_win_dialog "$_inam" - "$_snam" "$_stit" "$_icon" "$_kopt" "$@" || _stat=$?
+        return $_stat
+    fi
+
+    # escapes for markup
+    local _item _line=() _stat=0
+    for _item in "$@" ; do
+        case "$_item" in
+        \<html\>*|\<?\>*|\<??\>*|\<???\>*|\<????\>*)
+            ;;
+        *)
+            _item="${_item//&/\&amp;}" ; _item="${_item//</\&lt;}" ; _item="${_item//>/\&gt;}"
+        esac
+        _line+=("$_item")
+        [ -n "$_klst" ] && break
+    done
+
+    # show a listbox
+    if [ -n "$_klst" ] ; then
+        shift
+        local _rslt _mark _dflt=1 _coun=0
+        if [ -z "${1//[0-9]/}" ] ; then             # optional default line#
+             _dflt="$1" ; shift
+        fi
+        _line+=('--default' "${!_dflt##*:}" --)     # add --default
+
+        for _item in "$@" ; do
+            ((_coun += 1))
+            _rslt="${_item%%:*}" ; [ -z "$_rslt" -o "$_rslt" = "$_item" ] && _rslt="$_coun"
+            if [ "$_klst" = 1 ] ; then
+                _line+=("$_rslt" "${_item#*:}")
+            else
+                _item="${_item#*:}" ; _mark="${_item%%:*}"
+                [ "$_mark" = 1 -o "$_mark" = 'on' ] && _mark='on' || _mark='off'
+                _line+=("$_rslt" "${_item#*:}" "$_mark")
+            fi
+        done
+        _cen_win_dialog "$_inam" "$_kopt" "$_snam" "$_stit" "$_icon" - "${_line[@]}" || _stat=$?
+
+    # show dialog
+    elif [ $# -le 1 ] ; then
+    #<vari>|- <kind> <prog> <title> <icon> <text> <arg...>
+        _cen_win_dialog "$_inam" "$_kopt" "$_snam" "$_stit" "$_icon" - "$_line" || _stat=$?
+
+    elif [ "$CEN_WIN_NAME" = 'zenity' ] &&
+         [ "$_kopt" = 'inputbox' -o "$_kopt" = 'password' ] ; then
+        CEN_WIN_NAME=                               # disable markup
+        _cen_win_txtjoin 90 60 _good "${_line[@]}"
+        CEN_WIN_NAME='zenity'
+        _cen_win_dialog "$_inam" "$_kopt" "$_snam" "$_stit" "$_icon" "$_good" || _stat=$?
+
+    elif [ "$_kopt" = 'passivepopup' ] ; then
+        splitjoin -j _good -n -- "${_line[@]:1}"
+        _cen_win_dialog - "$_kopt" - - "$_icon" - "$_line" "$_good" "$_popw"
+
+    else
+        # add button labels
+        if [ -n "$_sbtn" ] ; then
+            [ "${_labl:--}" = "-" ] && _labl=$"yes no cancel"
+            _labl=($_labl)
+            _cen_win_addlbl -        "$_sbtn"           # set _kopt
+            _cen_win_addlbl 'yes'    "${_labl[0]}"
+            _cen_win_addlbl 'no'     "${_labl[1]}"
+            _cen_win_addlbl 'cancel' "${_labl[2]}"
+        fi
+        # pre-format text and show dialog
+        _cen_win_txtjoin 90 60 _good "${_line[@]}"
+        _cen_win_dialog "$_inam" "$_kopt" "$_snam" "$_stit" "$_icon" "$_good" "${_args[@]}" || _stat=$?
+    fi
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# internal helper: -|yes|no|cancel <text> (modifies _kopt and _args)
+# ------------------------------------------------------------------------------
+_cen_win_addlbl() {
+    local _lval="$2"
+    [ -z "$_lval" ] && _lval="$1"
+    _lval="${_lval^}"                   # 1st char uppercase
+
+    if [ "$CEN_WIN_NAME" = 'kdialog' ] ; then
+        case "$1" in
+        -)  [ "$_kopt" = 'sorry' -o "$_kopt" = 'error' ] && _kopt="warning$2" || _kopt="$2"
+            ;;
+        *)  [ "${_lval}" = "${_lval/&/}" ] && _lval="&$_lval"
+            _args+=("--${1}-label" "$_lval")
+            ;;
+        esac
+
+    elif [ "$CEN_WIN_NAME" = 'zenity' ] ; then
+        case "$1" in
+        -)      _kopt='question' ;;
+        yes)    _args+=("--ok-label" "${_lval/&/}") ;;
+        no)     _args+=("--cancel-label" "${_lval/&/}") ;;
+        esac
+
+    else
+        _cen_abort -
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# minimal dialog abstraction: <vari>|- <kind> <prog> <title> <icon> <text> <arg...>
+#                             <vari>|- - <prog> <title> <icon> <dialog> <arg...>
+# ------------------------------------------------------------------------------
+_cen_win_dialog() {
+    local _varg="${1:--}" _kind="${2:--}" _name="${3:--}"
+    local _titl="${4:--}" _icon="${5:--}" _text="${6:--}"; shift 6
+    local _opts _tdlg
+
+    if [ "$_kind" = 'inputbox' -o "$_kind" = 'password' ] ; then
+        local -n _rdlg="$_varg" ; _tdlg="$_rdlg" ; unset _rdlg
+    fi
+
+    ### kdialog ###
+
+    if [ "$CEN_WIN_NAME" = 'kdialog' ] ; then
+        if [ "$_titl" != '-' ] ; then
+            if [ -n "$CEN_WIN_DLG_CAPTION" ] ; then
+                _opts+=(--caption "$_name")
+            else
+                _titl="$_name: $_titl"
+            fi
+            [ -n "$CEN_WIN_DLG_TITLE" ] && _opts+=(--title "$_titl")
+        fi
+
+        [ "$_icon" = '-' ] || _opts+=(--icon "$_icon")
+        [ "$_text" = '-' ] && { _text="$1" ; shift ; }
+        if [ "$_kind" = '-' ] ; then                    # literal kdialog
+            _opts+=("--$_text" "$@")
+        elif [ "$_kind" = 'passivepopup' ] ; then
+            [ -n "$_text" ] && _text="<b>$_text</b><br/>"
+            _opts+=("--$_kind" "$_text$1" "${2:-3}")    # has timeout parameter
+        else
+            _text="${_text// /\&nbsp;}"
+            _opts+=("--$_kind" "$_text" "$@")           # must have text argument
+        fi
+
+    ### zenity ###
+
+    elif [ "$CEN_WIN_NAME" = 'zenity' ] ; then
+        _opts=(--width 500)                             # a minimum width
+        if [ "$_titl" != '-' ] ; then
+            _opts+=(--title "$_name: $_titl")
+        fi
+        local _nwrp='--no-wrap'
+        case "$_kind" in
+        input*) _opts+=(--entry) ; _opts+=(--entry-text="$_tdlg" "$@") ; _nwrp= ;;
+        passw*) _opts+=(--entry) ; _opts+=(--hide-text --entry-text="$_tdlg" "$@") ; _nwrp= ;;
+        msgbox) _opts+=(--info) ; _opts+=("$@") ;;
+        passi*) _opts=(--notification) ; _nwrp= ;;      # no --width or --title
+        sorry)  _opts+=(--warning) ; _opts+=("$@") ;;
+        quest*) _opts+=(--question) ; _opts+=("$@") ;;
+        *)      _opts+=(--error) ; _opts+=("$@") ;;
+        esac
+        [ "$_icon" = '-' ] || _opts+=(--window-icon "$_icon")
+        [ "$_text" = '-' ] && { _opts+=(--text "$1") ; shift ; } \
+                           || _opts+=($_nwrp --text "$_text")
+
+    ### xmessage ###
+
+    else
+        [ "$_text" = '-' ] && _text="$1"
+        [ "$_titl" != '-' ] && _text="*** $_titl ***  $_text"
+        sysrun -q -r xmessage -geometry 640 -font -adobe-*-*-r-*--0-100-*-*-p-*-*-* -default okay -center "$_text"
+    fi
+
+    if [ "$_varg" = '-' ] ; then
+        sysrun -q -r -n "$CEN_WIN_PATH" "${_opts[@]}"
+    else
+        system -r -n -s $_varg "$CEN_WIN_PATH" "${_opts[@]}"
+    fi
+
+    # return status
+}
+
+# ------------------------------------------------------------------------------
+# call args: <width> <first> <output> <paragraph>...
+# ------------------------------------------------------------------------------
+_cen_win_txtjoin() {
+    local _wide="$1" _frst="$2" _nout="$3" ; shift 3
+    local _item _text _fill _larr _temp
+    if [ "$CEN_WIN_NAME" = 'kdialog' ] ; then
+        _fill=2                                     # use &nbsp to fill
+        if [ "${1:--}" != '-' ] ; then
+            _cen_win_txtfold  "$_wide" "$_frst" "$_fill" '<br/>' "$1" _item
+            _text="<h4>$_item</h4>" ; _fill=
+        fi
+        shift
+        for _item in "$@" ; do                      # loop over paragraphs
+            splitjoin -s _larr -n -- "$_item"
+            for _item in "${_larr[@]}" ; do         # loop over lines
+                _cen_win_txtfold "$_wide" "$_frst" "$_fill" '<br/>' "$_item" _item
+                [ -n "$_temp" ] && _temp+="<br/>"
+                _temp+="$_item"
+            done
+            _text+="<p>$_temp</p>" ; _fill=
+        done
+
+    elif [ "$CEN_WIN_NAME" = 'zenity' ] ; then
+        local _lbrk="<span size='2048'>"$'\n\n'"</span>"
+        _fill=1                                     # fill with spaces
+        if [ "${1:--}" != '-' ] ; then
+            _cen_win_txtfold  "$_wide" "$_frst" "$_fill" $'\n' "$1" _item
+            _text="<span weight='bold' size='medium'>$_item</span>"$'\n' ; _fill=
+        fi
+        shift
+        for _item in "$@" ; do                      # loop over paragraphs
+            splitjoin -s _larr -n -- "$_item"
+            for _item in "${_larr[@]}" ; do         # loop over lines
+                _cen_win_txtfold  "$_wide" "$_frst" "$_fill" $'\n' "$_item" _item
+                [ -n "$_temp" ] && _temp+=$'\n'
+                _temp+="$_item"
+            done
+            [ -n "$_text" ] && _text+="${_lbrk:-$'\n'}"
+            _text+="$_temp" ; _fill=
+        done
+
+    else
+        [ "${1:--}" = '-' ] && shift
+        for _item in "$@" ; do
+            _cen_win_txtfold "$_wide" "$_frst" 0 $'\n' "$_item" _item
+            [ -z "$_text" ] && _text="$_item" || _text+=$'\n\n'"$_item"
+        done
+    fi
+
+    local -n _txtf="$_nout" ; _txtf="$_text"
+}
+
+# ------------------------------------------------------------------------------
+# call args: <width> <first> <fill> <delimiter> <input> <output>
+#
+#       fill        0 := no padding
+#                   1 := fill with spaces
+#                   2 := use &nbsp to fill
+# ------------------------------------------------------------------------------
+_cen_win_txtfold() {
+    local _wide="$1" _frst="$2" _fill="$3" _deli="$4" _tinp="$5" _nout="$6" _leng _temp
+    local -n _txtf
+    _leng="${#_tinp}"
+    if [ "$_leng" -le "$_wide" ] ; then             # no need to fold text
+        if [ "${_fill:-0}" -gt 0 ] && [ "$_leng" -le "$_wide" ] ; then
+            printf -v _temp "%-60s" "$_tinp"
+            [ "${#_tinp}" -lt 60 -a "$_fill" = 2 ] && _temp="${_temp// /\&nbsp;}"
+            _txtf="$_nout" ; _txtf="$_temp"
+        else
+            _txtf="$_nout" ; _txtf="$_tinp"
+        fi
+    else                                            # text folding ...
+        txtfold -d "$_deli" -m "$_wide" -s _temp _tinp
+        _txtf="$_nout" ; _txtf="$_temp"
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# hook message functions
+#
+#   Options -d ?        # show cancel button
+#           -d -        # text message, no GUI window
+#           -d +<time>  # notification window
+# ------------------------------------------------------------------------------
+_cen_windmesg() {
+    local _sfmt _args=() _argx=() _flib _fqui _ftwo _popw _scal _verb="$CEN_VERB" _head _stat=0
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   _argx+=("$1") ;;
+      -b)   shift ;; # ignored here
+      -c)   _argx+=("$1" "$2") ; shift ; _scal="$1" ;;
+      -d)   shift
+            [ "$1" = "?" ] && _ftwo=1
+            [ "$1" = "-" ] && _flib=1
+            [ "${1::1}" = "+" ] && _popw="${1:1}" ;;
+      -i)   _argx+=("$1") ;;
+      -l)   _argx+=("$1") ; _verb=1 ;;
+      -m)   _argx+=("$1") ;;
+      -n)   _argx+=("$1") ;;
+      -p)   _argx+=("$1") ; _sfmt=1 ;;
+      -e)   [ -n "$CEN_WIN_PROGTEXT" ] && _fqui=1
+            _args+=("$1") ; _verb=1 ; _stat="$CEN_EXIT" ;;
+      -f)   _args+=("$1") ; _verb=1 ; _stat="$CEN_EXIT" ;;
+      -r|-w)
+            _args+=("$1") ;;
+      -t)   _flib=1 ;;                              # special for trace()
+      *)    _cen_abort -2 - "$1"
+      esac ; shift
+    done
+    [ "$_verb" -gt 0 ] || return "$_stat"           # --quiet option
+
+    # implicitly init window mode or call /dev/stdout implementation
+    if [ -z "$_flib" ] ; then
+        _cen_windcheck || _flib=1
+    fi
+    if [ -z "$_flib" ] ; then               # close progress window
+        [ -n "$CEN_WIN_PROGRESS" ] && _cen_win_pdlg -c
+    else
+        _cen_message "${_args[@]}" "${_argx[@]}" -- "$@"
+        return "$_stat"
+    fi
+
+    if [ -n "$_sfmt" ] ; then               # printf formatting
+        _sfmt="$1" ; shift
+        printf -v _sfmt "$_sfmt" "$@"
+    else                                    # join simple args
+        _sfmt="$*" ; _sfmt="${_sfmt// \\n /$'\n'}" ; _sfmt="${_sfmt//\\n/$'\n'}"
+        _sfmt="${_sfmt//\\t/$'\t'}"
+    fi
+    if [ -n "$_scal" ] ; then               # option -c
+        _cen_shortfmt _scal - "$_scal"
+        _scal="${_scal//   / }" ; _scal="${_scal//  / }"
+        _scal="${_scal//  / }"  ; _scal="${_scal/ :/:}"
+        _sfmt="${_scal:1} $_sfmt"
+    fi
+
+    [ -z "${_sfmt//$'\n'/}" ] && return 0   # discard empty dialog
+
+    case "$_sfmt" in
+        *:$'\n'*)                           # colon at end-of-line
+            _head="${_sfmt%%:$'\n'*}:"
+            [ "${#_head}" -le 60 ] && _sfmt="${_sfmt#*:}" || _head=
+            ;;
+        *:*:*)                              # ignore multiple colons
+            ;;
+        *:\ *)                              # single colon
+            _head="${_sfmt%%:*}:"
+            [ "${#_head}" -le 60 ] && _sfmt="${_sfmt#*: }" || _head=
+            ;;
+    esac
+
+    [ -n "$_popw" ] && _args+=("-u" "$_popw")
+    _args+=("--")
+
+    if [ -n "$_ftwo" -o -n "$_fqui" ] ; then    # 2nd button ...
+        windialog -2 $"stop continue" "${_args[@]}" "$_sfmt" || return 1
+        [ -n "$_ftwo" ] && return 0
+        quit $"Cancelled by user"
+    fi
+    windialog "${_args[@]}" "$_head" "$_sfmt"        # simple message
+    return "$_stat"
+}
+
+# ------------------------------------------------------------------------------
+# read line: <vnam> <mode> <labl> <prom> <name> <text>...
+# ------------------------------------------------------------------------------
+_cen_windread() {
+    if ! _cen_windcheck ; then                  # needs kdialog
+        $CEN_WIN_HOOK_GETLINE "$@"
+        return
+    fi
+    [ -n "$CEN_WIN_PROGRESS" ] && progress      # close progress window
+
+    local -n _vret="$1"
+    local _vnam="$1" ; shift
+    local _mode="$1" ; shift
+    local _labl="$1" ; shift
+    local _prom="$1" ; shift
+    local _snam="$1" ; shift    # unused
+    local _head="$1" ; shift
+    local _warn _rslt _rval _body
+
+    [ -z "$1" ] && shift
+    splitjoin -j _body -d "\n" -- "$@"
+    [ -z "$_body" ] && { _body="$_head" ; _head='-' ; }
+
+    [ "${_mode::1}" = "w" ] && _warn="-w"       # w prefix shows warning
+    case "${_mode#w}" in
+    3)  windialog $_warn -3 "$_labl" "$_head" "$_body" ; _rslt="$?"
+        ;;
+    1|2)
+        windialog $_warn -2 "$_labl" "$_head" "$_body" ; _rslt="$?"
+        ;;
+    *)  if [ "$_prom" = "+" ] ; then
+            windialog $_warn -p "$_vnam" "$_head" "$_body" ; _rslt="$?"
+        else
+            windialog $_warn -i "$_vnam" "$_head" "$_body" ; _rslt="$?"
+        fi
+        [ "$_rslt" != 0 ] && return 2           # signal cancel/quit
+        return 0
+        ;;
+    esac
+
+    [ "$_rslt" -gt 2 ] && _rslt=2
+    _rval=($_labl) ; _vret="${_rval[_rslt]}"
+    if [ -z "$_vret" ] ; then
+        _labl=$"yes no cancel"
+        _rval=($_labl) ; _vret="${_rval[_rslt]}"
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# check for gui support: [-|+|<gui>]
+#
+#   arg:        -       disable dialog support
+#               +       any dialog support is ok
+#               <gui>   use this gui with dialog support
+#
+#   return:     0   (k)dialog is installed or not checked for
+#               1   no (k)dialog found
+#               2   not in windows mode or <gui> disabled
+# ------------------------------------------------------------------------------
+_cen_windcheck() {
+    # debug -c -- "$*"
+    case "$1" in
+        '')     [ "$CEN_WINDOWS" = 0 ] && return 2
+                [ "$CEN_WIN_NAME" = '-' ] && return 1
+                [ -n "$CEN_WIN_NAME" ] && return 0
+                windows -f -g - || return 1
+                [ "$CEN_WINDOWS" = 0 ] && return 2
+                ;;
+        -)      CEN_WIN_NAME='-'
+                [ "$CEN_WINDOWS" = 1 ] && return 0 || return 2
+                ;;
+        +)      [ "$CEN_WIN_NAME" = '-' ] && return 1
+                [ -n "$CEN_WIN_NAME" ] && return 0
+                ;;
+        kde)    [ "$CEN_WIN_NAME" = '-' ] && return 1
+                [ -n "$CEN_WIN_NAME" ] && return 0
+                ;;
+        *)      _cen_abort $"Supported GUIs" 'kde'
+    esac
+
+    # get GUI status
+    CEN_WIN_NAME='-'
+    if sysfind -c -o -s CEN_WIN_PATH -- 'kdialog' 'zenity' 'xmessage' ; then
+        CEN_WIN_NAME="${CEN_WIN_PATH##*/}"
+        if [ "${1:-+}" != '+' ] ; then              # check minimum requirement
+            windialog -c 'inputbox' || CEN_WIN_NAME='-'
+        fi
+    else
+        error $"Could not init window mode" $"(found neither 'kdialog' nor 'zenity')"
+    fi
+
+    [ -n "$CEN_WIN_GUISTAT" ] && return "$CEN_WIN_GUISTAT"  # do not reread version info
+    [ "$CEN_WIN_NAME" = '-' ] && CEN_WIN_GUISTAT=1 || CEN_WIN_GUISTAT=0
+
+    # get system and kde verssion
+    embed -q '_centauri_bash_sys' || :              # just to get version
+    CEN_WIN_DLG_TITLE=1
+    CEN_WIN_DLG_CAPTION=1
+    CEN_WIN_USE_TITLE=1
+    case "$CEN_SYS_PLASMA" in
+        004.*)      CEN_WIN_USE_TITLE= ;;
+        005.00*)    ;;
+        *)          CEN_WIN_DLG_TITLE=1
+                    CEN_WIN_DLG_CAPTION= ;;
+    esac
+    CEN_KDE_VERSION="${CEN_SYS_KDEVERS%%.*}"
+    CEN_KDE_VERSION="${CEN_KDE_VERSION#0}"
+    CEN_KDE_VERSION="${CEN_KDE_VERSION#0}"
+ ### TODO no kde installed
+    [ "${CEN_KDE_VERSION:--}" = '-' ] && CEN_KDE_VERSION=5
+    [ "$CEN_KDE_VERSION" -gt 4 ] && export KDE_FULL_SESSION=true
+    $CEN_TRACE -a -c "KDE-version" -- "$CEN_KDE_VERSION"
+    $CEN_TRACE -a -c "Dialog-title" -- "$CEN_WIN_DLG_TITLE"
+    $CEN_TRACE -a -c "Dialog-caption" -- "$CEN_WIN_DLG_CAPTION"
+    return "$CEN_WIN_GUISTAT"
+}
+
+# ------------------------------------------------------------------------------
+# hook for options()
+# ------------------------------------------------------------------------------
+_cen_win_option() {
+    case "$1" in
+
+    # pass option info to usage module
+
+    --help)
+        [ "$2" = "opts" ] || return                 # ignore unless _cen_usage()
+        _cen_use_option "-w" "--windows <mode>" \
+                        $"gui mode (off|on|auto) or (0|1|2)   (default: auto)" ;;
+
+    # options added by this module
+
+    -w|--win*)
+        optarg "windows" - -o ;;
+
+    esac
+    $CEN_WIN_HOOK_OPTIONS "$@"
+}
+
+# ------------------------------------------------------------------------------
+# launch GUI app: <fwait> <title> <app> <arg>...
+# ------------------------------------------------------------------------------
+_cen_win_launch() {
+   _cen_windcheck '+'               # need version check
+
+    local _wait="$1" _titl="$2" _appl="$3" _tset=1 _args ; shift 3
+    case "$_appl" in
+        bro*)       _args=('dolphin')
+                    [ "$CEN_SYS_KDEVERS" \> '005.070.000' ] && _args+=(--new-window) ;;
+        edi*)       _args=('kwrite')   ;;
+        ter*)       _args=('konsole')  ;;
+        *)          _args=("$_appl") ; _tset=
+    esac
+
+    [ -z "$_titl" -a -n "$_tset" ] && _titl="$CEN_NAME"
+    if [ -n "$_titl" ] ; then
+        [ -n "$CEN_WIN_USE_TITLE" ] && _args+=(--title "$_titl") #||
+                                     #  _args+=(--caption "$_titl")
+    fi
+
+    if [ "$_wait" = 0 ] ; then
+        system -e -p "${_args[@]}" "$@" &
+    else
+        system -e -p "${_args[@]}" "$@"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Hooks to override input / output
+# ------------------------------------------------------------------------------
+_cen_win_hook() {
+    CEN_WIN_HOOK_GETLINE="$CEN_HOOK_GETLINE"
+    CEN_HOOK_GETLINE="_cen_windread"
+    CEN_WIN_HOOK_MESSAGE="$CEN_HOOK_MESSAGE"
+    CEN_HOOK_MESSAGE='_cen_windmesg'
+}
+
+# _cen_win_quit() is disabled in _centauri_bash_lib, progress dialogs will
+#                 closed via _cen_pro_quit
+
+# ------------------------------------------------------------------------------
+# Startup: [-n|-s]
+# ------------------------------------------------------------------------------
+
+[ -n "$CEN_WINDOWS" ] && return 0       # already loaded
+
+[ -n "${CEN_MODULES[_centauri_bash_con]}" ] &&
+    fatal $"module conflict:" "_centauri_bash_win/con"
+[ -n "${CEN_MODULES[_centauri_bash_svc]}" ] &&
+    fatal $"module conflict:" "_centauri_bash_win/svc"
+
+[ "$1" = "-n" ] && return 0             # do not init
+
+# register option hook
+CEN_WIN_HOOK_OPTIONS="$CEN_HOOK_OPTIONS"
+CEN_HOOK_OPTIONS="_cen_win_option"
+
+#CEN_CONS_MSGLEN=                       # flags open progress dialog
+
+# dummies (indent to hide from _centauri_bash_dyn generator)
+    console() { return 1 ; }
+    output()  { error $"output: not available with _centauri_bash_win" ; }
+
+# initialize
+if [ "$1" = "-s" ] ; then
+    windows -m
+else
+    _cen_win_hook
+fi
+:
+
+# end

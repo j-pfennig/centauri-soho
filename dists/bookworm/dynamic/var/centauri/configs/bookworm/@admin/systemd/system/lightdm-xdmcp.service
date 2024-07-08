@@ -1,0 +1,13 @@
+# /lib/systemd/system/lightdm.service
+[Unit]
+Description=Light Display Manager XDMCP only, triggered by sddm.service
+
+After=sddm.service network-online.target centauriswitch.service
+Wants=network-online.target
+ConditionPathExists=/etc/lightdm/lightdm-xdmcp.conf 
+
+[Service]
+ExecStart=/usr/sbin/lightdm -c /etc/lightdm/lightdm-xdmcp.conf 
+Restart=always
+RuntimeDirectory=lightdm-data
+

@@ -1,0 +1,37 @@
+[Unit]
+Description=Network configuration switching
+DefaultDependencies=no
+
+# we should run early and before networking ...
+Before=NetworkManager.service networking.service
+After=local-fs.target sysinit.target centaurisysinit.service
+After=network-pre.target dbus.service
+
+# centauriroute should run afterwards ...
+Wants=centauriroute.service
+
+# must not be running as a daemon ...
+ConditionPathExists=!/run/centauri/centauriswitch.run
+
+# only run if in kernel command line
+ConditionKernelCommandLine=centauriswitch
+
+[Service]
+
+TimeoutSec=60
+
+# centauriswitch runs things in background threads (legacy). So the
+# service must not destroy it's cgroup (RemainAfterExit=yes) ...
+RemainAfterExit=yes
+
+Type=oneshot
+ExecStart=/var/centauri/tools/centauriswitch --daemon=0 start
+ExecStop=/var/centauri/tools/centauriswitch --daemon=0 stop
+
+[Install]
+# in runlevel2 we do not start networking, so add a dependency
+# but only if we really want to run it ...
+# WantedBy=runlevel2.target 
+
+# in other runlevels it is better to depend on networking
+WantedBy=networking.service

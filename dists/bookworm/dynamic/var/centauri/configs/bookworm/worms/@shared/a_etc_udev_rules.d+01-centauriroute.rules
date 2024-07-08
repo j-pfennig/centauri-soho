@@ -1,0 +1,171 @@
+# =======================================================================================
+# /etc/udev/rules.d/01-centauriroute.rules
+#
+# This file handles the centauriroute dial|hangup invokation when a modem or a therering
+# phone is connected or disconnected.
+#
+# Unfortunately you must add your modem or phone manually to this file. You should also
+# add it to file '/etc/udev/rules.d/99-centauriroute.rules' in order to keep the
+# modem-manager service from taking note of your modem or phone.
+#
+# How to add your phone ...
+#
+#   Android phone have several USB states that are reflected by changing USB product-ids.
+#
+#   (1) connect the phone, use lsusb to see USB vendor/product, example:
+#
+#       Bus 002 Device 003: ID 18d1:4ee1 Google Inc. Nexus/Pixel Device (MTP)
+#
+#   (2) turn tethering on and get the corresponding USB product-id, example:
+#
+#       Bus 002 Device 004: ID 18d1:4eeb Google Inc. Pixel 7a
+#
+#   (3) Find a glob expressen that matches both ids, example:
+#
+#           18d1:4ee[1b]        or      18d1:4ee?
+#
+#   (4) Add a line above '# end tethering phones', example:
+#
+#       ENV{PRODUCT}=="18d1/4ee?/*", GOTO="usb_modem_match"
+#
+#   (5) Repeat (4) in file '/etc/udev/rules.d/99-centauriroute.rules'
+#
+#   (6) Run 'udevadm control --reload' to load your updates
+#
+# Testing ...
+#
+#   (1) Make shure you booted into a 'centauriswitch=router' mode
+#
+#   (2) Run 'journalctl --follow' and connect/disconnect the phone
+# =======================================================================================
+
+# ---------------------------------------------------------------------------------------
+# Binding a service to a device would be nice but probably will not work as expected:
+# Removing a device will not change the device-unit state to unplugged. Currently the
+# centauriroute-dial service is start/stopped via 01-centauriroute-rules.
+# ---------------------------------------------------------------------------------------
+
+# ENV{PRODUCT}=="*", RUN+="/home/local/envlogger 'echo ACTION=$ACTION DRIVER=$DRIVER DEVTYPE=$DEVTYPE PRODUCT=$PRODUCT'"
+
+# =======================================================================================
+# wvdial: ID 12d1:1001 Huawei Technologies Co., Ltd. E169/E620/E800 HSDPA Modem
+#
+# .. using wvdial needs /dev/gsmmodem: do it ourself, not via /var/lib/udev_modeswitch
+# .. modem-manager might not init the stick correctly: disable
+# =======================================================================================
+
+# Create symlink for HUAWEI modem (cannot use ENV{PRODUCT})
+ATTRS{idVendor}=="12d1" ACTION=="add", ENV{DEVNAME}=="/dev/ttyUSB0", SYMLINK+="gsmmodem"
+
+# Check for HUAWEI modem via ENV{PRODUCT}
+ENV{PRODUCT}=="12d1/1001/*", GOTO="usb_modem_match"
+GOTO="usb_modem_next"
+
+# ignore all but this event
+LABEL="usb_modem_match"
+ENV{DEVTYPE}!="usb_device", GOTO="usb_modem_next"
+ 
+# Filter for router/switch mode
+TEST=="/var/run/centauri/centauriroute-mode-router", GOTO="usb_modem_run"
+TEST=="/var/run/centauri/centauriroute-mode-switch", GOTO="usb_modem_run"
+GOTO="usb_modem_next"
+
+# run action
+LABEL="usb_modem_run"
+ACTION=="bind",       RUN+="/bin/systemctl --no-block start centauriroute-udev@start"
+ACTION=="remove",     RUN+="/bin/systemctl start centauriroute-udev@stop"
+ACTION=="bind",       RUN+="/usr/bin/logger 'added huawei gsmmodem"
+ACTION=="remove",     RUN+="/usr/bin/logger 'removed huawei gsmmodem'"
+
+# =======================================================================================
+# Ethernet: LTE Sticks and Android-tethering create an ethernet interface
+#
+# ... USB device 0x:0x (cdc_ether): fixed it to eth2
+# ... USB phones: usb0
+# =======================================================================================
+LABEL="usb_modem_next"
+
+SUBSYSTEM=="net", ACTION=="add", DRIVERS=="cdc_ether", ATTR{dev_id}=="0x0", ATTR{type}=="1", KERNEL=="eth*", NAME="eth2"
+
+# -----------------------------------------------------
+# HW                                   device symlink
+# -----------------------------------------------------
+# LTE Stick: ID 12d1:14dc Huawei       (/dev/lterouter)
+#
+# Throws 3 events: usb_device + usb_interface (2 times)
+# -----------------------------------------------------
+ENV{PRODUCT}=="12d1/14dc/*", GOTO="usb_modem_match"
+GOTO="usb_modem_next"
+
+# Create symlink
+LABEL="usb_modem_match"
+ACTION!="remove",     SYMLINK+="lterouter"
+
+# ignore all but this event
+ENV{DEVTYPE}!="usb_device", GOTO="usb_modem_next"
+
+# Filter for router/switch mode
+TEST=="/var/run/centauri/centauriroute-mode-router", GOTO="usb_modem_run"
+TEST=="/var/run/centauri/centauriroute-mode-switch", GOTO="usb_modem_run"
+GOTO="usb_modem_next"
+
+# run action
+LABEL="usb_modem_run"
+ACTION=="add",        RUN+="/bin/systemctl --no-block start centauriroute-udev@start"
+ACTION=="remove",     RUN+="/bin/systemctl start centauriroute-udev@stop"
+ACTION=="add",        RUN+="/usr/bin/logger 'added huawei router stick'"
+ACTION=="remove",     RUN+="/usr/bin/logger 'removed huawei router stick'"
+ 
+# --------------------------------------------------------
+# Tethering phones                        device symlink
+# --------------------------------------------------------
+# Android: Id 0fce:[07]1da Sony Z4        (/dev/usbrouter)
+#                     71f9 Sony XZ2
+# Android: Id 22b8:2e2[45] Motorola PCS   (/dev/usbrouter)
+# Android: Id 04e8:686[34] Samsung        (/dev/usbrouter)
+# Android: Id 18d1:4ee[1b] Google P7a     (/dev/usbrouter)
+# --------------------------------------------------------
+LABEL="usb_modem_next"
+
+ENV{PRODUCT}=="fce/?1da/*",  GOTO="usb_modem_match"
+ENV{PRODUCT}=="fce/71f9/*",  GOTO="usb_modem_match"
+ENV{PRODUCT}=="22b8/2e25/*", GOTO="usb_modem_match"
+ENV{PRODUCT}=="4e8/6864/*",  GOTO="usb_modem_match"
+ENV{PRODUCT}=="18d1/4eeb/*", GOTO="usb_modem_match"
+
+# end tethering phones
+GOTO="usb_modem_next"
+
+# Create symlink
+LABEL="usb_modem_match"
+ACTION!="remove",     SYMLINK+="usbrouter"
+GOTO="usb_modem_udev"
+
+# ignore all but this event
+LABEL="usb_modem_udev"
+ENV{DEVTYPE}!="usb_device", GOTO="usb_modem_next"
+
+# Filter for router/switch mode
+TEST=="/var/run/centauri/centauriroute-mode-router", GOTO="usb_modem_run"
+TEST=="/var/run/centauri/centauriroute-mode-switch", GOTO="usb_modem_run"
+GOTO="usb_modem_next"
+
+# run action
+LABEL="usb_modem_run"
+ACTION=="add",        RUN+="/bin/systemctl --no-block start centauriroute-udev@start"
+ACTION=="remove",     RUN+="/bin/systemctl start centauriroute-udev@stop"
+ACTION=="add",        RUN+="/usr/bin/logger 'added mobile usb modem'"
+ACTION=="remove",     RUN+="/usr/bin/logger 'removed mobile usb modem'"
+
+# =======================================================================================
+# End of Modem Entries 
+# =======================================================================================
+
+LABEL="usb_modem_next"
+LABEL="usb_modem_end"
+
+# Show environment
+#ENV{PRODUCT}=="fce/1da/*",  RUN+="/bin/bash -c '/usr/bin/logger $(/usr/bin/env)'"
+#ENV{PRODUCT}=="fce/?1da/*", RUN+="/home/local/envlogger 'echo ACTION=$ACTION DEVTYPE=$DEVTYPE PRODUCT=$PRODUCT'"
+
+# end

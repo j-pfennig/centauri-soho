@@ -1,0 +1,26 @@
+# Configuration for gmediarender
+
+# User and group the daemon will be running as.
+DAEMON_USER="nobody:audio"
+
+# Device name as it will be advertised to and shown in the UPnP controller UI.
+# Some string that helps you recognize the player, e.g. "Livingroom Player"
+UPNP_DEVICE_NAME="Notebook [$(hostname)]"
+
+# Initial volume in decibel. 0.0 is 'full volume', -10 correspondents to '75' on
+# the exported volume scale (Note, this does not change the ALSA volume, only
+# internal to gmrender. So make sure to leave the ALSA volume always to 100%).
+INITIAL_VOLUME_DB=-10
+
+# If you explicitly choose a specific ALSA device here (find them with 'aplay -L'), then
+# gmediarenderer will use that ALSA device to play audio.
+# Otherwise, whatever default is configured for gstreamer for the '$DAEMON_USER' is
+# used.
+ALSA_DEVICE="dmixer"
+#ALSA_DEVICE="sysdefault"
+#ALSA_DEVICE="iec958"
+
+# You can pass extra arguments to the daemon
+# For example, you can specify a logfile with this line
+# (though you need to ensure correct permissions for a log file yourself.)
+# DAEMON_EXTRA_ARGS="--logfile /var/log/gmediarender.log"

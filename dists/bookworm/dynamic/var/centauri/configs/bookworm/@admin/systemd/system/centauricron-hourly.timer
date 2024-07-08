@@ -1,0 +1,10 @@
+[Unit]
+Description=Run centauricron every hour
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h 
+RandomizedDelaySec=90
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Allow user to send messages]
+Identity=unix-group:plugdev
+Action=org.freedesktop.ModemManager1.Messaging
+ResultInactive=no
+ResultActive=yes
+
+[Allow user to control modem]
+Identity=unix-group:plugdev
+Action=org.freedesktop.ModemManager1.Device.Control
+ResultInactive=no
+ResultActive=yes
+
+[Allow user viewing location]
+Identity=unix-group:plugdev
+Action=org.freedesktop.ModemManager1.Location
+ResultInactive=no
+ResultActive=yes

@@ -1,0 +1,28 @@
+# centauriwsdd.service
+[Unit]
+Description=WS-DISCOVER Provider
+After=network-online.target centauriswitch.service smbd.service
+Wants=network-online.target
+
+StartLimitBurst=10
+StartLimitIntervalSec=1000
+
+ConditionPathExists=/etc/default/wsdd
+
+[Service]
+User=smbworld
+TimeoutSec=60
+IgnoreSIGPIPE=no
+KillMode=process
+GuessMainPID=no
+RemainAfterExit=no
+EnvironmentFile=/etc/default/wsdd
+ExecStart=/usr/sbin/wsdd --shortlog --chroot=/run/wsdd $WSDD_PARAMS
+RuntimeDirectory=wsdd
+AmbientCapabilities=CAP_SYS_CHROOT
+
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=smbd.service

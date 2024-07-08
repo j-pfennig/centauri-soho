@@ -1,0 +1,62 @@
+# minmal system services ...
+
++ /lib/systemd/system/dbus.service
++ /lib/systemd/system/getty.target
++ /lib/systemd/system/plymouth-quit.service
++ /lib/systemd/system/plymouth-quit-wait.service
++ /lib/systemd/system/systemd-logind.service
++ /lib/systemd/system/systemd-update-utmp-runlevel.service
++ /lib/systemd/system/systemd-user-sessions.service
+
+# always start these ...
+
++ centaurifilter.service
++ centaurimounter.service
++ centauriroute.service
++ centaurisecrets.service
++ centauriswap.service
++ centauriswitch.service
+
+# don't start here ...
+
+- centauri-net-svc.service
+- centauri-network.service
+- centauriwsdd.service
+- autofs.service
+
+# tools started via 'centauriswitch' for the master server only
+
+- dnsmasq.service
+- slapd.service
+- samba-ad-dc.service
+- cyrus-imapd.service
+- exim4.service
+- krb5-kdc.service
+- ntpsec.service
+- openvpn.service
+
+# started by centauri-network
+
+- gmediarender.service
+- minidlna.service
+- cups-browsed.service
+- cups.service
+
+# never start these automatically ...
+
+- fetchmail.service
+- lightdm-xdmcp.service
+- nmbd.service
+- nfs-client.target
+- nfs-server.service
+- rpcbind.service
+- saned.service
+- smartd.service
+- smartmontools.service
+- sshd.service
+- smbd.service
+- rsnyc.service
+- vsftpd.service
+- winbind.service
+
+# end

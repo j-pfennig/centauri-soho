@@ -1,0 +1,12 @@
+#Acquire::http::Proxy "http://worm.worms.home:3142";
+Acquire::Languages "none";
+APT::Install-Recommends "false";
+APT::Install-Suggests "false";
+
+# this overrides apt.conf.d settings
+APT::Periodic::Enable "0";
+APT::Periodic::Update-Package-Lists "0";
+APT::Periodic::Unattended-Upgrade "0";
+APT::Periodic::Download-Upgradeable-Packages "0";
+
+APT::Archives::MaxAge "32";

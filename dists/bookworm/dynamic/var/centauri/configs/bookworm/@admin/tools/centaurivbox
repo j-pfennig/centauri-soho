@@ -1,0 +1,726 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2024; BSD License"
+CEN_TITLE="Run VirtualBox commands using the 'vbox' proxy user"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g -y - '0.42:2' || exit 2
+
+# Data
+
+DAT_SELF="$CEN_TOOLS/$CEN_NAME"
+
+DAT_DEST=                               # contains 'c' or 's' for client/server
+DAT_HOST=                               # host name, see --host
+DAT_MASTER=                             # master server
+DAT_NAME=                               # machine name, see --machine
+
+DAT_FIXN=                               # have --machine option
+
+DAT_HOME=~vbox
+DAT_VBOX="$DAT_HOME/.VirtualBox"
+DAT_MACHINES="$DAT_HOME/Machines"
+DAT_DRIVES="$DAT_HOME/Drives"
+DAT_CONFIG=                             # vbox xml file, see do_find
+
+[ -d "$DAT_VBOX" -o -h "$DAT_VBOX" ] || DAT_DEST='s'      # server if no local vbox installation
+
+# ------------------------------------------------------------------------------
+# Resolve a disk drive name: <vnam> <name>
+# ------------------------------------------------------------------------------
+do_drive() {
+    local _disk
+    case "$2" in
+    -)      _disk='none' ;;
+    */*)    _disk="$2" ;;
+    *.*)    matchpath -s _disk -e -o -- "${DAT_CONFIG%/*}/$2" "$DAT_DRIVES/$2" ;;
+    +)      inpfile -s disk -l -x 'vdi' + ;;
+    *)      matchpath -s _disk -e -o -- "${DAT_CONFIG%/*}/$2.vdi" "$DAT_DRIVES/$2.vdi"
+    esac
+    printf -v "$1" "$_disk"
+}
+
+# ------------------------------------------------------------------------------
+# Find vm config: <name> [<vres>]
+# ------------------------------------------------------------------------------
+do_find() {
+    local locl path vres="${2:-DAT_CONFIG}"
+    [ -z "$2" ] && do_find_=()
+    for locl in "$DAT_VBOX" "$DAT_VBOX/$1" "$DAT_MACHINES" "$DAT_MACHINES/$1" \
+                "$DAT_MACHINES"/*/$1 "$DAT_MACHINES"/*/*/$1 ; do
+        [ -d "$locl" ] || continue
+        if [ -r "$locl" ] ; then
+            trace -a -c "check folder" -- "$locl"
+        else
+            invoke -w "Folder not readable:" "$locl" ; continue
+        fi
+        matchpath -f -o -s "$vres" -- "$locl/$1.xml" "$locl/$1.vbox" && return 0
+    done
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# get image uuid: do_image <vres>                   # list, <vres> is requited
+#                 do_image <vres> <name>            # find machine primary disk
+#                 do_image -p <vres> <path>         # find uuid by path
+# ------------------------------------------------------------------------------
+do_image() {
+    local path
+    if [ "$1" = '-p' ] ; then
+        path="${3##*/}" ; set -- "$2"
+    fi
+    local -n vcur="$1"
+    local list line vnam vimg vpri mnam="$2"
+    local lkey lval stat=0 mesg='message'
+
+    system -a list -e -p -r -- vboximg-mount -l || return
+
+    [ -n "$mnam" ] && mesg='trace'
+
+    for line in "${list[@]}" 'VM:' ; do
+        lkey="${line%%:*}"
+        [ "$lkey" = "$line" ] && continue
+        lval="${line#*:}"
+        lkey="${lkey#"${lkey%%[![:space:]]*}"}"
+        lval="${lval#"${lval%%[![:space:]]*}"}"
+        $CEN_TRACE2 -a "$lkey: $lval"
+
+        if [ -n "$path" ] ; then
+            case "$lkey" in
+            Image)  [ "$path" = "$lval" ] && stat=3 || stat=0
+                    continue ;;
+            UUID)   [ "$stat" = 3 ] || continue
+                    vcur="$lval" ; return ;;
+            *)      continue
+            esac
+        fi
+
+        # stat: 0 wait for 'VM'    -> 1
+        #       1 wait for 'UUID'  -> 2
+        #       2 wait for 'Image' -> 3
+        #       3 wait for 'UUID'  -> 4
+        #       4 wait for 'Snapshot'
+
+        case "$lkey" in
+        VM)     if [ -n "$vnam" ] ; then
+                    [ -z "$vpri" ] && continue
+                    $mesg -a -p "    Current:  %-20s %s" "$vpri" "$vcur"
+                    [ -n "$mnam" ] && return
+                fi
+                if [ -n "$mnam" ] ; then
+                    [ "$mnam" = "$lval" ] || continue
+                fi
+                vnam="$lval" ; vimg= ; vpri= ; vcur= ; stat=1
+                ;;
+        UUID)   if [ "$stat" = 1 ] ; then
+                    $mesg -a -p "Machine:      %-20s %s" "$vnam" "$lval"
+                    stat=2
+                elif [ "$stat" = 3 ] ; then
+                    $mesg -a -p "    Image:    %-20s %s" "$vimg" "$lval"
+                    [ "$vimg" = "$vpri" ] && vcur="$lval" ; stat=4
+                fi
+                ;;
+        Image)  if [ "$stat" = 2 ] ; then           # 1st image
+                    vpri="$lval"
+                elif [ "$stat" = 4 ] ; then         # other images...
+                    [ "$lval" = "$vnam.vdi" ] && vpri="$lval"
+                else
+                    continue
+                fi
+                vimg="$lval" ; stat=3
+                ;;
+        Snap*)  [ "$stat" = 4 ] || continue
+                [ "$vimg" = "$vpri" ] && vcur="$lval"
+                trace -a -p "    Snapshot: %-20s %s" "" "$lval"
+                ;;
+        esac
+    done
+}
+
+# ------------------------------------------------------------------------------
+# add builtin/default options to array: <anam>
+# ------------------------------------------------------------------------------
+do_opts() {
+    optmake -a "$1" -b 'dryrun'
+    optmake -a "$1" -b 'verbose'
+    optmake -a "$1" -b 'yesno'
+    optmake -a "$1" -b 'quiet'
+    optmake -a "$1" -b 'zombie'
+    optmake -a "$1" -b 'gui'
+    optmake -a "$1" -n 'machine' -v "$DAT_NAME"
+}
+
+# ------------------------------------------------------------------------------
+# load kernel modules or kill VBoxSVC: [-k]
+# ------------------------------------------------------------------------------
+do_vdrv() {
+    [ -n "$USER" ] || USER="${LOGNAME:-vbox}"
+    local spid vdir="/tmp/.vbox-$USER-ipc"
+    system -e -p -g 1 -s spid -- pgrep "^VBoxSVC"
+
+    if [ "$1" = '-k' ]; then
+        if [ -n "$spid" ] && kill -TERM $spid 2>/dev/null ; then
+            trace -a $"Stopped 'VBoxSVC' process"
+            sleep 2 ; spid=
+        fi
+
+    elif [ ! -c /dev/vboxdrv ] ; then
+        trace -a $"Load 'vbox' kernel modules ..."
+        if [ -x /etc/init.d/vboxdrv ] ; then
+            system -e -u - /etc/init.d/vboxdrv start
+        else
+            system -e -u - systemctl start virtualbox
+        fi
+    fi
+
+    [ -z "$spid" ] && remove -d -- "$vdir"
+}
+
+# ------------------------------------------------------------------------------
+# Open a SSH connection - use exec, do not return
+# ------------------------------------------------------------------------------
+do_ssh() {
+    local hdir="/home/$USER"; [ "$EUID" = 0 ] && hdir="/root"; [ -d "$hdir" ] || hdir=~
+    if [ -h "$hdir/.ssh" -a ! -e "$hdir/.ssh/id_rsa" ] ; then
+        embed -r centauriencfs mount - || quit
+    fi
+
+    local opts=("-X") self="$DAT_SELF"
+    netiface -k 'eth0'
+    nettool -c -d "$_netiface" isup || opts+=('-C')
+    [ -n "$XDG_CURRENT_DESKTOP" ] && opts+=("-o" "SendEnv=XDG_CURRENT_DESKTOP")
+
+    [ "$#" = 0 ] && self=
+    [ "$self" = "$CEN_TOOLS/vbox" ] && self="$CEN_TOOLS/centaurivbox"
+    system -e -x -- ssh "${opts[@]}" vbox@$DAT_HOST $self "$@"
+}
+
+# ------------------------------------------------------------------------------
+# attach a drive to a VM: [<name>] <disk> <port>
+# ------------------------------------------------------------------------------
+actionAttach() {
+    [ $# -lt 3 ] && set - "$@"
+    execute -m -v -- "$1" || return
+
+    local disk
+    case "$2" in
+    -)      disk='none' ;;
+    */*)    disk="$2" ;;
+    *.*)    matchpath -s disk -e -o -- "${DAT_CONFIG%/*}/$2" "$DAT_DRIVES/$2" ;;
+    +)      inpfile -s disk -l -x 'vdi' + ;;
+    *)      matchpath -s disk -e -o -- "${DAT_CONFIG%/*}/$2.vdi" "$DAT_DRIVES/$2.vdi"
+    esac
+
+    local opts=(--storagectl SATA --type hdd --medium "$disk" --port "$3")
+    [ "$disk" != 'none' ] && opts+=(--nonrotational on --discard on)
+    system -e VBoxManage storageattach "$DAT_NAME" "${opts[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# create/delete virtual disk: <name> [<size>]
+# ------------------------------------------------------------------------------
+actionDrive() {
+    execute -v || return
+
+    local oexi
+    [ "$CEN_ACTION" = 'delete' ] && oexi='-e'
+    [ "${1::1}" != '/' ] && folder -c -f -- "$DAT_DRIVES"
+    outfile -a -l -r -x 'vdi' $oexi -- "$1" || return
+
+    if [ "$CEN_ACTION" = 'delete' ] ; then
+        system -e VBoxManage closemedium disk "$CEN_OUTFILE" --delete
+    else
+        system -e VBoxManage createmedium disk --filename="$CEN_OUTFILE" --size="$2"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# run shell or command as user 'vbox': [<cmd> ...]
+# ------------------------------------------------------------------------------
+actionCmd() {
+    if [ "$USER" = 'vbox' ] ; then
+        if [ $# = 0 ] ; then
+            invoke -w $"Not lauching a shell for user 'vbox'"
+        else
+            system -e -- "$@"
+        fi
+    else
+        execute -v
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Export VM: [<name> [<path>]]
+# ------------------------------------------------------------------------------
+actionExport() {
+    execute -m -v -- "$1" || return
+    local path="${2:--}" mesg
+    if [ "$path" = '-' ] ; then
+        matchpath -a path -d -o -w -- "$HOME/Backup" "$HOME"/*/Backup* "$HOME"
+        printf -v path "$path/%s_%s_%(%Y-%m-%d)T" "$HOSTNAME" "$DAT_NAME" -1
+    fi
+    outfile -l -s path -x ova -- "$path" || return
+    printf -v mesg "Export machine '%s' to:\n%s" "$DAT_NAME" "$path"
+    confirm -a -y "$mesg" || return
+    remove -- "$path"
+    system -e VBoxManage export "$DAT_NAME" --output="$path" --ovf10 --manifest
+}
+
+# ------------------------------------------------------------------------------
+# run VirtualBox
+# ------------------------------------------------------------------------------
+actionGui() {
+    execute -k -v || return
+    system -e -- VirtualBox
+}
+
+# ------------------------------------------------------------------------------
+# run VBoxManage to print help: [<keyw>]
+# ------------------------------------------------------------------------------
+actionHelp() {
+    execute || return
+    syspager system -e -g 2 -- VBoxManage "$@"
+}
+
+# ------------------------------------------------------------------------------
+# load kernel driver, kill vbox server: [shutdown]
+# ------------------------------------------------------------------------------
+actionInit() {
+    local optk
+    case "$1" in
+    shu*|down)  optk='-k' ;;
+    "")         ;;
+    *)          invoke -e $"Invalid argument:" "$1"
+    esac
+
+    execute -v || return
+    do_vdrv $optk
+}
+
+# ------------------------------------------------------------------------------
+# run VBoxManage: <args>...
+# ------------------------------------------------------------------------------
+actionMgr() {
+    execute -v || return
+    system -e -- VBoxManage "$@"
+}
+
+# ------------------------------------------------------------------------------
+# run vboximg-mount: [<name>|<path>|<uuid> [<where> [rw] [<part>...]]]
+# ------------------------------------------------------------------------------
+actionMount() {
+    system -c -- vboximg-mount || return
+    execute -v || return
+
+    # what kind of input argument?
+    local aimg anam what="$1" base="${2:--}" bnam fwri
+    shift ; shift
+    if [ "$base" = 'RW' ] ; then
+        base='-' ; fwri='--rw'
+    fi
+    if [ "$1" = 'RW' ] ; then
+        fwri='--rw' ; shift
+    fi
+
+    case "${what//[a-f0-9]/x}" in
+    xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+                    aimg="$what" ;;
+    /*)             anam="$what" ; bnam="$anam" ;;
+    */*|*.v??|+)    inpfile -c -l -s aimg -x vdi -- "$what" || return
+                    bnam="${aimg##*/}" ; bnam="${bnam%%.*}" ;;
+    -|'')           anam="$DAT_NAME" ;;
+    *)              anam="$what" ; bnam="$anam"; folder -c -f -- "$DAT_DRIVES"
+    esac
+
+    [ "$base" = '-' ] && base="$HOME/Mount"
+    outfile -d -l -s base -- "$base" || return
+    case "$base" in
+    $HOME/*)    ;;
+    ./*|../*)   invoke -e "Invalid mountpoint:" "$base" ; return ;;
+    /*)         invoke -w "Mountpoint not a subfolder of '%s'" "$HOME" ;;
+    *)          base="$HOME/$base"
+    esac
+
+    if [ -n "$aimg" ] ; then
+        local temp
+        do_image -p temp "$aimg"            # search uuid for path
+        if [ -n "$temp" ] ; then
+            trace -a -p "Found '%s' for path '%s'" "$temp" "$aimg"
+            aimg="$temp"
+        fi
+    fi
+
+    # list drives or get specified drive
+    if [ -z "$aimg" ] ; then
+        do_image aimg "$anam"
+        [ -z "$anam" ] && return            # name machine name: list only
+        if [ -z "$aimg" ] ; then
+            invoke -e $"Found no drive for machine:" "$anam" ; return
+        fi
+    fi
+
+    # mount base name
+    if [ -n "$DAT_NAME" ] ; then
+        bnam="$DAT_NAME"
+    elif [ -z "$bnam" ] ; then
+        invoke -e $"Need '--machine=' option to set mount name" ; return
+    fi
+
+    # mount folder
+    base+="/$bnam"
+    if [ -d "$base" ] ; then
+        if findmount -- vboximg-mount "$base" ; then
+            invoke -e $"Mountpoint '%s' is in use" "$base" ; return
+            return
+        fi
+    else
+        folder -m -f -- "$base"
+    fi
+    message -a -p "Mounting '%s' at '%s'" "$aimg" "$base"
+    system -e -p vboximg-mount --root $fwri --image "$aimg" "$base" || return
+
+    # mounting volumes
+    local list item part mopt
+    matchpath -a list -e -- "$base"/vol? || return
+    if [ $# = 0 ] ; then
+        case "${#list[*]}" in
+        4)  set -- + - - / ;;
+        3)  set -- + - / ;;
+        2)  set -- + / ;;
+        esac
+    fi
+    for part in "${list[@]}" ; do
+        item="${base}_${part##*/}"
+        mopt=('-l')
+        case "${1:-+}" in
+        +)  ;;
+        -)  message -a -p "Skipping '%s'" "$item" ; shift ; continue ;;
+        /)  mopt+=('-o' 'subvol=/') ;;
+        *)  invoke -e "Invalid partition selector:" "$1" ; break
+        esac ; shift
+        folder -m -f -- "$item"
+        message -a -p "Mounting '%s' at '%s'" "$part" "${item##*/}"
+        # losetup --show -f $part # lsblk
+        system -e -p -u - mount "${mopt[@]}" -- "$part" "$item" || remove -- "$item"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# stop/stop a VM: [<name>]
+# ------------------------------------------------------------------------------
+actionStart() {
+    execute -k -m -v -- "$1" || return
+    local args=('-q') host="$HOSTNAME" coun
+    if [ "$CEN_ACTION" = "stop" ] ; then
+        trace -a "Stopping (acpi) '$DAT_NAME' on $host ..."
+        args+=(controlvm "$DAT_NAME" acpipowerbutton)
+    elif [ "$CEN_ACTION" = "batch" ] ; then
+        trace -a "Starting '$DAT_NAME' [headless] on $host ..."
+        args+=(startvm "$DAT_NAME" --type headless)
+    else
+        trace -a "Starting '$DAT_NAME' on $host ..."
+        args+=(startvm "$DAT_NAME")
+    fi
+
+    # just exec if no cmds follow ...
+    coun=$((${#CEN_CMDARGS[@]} - 1))
+    if [ "$coun" = 0 ] ; then
+        system -e -x VBoxManage "${args[@]}" ; return
+    fi
+
+    system -e VBoxManage "${args[@]}"               # will go into background
+}
+
+# ------------------------------------------------------------------------------
+# umount virtual disk(s): <path>
+#                         [<name>|<uuid>|- [<base>]]
+# ------------------------------------------------------------------------------
+actionUmount() {
+    execute -v || return
+    local base="${2:--}"
+
+    # mount folder
+    [ "$base" = '-' ] && base="$HOME/Mount"
+    outfile -d -l -s base -- "$base" || return
+
+    local list lpar item part
+    if [ "${1:--}" = '-' ] ; then
+        matchpath -a list -e -- "$base"/*/vhdd || return
+    elif [ -e "$base/$1/vhdd" ] ; then
+        list=("$base/$1/vhdd")
+    else
+        list=("$1/vhdd")
+    fi
+
+    for item in "${list[@]}" ; do
+    trace -a "Unmount:" "$item"
+        item="${item%/*}"
+        if ! findmount -- vboximg-mount "$item" ; then
+            warning -a "Not a mountpoint:" "$item" ; continue
+        fi
+        matchpath -a lpar -d -- "${item}_"vol?
+        for part in "${lpar[@]}" ; do
+            message -a "Unmounting:" "$part"
+            system -e -p -u - umount -- "$part" && remove -- "$part"
+        done
+        message -a "Unmounting:" "$item"
+        system -e -p umount -- "$item"
+        remove -- "$item"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# wait for vm termination: [<snap>]
+# ------------------------------------------------------------------------------
+actionWait() {
+    execute -m -v || return
+
+    system -e -p -g 1  pidwait -f -u vbox "VirtualBoxVM .* $DAT_NAME "
+    [ "$CEN_ACTION" = 'wait' ] && return
+
+    if [ "${1:--}" = '-' ] ; then
+        confirm -n -y "Restore current snapshot" || return
+        system -e -p VBoxManage snapshot "$DAT_NAME" restorecurrent
+    else
+        confirm -n -y "Restore snapshot:" "$1" || return
+        system -e -p  VBoxManage snapshot "$DAT_NAME" restore "$1"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Set/check context (drivers, sudo, ssh): [-k] [-m] [-v] [<name>|-]
+#
+# Options   -k      load kernel drivers
+#           -m      needs --machine option
+#           -v      must run as "vbox" user
+#
+# Run at host (a) --server|--host
+#             (b) VBoxManage not installed
+#             (c) machine not installed
+# ------------------------------------------------------------------------------
+execute() {
+    local oker omac ousr
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -k)    oker=1 ;;
+        -m)    omac=1 ;;
+        -v)    ousr=1 ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+
+    # do we have a machine name?
+    if [ "${1:--}" != '-' ] ; then
+        if [ -n "$DAT_NAME" ] &&  [ -n "$DAT_FIXN" ] && [ "$DAT_NAME" != "$1" ] ; then
+            invoke -e $"Multiple machine names" ; return 1
+        fi
+        DAT_NAME="$1"
+    fi
+    if [ -n "$omac" -a -z "$DAT_NAME" ] ; then
+        invoke -e $"Needs '%s' option" '--machine=<name>' ; return 1
+    fi
+
+    # run locally
+    [ "$DAT_HOST" = "$HOSTNAME" ] && DAT_DEST='l'
+
+    # is vbox installed locally?
+    if [ "$DAT_DEST" = 'c' -o "$DAT_DEST" = 'l' ] ; then
+        system -c -f 'VBoxManage'
+    elif [ "$DAT_DEST" != 's' ] ; then
+        sysfind -c 'VBoxManage' || DAT_DEST='s'
+    fi
+
+    # is machine local?
+    if [ -z "$DAT_DEST" -a -n "$omac" ] ; then
+        do_find "$DAT_NAME" && omac= || DAT_DEST='s'
+    fi
+
+    # get remote host's name
+    if [ "$DAT_DEST" = 's' ] && [ -z "$DAT_HOST" ] ; then
+        netquery -s DAT_MASTER MASTER || DAT_HOST="$DAT_MASTER"
+        if [ -z "$DAT_HOST" ] ; then
+            invoke -e $"No master server active" ; return 1
+        fi
+    fi
+
+    # not a client: allow access to my display
+    if [ "$DAT_DEST" != 'c' ] && [ -n "$ousr" -a -n "$DISPLAY" ] ; then
+        local xadd
+        [ "$DAT_DEST" = 's' -o -n "${DISPLAY%%:*}" ] && xadd="+$DAT_HOST"
+        system -e -p -- xhost $xadd +si:localuser:vbox
+    fi
+
+    # invoke via ssh
+    if [ "$DAT_DEST" = 's' ] ; then
+        message -a -d +3 $"Run at host '$DAT_HOST' ..."
+        if [ "$CEN_ACTION" = 'cmd' ] ; then
+            do_ssh
+        else
+            local opts=('--client')
+            do_opts opts
+            do_ssh "${opts[@]}" "${CEN_CMDARGS[@]:CEN_CMDCURR}"
+        fi
+        return 1
+    fi
+
+    # re-run via sudo
+    if [ -n "$ousr" -a "$USER" != 'vbox' ] ; then
+        message -a -d +3 $"Run as user 'vbox' ..."
+        if [ "$CEN_ACTION" = 'cmd' ] ; then
+            system -e sudo -i -u vbox -H PULSE_SERVER=localhost
+        else
+            local opts=(-u vbox -H PULSE_SERVER=localhost "$CEN_NAME" '--local')
+            do_opts opts
+            system -e -r -x sudo "${opts[@]}" "${CEN_CMDARGS[@]:CEN_CMDCURR}"
+        fi
+        return 1
+    fi
+
+    if [ -n "$omac" ] && ! do_find "$DAT_NAME" ; then
+        invoke -e $"Machine not found:" "$DAT_NAME" ; return 1
+    fi
+
+    # load kernel drivers
+    [ -n "$oker" ] && do_vdrv
+
+    # qt wants XDG_RUNTIME_DIR
+    if ! [ -d "XDG_RUNTIME_DIR" ] ; then
+        local xdir="/tmp/runtime-${USER:-$EUID}"
+        create -f -d -- "$xdir" 700 ; export XDG_RUNTIME_DIR="$xdir"
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    '')  [ -n "$DAT_NAME" ] && DAT_FIXN=1 ;;
+
+    --client)
+         optarg -           DAT_DEST     -f 'c' ;;
+    -H|--host)
+         optarg 'host'      DAT_HOST     -t ; DAT_DEST='s' ;;
+    -L|--loc*)
+         optarg 'local'     DAT_DEST     -f 'l' ;;
+    -M|--mac*)
+         optarg 'machine'   DAT_NAME     -t ;;
+    -S|--ser*)
+         optarg 'server'    DAT_DEST     -f 's' ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    att*)
+        invoke    'attach' -           2 3 ;;
+    bat|batc|batch)
+        invoke    'batch'  actionStart 0 1 ;;
+    cmd)
+        invoke -c -        -               ;;
+    cre*)
+        invoke    'create' actionDrive   2 ;;
+    del*)
+        invoke    'delete' actionDrive   1 ;;
+    exp*)
+        invoke    'export' -           0 2 ;;
+    gui)
+        invoke    -        -           0   ;;
+    hel|help)
+        invoke -c 'help'   -           0 1 ;;
+    ini|init)
+        invoke    'init'   -           0 1 ;;
+    mou*)
+        invoke    'mount'  -               ;;
+    res*)
+        invoke   'restore' actionWait  0 1 ;;
+    sta|star|start)
+        invoke    'start'  -           0 1 ;;
+    sto*|shu*)
+        invoke    'stop'   actionStart 0 1 ;;
+    unm*|umo*)
+        invoke    'umount' -           0 2 ;;
+    wai|wait)
+        invoke    'wait'   -           0   ;;
+    ????*)
+        invoke -c '(mgr)'  actionMgr   - - "$@" ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    netquery -s DAT_MASTER MASTER
+    [ -z "$DAT_MASTER" ] && DAT_MASTER=$"-unknown-"
+
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -H --host    <host>  set the remote host (default is: $DAT_MASTER)
+       -L --local           never run at remote host
+       -M --machine <name>  virtual machine name
+       -S --server          start on server '$DAT_MASTER'
+
+          --client          used internaly when running at remote host
+
+actions:
+       attach  [<name>] <disk>|- <port>
+                            attach a disk, use '-' to detach
+       batch   [<name>]     start a virtual machine without gui
+       cmd                  open a shell for user 'vbox'
+       create  <disk> [<size>]
+                            create a disk image (size in MByte)
+       delete  <disk>       delete a disk image
+       export  [<name> [<path>]]
+                            export a VM as OVA archive
+       gui                  run the VirtualBox gui as 'vbox'
+       help    [<cmd>]      show VBoxManage help
+       init    [-]          load kernel driver (use - to unload driver)
+       mount   [<name>|<path>|<uuid> [<mdir>|- [RW] [<part>...]]]
+                            list or mount vdi images/snapshots
+       restore [<snap>|-]]  wait and restore to (current) snapshot
+       start   [<name>]     start a virtual machine
+       stop    [<name>]     stop a virtual machine via ACPI powerbutton
+       unmount [<name>|<path>|<uuid>|- [<where>]]
+                            list mounts or unmount (use '-' for all mounts)
+       wait                 wait for virtual machine to terminate
+       <cmd> <args>...      run VBoxManage as user 'vbox'
+
+arguments:
+       <cmd>                a native virtualbox command
+       <disk>               name of a registered vbox disk image
+       <mdir>               mount directory (default is $HOME/Mount)
+       <part>               partition selector (- skip, + mount, /... subvol)
+       <port>               x
+       <size>               x
+       <snam>               x
+!EOF
+}
+
+# backup [<mode>]      create backups (local only), default mode: all
+#arguments:
+#
+#       <mode>:=all|cron|drives|state
+#                            all:    interactive, runs drives and state backups
+#                            cron:   like 'all' but non-interactive (cron jobs)
+#                            drives: backup the vm disk images
+#                            state:  backup vbox home, snapshots, configuration
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

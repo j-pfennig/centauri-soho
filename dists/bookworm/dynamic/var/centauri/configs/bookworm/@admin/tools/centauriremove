@@ -1,0 +1,303 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2012-2022; BSD License"
+CEN_TITLE="Tool to use/manage 'Deleted' folders"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -s -y "$0" "0.30" || exit 2
+
+# Data
+
+CEN_OPT_DELETE=     # --delete or --free option seen
+CEN_OPT_MBYTES=1    # number of MBytes to be deleted
+CEN_OPT_ANYPATH=    # --anypath option seen
+CEN_OPT_BASE=""     # basedir
+CEN_OPT_SILENT=     # see --silent
+
+DAT_DIR_CURR=       # set in do_base_arg()
+DAT_PURGE_SIZ="32G" # size for --purge
+
+# check numeric argument, see --free and --delete options
+do_mbyte_arg() {
+    local size flgg
+    case "$2" in
+    *M|*m)      size="${2::-1}" ; flgg=1 ;;
+    *G|*g)      size="${2::-1}" ; flgg=1024 ;;
+    *)          size="$2" ; flgg=1
+    esac
+
+    if [ -n "$CEN_OPT_DELETE" ] ; then
+        error "Bad usage of '--$1' option" ; return
+    elif [ -z "$size" ] ; then
+        error "Missing size argument '--$1'"
+    elif [ "${size//[0-9]/}" != "" ] ; then
+        error "Size argument not numeric '--$1'"
+    else
+        CEN_OPT_MBYTES=$((size * flgg))
+    fi
+    CEN_OPT_DELETE="$1"
+}
+
+# get a base folder, see --base option
+do_base_arg() {
+    embed -r -s CEN_OPT_BASE centauripaths --err --log "$1" || return
+    DAT_DIR_CURR="$PWD"
+}
+
+# check free space: <folder>
+do_space() {
+    local vola voln="$1" vblk
+    system -f -p -r -a vola -- df "$voln"       # must not fail
+    splitjoin -s vola -d " " -- "${vola[-1]}"   # split last line
+    vblk="${vola[3]}"                           # free 1k blocks
+    [ "$vblk" -lt 0 ] && vblk=0
+    vblk=$((vblk / 1024))                       # free MByte
+
+    if [ "$vblk" -ge "$CEN_OPT_MBYTES" ] ; then
+        CEN_OPT_MBYTES=0
+        [ -z "$CEN_OPT_SILENT" ] &&
+            message -a "$vblk MByte free on $voln, nothing to delete"
+    else
+        CEN_OPT_MBYTES="$((CEN_OPT_MBYTES - vblk))"
+        [ -z "$CEN_OPT_SILENT" ] &&
+            message -a "$vblk MByte free on $voln, deleting $CEN_OPT_MBYTES MByte"
+    fi
+}
+
+# report size of trash folder
+do_used() {
+    [ "$CEN_VERB" = 0 -o -n "$CEN_OPT_SILENT" ] && return
+    local used
+    system -e -p -r -a used du -s --block-size=1M "$2"          # 1st elt is size
+    message -a "$1: $2 (${used:-<unknown>} MByte used)"
+}
+
+# validate path
+do_anypath() {
+    case ${1%/} in
+        -*|/[a-z][a-z][a-z]|/boot|/sbin|/root|/home|/export|"")
+            error "Path not allowed for security reasons: $1"
+            ;;
+        */[dD]eleted)
+            return 0
+            ;;
+        *)
+            [ -n "$CEN_OPT_ANYPATH" ] && return 0
+            fatal "Bad path (no --anypath): $1"
+            ;;
+    esac
+    return 1
+}
+
+# used to delete files from the trash folder, see actionPurge()
+do_purge() {
+    # preset commands to speed-up loop
+    local rcmd ccmd rcmd=':'
+    if [ "$CEN_VERB" -gt 1 ] ; then
+        case "$CEN_YESNO" in
+        n*) ccmd="trace -a Not purged" ;;
+        y*) ccmd="trace -a Purging" ; rcmd="remove" ;;
+        *)  ccmd="confirm -a -c - -q Purge" ; rcmd="remove" ;;
+        esac
+    else
+        case "$CEN_YESNO" in
+        n*) ccmd=":" ;;
+        y*) ccmd=":" ; rcmd="remove" ;;
+        *)  ccmd="confirm -a -c - -q Purge" ; rcmd="remove" ;;
+        esac
+    fi
+
+    # loop over files
+    local bmax="$((CEN_OPT_MBYTES * 1024))"
+    local ncnt=0 nblk=0
+    local lmax line size name csta
+
+    # loop over files
+    for line in "$@" ; do
+        line="${line#* }"                       # remove time
+        size="${line%% *}"                      # get size
+        name="${line#* }"                       # remove size
+        [ -e "$name" ] || continue
+        [ -d "$name" ] && continue
+        $ccmd "'$name'" && csta=0 || csta=$?    # confirm
+        [ "$csta" = "2" ] && break              # quit
+        [ "$csta" = "0" ] || continue           # no
+        [ -n "$rcmd" ] || continue
+        $rcmd -- "$name" || continue            # delete file
+        ncnt="$((ncnt + 1))"
+        nblk="$((nblk + size))"
+        [ "$bmax" -gt "$nblk" ] && continue
+        lmax=" (limit reached)" ; break
+    done
+
+    # summary
+    local pref="Total"
+    [ "$CEN_YESNO" = "n" ] || pref="Purged"
+    local hect="$((((nblk * 10) + 1023) / 1024))"
+    message -a "$pref $ncnt files(s) with $((hect / 10)).$((hect % 10)) MByte$lmax"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# action trash: <file|folder>...
+# ------------------------------------------------------------------------------
+actionTrash() {
+    local arg="--del" dest
+    [ -n "$CEN_OPT_ANYPATH" ] && arg="--log"
+    embed -r -s dest centauripaths --err $arg "${CEN_OPT_BASE:-.}" || return
+    do_anypath "$dest" || return
+    do_used "Trash folder" "$dest"
+
+    # preset commands to speed-up loop
+    local rcmd ccmd
+    if [ "$CEN_VERB" -gt 1 ] ; then
+        case "$CEN_YESNO" in
+        n*)
+            ccmd="trace -i Not deleted" ; rcmd=":" ;;
+        y*)
+            ccmd="trace -i Deleting" ; rcmd="mv -f" ;;
+        *)
+            ccmd="confirm -i -q Delete" ; rcmd="mv -f" ;;
+        esac
+    else
+        case "$CEN_YESNO" in
+        n*)
+            ccmd=":" ; rcmd=":" ;;
+        y*)
+            ccmd=":" ; rcmd="mv -f" ;;
+        *)
+            ccmd="confirm -i -q Delete" ; rcmd="mv -f" ;;
+        esac
+    fi
+
+    # handle arguments
+    for arg in "$@" ; do
+        [ -e "$arg" ] || continue
+        $ccmd "'$arg'" && $rcmd "$arg" "$dest"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# action purge: <path>...
+# ------------------------------------------------------------------------------
+actionPurge() {
+    local arg="--del" list frst rslt
+    [ -n "$CEN_OPT_ANYPATH" ] && arg="--log"
+    [ -n "$CEN_OPT_BASE" ] && folder -c -f "$CEN_OPT_BASE"
+    embed -r -a list centauripaths --err $arg --uni "$@" || return
+    [ -n "$DAT_DIR_CURR" ] && folder -c -f "$DAT_DIR_CURR"
+
+    # handle arguments
+    for arg in "${list[@]}" ; do
+        do_anypath "$arg" || continue
+        do_used "Purge folder" "$arg"
+        [ -z "$frst" ] && frst="$arg"
+    done
+    [ "$CEN_OPT_DELETE" = "info" ] && return
+    error -q
+
+    # prepare
+    arg='system'
+    if [ -n "$CEN_OPT_ANYPATH" -a "$CEN_YESNO" != "y" ] ; then
+        confirm -a -y "Remove (sym)links and empty files/folders" || arg=":"
+    else
+        trace -a "Removing (sym)links and empty files/folders"
+    fi
+    $arg -q -- find "${list[@]}" -mindepth 1 -xdev \( -links +1 -type f -o -empty -o -type l \) -delete
+
+    # get free space
+    if [ "$CEN_OPT_DELETE" = "free" ] ; then
+       do_space "$frst"
+       [ "$CEN_OPT_MBYTES" -gt 0 ] || return
+    elif [ "$CEN_OPT_DELETE" = "empty" ] ; then
+       confirm -a -y "Empty the trash folder" || return
+       CEN_YESNO="y"
+    fi
+
+    system -r -e -a rslt -- find "${list[@]}" -xdev -printf "%TY%Tm%Td%TH%TM%TS %k %p\n" || return
+    txtsort -r -a rslt -i rslt || return
+    do_purge "${rslt[@]}" || return
+}
+
+# ------------------------------------------------------------------------------
+# option parsing
+# ------------------------------------------------------------------------------
+options() {
+    local oval
+    case "$1" in
+
+    -B|--bas*)
+         optarg "base"  oval -t && do_base_arg "$oval" ;;
+    -D|--del*)
+        optarg "delete" oval -t && do_mbyte_arg "delete" "$oval" ;;
+    -E|--emp*)
+        optarg "empty"  oval -f && do_mbyte_arg "empty" 9999999 ;;
+    -F|--fre*)
+        optarg "free"   oval -t && do_mbyte_arg "free" "$oval" ;;
+    -U|--usa*)
+        optarg "usage"  oval -f && do_mbyte_arg "info" 0 ;;
+    -P|--pur*)
+        optarg "purge"  oval -f && do_mbyte_arg "free" "$DAT_PURGE_SIZ" ;;
+    --anypath)
+        optarg "anypath" CEN_OPT_ANYPATH        ;; # simple flag
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# process arguments
+# ------------------------------------------------------------------------------
+run() {
+    [ -n "$CEN_OPT_BASE" ] && trace "Using base folder: $CEN_OPT_BASE"
+
+    if [ -z "$CEN_OPT_DELETE" ] ; then
+        actionTrash "$@"
+    else
+        actionPurge "$@"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+
+CEN_FEATURE_S="-s --silent          show only deletion summary"
+
+usage() {
+    usagecat << !EOF
+usage: $CEN_NAME [options...] path...
+
+       Tool to (1) move files to a 'Deleted' folder    --or--
+               (2) purge the space used by 'Deleted' folders.
+
+$CEN_USE_OPTIONS
+
+          --anypath         do not search '[Dd]eleted', use verbatim paths
+       -B --basedir <path>  base directory for 'Deleted' folder search
+       -D --delete  <size>  purge up to <size> from the 'Deleted' folder(s)
+       -F --free    <size>  purge until <size> diskspace are free
+       -E --empty           purge all files from the 'Deleted' folder(s)
+       -P --purge           short for '--free $DAT_PURGE_SIZ'
+       -U --usage           show 'Deleted' usage and quit
+
+The <size> argument is a number optionally followed by 'G' or 'M'. For 'G' the
+size is in GBytes, otherwise it is in MBytes.
+
+Without the --anypath option each <path> argument is searched upwards for a
+'Deleted' or 'deleted' folder.
+
+When neither --free nor --delete are given mode (1) is active and the files or
+folders passed as arguments are moved to the current 'Deleted' folder.
+
+In mode (2) data from multiple folders can be purged, the oldest files will be
+deleted first no matter what their path (or disk volume) is.
+
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

@@ -1,0 +1,1634 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2024; BSD License"
+CEN_TITLE="Simple IpTables Firewall and Masquerade Tool"
+CEN_SVC_SHORT="Firewall and Masquerade Service"
+
+### BEGIN INIT INFO
+# Provides:          centaurifilter
+# Required-Start:    $local_fs
+# Required-Stop:
+# X-Start-Before     networking
+# Default-Start:     3 4 5
+# Default-Stop:
+# Short-Description: centaurifilter
+# Description:       Simple Firewall
+### END INIT INFO
+
+# Import the bash library, set name and version
+PATH+=":/usr/local/bin"
+PATH+=":${0%/*}" . _centauri_bash_lib -d -f -s -v - '0.53:2' || exit 2
+
+embed -m _centauri_bash_net -n  # Load centaurinetcfg support
+
+CEN_OPT_IPV4=                   # see --ipv4
+CEN_OPT_IPV6=                   # see --ipv6
+CEN_OPT_NFTABLES=               # see --nft
+
+# debug
+CEN_OPT_TEST=
+
+# Data
+DAT_MAX_PORT=9999               # end of protected port range
+DAT_RUN_MODE=                   # new security level, see do_level
+DAT_RUN_CURR=                   # current security level
+
+DAT_NO_MAC=                     # no mac checks in rules
+DAT_ADDRULE=                    # see do_addrule()
+
+# port mapping for samba4 / dnsmasq, see actionDnsmap
+DAT_MAP_DNS_ADDR='127.0.0.2'    # used by samba with 'dns forwarder='
+                                # override file
+DAT_OVERRIDE="$CEN_ROOT/persistent/$CEN_NAME-override"
+
+# set umask to give all created files 0644 protection
+umask 022
+
+# don't run as a service if centauriswitch is active
+inhibit "Inhibited by centauriswitch"
+
+# ------------------------------------------------------------------------------
+# add INPUT rule (do_expand callback): <mac>|- <ip> <name>|- <tag>
+# ------------------------------------------------------------------------------
+do_addrule() {
+    local maca neta ; ((DAT_ADDRULE += 1))
+    [ "${1:--}" != '-' ] && maca="-m mac --mac-source $1" || neta="-s $2"
+    if [ "${3:--}" = '-' ] ; then
+        trace -a -c "${4^} range" "$2"
+    else
+        trace -a -c "${4^} host" "$2"
+    fi
+    do_tables -x -- -A INPUT $maca $neta -j "$4"
+}
+
+# ------------------------------------------------------------------------------
+# Handle ephemeral ports: [-m] [-u] <chain> <jump>
+#
+# Options:  -m      apply for Microsoft's dynamic ports (default is linux)
+#           -u      for udp only
+#
+# If <chain> is givem, ephemeral port data is sent that chain.
+# ------------------------------------------------------------------------------
+do_dynamic() {
+    local ldyn=49151                            # microsoft max port
+    local odyn oudp maxp="$DAT_MAX_PORT" jump
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -m)   [ "$ldyn" -lt "$maxp" ] && odyn="$ldyn" ;;
+      -u)   oudp=1 ;;
+      *)    fatal -t - "$1"
+      esac ; shift
+    done
+
+    [ -z "$oudp" ] && do_tables -- -A "$1" -p tcp ! --dport 1:$DAT_MAX_PORT -j "$2"
+    do_tables -- -A "$1" -p udp ! --dport 1:$DAT_MAX_PORT -j "$2"
+}
+
+# ------------------------------------------------------------------------------
+# expand a list if host names: [-a|-m] [-t <tag>] <callback> <name>...
+#
+#       -a      allow IPv4 address
+#       -m      callback needs configured mac address
+#       -n      like -m but ignore 'option nomac'
+#       -o      callback for name and mac (if known) (implied for 'alien')
+#       -t      pass tag to callback
+#
+# The function expands host names including globs. With '-a' ip-addresses or
+# ranges are recognized and generate a single callback that contains no mac
+# address.
+#
+# Without '-m' no mac address is checked and the host-ip (and mac if known) is
+# passed to the callback function. Option '-m' does no callback if no mac addr
+# is known.
+#
+# Option '-o' generates separate callbacks for both: ip-address and host-ip.
+#
+# callback arguments:  <mac>|- <ip> <name>|- <tag>
+# ------------------------------------------------------------------------------
+do_expand() {
+    # trace -a -c ' ' "$*"
+    local _fip4 _fmac _ftag
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   _fip4=1 ;;
+      -m)   [ -z "$DAT_NO_MAC" ] && _fmac=1 ;;
+      -n)   _fmac=1 ;;
+      -o)   _fmac=2 ;;
+      -t)   shift ; _ftag="$1" ; [ "$ftag" = 'alien' ] && _fmac=2 ;;
+      *)    fatal -t - "$1"
+      esac ; shift
+    done
+
+    local host whos addr amac xrun="$1" ; shift
+    local -A _hmap _mmap
+
+    # build map of possible host names
+    for host in "$@" ; do
+        if [ -z "${host//[0-9.\/]/}" ] ; then           # get ipv4 addr ...
+            if [ -n "$_fip4" ] ; then
+                $xrun - "$host" - "$_ftag"
+            else
+                warning "No ipv4 address expected:" "$host"
+            fi
+            continue
+        fi
+
+        if [ "${host/[?*[]/}" == "$host" ] ; then       # no wildcard
+            if [ "${host%-[0-2]}" = "$host" ] ; then    # simple address
+                _hmap["$host-0"]=1 ; _hmap["$host-1"]=1 ; _hmap["$host-2"]=1
+            fi
+            _hmap["$host"]=1
+            continue
+        fi
+
+        # resolve wildcards
+        for whos in "${CEN_NET_HOSTS[@]}" ; do
+            set -- $whos ; whos="$3"
+            [[ "$whos" == $host ]] || continue
+            if [ "${whos%-[0-2]}" = "$whos" ] ; then        # simple address
+                _hmap["$whos-0"]=1 ; _hmap["$whos-1"]=1 ; _hmap["$whos-2"]=1
+            fi
+            _hmap["$whos"]=1
+        done
+    done
+
+    # loop over host table and do callbacks
+    for host in "${CEN_NET_HOSTS[@]}" ; do
+        set -- $host
+        if [ "$_fmac" = 1 ] ; then                      # filter unique macs
+            [ "$1" = '-' ] && continue                  # option -m (need mac)
+            [ -n "${_mmap["$1"]}" ] && continue
+            _mmap["$1"]=1
+        elif [ -n "$_fmac" ] ; then                     # option -o ...
+            # named host with mac address ...
+            if [ "${_hmap["$3"]}" = 1 ] && [ "$1" != '-' ] ; then
+                [ -z "${_mmap["$1"]}" ] && $xrun "$1" - "$3" "$_ftag"
+                _mmap["$1"]=1
+            fi
+        fi
+        [ "$_fmac" = 1 ] && amac="$1" || amac='-'; aadr="$2"
+        while [ "$#" -gt 2 ] ; do                       # loop over (alias-)names
+            if [ "${_hmap["$3"]}" = 1 ] ; then          # name not yet seen...
+                _hmap["$3"]=2 ; $xrun "$amac" "$aadr" "$3" "$_ftag"
+                [ "$_fmac" = 1 ] && break               # can have only one mac
+            fi
+            shift
+        done
+    done
+}
+
+# ------------------------------------------------------------------------------
+# load a filter config: <prot> <name> <variable>
+#                       <keyword> - <variable>
+# ------------------------------------------------------------------------------
+do_load() {
+    local item aitm
+    local -n avar="$3"
+    for item in "${CEN_NET_FILTERS[@]}" ; do
+        splitjoin -s aitm -d ' ' "$item"
+        [ "${aitm[0]}" = "$1" ] || continue
+        [ "${aitm[1]}" = "$2" ] || continue
+        [ "$1" = 'lit' ] && avar+=("${aitm[*]:2}") || avar+=("${aitm[@]:2}")
+    done
+    [ "${#avar[@]}" = 0 ] || return 0
+    $CEN_TRACE2 -a -c "Found no entries" "filter $1 $2"
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# load a filter list: <keyword> <variable>
+# ------------------------------------------------------------------------------
+do_list() {
+    local item aitm
+    local -n avar="$2" ; avar=()
+    for item in "${CEN_NET_FILTERS[@]}" ; do
+        splitjoin -s aitm -d ' ' "$item"
+        [ "${aitm[0]}" = "$1" ] || continue
+        avar+=("${aitm[@]:1}")
+    done
+}
+
+# ------------------------------------------------------------------------------
+# run iptables/nft commands: do_tables [-a <array>] [-4|-6] [-i|-n] [--] <args>...
+#                            do_tables -x [-i|-n] [--] <args>...
+#                            do_tables [-c] [-4|-6] <chain> <text>....
+#
+# Options:  -a  repeat command for array elements
+#           -c  comment add comment to chain
+#           -i  literal iptables command
+#           -n  literal nftables command
+#           -x  ipv4 and ipv6 with address conversion
+#           -4  ipv4 only
+#           -6  ipv6 only
+# ------------------------------------------------------------------------------
+do_tables() {
+    $CEN_TRACE2 -a -c ' ' "$*"
+    local sarr fipv fcmt flit
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; sarr="$1" ;;
+      -c)   fcmt=1 ;;
+      -i)   flit=0 ;;
+      -n)   flit=1 ;;
+      -4)   fipv=4 ; [ -z "$CEN_OPT_IPV4" ] && return 0 ;;
+      -6)   fipv=6 ; [ -z "$CEN_OPT_IPV6" ] && return 0 ;;
+      -x)   fadr=1 ;;
+      *)    fatal -t - "$1"
+      esac ; shift
+    done
+
+    if [ -z "$fipv" ] ; then
+        if [ -n "$fadr" ] ; then
+            [ -n "$farr" ] && fatal -t "Cannot mix -a with -x"
+            local item args=()
+            [ -n "$sarr" ] && args+=('-a' "$sarr")
+            [ -n "$fcmt" ] && args+=('-c')
+            [ "$flit" = 0 ] && args+=('-i')
+            [ "$flit" = 1 ] && args+=('-n')
+            args+=('--')
+            do_tables -4 "${args[@]}" "$@"
+            for item in "$@" ; do
+                if [ "${item//[0-9\/]/}" = '...' ] ; then
+                    netconv -u "$item"
+                    args+=("$_netconv")
+                else
+                    args+=("$item")
+                fi
+            done
+            do_tables -6 "${args[@]}"
+            return 0
+        fi
+        [ -z "$CEN_OPT_IPV4" ] && fipv=6
+        [ -z "$CEN_OPT_IPV6" ] && fipv=4
+    fi
+
+    # literal commands
+    if [ -n "$flit" ] ; then
+        [ -n "$farr" ] && fatal -t "Cannot mix -a with -i|-n"
+        if [ "$CEN_OPT_NFTABLES" = 1 ] ; then
+            [ "$flit" = 1 ] || return 0         # ignore iptables
+            ___tables_run_nft "$fipv" "$@"
+        else
+            [ "$flit" = 1 ] && return 0         # ignore nftables
+            ___tables_run_ipt "$fipv" "$@"
+        fi
+
+    # comments
+    elif [ -n "$fcmt" ] ; then
+        [ -n "$farr" ] && fatal -t "Cannot mix -a with -c"
+        local carg="$1" ; shift
+        if [ "$CEN_OPT_NFTABLES" = 1 ] ; then
+            warning TODO ___tables_run_nft "$fipv" comment "${*// /°}"
+        else
+            ___tables_gen_ipt "$fipv" '' -A "$carg" -m comment --comment "${*// /°}"
+        fi
+
+    # translated commands
+    elif [ "$CEN_OPT_NFTABLES" = 1 ] ; then
+        ___tables_gen_nft "$fipv" "$sarr" "$@"
+    else
+        ___tables_gen_ipt "$fipv" "$sarr" "$@"
+    fi
+}
+
+# generate iptables: 4|6|'' <varr>|''
+___tables_gen_ipt() {
+    # trace -c -a 'gen_ipt' "$*"
+    local fipv="$1" ; shift
+    [ -z "$1" ] && local varr=(-) || local -n varr="$1" ; shift
+    local aarg irun scmd pcmd="$*"
+    for irun in "${varr[@]}" ; do
+        scmd="$pcmd"
+        if [ "$irun" = '-' ] ; then
+            aarg=()
+        else
+            splitjoin -s aarg -d '|' "$irun"
+
+            # parameter replacement
+            [ -n "${aarg[0]}" ] && scmd="${scmd/ @dport/ --dport=${aarg[0]}}" ||
+                                   scmd="${scmd/ @dport/}"
+            [ -n "${aarg[1]}" ] && scmd="${scmd/ @sport/ --sport=${aarg[1]}}" ||
+                                   scmd="${scmd/ @sport/}"
+            [ -n "${aarg[2]}" ] && scmd="${scmd/ @dest/ -d ${aarg[2]}}"       ||
+                                   scmd="${scmd/ @dest/}"
+            [ -n "${aarg[3]}" ] && scmd="${scmd/ @orig/ -s ${aarg[3]}}"       ||
+                                   scmd="${scmd/ @orig/}"
+            [ -n "${aarg[4]}" ] && scmd="${scmd/ @input/ -i ${aarg[3]}}"      ||
+                                   scmd="${scmd/ @input/}"
+            [ -n "${aarg[5]}" ] && scmd="${scmd/ @prot/ -p ${aarg[4]}}"       ||
+                                   scmd="${scmd/ @prot/}"
+        fi
+
+        # special: ipv6 only if we got no @dest address
+        scmd="${scmd//++/65535}"
+        scmd="${scmd//[0-9=: ]+/ $((DAT_MAX_PORT + 1))}"
+        if [ -z "${aarg[2]}" ] ; then                       # ipv4 and ipv6
+            ___tables_run_ipt "$fipv" -w $scmd
+        elif [ "$fipv" != 6 ] ; then                        # ipv4 only
+            ___tables_run_ipt 4 -w $scmd
+        fi
+    done
+}
+
+___tables_gen_nft() {
+    local fipv="$1" ; shift
+    [ -z "$1" ] && local varr=(-) || local -n varr="$1" ; shift
+
+    # generate nftables commands
+    local ainp askp acmd=() xcmd=() nchk
+    for ainp in "$@" ; do
+        if [ -n "$askp" ] ; then
+            case "$askp $ainp" in
+                iface\ *)       acmd+=('iifname' "${ainp/+/*}") ;;
+                jump\ DROP)     acmd+=('counter' 'drop') ;;
+                jump\ ACCEPT)   acmd+=('counter' 'accept') ;;
+                jump\ *)        acmd+=('counter' 'jump' "$ainp") ;;
+                module\ *)      ;;
+                protocol\ *)    acmd+=("$ainp") ;;
+                source\ *)      acmd+=('ip' 'saddr' "$ainp") ;;
+                mac-source\ *)  acmd+=('ether' 'saddr' "$ainp") ;;
+                [ds]port\ *)    acmd+=("$askp" "${ainp/:/-}") ;;
+                ct\ state\ *)   acmd+=("$askp" "${ainp,,}") ;;
+
+                # things with two arguments...
+                policy*DROP|policy*ACCEPT)
+                                acmd+=('add' 'chain' 'ip' 'filter' "${askp#* }" "{ policy ${ainp,,}; }")
+                                nchk=1 ;;
+                policy\ *)      askp="$askp $ainp" ; continue ;;
+
+                # single argument...
+                *)              acmd+=("$askp" "$ainp")
+            esac
+            askp= ; continue
+        fi
+
+        case "$ainp" in
+            -A)             askp='add rule ip filter' ;;
+            -F)             acmd+=('flush' 'table' 'ip' 'filter') ; continue ;;
+            -N)             askp='add chain ip filter' ;;
+            -P)             askp='policy' ;;
+            -X)             acmd+=('delete' 'chain' 'ip' 'filter' '(null)') ; continue ;;
+            -d)             askp='destination'
+            echo "TEST $*";;
+            -i)             askp='iface' ;;
+            -j)             askp='jump' ;;
+            -m)             askp='module' ;;
+            -p)             askp='protocol' ;;
+            -s)             askp='source' ;;
+            -w)             continue ;;
+            --dport)        askp='dport' ;;
+        #    --log-level)    askp='log-level' ;;
+        #    --log-prefix)   askp='log-prefix' ;;
+            --mac-source)   askp='mac-source' ;;
+            --sport)        askp='sport' ;;
+            --state)        askp='ct state' ;;
+            @*)             acmd+=("$ainp") ; continue ;;
+        ###    !)              ;;
+            *)              warning "Not implemented '$ainp': $*" ; return
+        esac
+        if [ -z "$askp" ] ; then
+            acmd+=("$ainp")
+        fi
+    done
+
+    # loop over array
+    local aarg irun scmd pcmd="$*"
+    for irun in "${varr[@]}" ; do
+        scmd="$pcmd"
+        if [ "$irun" = '-' ] ; then
+            aarg=()
+        else
+            splitjoin -s aarg -d '|' "$irun"
+
+            # parameter replacement
+            xcmd=()
+            for ainp in "${acmd[@]}" ; do
+                case "$ainp" in
+                    @dport)         [ -n "${aarg[0]}" ] && xcmd+=('dport' "${aarg[0]/:/-}") ;;
+                    @sport)         [ -n "${aarg[1]}" ] && xcmd+=('sport' "${aarg[1]/:/-}") ;;
+                    @dest)          [ -n "${aarg[2]}" ] && xcmd+=('daddr' "${aarg[2]}") ;;
+                    @orig)          [ -n "${aarg[3]}" ] && xcmd+=('saddr' "${aarg[3]}") ;;
+                    *)              xcmd+=("$ainp")
+                esac
+            done
+        fi
+
+        # check nft conversion
+        if [ "$CEN_OPT_TEST" = 1 ] ; then
+            [ -n "$nchk" ] && continue
+            local xlte
+            if [ "${fipv:-6}" = "6" -a -z "${aarg[2]}" ] ; then
+                system -n -m -r -s ainp ip6tables-translate "$@" || xlte=1
+                ainp="${ainp//\"/}" ; ainp="${ainp// ip6 / ip }"
+            else
+                system -n -m -r -s ainp iptables-translate "$@" || xlte=1
+                ainp="${ainp//\"/}"
+            fi
+            if [ -n "$xlte" ] || [ "${ainp// / }" != "nft ${xcmd[*]}" ] ; then
+                echo iptables "$@"
+                echo "$ainp"
+                echo "nft ${xcmd[*]}"
+                echo
+            fi
+            continue
+        fi
+
+        fatal "nftables not yet implemented"
+    done
+}
+
+# run iptables or iptables6: 4|6'' <arg>...
+___tables_run_ipt() {
+    local iver="$1" ; shift
+    [ "${iver:-4}" = 4 ] && sysrun -f -p -n -- iptables "$@"
+    [ "${iver:-6}" = 6 ] && sysrun -f -p -n -- ip6tables "$@"
+}
+
+# run nft command, replace '@family': 4|6|'' <arg>...
+___tables_run_nft() {
+    local nfam item args=()
+    case "$1" in
+    4)  nfam='ip' ;;
+    6)  nfam='ip6' ;;
+    *)  nfam='inet'
+    esac
+    shift
+    for item in "$@" ; do
+        [ "$item" = '@family' ] && args+=("$nfam") || args+=("$1")
+    done
+    sysrun -e -p -n -- nft "${args[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# save/restore iptables cached configuration
+# ------------------------------------------------------------------------------
+do_save() {
+    if [ -d "$CEN_ROOT/persistent" ] ; then
+        dryrun "Saving state" && return
+        system -f -c -- iptables-save ip6tables-save
+        local mode="_${DAT_RUN_MODE:-wild}"
+        local mod6="${mode}6"
+        if [ -z "$CEN_OPT_IPV4" ] ; then
+            > "$CEN_NET_FILE_FILT$mode"
+        else
+            system -e -p -n -z -- iptables-save > "$CEN_NET_FILE_FILT$mode"
+            trace -a "Saved ipv4 configuration in cache: $CEN_NET_FILE_FILT$mode"
+        fi
+        if [ -z "$CEN_OPT_IPV6" ] ; then
+            > "$CEN_NET_FILE_FILT$mod6"
+        else
+            system -e -p -n -z -- ip6tables-save > "$CEN_NET_FILE_FILT$mod6"
+            trace -a "Saved ipv6 configuration in cache: $CEN_NET_FILE_FILT$mod6"
+        fi
+        nettemp -l "$CEN_NET_FILE_FILT$mode"            # create symlink
+    else
+        error "Missing folder: $CEN_ROOT/persistent"
+    fi
+}
+
+# restore saved config: [-n] [<level>]
+do_restore() {
+    # ignore cached rules, update netconfig cache
+    if [ -n "$CEN_OPT_FORCE" ] ; then
+        if [ "$CEN_ROOT/default/centaurinetcfg" -nt "$CEN_ROOT/persistent/centaurinetcfg" ] ; then
+            embed centaurinetcfg validate cache || quit -e
+        fi
+        return 1
+    fi
+
+    # load cached rules
+    local noop mode
+    if [ "$1" = "-n" ] ; then
+        noop=1 ; shift
+    fi
+    local mode="_${1:-$DAT_RUN_MODE}"
+    local mod6="${mode}6"
+
+    ___restore4() {
+        [ -z "$CEN_OPT_IPV4" ] && return 0
+        [ -s "$CEN_NET_FILE_FILT$mode" -a -r "$CEN_NET_FILE_FILT$mode" ] || return 1
+        [ "$CEN_NET_FILE_CONF" -nt "$CEN_NET_FILE_FILT$mode" ] && return 1
+        [ -z "$noop" ] || return 0
+        trace -a "Loading cached ipv4 configuration: $CEN_NET_FILE_FILT$mode"
+        system -e -p -n -- iptables-restore < "$CEN_NET_FILE_FILT$mode"
+    }
+
+    ___restore6() {
+        [ -z "$CEN_OPT_IPV6" ] && return 0
+        [ -s "$CEN_NET_FILE_FILT$mod6" -a -r "$CEN_NET_FILE_FILT$mod6" ] || return 1
+        [ "$CEN_NET_FILE_CONF" -nt "$CEN_NET_FILE_FILT$mod6" ] && return 1
+        [ -z "$noop" ] || return 0
+        trace -a "Loading cached ipv6 configuration: $CEN_NET_FILE_FILT$mod6"
+        system -e -p -n -- ip6tables-restore < "$CEN_NET_FILE_FILT$mod6"
+    }
+
+    # script changed? sysctl changed?
+    [ "$BASH_SOURCE" -nt "$CEN_NET_FILE_FILT$mode" ] && return 1
+    [ "/etc/sysctl.conf" -nt "$CEN_NET_FILE_FILT$mode" ] && return 1
+
+    if [ -z "$noop" ] ; then
+        system -f -c -- iptables-restore ip6tables-restore
+        nettemp -l "$CEN_NET_FILE_FILT$mode"    # create symlink
+        rules_reset                             # disable ipv4/6
+    fi
+
+    ___restore4 || return 1
+    ___restore6 || return 1
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# utilities
+# ------------------------------------------------------------------------------
+
+do_netconf() {
+    [ -n "$CEN_NET_DOMAIN" ] && return 0
+    trace -a "Loading network configuration"
+    netconfig -f                        # cannot run without config
+}
+
+# load centauri netcfg, get security level
+do_level() {
+    DAT_RUN_CURR=
+    nettemp
+    if   [ "${CEN_NET_FILE_FILT}_home" -ef "$_nettemp" ] ; then
+        DAT_RUN_CURR='home'
+    elif [ "${CEN_NET_FILE_FILT}_wild" -ef "$_nettemp" ] ; then
+        DAT_RUN_CURR='wild'
+    fi
+
+    # do we have a tun device (possible openvpn)?
+    if [ "$DAT_RUN_CURR" != 'home' -a "$DAT_RUN_MODE" != 'wild' -a -z "$CEN_OPT_FORCE" ] ; then
+        set -- /sys/devices/virtual/net/tun*
+        if [ "$1" != "/sys/devices/virtual/net/tun*" ] ; then
+            [ -z "$CEN_NET_ROLE" ] && netserver
+            if [ "$CEN_NET_ROLE" = "PRIMARY" -o "$CEN_NET_ROLE" = "SECONDARY" ] ; then
+                trace -a "I am a server, ignoring VPN connections"
+            elif [ "$DAT_RUN_MODE" = 'home' ] ; then
+                DAT_RUN_MODE='wild'
+                warning -a "Might be in public net with VPN connection, mode 'home' is not set."
+            else
+                DAT_RUN_MODE='wild'
+                warning -a "Might be in public net with VPN connection, wan't switch to mode 'home'."
+            fi
+        fi
+    fi
+
+    [ -z "$DAT_RUN_MODE" ] || return
+    DAT_RUN_MODE='wild'
+
+    # do we have a domain server?
+    [ -z "$CEN_NET_ROLE" ] && netserver
+    if [ -n "$CEN_NET_SERVER" ] ; then
+        DAT_RUN_MODE='home'
+
+    # are we in the home dns?
+    else
+        local hdns ; embed -n -s hdns centauriname --home
+        if [ "${hdns:--}" != '-' ] ; then
+            DAT_RUN_MODE='home'
+            message "Configured home dns server:" "$hdns"
+        fi
+    fi
+}
+
+# get override data: <vnam>
+do_override() {
+    [ -n "$CEN_OPT_FORCE" ] && return 1
+    readline -e -s "$1" -i "$DAT_OVERRIDE"      # return status
+}
+
+# ------------------------------------------------------------------------------
+# Add a comment: <chain>|- <text>...
+# ------------------------------------------------------------------------------
+rules_comment() {
+    local chai="${1:--}" ; shift
+    [ "$chai" = '-' ] && chai='INPUT'
+    trace -- "$*"
+    do_tables -c -- "$chai" "$*"
+}
+
+# ------------------------------------------------------------------------------
+# setup chains of packet filter rules
+# ------------------------------------------------------------------------------
+# Depending on the current network environment the firewall operates in one of
+# two zones (home|wild). Depending on the actual zone more or less chains are
+# activated. Chains contain rules, part of which are added automatically, and
+# others that are defined in centaurinetcfg. The configuration syntax is:
+#
+#           filter <chain> <host>...
+#           filter <chain> <range>
+#
+#           option alien|friend|player|trusted <host>...
+#
+#   In zone 'wild' the chains 'player' and 'trusted' are not generated, e.g.
+#   these chains are can be used in 'home' to grant port permissions to some
+#   devices and/or ports.
+#
+#   all zones
+#           alert       host                log and drop
+#           trash       host                partial log and drop
+#           alien       option|host         disable access
+#           friend      option|host         grant limited access
+#   home zone only
+#           player      option|host+mac     grant player access
+#           trusted     option|host+mac     grant trused access
+#
+#   Chains contain port filter rules (and nothing else) to accept packets. If no
+#   rule matches, processing is continued in 'trash' (except for 'trash' itself
+#   which continues with 'alert'). The 'alert' chain logs and drops the packet.
+# ------------------------------------------------------------------------------
+rules_chains() {
+    ___set_literal() {
+        local opts=()
+        case "$2" in
+        -4|-6)  opts+=("$2" '--' '-A' "$1") ; shift ; shift ;;
+        *)      opts+=('--' '-A' "$1") ; shift
+        esac
+        do_tables "${opts[@]}" "$@"
+    }
+
+    ___set_chain() {
+        local ltcp ludp llit item jump next
+
+        # load udp/tcp rules from configuration, add 'trash' extras
+        do_load 'tcp' "$1" ltcp ; do_load 'udp' "$1" ludp ; do_load 'lit' "$1" llit
+        if [ "$1" = 'trash' ] ; then
+            jump='DROP'
+            ltcp+=(5353 '|5353')                            # AVAHI
+            ludp+=(137:138   1900 '|1900'   5353 '|5353')   # Samba UPNP AVAHI
+        else
+            jump='ACCEPT'
+        fi
+        trace -a -c -p "creating chain" "%-7s [%2s tcp, %2s udp entries, %2s lit entries]" \
+                       "$1" "${#ltcp[@]}" "${#ludp[@]}" "${#llit[@]}"
+
+        do_tables -- -N "$1"
+        for item in "${llit[@]}" ; do ___set_literal "$1" $item ; done
+
+        # chain 'trash' does DROP, other chains ACCEPT matching packets
+        do_tables -a ltcp -- -A "$1" -p tcp @orig @dest @sport @dport -j "$jump"
+        do_tables -a ludp -- -A "$1" -p udp @orig @dest @sport @dport -j "$jump"
+
+        # chains 'trash' and 'alert' DROP matching packets
+        if [ "$1" = 'trash' ] ; then
+            do_dynamic "$1" DROP                            # don't log ephemerals
+            do_tables -i -- -A "$1" -j LOG --log-level 6 --log-prefix "$CEN_NAME: "
+            do_tables -n -- add rule ip filter alert counter log prefix "$CEN_NAME: " level info
+            next='DROP'
+        elif [ "$1" = 'alert' ] ; then
+            do_tables -i -- -A "$1" -j LOG --log-level 5 --log-prefix "$CEN_NAME: "
+            do_tables -n -- add rule ip filter "$1" counter log prefix "$CEN_NAME: " level info
+            next='DROP'
+        fi
+        do_tables -- -A "$1" -j "${next:-trash}"
+    }
+
+    # chains 'trash' and 'alert' log and drop
+    trace "Create chains"
+    ___set_chain 'trash'
+    ___set_chain 'alert'
+
+    # chains for all zones
+    ___set_chain 'alien'
+    ___set_chain 'friend'
+    ___set_chain 'trusted'
+
+    # chains for 'home' zone
+    if [ "$DAT_RUN_MODE" = 'home' ] ; then
+        ___set_chain 'router'
+        ___set_chain 'player'
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Reset iptable (default policies ACCEPT): [<input-policy> [<output-policy>]
+# ------------------------------------------------------------------------------
+rules_reset() {
+    if [ -n "$1" ] ; then
+        trace "Reset rules, set policies"
+        do_tables -- -F
+        do_tables -- -X
+        do_tables -- -P INPUT  "$1"
+        do_tables -- -P OUTPUT "${2:-ACCEPT}"
+    fi
+
+    local sav4="$CEN_OPT_IPV4" sav6="$CEN_OPT_IPV6"
+    if [ -z "$CEN_OPT_IPV4" ] ; then
+        message -a "Protocol ipv4 disabled, data gets blocked"
+        CEN_OPT_IPV4=1 ; CEN_OPT_IPV6=
+    elif [ -z "$CEN_OPT_IPV6" ] ; then
+        message -a "Protocol ipv6 disabled, data gets blocked"
+        CEN_OPT_IPV4= ; CEN_OPT_IPV6=1
+    else
+        return
+    fi
+
+    do_tables -- -F
+    do_tables -- -X
+    do_tables -- -P INPUT  DROP
+    do_tables -- -P OUTPUT DROP
+    CEN_OPT_IPV4="$sav4" ; CEN_OPT_IPV6="$sav6"
+}
+
+# ------------------------------------------------------------------------------
+# Early filtering: loopback, interfaces, icmp
+# ------------------------------------------------------------------------------
+rules_early() {
+    local neta aint
+    rules_comment - "Early filter rules (local traffic)"
+
+    # always allow localhost ...
+    do_tables -- -A INPUT -i lo -j ACCEPT
+    do_tables -4 -- -A INPUT -s "127.0.0.0/24" -j ACCEPT
+    do_tables -6 -- -A INPUT -s "::1" -j ACCEPT
+
+    # allow loopback traffic to myself: <mac>|- <ip> <name>|- <tag>
+    ___self_ok() {
+        trace -a -c 'local traffic' "$*"
+        if [ "$1" = '-' ] ; then
+            do_tables -x -- -A INPUT -s "$2" -j ACCEPT
+        else
+            do_tables -- -A INPUT -m mac --mac-source "$1" -j ACCEPT
+        fi
+    }
+    do_expand -o ___self_ok "$HOSTNAME"
+
+    # accept safe interfaces
+    rules_comment - "Early filter rules (bypass)"
+    do_list 'bypass' aint
+    for neta in "${aint[@]}" ; do
+        trace -a "Bypass interface: $neta"
+        do_tables -- -A INPUT -i $neta -j ACCEPT
+    done
+
+    # drop unsafe interfaces
+    rules_comment - "Early filter rules (deny)"
+    do_list 'deny' aint
+    for neta in "${aint[@]}" ; do
+        trace -a "Block interface: $neta"
+        do_tables -- -A INPUT -i $neta -j DROP
+    done
+
+    # icmp is always on
+    rules_comment - "Early filter rules (icmp)"
+    do_tables -4 -i -- -A INPUT -p icmp    -j ACCEPT
+    do_tables -6 -i -- -A INPUT -p icmpv6  -j ACCEPT
+    do_tables -4 -n -- add rule ip filter INPUT ip protocol icmp counter accept
+    do_tables -6 -n -- add rule ip6 filter INPUT meta l4proto ipv6-icmp counter accept
+}
+
+# ------------------------------------------------------------------------------
+# Simple mode or connection tracking: SIMPLE|TRACKING
+# ------------------------------------------------------------------------------
+rules_track() {
+    # get ip port range
+    local prng
+    system -a prng -d " \t" -r -- sysctl -n net.ipv4.ip_local_port_range
+
+    # set DAT_MAX_PORT
+    if [ -n "$prng" ] ; then
+        DAT_MAX_PORT=$((prng - 1))
+        trace -a "Used sysctl to set DAT_MAX_PORT=$DAT_MAX_PORT"
+    else
+        warning "Cannot get ip_local_port_range, using DAT_MAX_PORT=$DAT_MAX_PORT"
+    fi
+
+    # igmp is ipv4 specific
+    do_tables -4 -i -- -A INPUT -d 224.0.0.0/24 -p igmp -j ACCEPT
+    do_tables -4 -n -- add rule ip filter INPUT \
+                       ip protocol igmp ip daddr 224.0.0.0/24 counter accept
+
+    case "$1" in
+    simple)
+        rules_comment - "Enable ephemeral ports"
+
+        # accept all tcp/udp ports above DAT_MAX_PORT
+        do_dynamic -m INPUT ACCEPT
+        ;;
+
+    tracking)
+        rules_comment - "Enable connection tracking"
+
+        # accept packets in established connections
+        do_tables -- -A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+        # always enable ephemeral udp ports
+        do_dynamic -m -u INPUT ACCEPT
+        # broadcasts
+        do_tables -i -- -A INPUT -p udp --sport 1900 ! --dport 1:$DAT_MAX_PORT -j ACCEPT
+        do_tables -n -- add rule ip filter INPUT \
+                        udp sport 1900 udp dport gt $DAT_MAX_PORT counter accept
+        ;;
+
+    *)  fatal -t - "$1"
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Rules that always apply
+# ------------------------------------------------------------------------------
+rules_global() {
+    rules_comment - "Rules that always apply"
+
+    local udp_always_accept=(
+        53 520              # allow port 53, 520 for nameservice
+        67 68               # allow port 67/68 (bootps) for dhcp
+        123                 # allow port 123 (ntp) for ntp-server
+        3702                # for ws discovery
+    )
+
+    # by port
+    if [ "$DAT_RUN_MODE" = 'home' ] ; then
+        do_tables -a udp_always_accept -- -A INPUT -p udp @dport -j ACCEPT
+    else
+        do_tables -i -- -A INPUT -p udp --dport 68 -j ACCEPT
+        do_tables -a udp_always_accept -- -A 'friend'  -p udp @dport -j ACCEPT
+        do_tables -a udp_always_accept -- -A 'trusted' -p udp @dport -j ACCEPT
+    fi
+
+    # Simple service disovery etc...
+    do_tables -4 -i -- -A INPUT -p igmp -d 239.255.255.250 -j ACCEPT
+    do_tables -4 -n -- add rule ip filter INPUT \
+                       ip protocol igmp ip daddr 239.255.255.250 counter accept
+
+    do_tables -6 -i -- -A INPUT -p igmp -d fe02::c -j ACCEPT
+    do_tables -6 -n -- add rule ip filter INPUT \
+                       meta l4proto igmp ip daddr fe02::c counter accept
+}
+
+# ------------------------------------------------------------------------------
+# Processing for a 'home' location
+#
+#       early accept    -> ACCEPT
+#       early drop      -> chain trash
+#       alien           -> chain trash
+#       trusted + mac   -> ACCEPT
+#       player          -> player
+#       router          -> router
+#       early rules     -> trusted
+# allow remotessh
+#       *               -> trash (logging)
+# ------------------------------------------------------------------------------
+rules_home() {
+    local trgt aadr=()
+
+    # discard alien data (by host)
+    rules_comment - "Rules by option 'alien'"
+    netoption 'alien'
+    do_expand -t 'alien' do_addrule "${_netoption[@]}"
+
+    # built-in rules for servers
+    rules_server
+
+    # accept by hostname + mac address
+    rules_comment - "Rules by host 'accept'"
+    do_list 'accept' aadr ; CEN_AUTOIND=
+    do_expand -a -n -t 'ACCEPT' do_addrule "${aadr[@]}"
+
+    # enter chains by option
+    for trgt in 'friend:'"Friendly hosts" 'player:'"Media Players" \
+                'router:'"Routers" 'trusted:'"Trusted hosts" ; do
+        trace "${trgt#*:}" ; trgt="${trgt%%:*}" ; DAT_ADDRULE=0
+        rules_comment - "Rules by option '$trgt'"
+        case "$trgt" in
+        router) do_expand -n -t "$trgt" do_addrule "${CEN_NET_ROUTERS[@]}"
+                ;;
+        *)      netoption "$trgt"
+                do_expand -n -t "$trgt" do_addrule "${_netoption[@]}"
+        esac
+        trace -a -c "'$trgt' chain" "$DAT_ADDRULE" "entries"
+    done
+
+    # enter chains by hostname + mac address
+    rules_comment - "Rules by host 'friend|player|trusted'"
+    for trgt in 'friend' 'player' 'trusted' ; do
+        do_list "$trgt" aadr ; CEN_AUTOIND=
+        do_expand -a -m -t "$trgt" do_addrule "${aadr[@]}"
+    done
+
+    # enter chains by hostname (ACCEPT needs mac)
+    rules_comment - "Rules by host 'drop trash alien'"
+    for trgt in 'drop:DROP' 'trash' 'alien' ; do
+        do_list "${trgt%:*}" aadr ; CEN_AUTOIND=
+        do_expand -a -t "${trgt#*:}" do_addrule "${aadr[@]}"
+    done
+
+    # default is to drop
+    rules_comment - "Handle unmatched packets"
+                                                # enable openvpn by default
+   # do_tables -- -A INPUT -p tcp --dport 1194 -j ACCEPT
+   # do_tables -- -A INPUT -p udp --dport 1194 -j ACCEPT
+                                                # last chance ...
+    do_tables -- -A INPUT -j 'alien'
+
+    CEN_AUTOIND=
+}
+
+# ------------------------------------------------------------------------------
+# open remoteXXX and centaurisecrets ports for servers/routers
+# ------------------------------------------------------------------------------
+rules_server() {
+    if ! netquery 'server' ; then
+        netoption 'dns' || return                   # router depends on dns
+    fi
+    rules_comment - "Rules for 'server/router'"
+    local item port
+    system -e -p -a port -- getent services \
+        'centaurisecrets' 'remotessh' 'remoteimap' 'remotesmtp'
+    for item in "${port[@]}" ; do
+        item="${item##* }" ; item="${item%%/*}"
+        [ -n "$item" ] && do_tables -- -A INPUT -p tcp --dport "$item" -j ACCEPT
+    done
+
+    system -e -p -a port -- getent services \
+        'remotessh' 'remoteimap' 'remotesmtp'
+    for item in "${port[@]}" ; do
+        item="${item##* }" ; item="${item%%/*}"
+        [ -n "$item" ] && do_tables -- -A router -p tcp --dport "$item" -j ACCEPT
+    done
+}
+
+# ------------------------------------------------------------------------------
+# some exceptions for 'wild' state
+#
+#   trusted hosts       -> wild
+#   remote ssh          -> ACCEPT
+#   wlan                -> DROP (no logging)
+#   avahi, upnp         -> DROP (no logging)
+# ------------------------------------------------------------------------------
+rules_wild() {
+    rules_comment - "Rules for 'wild' state"
+
+    # permissions for trusted devices
+    netoption 'trusted'
+    do_expand -m -t trusted do_addrule "${_netoption[@]}"
+    trace -a "Found $DAT_ADDRULE trusted hosts"
+
+    # restrict WLAN input
+    do_tables -- -A INPUT -i wlan+ -j DROP
+
+    # silently drop AVAHI and UPNP packets
+    do_tables -- -A INPUT -p udp --dport 5353 -j DROP
+    do_tables -- -A INPUT -p udp --dport 1900 -j DROP
+}
+
+# ------------------------------------------------------------------------------
+# configure iptables: -no args-
+# ------------------------------------------------------------------------------
+# The firewall only filters incomming packets. Output packet always pass thrugh.
+# It gets configured by '/etc/default/centaurinetcfg' using the statements:
+#
+#       servers ...
+#       routers ...
+#       option  nofirewall|simple|tracking|nomac
+#       rule    ...
+#
+# Zones are used to distinguisch between trusted and public networks:
+#
+#   home:   used for home and guest networks
+#   wild:   used for unknown (e.g. public) networks
+#
+# Switching the active zone:
+#
+#   centaurifilter home                 # switch to home
+#   centaurifilter wild                 # switch to wild
+#   centaurifilter --force stop         # disable firewall
+#
+#   Usually switching the zone is handled by centauriswitch and centaurisecrets
+#   by evaluating the network state.
+#
+# Input packets can be explicitly assigned to classes to grant rights:
+#
+#   Trusted ('option trusted') : bypass most of the firewall
+#   Player  ('option player')  : media player with smb and upnp access
+#   Friend  ('option friend')  :
+#   Alien   ('option alien')   :
+#   Default: all hosts without special rights
+#
+#   Server  (statement 'servers'): allow openvpn
+#   Router  (statement 'routers'): bypass most of the firewall
+#
+#   Per default input is assigned to class 'alien'.
+#
+# Early rules are the 1st mechanism to assign input to classes:
+#
+#   rule    bypass   <interface> ...    # bypass any input
+#   rule    deny     <interface> ...    # block any input
+#   rule    drop     <range>|host ...   # silently drop packets
+#   rule    accept   <range>|host ...   # accept, no filtering
+#   rule    <chain>  <range>|host ...   # sent to filter chain
+#
+# Options are the 2nd mechanism to assing input to classes:
+#
+#   Options can be used for named hosts (wildcards are allowed). Some
+#   options only work for hosts with a known (registered) mac address:
+#
+#   no mac dependency:  option alien|friend <host>...
+#   known mac only:     option trusted|player
+#
+# Filter chains implement class behaviour:
+#
+#   server:
+#   router:  all packets from a router are accecpted
+#   trusted: zone 'home' - allow a default set of packets
+#   player:  zone 'home' - allow packets for smb an upnp
+#   friend:  zone 'home' - ...
+#   alien:   zone 'wild' - restricted set of packets
+#   trash:   drop some packets (no logging), the jump to 'alert'
+#   alert:   log and drop all packets
+#
+# Filtering steps bring zones, classes and chains together:
+#
+# 1. Early: process nofirewall|simple|tracking|nomac options
+#
+# 2. Track: Handle ephemeral and dynamic ports
+#
+#    This uses 'option tacking' for statefull filtering and 'option simple'
+#    to let ephemeral ports bypass the firewall.
+#
+# 3. Global: for ICMP, broadcasts, DHCP and various name services
+#
+#    In zone 'wild' nameservice are passed thrugh only for chain 'trusted' and
+#    'friend'.
+#
+# 3. Rules: apply per zone rules (home or wild)
+#
+# 4. Logging: log and drop remaining packets
+# ------------------------------------------------------------------------------
+rules_setup() {
+    trace -a "Creating '$DAT_RUN_MODE' configuration"
+    system -c -f -- iptables ip6tables
+    do_netconf
+
+    local nopt nmod='tracking'
+    for nopt in 'tracking' 'simple' 'nofirewall' ; do
+        netoption "$nopt" "$HOSTNAME" || continue
+        nmod="$nopt"
+        [ "$_netoption" = '*' ] || break
+    done
+
+    if [ "$nmod" = 'nofirewall' ] ; then
+        warning "Firewall disabled, see 'option nofirewall'"
+        rules_reset ACCEPT ; return
+    fi
+
+    nopt="${#CEN_NET_FILTERS[@]}"
+    if [ "$nopt" = 0 ] ; then
+        error "Firewall not configured, missing 'option nofirewall'?"
+        return
+    else
+        trace -a -c "Firewall config" "$nopt" "entries"
+    fi
+
+    if netoption 'nomac' "$HOSTNAME" ; then
+        DAT_NO_MAC=1
+        warning "Firewall mac checks disabled, see 'option nomac'"
+    fi
+
+    rules_reset DROP                # reset, default input policy is to drop all
+    rules_chains                    # setup chains
+    rules_early                     # block/allow by interface or host
+    rules_track "$nmod"             # connection tracking or allow ephemeral ports
+    rules_global                    # global rules
+
+    # filter by firewall state home/wild
+    if [ "$DAT_RUN_MODE" = 'home' ] ; then
+        rules_home
+    else
+        rules_wild
+    fi
+
+    # log and drop the remaining packets
+    do_tables -- -A INPUT -j alert
+}
+
+# ------------------------------------------------------------------------------
+# Service actions: -no args-
+# ------------------------------------------------------------------------------
+actionService() {
+    if [ "$CEN_ACTION" = 'stop' ] ; then
+        rules_reset ACCEPT
+        nettemp -r
+    else
+        do_level
+        if ! do_restore ; then
+            rules_setup
+            do_save
+        fi
+    fi
+    actionDnsmap                            # these rules are not saved/restored
+
+    message -a "Firewall mode '${DAT_RUN_MODE:-disabled}' after service $CEN_ACTION"
+}
+
+actionStatus() {
+    local slog="$CEN_OPT_SYSLOG" over ; CEN_OPT_SYSLOG=0
+
+    do_level
+    do_restore -n 'home' &&
+        message -a "Saved configuration for 'home' is current"
+    do_restore -n 'wild' &&
+        message -a "Saved configuration for 'wild' is current"
+
+    message -a "Current security level: ${DAT_RUN_CURR:--none-}"
+    message -i "Default security level: ${DAT_RUN_MODE:--none-}"
+
+    if do_override over ; then
+        message -i "... from override file: $over"
+    elif [ "$DAT_RUN_CURR" != "$DAT_RUN_MODE" -a "$CEN_NET_MODE" != "GUEST" ] ; then
+        warning -a "Please run: $CEN_NAME auto"
+    fi
+    message -i
+    CEN_OPT_SYSLOG="$slog"
+}
+
+# ------------------------------------------------------------------------------
+# Display statistics
+# ------------------------------------------------------------------------------
+actionCounts() {
+    local verb="$CEN_VERB"                          # reset by --pager
+
+    CEN_MODULES['_centauri_bash_svc']=
+    embed -q '_centauri_bash_con'
+
+    ___header() {
+            [ -z "$CEN_OPT_IPV4" -o -z "$CEN_OPT_IPV6" ] && return
+            [ "$1" = "6" ] && echo
+            echo "${CEN_DECO_WARN}--- ipv$1 counts ---$CEN_DECO_NORM" ; echo
+    }
+
+    ___format() {
+        local line hlin
+        while IFS= read line ; do
+            if [ "$verb" -gt 1 ] ; then
+                printf '%s\n' "${line//°/ }" ; continue
+            fi
+
+            case "$line" in
+            '    0     0 '*)
+                ;;
+            Chain\ *)
+                hlin= ; echo "$CEN_DECO_BOLD$line$CEN_DECO_NORM" ;;
+            \ pkts\ bytes\ target*)
+                hlin="$line" ; continue ;;
+            */\**)
+                [ -n "$CEN_OPT_SILENT" ] && continue
+                if [ -n "$hlin" ] ; then
+                    [ "${hlin::5}" != '     ' ] && echo "$hlin"
+                    hlin=
+                fi
+                line="${line##*/\* }" ; line="${line% \*/}"
+                hlin="                                               "
+                hlin+="$CEN_DECO_TRCE# ${line//°/ }$CEN_DECO_NORM"
+                ;;
+            '')
+                hlin= ; echo "$line" ;;
+            *)
+                if [ -n "$hlin" ] ; then
+                    echo "$hlin" ; hlin=
+                fi
+                printf '%s\n' "$line"
+            esac
+        done
+    }
+
+    # this function executes in the main shell, output goes to pager
+    ___counts() {
+        local acmd
+        if [ -n "$CEN_OPT_IPV4" ] ; then
+            [ "$CEN_OPT_NFTABLES" = 1 ] &&
+                acmd=(nft list table ip filter) || acmd=(iptables -L -v -n)
+            ___header 4 ; syspipe -b "$acmd" -d ___format -- "${acmd[@]:1}"
+        fi
+        if [ -n "$CEN_OPT_IPV6" ] ; then
+            [ "$CEN_OPT_NFTABLES" = 1 ] &&
+                acmd=(nft list table ip6 filter) || acmd=(ip6tables -L -v -n)
+            ___header 6 ; syspipe -b "$acmd" -d ___format -- "${acmd[@]:1}"
+        fi
+    }
+
+    embed -q '_centauri_bash_pip' && syspager       # check pager
+    $CEN_PAGER ___counts                            # see --pager option
+}
+
+# ------------------------------------------------------------------------------
+# do dns port mapping: [<addr> [<port>]]
+#
+# This code is also called internally via actionMode().
+#
+# The DAT_MAP_DNS_ADDR should be hard-coded in smb.conf as "dns forwarder". The
+# port redirection created by this code will then forward samba dns requests to
+# port 'centauriadns'. Dnsmasq must be configured to listen on this port.
+# ------------------------------------------------------------------------------
+actionDnsmap() {
+    local addr="${1:--}" adns="${2:--}"
+
+    do_netconf
+    if ! netoption 'addc' "$HOSTNAME" ; then    # not running samba4 ad/dc
+        [ "$CEN_ACTION" = 'dnsmap' ] || return
+        if [ -z "$CEN_OPT_FORCE" ] ; then
+            invoke -w "No 'addc' config option (try --force to override)"
+            return
+        fi
+    fi
+
+    [ "$addr" = '-' ] && addr="$DAT_MAP_DNS_ADDR"
+    [ "$adns" = '-' ] && adns="$CEN_NET_PORT_ADNS"
+
+    message -a "DNS port map: using destination" "$addr:$adns"
+    do_tables -4 -- --table nat -F OUTPUT       # reset out rules only
+    do_tables -4 -- --table nat -A OUTPUT \
+            -p udp -d "$addr" --dport 53 -j REDIRECT --to-ports "$adns"
+    do_tables -4 -- --table nat -A OUTPUT \
+            -p tcp -d "$addr" --dport 53 -j REDIRECT --to-ports "$adns"
+}
+
+# ------------------------------------------------------------------------------
+# Show log output: [<since>|- [<until>|-]]
+# ------------------------------------------------------------------------------
+actionLogger() {
+    local tims="${1:--}" timu="${2:--}" verb="$CEN_VERB"
+    system -f -c 'journalctl'
+
+    ___output() {
+        local line="$1" lseg
+        lseg="${line%% SRC=*}"
+        printf '%s\n' "$lseg" || return 1
+        line="${line:${#lseg}+1}"
+        if [ "${#line}" -gt 100 ] ; then
+            lseg="${line%% LEN=*}"
+            printf '                %s\n' "$lseg" || return 1
+            line="${line:${#lseg}+1}"
+        fi
+        printf '                %s\n' "$line"
+    }
+
+    ___format() {
+        local line lseg
+        while IFS= read line ; do
+            [ -z "$CEN_SYSPIPE" ] && break
+            if [ "$verb" -le 1 ] ; then
+                line="${line% }"
+                line="${line% RES=0x00 SYN URGP=0}"
+                line="${line/ HOPLIMIT=255 FLOWLBL=0 / /}"
+                line="${line/$HOSTNAME * $CEN_NAME.service - /}"
+                line="${line/$HOSTNAME * $CEN_NAME: /}"
+                line="${line/TOS=* PROTO/PROTO}"
+                line="${line/ OUT= / }"
+            fi
+            ___output "$line" 2>/dev/null && continue
+            message "Output canceled" ; break
+        done
+    }
+
+    ___logger() {
+        local opts=('--no-pager' '--grep' "$CEN_NAME")
+        if [ "$tims$timu" = '--' ] ; then
+            opts+=('--boot')
+        else
+            [ "$tims" = '-' ] || opts+=('--since' "$tims")
+            [ "$timu" = '-' ] || opts+=('--until' "$timu")
+        fi
+        syspipe -b 'journalctl' -d ___format -- "${opts[@]}"
+    }
+
+    embed -q '_centauri_bash_pip' && syspager       # check pager
+    $CEN_PAGER ___logger                            # see --pager option
+}
+
+# ------------------------------------------------------------------------------
+# Mangle mss to handle broken pmtu: <ifce> [<mmtu>]
+#
+#iptables -t mangle -A FORWARD -o eth0 \
+# -p tcp -m tcp --tcp-flags SYN,RST SYN \
+# -m tcpmss --mss 1361:1536 \
+# -j TCPMSS --set-mss 1360
+#
+#echo 1 >/proc/sys/net/ipv4/ip_no_pmtu_disc
+# ------------------------------------------------------------------------------
+actionMangle() {
+    local pmtu=1 mmtu="${2:-1400}"
+
+    # reset if no args are given
+    if [ "$#" = 0 ] ; then
+        do_tables -4 -- --table mangle -F
+        pmtu=0
+
+    # setup iptables
+    else
+        if [ -z "$CEN_OPT_IPV4" ] ; then
+            invoke -w "IPv4 disabled, ignored" ; return
+        fi
+        [ "$mmtu" -gt 1500 ] && mmtu=1500
+        do_tables -4 -- --table mangle -A FORWARD -o "$1" \
+                        -p tcp -m tcp --tcp-flags SYN,RST SYN \
+                        -m tcpmss --mss $((mmtu+1)):1536 \
+                        -j TCPMSS --set-mss "$mmtu"
+    fi
+
+    # enable/disable pmtu
+    if [ -w /proc/sys/net/ipv4/ip_no_pmtu_disc ] ; then
+        if ! dryrun "$pmtu >/proc/sys/net/ipv4/ip_no_pmtu_disc" ; then
+            echo "$pmtu" >/proc/sys/net/ipv4/ip_no_pmtu_disc
+        fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Mode setting actions: -no args-
+# ------------------------------------------------------------------------------
+actionMode() {
+    do_level
+    if do_override DAT_RUN_MODE ; then
+        invoke -w "Using '$DAT_RUN_MODE' mode from override file"
+    elif [ "$CEN_ACTION" != 'auto' ] ; then
+        DAT_RUN_MODE="$CEN_ACTION"
+    fi
+
+    if [ "$DAT_RUN_CURR" = "$DAT_RUN_MODE" -a -z "$CEN_OPT_FORCE" ] ; then
+        trace -a "Same security level '$DAT_RUN_MODE', no action taken."
+        return
+    fi
+
+    message -a "Change security level from '${DAT_RUN_CURR:--none-}' to '$DAT_RUN_MODE'."
+    if ! do_restore ; then
+        rules_setup
+        do_save
+    fi
+    actionDnsmap                        # these rules are not saved/restored
+}
+
+# ------------------------------------------------------------------------------
+# Configure IP NAT: actionRoute [no]route [<ifout>] [<ipsrc>|-] [<ifsrc>]
+# ------------------------------------------------------------------------------
+# Sets IP forwarding flags for interfaces, updates NAT tables and optionally
+# configures an alias for the LAN interface.
+#
+#   <ifout>     the WAN/LAN interface
+#   <ifsrc>     optional NAT source interface
+#
+# /proc/sys/net/ipv4/conf/<if>/forwarding are used as flag to flush NAT.  Thus
+# route can be called to reinitialize NAT without a preceeding call to noroute.
+# ------------------------------------------------------------------------------
+actionRoute() {
+    # enable/disable forwarding: <value> <iface>
+    ___forwarding() {
+        dryrun "$1 > /proc/sys/net/ipv[46]/conf/$2/forwarding" && return
+        [ -w "/proc/sys/net/ipv4/conf/$2/forwarding" ] &&
+            echo "$1" > "/proc/sys/net/ipv4/conf/$2/forwarding"
+        [ -w "/proc/sys/net/ipv6/conf/$2/forwarding" ] &&
+            echo "$1" > "/proc/sys/net/ipv6/conf/$2/forwarding"
+    }
+
+    local mesg fval=1 ifce icnt=0
+    if [ "$CEN_ACTION" = 'nofwd' ] ; then
+        for ifce in /proc/sys/net/ipv4/conf/* ; do
+            [ -r "$ifce/forwarding" ] || continue
+            read fval <$ifce/forwarding
+            [ "$fval" = 0 ] && continue
+            ___forwarding 0 "${ifce##*/}"
+            message -a "Forwarding for '${ifce##*/}' now disabled"
+            ((icnt += 1))
+        done
+        local plur ; [ "$icnt" = 1 ] || plur="s"
+        message -a "Disabled forwarding for $icnt interface$plur."
+        return
+
+    elif [ "$CEN_ACTION" = 'route' ] ; then
+
+        # no arguments, list NAT table ...
+        if [ -z "$1" ] ; then
+            if [ -n "$CEN_OPT_IPV4" ] ; then
+                message "Listing the ipv4 NAT table:"
+                system -e -p -s mesg -- iptables -w --table nat -L -v
+                echo -e "\n$mesg\n" >&2
+            fi
+            if [ -n "$CEN_OPT_IPV6" ] ; then
+                message "Listing the ipv6 NAT table:"
+                system -e -p -s mesg -- ip6tables -w --table nat -L -v
+                echo -e "\n$mesg\n" >&2
+            fi
+            CEN_AUTOIND=
+
+            for ifce in /proc/sys/net/ipv4/conf/* ; do
+                read fval <$ifce/forwarding
+                [ "$fval" = 0 ] && continue
+                message -a "Forwarding for '${ifce##*/}' is enabled"
+                ((icnt += 1))
+            done
+            local plur ; [ "$icnt" = 1 ] || plur="s"
+            message -a "Found $icnt forwarding interface$plur."
+            return
+        fi
+
+    else
+        fval=0
+    fi
+    message -a "Configuring forwarding and masquerade: $CEN_ACTION $*"
+    mesg="disabled" ; [ "$fval" = 1 ] && mesg="enabled"
+
+    local rstat
+    local ifout="$1" ifsrc="$3"
+    local ipsrc="${2:--}"
+    if [ "$CEN_ACTION" = 'noroute' ] ; then
+        ifsrc="$2" ; ipsrc=
+    elif [ "$ipsrc" = '-'  ] ; then
+        ipsrc=
+    fi
+    [ "$ifsrc" = '-' -o "$ifsrc" = 'none' ] && ifscr=
+
+    # get current forwarding flag and set new value
+    if [ -n "$ifout" ] ; then
+        if [ -d "/proc/sys/net/ipv4/conf/$ifout" ] ; then
+            read -r rstat </proc/sys/net/ipv4/conf/$ifout/forwarding
+            ___forwarding "$fval" "$ifout"
+            trace -a "Forwarding $mesg for interface: $ifout"
+        elif [ "$CEN_ACTION" = "route" ] ; then
+            message -a "No such interface: $ifout. Using global forwarding."
+            read -r rstat </proc/sys/net/ipv4/conf/all/forwarding
+            ___forwarding "$fval" "all"
+            trace -a "Forwarding $mesg for all interfaces"
+        fi
+    fi
+
+    if [ -n "$ifsrc" ] ; then
+        [ -d "/proc/sys/net/ipv4/conf/$ifsrc" ] || fatal "No such interface: $ifsrc"
+        ___forwarding "$fval" "$ifsrc"
+    fi
+
+    # "route" command ...
+    do_tables -- --table nat -F POSTROUTING
+    #if [ "$CEN_ACTION" = "route" ] ; then
+    #    [ "${rstat:-0}" != 0 ] && warning -a "Forwarding was already enabled: $ifout"
+    #    # configure NAT
+    #    do_tables -4 -- -P FORWARD ACCEPT
+    #    do_tables -4 -- --table nat -A POSTROUTING -o $ifout $ipsrc -j MASQUERADE
+
+    if [ "$CEN_ACTION" = 'route' ] ; then
+        [ "${rstat:-0}" != 0 ] && warning -a "Forwarding was already enabled: $ifout"
+        # configure NAT
+        do_tables -- -P FORWARD ACCEPT
+        if [ -z "$ipsrc" ] ; then
+            do_tables -- --table nat -A POSTROUTING -o $ifout -j MASQUERADE
+        else
+            do_tables -4 -- --table nat -A POSTROUTING -o $ifout -s $ipsrc -j MASQUERADE
+            netconv -u -- "$ipsrc"
+            do_tables -6 -- --table nat -A POSTROUTING -o $ifout -s $_netconv -j MASQUERADE
+        fi
+
+    # "noroute" command ...
+    else
+        [ "${rstat:-1}" = 0 ] && warning -a "Forwarding was not enabled: $ifout"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    # service commands
+    start|stop)
+        invoke  -        actionService 0   ;;
+    sta*)
+        invoke 'status'  -             0   ;;
+
+    # other actions
+    cou*)
+        invoke 'counts'  -             0 1 ;;
+    dns*)
+        invoke 'dnsmap'  -             0 2 ;;
+    log*)
+        invoke 'logger'  -             0 2 ;;
+    man*)
+        invoke 'mangle'  -             0 2 ;;
+    nor*)
+        invoke 'noroute' actionRoute   0 2 ;;
+    nof*)
+        invoke 'nofwd'   actionRoute   0   ;;
+    rou*)
+        invoke 'route'   actionRoute   0 3 ;;
+
+    aut*)
+        invoke  'auto'   actionMode    0   ;;
+    hom*)
+        invoke  'home'   actionMode    0   ;;
+    wil*)
+        invoke  'wild'   actionMode    0   ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> <argument>
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    # end of option parsing
+    '') if [ -z "$CEN_OPT_IPV4" -a -z "$CEN_OPT_IPV6" ] ; then
+            local rsta
+            [ -r "/proc/sys/net/ipv6/conf/all/disable_ipv6" ] &&
+                read -r rsta <"/proc/sys/net/ipv6/conf/all/disable_ipv6"
+            if [ "$rsta" = 1 ] ; then
+                trace -a "ipv6 is disabled via /proc/sys/net/ipv6/conf/all/disable_ipv6"
+                CEN_OPT_IPV4=1
+            else
+                CEN_OPT_IPV4=1 ; CEN_OPT_IPV6=1
+            fi
+        fi
+
+        if [ "$CEN_OPT_NFTABLES" = 1 ] ; then
+            if ! system -c true ; then      #### HACK
+                warning "nftables is not available, trying iptables" ; CEN_OPT_NFTABLES=0
+            fi
+        elif [ "$CEN_OPT_NFTABLES" = 0 ] ; then
+            if ! system -c iptables ; then
+                warning "iptables is not available, trying nftables" ; CEN_OPT_NFTABLES=1
+            fi
+        else
+            if system -c nft ; then
+                CEN_OPT_NFTABLES=0
+                trace -a "nftables not yet implemented"
+            else
+                trace -a "nftables is not available, trying iptables" ; CEN_OPT_NFTABLES=0
+            fi
+        fi
+        ;;
+
+    -4|--ipv4)
+        optarg "ipv4"     -     ;;            # flag
+    -6|--ipv6)
+        optarg "ipv6"     -     ;;            # flag
+    -N|--nft*)
+        optarg "nftables" - -o  ;;            # ternary
+
+    -T|--test)
+        optarg "test"     -
+        CEN_OPT_NFTABLES=1 ; CEN_OPT_DRYRUN=1 ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -h - \
+        -h $"The firewall is configured via 'centaurinetcfg'. If can be used as a" \
+        -h $"service or from command line. Usually it is run by 'centauriswitch'."
+     usageset \
+        -o - \
+        -o "-4 --ipv4            "$"use ipv4 (implicitly disable ipv6)" \
+        -o "-6 --ipv6            "$"use ipv6 (implicitly disable ipv4)" \
+        -o "-N --nftables [012]  "$"favour nftables over iptables (0:no 1:yes 2:auto)"
+    usageset \
+        -a "dnsmap   [<addr>|- [<port>|-]]" \
+        -a "                     "$"map loopback <addr>:53 to <addr>:<port>" \
+        -a "mangle   [<ifce> [<mmtu>]]" \
+        -a "                     "$"force mss to fix broken pmtu, no args to reset" \
+        -a "noroute  <ifout>|all [<ifsrc>]" \
+        -a "                     "$"stop IP forwarding and masquerading" \
+        -a "nofwd                "$"clear all IP forwardings" \
+        -a "route    <ifout> [<ipsrc>|- [<ifsrc>]]" \
+        -a "                     "$"start IP forwarding and masquerading" \
+        -a '••• '$"statistics"' •••' \
+        -a 'counts'               $"show packet statistics" \
+        -a 'logger   [<since>|- [<until>|-]]' \
+        -a -                      $"show logged messages" \
+        -a '••• '$"network location"' •••' \
+        -a "auto                 "$"automatically switch to home/wild zone" \
+        -a "home                 "$"switch to 'home' security zone" \
+        -a "wild                 "$"switch to 'wild' security zone"
+    usageset \
+        -p "addr                 "$"loopback address     (example: $DAT_MAP_DNS_ADDR)" \
+        -p "port                 "$"port number" \
+        -p "ifout                "$"the output interface (example: ppp0)" \
+        -p "ipsrc                "$"masq. source ip/mask (example: 10.21.3.0/24)" \
+        -p "ifinp                "$"the source interface (example: tun0)"
+    usageset \
+        -e ". -6 counts         # "$"ipv6 package statistics (non-zero counts)" \
+        -e ". -v counts         # "$"tpv4 package statistics (list all rules)" \
+        -e ". -f restart        # "$"rebuild rules cache, reload rules" \
+        -e ". -f stop           # "$"disable the firewall"
+    usageset \
+        -l "remarks" \
+        -t "Even though $CEN_NAME can be run as a service, it is tpyically run" \
+        -t "by centauriswitch as a helper tool. centauriswitch disables the service" \
+        -t "start of $CEN_NAME." \
+        -t - \
+        -t "The actions auto|home|wild can altered using an override file. For details" \
+        -t "see centaurisysinit and appliances. Option '--force' can be used to ignore" \
+        -t "the override file."
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

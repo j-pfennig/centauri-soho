@@ -1,0 +1,112 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2023; BSD License"
+CEN_TITLE="Template for simple scripts (no action syntax)"
+
+MINIMAL="${MINIMAL:-false}" ####################################################
+if $MINIMAL ; then #############################################################
+# Import the bash library, set mix/max arguments
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r - '0.00:2' 1 + || exit 2
+
+# Data
+CEN_OPT_XXX=                    # see --xxx
+else ###########################################################################
+
+# Import the bash library, set name and version TODO
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g -r - '0.00:2' || exit 2
+
+# Minimum/maximum argument count
+CEN_RUN_MIN_ARGS=1              # min arg count, see arguments() TODO
+CEN_RUN_MAX_ARGS=+              # max arg count
+
+# Data
+CEN_OPT_ALL=                    # see --all TODO
+CEN_OPT_FOLDER=                 # see --folder
+CEN_OPT_TEXT=                   # see --text
+fi #############################################################################
+
+# ------------------------------------------------------------------------------
+# The one and only action
+# ------------------------------------------------------------------------------
+run() {
+if $MINIMAL ; then #############################################################
+    message "Hello World"
+else ###########################################################################
+    # TODO Example, the options() function can be deleted if not needed
+    if [ -n "$CEN_OPT_FOLDER" ] ; then
+        local icnt
+        # here 'eval' is used to run a scriplet
+        system -p -e -s icnt "eval" "ls '$CEN_OPT_FOLDER' | wc -l" &&
+            message "Folder '$CEN_OPT_FOLDER' has ${icnt:-<error>} entries"
+    else
+        message "${CEN_OPT_TEXT:-$CEN_TITLE} ${CEN_OPT_ALL:+(option '--all' used)}"
+    fi
+fi #############################################################################
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> <argument>
+# ------------------------------------------------------------------------------
+options() {
+
+if $MINIMAL ; then #############################################################
+    case "$1" in
+
+    -X|--XXXX)
+        optarg 'xxxx'       -    -t ;;          # text argument
+
+    esac
+else ###########################################################################
+    case "$1" in
+
+    # TODO Example, the options() function can be deleted if not needed
+    -A|--all)
+        optarg "all"    CEN_OPT_ALL        ;;   # simple flag
+    -F|--fol*)
+        optarg "folder" CEN_OPT_FOLDER -d  ;;   # existing folder
+    -T|--tex|--text)
+        optarg "text"   CEN_OPT_TEXT   -t  ;;   # any text
+
+    -X|--ext*)
+        optarg "extra"  CEN_OPT_OUTPUT -w  ;;   # writable file
+    -R|--rea*)
+        optarg "read"   CEN_OPT_INPUT  -r  ;;   # redable file
+
+    esac
+fi #############################################################################
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+if $MINIMAL ; then #############################################################
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -X --xxx             option example
+!EOF
+else ###########################################################################
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -A --all             option example
+       -F --folder  <fldr>  option example
+       -T --text    <text>  any text
+
+       -R --read    <file>  input file (use '+' to prompt, '-' for stdin)
+       -X --extra   <file>  output file (use '+' to prompt, '-' for stdout)
+!EOF
+fi #############################################################################
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

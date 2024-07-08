@@ -1,0 +1,902 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_utl = centauri-bash-lib: miscallaneous utilities
+#
+# Call:     . _centauri_bash_utl
+#
+# Copyright Dr. J. Pfennig (c) 2022-2024
+# ------------------------------------------------------------------------------
+
+CEN_MODULES["_centauri_bash_utl"]="0.03:1"
+
+# ------------------------------------------------------------------------------
+# listsearch - search a word in a list
+#
+# Call:     listsearch [-b] [-c] [-t] [-d <deli>] [-m|-n <vres>] [-g|-u|-x] [--] <what> <list>
+#           listsearch [-b] [-c] [-t] [-m|-n <vres>] [-g|-u|-x] [--] <what> <item>...
+#           listsearch [-b] [-c] [-t] [-d <deli>] [-m|-n <vres>] [-g|-u|-x] -i <vinp> [--] <what>
+#
+# Options:  -b  [-] do a binary search (list must be ordered lexically)
+#           -c      do a case sensitive search
+#           -d      list item separator(s), calls [[splitjoin]] on <list>
+#           -g      glob expression match (longest expression wins)
+#           -i      input from variable (string or array)
+#           -m      return matched word in <vres>
+#           -n      return match index in <vres>
+#           -t      trim list items
+#           -u      partial word search, match must be unique
+#           -x      regular expression match (longest expression wins)
+#
+#           [-] Not yet implemented
+#
+# Arguments:<deli>  word delimiters in list string
+#           <vres>  variable to receive the search result
+#           <vinp>  variable or array containing the list to be searched
+#           <item>  a list item
+#           <list>  a list string
+#           <what>  the word to be searched
+#
+# Return:   0   word found
+#           1   word not found
+#           2   no unique match
+#
+#.Example:  set -- "oTTO" "emil o* *TO O?* *"
+#.          local valn valm
+#.          listsearch -g -d ' ' -n valn -m valm -- "$@" || quit "not found"
+#.          message "Index $valn is '$valm'"
+# ------------------------------------------------------------------------------
+listsearch() {
+    local _fbin _fcas _fglo _finp _fwrd _fidx _frex _ftrm _funi _sdel _word _list
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -b)   _fbin=1 ;;
+      -c)   _fcas=1 ;;
+      -d)   shift ; _sdel="$1" ;;
+      -g)   _fglo=0 ;;
+      -i)   shift ; local -n _vinp="$1" ; _finp=1 ;;
+      -n)   shift ; local -n _vidx="$1" ; _vidx= ; _fidx=1 ;;
+      -m)   shift ; local -n _vres="$1" ; _vres= ; _fwrd=1 ;;
+      -t)   _ftrm=1 ;;
+      -u)   _funi=1 ;;
+      -x)   _fglo=0 ; _frex=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # get input into _list
+    [ -z "$_fcas" ] && _word="${1,,}" || _word="$1" ; shift
+    [ -n "$_finp" ] && set -- "${_vinp[@]}"
+    if [ -n "$_sdel" ] ; then
+        splitjoin -s _list -d "$_sdel" -- "$@"
+    else
+        _list=("$@")
+    fi
+
+    # iteration limits
+    local _ibeg=0 _iend="${#_list[@]}" _irun _curr _cwrd
+    for ((_irun=_ibeg; _irun<_iend; _irun++)) ; do
+        _curr="${_list[_irun]}"
+        if [ -n "$_ftrm" ] ; then
+            _curr="${_curr%"${_curr##*[![:space:]]}"}"
+            _curr="${_curr#"${_curr%%[![:space:]]*}"}"
+        fi
+        _cwrd="$_curr"                              # preserve case
+        [ -z "$_fcas" ] && _curr="${_curr,,}"
+        if [ -n "$_fglo" ] ; then                   # glob match ...
+            [ $_fglo -ge ${#_curr} ] && continue    # find longest match
+            if [ -n "$_frex" ] ; then               # regexp match
+                [[ "$_curr" =~ $_word ]] || continue
+            else                                    # glob match
+                [[ "$_curr" == $_word ]] || continue
+            fi
+            [ -n "$_fidx" ] && _vidx="$_irun"
+            [ -n "$_fwrd" ] && _vres="$_cwrd"
+            _fglo=${#_curr} ; _funi=2
+        elif [ -z "$_funi" ] ; then                 # full match only...
+            [ "$_word" = "$_curr" ] || continue
+            [ -n "$_fidx" ] && _vidx="$_irun"
+            [ -n "$_fwrd" ] && _vres="$_cwrd"
+            return 0
+        else                                        # allow partial match...
+            [ "${_curr#$_word}" = "$_curr" ] && continue
+            [ "$_funi" = 2 ] && return 2            # previous match, stop
+            [ -n "$_fidx" ] && _vidx="$_irun"
+            [ -n "$_fwrd" ] && _vres="$_cwrd"
+            ((_funi += 1))                          # _funi=2 is one match
+        fi
+    done
+    [ "$_funi" = 2 ]                                # return status
+}
+
+# ------------------------------------------------------------------------------
+# number - check numeric value
+#
+# Call:     number [-e|-f] [-d <dflt>] [--] <narg> [<nmin>|- [<nmax>|-]]
+#
+#           This function works with decimal integers only
+#
+# Options:  -d  default value if <narg> is '-' or empty
+#           -e  generate error messages
+#           -f  make errors fatal
+#           -r  accept real value (min/max tests not allowed)
+#           -s  save numbre to variable (default: CEN_NUMER)
+#           -u  number must be unsigned
+#
+# Arguments:<narg>  string that should be a ''number'' (optinally signed)
+#           <nmin>  optional minimum value
+#           <nmax>  optional maximum value
+#
+# Return:   0   input is valid
+#           1   value below minimum
+#           2   value above maximum
+#           3   input is not a decimal integer ''number''
+# ------------------------------------------------------------------------------
+CEN_NUMBER=
+number() {
+    local _dflt _oerr=':' _orea _ouns _narg _nmin _nmax _nabs _vnam='CEN_NUMBER'
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -|-[0-9]*)
+            break ;;
+      -d)   shift ; _dflt="$1" ;;
+      -e)   _oerr='error' ;;
+      -f)   _oerr='fatal' ;;
+      -r)   _orea=1 ;;
+      -s)   shift ; _vnam="$1" ;;
+      -u)   _ouns=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ $# -gt 3 ] && _cen_abort @
+    local -n _cen_txt_number="$_vnam" ; _cen_txt_number='-'
+
+    _narg="${1:--}" ; _nmin="${2:--}" ; _nmax="${3:--}"
+    [ "$_narg" = '-' ] && _narg="$_dflt"
+    _narg="${_narg%"${_narg##*[![:space:]]}"}"
+    _narg="${_narg#"${_narg%%[![:space:]]*}"}"
+
+    case "$_narg" in
+    ''|-|0[0-9xX]*)
+            $_oerr $"Not a decimal integer number:" "$_narg" ; return 3 ;;
+    -*)     if [ -n "$_ouns" ] ; then
+                $_oerr $"Not an unsigned decimal number:" "$_narg" ; return 3
+            fi
+            _nabs="${_narg:1}" ;;
+    *)      _nabs="$_narg"
+    esac
+    if [ -n "$_orea" ] ; then
+        _nmin='-' ; _nmax='-' ; _nabs="${_nabs/./}"
+    fi
+    if [ -n "${_nabs//[0-9]/}" ] ; then
+        $_oerr $"Unexpected text data, not a number:" "$_narg" ; return 3
+    fi
+
+    if   [ "$_nmin" != '-' ] && [ "$_narg" -lt "$_nmin" ] ; then
+        $_oerr -p $"Value to small (min is %s):" "$_nmin" "$_narg" ; return 1
+    elif [ "$_nmax" != '-' ] && [ "$_narg" -gt "$_nmax" ] ; then
+        $_oerr -p $"Value to large (max is %s):" "$_nmax" "$_narg" ; return 2
+    fi
+    _cen_txt_number="$_narg"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# optmake - Build options string or array
+#
+# Call:     optmake -s|-j|-a <dest> [-k|-n <name>] [-f|-v|-z] <valu>
+#           optmake -s|-j|-a <dest> -b <opti>
+#
+# Options:  -a  add result to <dest> array
+#           -b  copy a builitin option
+#           -f  option is a flag, no value
+#           -j  add result to <dest> variable
+#           -k  key name (not an option)
+#           -m  do not treat '-' as empty value
+#           -s  save result in <dest> variable
+#           -n  option name (optionally starting with - or --)
+#           -v  option has a value (default is an option flag)
+#           -z  option has a value must must be non-zero
+#
+#.Examples: optmake -a opts -v "$CEN_OPT_INPUT"                 # argument
+#.          optmake -a opts -- "-version"                       # constant
+#.          optmake -a opts -b pager                            # builtin
+#.          optmake -s opts -n host -m -v "$CEN_OPT_HOST"       # text value
+#.          optmake -j opts -n logical -f "$CEN_OPT_LOGICAL"    # flag
+#.          optmake -a opts -n number  -z "$CEN_OPT_NUMBER"     # num. value
+#.          optmake -j opts -n physical   "$CEN_OPT_PHYSICAL"   # flag
+#
+#.          optmake -j args        -v "$addr"       # add a value
+#.          optmake -j args -k mtu -v "$vmtu"       # add key/value
+#.          optmake -j args -b verb                 # add builtin --verbose
+#
+#+If the option <name> starts with '-' or '--' the generated code for
+# string output (option -j or -s) is:
+#
+#,    ''-           -<name>   or  -<name> <valu>''     (one or two elements)
+#,    ''--          --<name>  or  --<name>=<valu>''    (only one element)
+#,    ''default     --<name>  or  --<name> <valu>''    (one or two elements)
+#
+#+When used with -a option optmake never generates a '=' separator but
+# puts the <valu> into an extra array element. For string output only
+# simple quoting is used, e.g. '''"''' in <valu> are changed to '''\"'''.
+#
+#+For builitin options (-b) the following <opti> values are recognized:
+#
+#,      dryrun|force|silent|trace|quiet|zombie
+#,      gui|pager|verb*|yesno
+# ------------------------------------------------------------------------------
+optmake() {
+    local _vset _name _vflg _asep _blti _fmin _valu
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _vset="a" ; local -n _vvaa="$1" ;;
+      -b)   shift ; _blti="$1" ;;
+      -f)   shift ; _valu="$1" ; _vflg=0 ;;
+      -m)   shift ; _fmns=1 ;;
+      -j)   shift ; _vset="j" ; local -n _vvaa="$1" ;;
+      -k)   shift ; _name="=$1" ;;
+      -s)   shift ; _vset="d" ; local -n _vvaa="$1" ; _vvaa= ;;
+      -n)   shift ; _name="$1" ;;
+      -v)   shift ; _valu="$1" ; _vflg=1 ;;
+      -z)   shift ; _valu="$1" ; _vflg=2 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    if [ -z "$_vflg" ] ; then                   # no -f|-v|-z option
+        _valu="$1" ; _vflg=0
+    fi
+    if [ -n "$_blti" ] ; then                   # builtin options
+        [ -n "$_name" ] && _cen_abort - '-b|-n|-k'
+        _name="$_blti" ; _vflg=0
+        eval _valu="\$CEN_OPT_${_name^^}"
+        case "$_blti" in
+        dryrun|force|silent|trace|quiet|zombie)
+                    [ -z "$_valu" ] && return ;;
+        gui)        [ "$_valu" = 2 ] && return
+                    _vflg=1 ;;
+        pager)      _vflg=1 ;;
+        verb*)      [ "$CEN_VERB" -le 1 ] && return ;;
+        yesno)      [ -z "$CEN_YESNO" ] && return
+                    [ "$CEN_YESNO" = 'y' ] && _name='yes' || _name='no' ;;
+        *)          _cen_abort $"unknown option:" "$_blti"
+        esac
+    else
+        case "$_valu" in
+            "") return ;;
+            -)  [ -z "$_fmns" ] && return ;;
+            0)  [ "$_vflg" = 2 ] && return ;;
+        esac
+    fi
+
+    case "$_name" in
+    "")         ;;
+    --*)        _asep=1 ;;
+    -*)         ;;
+    =*)         _name="${_name:1}" ;;
+    ?)          _name="-$_name" ;;
+    *)          _name="--$_name"
+    esac
+
+    # append to array
+    if [ "$_vset" = "a" ] ; then
+        [ -n "$_name" ] && _vvaa+=("$_name")
+        [ "${_vflg:-0}" != 0 ] && _vvaa+=("$_valu")
+        [ $# -gt 0 ] && _vvaa+=("$@")
+
+    # simple output string
+    else
+        _valu="${_valu//\"/\\\"}"
+        [ -n "$_vvaa" ] && _vvaa+=" "
+        [ -n "$_name" ] && _vvaa+="$_name"
+        if [ "${_vflg:-0}" != 0 ] ; then
+            if [ -n "$_asep" ] ; then
+                _vvaa+="=\"$_valu\""
+            else
+                [ -n "$_vvaa" ] && _vvaa+=" "
+                _vvaa+="\"$_valu\""
+            fi
+        fi
+        [ $# -gt 0 ] && _vvaa+=" $*"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# pluralize - use singular or plural form depending on count
+#
+# Call:     (1) pluralize -s <vnam> [-c <caps>] [-g] [-n] [-o] [-z]
+#                         [--] <count> <singular> [<plural> [<zero>|- [<one>|-]]]
+#           (2) pluralize [-a|-i] [-e|-f|-w] [-p <frmt> [-c <caps>] [-g] [-n] [-o] [-z]
+#                         [--] <count> <singular> [<plural> [<zero>|- [<one>|-]]]
+#
+#+          Form (1) saves the singular/plural word to a variable, and form (2)
+#           behaves like [[message()]].
+#
+#+          If no plural is given, the singular with an 's' appended is used.
+#           If localization is enabled the 's' is subject to translation so it
+#           may work for other languages in some cases.
+#
+#+          Translations for zero, one, line, lines, file, files, folder, folders,
+#           error and errors are built-in.
+#
+# Options:  -a  auto indent, see [[message()]]
+#           -c  capitalize 1st letter of singular/plural and count 0/1
+#           -e  use [[error()]] for output
+#           -f  use [[fatal()]] for output
+#           -g  gender translation like 'kein'/'keine' and 'ein'/'eine'
+#           -i  indent, see [[message()]]
+#           -n  use numbers with count=0 and count=1
+#           -o  for count=0 fall back to [[message()]] or [[trace()]]
+#           -p  format using two arguments: count singular/plural
+#           -s  save result to variable (default is calling [[message]])
+#           -w  use [[warning()]] for output
+#           -z  use plural form for zero count
+#
+# Arguments:<vnam>  a variable name
+#           <frmt>  a format string with two '%s' for count/word
+#           <caps>  bit 1: capitalize singular/plural  bit 2: cap. count
+#           <zero>  optional count=0 text
+#           <one>   optional count=1 text
+#
+#.Example:  # some simple cases
+#.          pluralize -s sout -c 2 -n -z -- "$count" 'bird' 'birds'
+#.          pluralize -s sout -z -- "$count" 'item' 'items' 'Zero' 'Single'
+#.          pluralize -a -z -p 'Done, %s %s processed' -- "$count" 'dog'
+#
+#.          # gendering
+#.          pluralize    -z -p 'Fertig, %s %s verarbeitet' -- "$count" \
+#.                             'Datei' 'Dateien' 'keine' 'eine'
+#.          pluralize -g -z -p 'Fertig, %s %s verarbeitet' -- "$count" \
+#.                             'Datei' 'Dateien'
+#
+#.          # using built-in translations, auto-plural and capitalize
+#.          pluralize -z -c 2 -- "$count" 'folder'
+#.          pluralize -z -c 2 -p '%s %s '$"read." -- "$count" 'line'
+#
+#.          # conditional error/warning
+#.          pluralize -o -e -- "$count" 'error was found' 'errors were found'
+#.          pluralize -g -o -w  -- "$count" 'Wespe'
+# ------------------------------------------------------------------------------
+pluralize() {
+    local _opts=() _caps _numi _zero _word _waut _frmt _oone _ogen _omsg='message'
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a|-i)
+            _opts+=("$1") ;;
+      -c)   shift ; _caps="$1" ;;
+      -e)   _omsg='error' ;;
+      -f)   _omsg='fatal' ;;
+      -g)   _ogen=1 ;;
+      -o)   _oone=1 ;;
+      -n)   _numi=1 ;;
+      -p)   shift ; _frmt="$1" ;;
+      -s)   shift ; _save="$1" ;;
+      -t)   _omsg="$CEN_TRACE" ; [ "$_omsg" = ':' ] && return 0 ;;
+      -w)   _omsg='warning' ;;
+      -z)   _zero=0 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ "$#" = 2 ] && set -- "$1" "$2" -
+    [ "$#" -lt 3 ] && _cen_abort +
+
+    if [ "$1" = 0 ] ; then
+        [ -n "$_zero" ] && _word="$3" || _word="$2"
+        [ -z "$_numi" ] && _numi=$"zero" || _numi=0
+        [ "$_numi" = 'zero' ] && _numi='no'         # fix english translation
+        [ "${4:--}" = '-' ] || _numi="$4"
+    elif [ "$1" = 1 ] ; then
+        _word="$2"
+        [ -z "$_numi" ] && _numi=$"one" || _numi=1
+        [ "${5:--}" = '-' ] || _numi="$5"
+    else
+        _word="$3" ; _numi="$1"
+    fi
+
+    if [ "$_word" = '-' ] ; then                        # try auto-plural
+        _word="$2s" ; _waut="$2"$"s"
+    fi
+    local _temp="$_word" _indx
+    local _weng=('line' 'lines' 'file' 'files' 'folder' 'folders' 'error' 'errors')
+    if listsearch -i _weng -n _indx -- "$_temp" ; then
+        _weng=($"line" $"lines" $"file" $"files" $"folder" $"folders" $"error" $"errors")
+        _word="${_weng[_indx]}"
+        _temp="${_word%|-g}"
+        if [ "$_temp" != "$_word" ] ; then          # want gendering
+            _word="$_temp" ; _ogen=1
+        fi
+    else
+        [ -n "$_waut" ] && _word="$_waut"           # try xlated auto-plural
+    fi
+                                                    # gendering
+    [ -n "$_ogen" ] && _numi="${_numi#*|}" || _numi="${_numi%|*}"
+                                                    # capitalize
+    [ "$((_caps & 1))" = 1 ] && _word="${_word^}"
+    [ "$((_caps & 2))" = 2 ] && _numi="${_numi^}"
+    [ "${_frmt:--}" = '-' ] && _frmt="%s %s"        # default format
+    if [ -n "$_save" ] ; then
+        printf -v "$_save" -- "$_frmt" "$_numi" "$_word"
+    else
+        [ -n "$_oone" -a "$1" = 0 ] &&
+            case "$_omsg" in
+            :)          ;;
+            message)    _omsg="$CEN_TRACE" ;;
+            *)          _omsg='message'
+            esac
+        $_omsg "${_opts[@]}" -p -- "$_frmt" "$_numi" "$_word"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# splitcall - run commands or functions splitting long arguments lists
+#
+# Call:     splitcall -c|-s <what> [-e|-f|-q] [-g <good>] [-p] [-r]
+#           °         <>           [-a <para>] [-m <maxi>] [-d <deli>] -i <data>
+#           splitcall -c|-s <what> [-e|-f|-q] [-g <good>] [-r]
+#           °         <>           [-a <para>] [-m <maxi>] [-p] [-d <deli>] -- <arg>...
+#
+# Options:  -a      parameter array, see below
+#           -c      call a script function
+#           -d  [-] delimiter passed to [[splitjoin()]]
+#           -e      add option -e (report errors)
+#           -f      add option -f (make errors fatal)
+#           -g      stop processing if exit code of <what> is greater <good>
+#           -i  [-] input variable name (can be an array)
+#           -m      maximum chunk size for parallel processes
+#           -p  [-] parallel processing, see below
+#           -q      add option -q (no messages)
+#           -r      add option -r (ignore --dryrun)
+#           -s      use [[sysrun()]] to run a (external) command
+#
+#           [-]     Not yet implemented
+#
+# Arguments:<arg>   list of fields that get added to <data>
+#           <data>  list to be split into chunks
+#           <deli>  used to split strings into items, see [[splitjoin()]]
+#           <good>  maximum non-error return code (default is using "error°-t")
+#           <what>  a function/command to be invoked for chunks of <data>
+#           <para>  parameters passed to <func>, can be string or array, '@'
+#           °       stands for a chunk of <data>. If no '@' field is passed,
+#           °       it automatically gets appended to <para>.
+#           <maxi>  maximum chunk size (default: -c uses 100, -p uses number of cpus)
+#           <deli>  field delimiter if <data> is a string, not used for array
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#.Examples: # call function: symlink -e -r -- "$@" "dest-folder"
+#.          local para("--" "@" "$dest-folder")
+#.          splitcall -c symlink -e -r -m 1024 -a para -- "$@"
+#
+#.          # run a program: sysrun -e -p -r -- mytool --option "$1" "dest"
+#.          local para("--option" "@" "$dest")
+#.          local arga("tick" "tack" "tock")
+#.          splitcall -s "mytool" -e -r -m 1 -a para -i arga
+#
+#.          # parallel processes: sysrun -- worker "$1"
+#.          splitcall -p -s "worker" -- '1.dat' '2.dat' '3.dat'
+#
+#.          # parallel subshells: wrapper -e -r -- "$1"
+#.          splitcall -p -c "wrapper" -e -r -- '1.dat' '2.dat' '3.dat'
+# ------------------------------------------------------------------------------
+splitcall() {
+    local _oerr _vnam _call _deli _fdry _fpre _good _ivar _maxi _ppar _srun
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _vnam="$1" ;;
+      -c)   shift ; _call="$1" ; isfunction -f -- "$1" ;;
+      -d)   shift ; _deli="$1" ;;
+      -e)   _oerr='-e' ; _fpre='-p' ;;
+      -f)   _oerr='-f' ; _fpre='-p' ;;
+      -g)   shift ; _good="$1" ;;
+      -i)   shift ; _ivar="$1" ;;
+      -m)   shift ; _maxi="$1" ;;
+      -p)   _ppar=1 ;;
+      -q)   _oerr='-q' ;;
+      -r)   _fdry='-r' ;;
+      -s)   shift ; local _cen_splitcall
+            sysfind -f -s _cen_splitcall -- "$1" ; _srun="$_cen_splitcall" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ -z "$_call" -a -z "$_srun" ] && _cen_abort = '-c|-s'
+    if [ -n "$_ivar" ] ; then
+        local _iarr
+        splitjoin -s _iarr -i "$_ivar" ; set -- "${_iarr[@]}"
+    fi
+    [ -n "$_deli" ] && fatal -t "Not yet implented:" '-d'
+
+    local _offs= _leng _coun="$#" _aidx _args _stat _save _savd _rval=0
+    _leng="${_maxi:-1024}"
+
+    if [ -n "$_vnam" ] ; then                       # find @ in param list
+        listsearch -c -n _aidx -i "$_vnam" -- '@' ||
+            _cen_abort $"No '@' in arguments array:" '-a'
+        local -n _cen_splitcall="$_vnam"
+    fi
+
+    if [ -n "$_ppar" ] ; then
+      #  sysfind $_oerr -c -s _ppar -- "$_ppar" || return
+        _cen_scal_find -i "${_maxi:--}"             # init pid/tag tables
+  _fake=100      ;   _frun=$_fake
+        while [ $# -gt 0 ] ; do
+            if _cen_scal_find -f 0 ; then
+                CEN_UTL_SCTAG[CEN_UTL_SCIDX]="$1"
+       # eval sysrun -s _rslt -- "$_ppar" "$1"
+                if [ -n "$_call" ] ; then
+                    $CEN_TRACE2 -c " function" "$CEN_UTL_SCIDX: $_call $1"
+                    eval "$_call" "$1" &
+                else
+                    $CEN_TRACE2 -c " program" "$CEN_UTL_SCIDX: $_srun $1"
+                fi
+                CEN_UTL_SCPID[CEN_UTL_SCIDX]="$!"
+            else
+                wait -p _frun -n ${CEN_UTL_SCPID[*]}
+                $CEN_TRACE2 -c " finished" -- "$_frun"
+                _cen_scal_find -f $_frun || _cen_abort $"invalid 'wait' result"
+                CEN_UTL_SCPID[CEN_UTL_SCIDX]=0
+                continue
+            fi
+            shift
+        done
+        return
+        fatal -t "Not yet implented:" '-p'
+    fi
+
+
+    if [ "${_good:--}" = '-' ] ; then               # save/reset error state
+        _save="$CEN_ERROR" ; _savd="$CEN_DONE"
+        error -c
+    fi
+
+    while [[ "$_offs" -lt "$_coun" ]] ; do
+        if [ -n "$_vnam" ] ; then                   # make argument list
+            _args=("${_cen_splitcall[@]::_aidx}")
+            _args+=("${@:_offs+1:_leng}")
+            _args+=("${_cen_splitcall[@]:_aidx+1}")
+        else
+            _args=("${@:_offs+1:_leng}")
+        fi
+
+        if [ -n "$_srun" ] ; then
+            sysrun -n $_fdry $_fpre $_oerr -- "$_srun" "${_args[@]}"
+        else
+            $_call $_fdry $_oerr "${_args[@]}"
+        fi
+        _stat="$?" ; ((_offs+=_leng))
+        [ "$_stat" = 0 ] && continue
+
+        if [ "${_good:--}" = '-' ] ; then           # stop after any error
+            error -t && continue
+        elif [ "$_stat" -le "${_good:-0}" ] ; then  # stop if $? > _good
+            continue
+        fi
+        _rval="$_stat" ; break                      # stop with error code
+    done || :
+
+    if [ "${_good:--}" = '-' -a "$CEN_ERROR" = 0 ] ; then
+        CEN_ERROR="$_save" ; CEN_DONE="$_savd"      # restore error state
+    fi
+    return $_rval
+}
+
+# ------------------------------------------------------------------------------
+# manage process tables: -i <max>  |  -f <pid>  |  -p
+# ------------------------------------------------------------------------------
+CEN_UTL_SCPID=                      # pid array
+CEN_UTL_SCTAG=                      # tag array
+CEN_UTL_SCMAX=                      # max process count
+CEN_UTL_SCIDX=                      # current array index
+CEN_UTL_SCOLD=                      # flags old bash wait implementation
+
+_cen_scal_find() {
+    if [ "$1" = '-i' ] ; then
+        CEN_UTL_SCPID=()
+        CEN_UTL_SCTAG=()
+        if [ "$2" = '-' ] || [ "$2" -le 0 ] ; then
+            CEN_UTL_SCMAX=2
+            local _keyw _sepa _data
+            while read _keyw _sepa _data ; do
+                [ "$_keyw" = 'processor' ] || continue
+                [ "$_sepa" = ':' ] || continue
+                ((CEN_UTL_SCMAX += 1))
+            done < /proc/cpuinfo 2>/dev/null
+        else
+            CEN_UTL_SCMAX="$2"
+        fi
+        $CEN_TRACE -c " init" -- "$CEN_UTL_SCMAX processes"
+        return 0
+    fi
+
+    CEN_UTL_SCIDX=0
+    if [ "$1" = '-p' ] ; then                           # must probe via kill
+        local spid _stat
+        while [ "$CEN_UTL_SCIDX" -lt "$CEN_UTL_SCMAX" ] ; do
+            spid="${CEN_UTL_SCPID[CEN_UTL_SCIDX]:- }"
+            if [ "${spid#* }" = "$spid" ] ; then
+                kill -n 0 "$spid" || return 0           # process did exit
+            fi
+            ((CEN_UTL_SCIDX += 1))
+        done 2>/dev/null
+    else
+        while [ "$CEN_UTL_SCIDX" -lt "$CEN_UTL_SCMAX" ] ; do
+            [ "${CEN_UTL_SCPID[CEN_UTL_SCIDX]:-0}" = "$2" ] && return 0
+            ((CEN_UTL_SCIDX += 1))
+        done
+    fi
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# wait for a process to finish: -no args-  (sets CEN_UTL_SCIDX, -1: pid unknown)
+# ------------------------------------------------------------------------------
+_cen_scal_wait() {
+    local _ppid _stat
+    if [ -n "$CEN_UTL_SCOLD" ] ; then               # no -v in wait
+        wait -f -n ${CEN_UTL_SCPID[*]} ; _stat=$?
+    else
+        wait -p _ppid -f -n ${CEN_UTL_SCPID[*]} ; _stat=$?
+    fi
+    if [ -n "$_ppid" ] ; then                       # ok, got _ppid
+        _cen_scal_wait -f "$_ppid" || return 127
+    else                                            # must try 'kill -n 0 <pid>'
+        _cen_scal_wait -p || return 127
+        # a 2nd call to wait may return the status
+        # _ppid="${CEN_UTL_SCPID[CEN_UTL_SCIDX]}"
+        # wait -n "$_ppid" ; _stat=$?
+    fi
+    CEN_UTL_SCPID[CEN_UTL_SCIDX]+=" $_stat"         # append exit code
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# timer - sleep, return elapsed time, run poll loop
+#
+# Call:     (1) timer [-a] -m                    # show elapsed time via message
+#               timer [-a] -t                    # show elapsed time via trace
+#               timer [-a] -t|-m -p <pfmt>       # explicit printf format
+#               timer <opts> [--] <text>...      # append text to output
+#           (2) timer -s <vnam>                  # save current epoch time
+#               timer -s <vnam> -p <pfmt>|-      # save elapsed time in [ms]
+#           (3) timer ... -i <time>|- ...        # set epoch time before return
+#                                                # sleep, optional callback
+#           (4) timer -w <secs> [-c <func>] [-h] [-r]
+#                                                # run a poll loop ...
+#           (5) timer -l <tick> -w <secs> -c <func> [-h] [-r]
+#
+# Options:  -a  pass -a option to [[message]] or [[trace]]
+#           -c  callback function
+#           -h  register a trap handler (see [[context]] -t)
+#           -i  set or reset start time integer [ms] or floating time
+#           -l  enter callback loop
+#           -m  report elapsed time via  [[message]]
+#           -p  use printf formatting
+#           -r  ignore --dryrun option
+#           -s  save elapsed time to variable
+#           -t  report elapsed time via  [[trace]]
+#           -w  wait number of seconds
+#
+# Arguments:<func>      callback function
+#           <opts>      any other options
+#           <pfmt>      printf format
+#           <text>      additional argument for [[message]] or [[trace]]
+#           <secs>      time to wait in [s], floating point
+#           <tick>      poll interval in [s], floating point
+#           <time>      unix epoch time, floating point
+#           <vnam>      a variable name
+#
+#+Caveat:   This function handles only 9 digit [ms] values (277 hours) to stay
+#           32-bit compatible. Bash cannot handle floating point and on 32-bit
+#           systems integer arithmetics is 32-bit only.
+#
+#+Callback: The callback function is called at function entry, at exit and when
+#           running a poll loop:
+#
+#,          -   <func> -b <secs>                # entry, pass -w argument
+#,          -   <func> -l <elap> <totl>         # poll loop only, see below
+#,          -   <func> -e <stat>                # exit, pass exit code
+#
+#+Polling:  With option -l the callback function is called in a loop until it
+#           returns 0 (ready, exit code 0), or a <stat> > 1 (stop, exit code <stat>).
+#           A return code of 1 continues polling. When <wait> has expired <func>
+#           is called for a last time with option -e, and the return values becomes
+#           the timer exit code.
+#
+#+          The two non-option arguments of <func> are elapsed time and total wait
+#           time in [ms].
+#
+#.Examples: # just sleep for a while (1.5 [s])
+#.          timer -w 1.5 -h
+#
+#.          # reset elapsed time, do something, report elapsed time, reset
+#.          timer -i - ; do_something
+#.          timer -a -m -i -
+#
+#.          # simple tracing
+#.          local curr; timer -s curr
+#.          do_something one  ; timer -a -p "%s [ms]: do_something" -t -i - -- one
+#.          do_something two  ; timer -a -p "%s [ms]: do_something" -t -i - -- two
+#.          timer -i "$curr" ; timer -p "Total elapsed time: %s [ms]"
+#
+#.          # run a poll loop
+#.          poll_func() {  [ "$1" = '-l' ] || return 0 ; [ -e "flagfile" ] ; }
+#.          timer -w 10 -l 200 -c poll_func -h || quit "Timeout"
+#.          timer -s mesg -p "% [ms]"
+#.          message "Ready after" "$mesg" " wait time."
+# ------------------------------------------------------------------------------
+
+# convert floating [s] to [ms] -> _time
+_cen_timer_cvt() {
+    local _tnum="${1%[.,]*}" _tfra=0
+    [ "$_tnum" != "$1" ] && _tfra="${1#*[.,]}000"
+    _tfra="${_tfra::3}"
+    _tnum="000000$_tnum" ; _tnum="1${_tnum:${#_tnum}-6}"
+    case "$_tfra" in
+    00?) _tfra="${_tfra:2}" ;;
+    0??) _tfra="${_tfra:1}" ;;
+    esac
+    _time=$((_tnum * 1000 + _tfra))
+}
+
+CEN_UTL_SLEEP=                                  # see 'sysfind -b sleep'
+[ -v CEN_UTL_STIME ] || CEN_UTL_STIME="$EPOCHREALTIME"
+timer() {
+    local _call=: _vnam _aopt _hopt _ropt _spri _sset _stic _swai _mesg _time _stat
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   _aopt="$1" ;;
+      -c)   shift ; isfunction -f -- "$1" ; _call="$1" ;;
+      -h)   _hopt=1 ;;
+      -i)   shift ; _sset="$1" ;;
+      -l)   shift ; _stic="$1" ;;
+      -m)   _mesg='message' ;;
+      -p)   shift ; _spri="$1" ;;
+      -r)   _ropt="$1" ;;
+      -s)   shift ; _vnam="$1" ;;
+      -t)   _mesg="$CEN_TRACE" ;;
+      -w)   shift ; number -e -r -u -s _swai -- "$1" || return ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ -z "$_mesg" -a -n "$_aopt" ] && _mesg="$CEN_TRACE"
+    [ -n "$_mesg" -a -z "$_spri" ] && _spri='-'
+
+    [ -n "$_hopt" ] && context -t +
+    $_call -b "$_swai"
+
+    if [ -n "$_spri" ] ; then
+        local _tnow
+        _cen_timer_cvt "$EPOCHREALTIME" ; _tnow="$_time"
+        _cen_timer_cvt "$CEN_UTL_STIME"
+        if [ "$_tnow" -ge "$_time" ] ; then
+            _time=$((_tnow - _time))
+        else
+            _time=$((_tnow - _time + 100)) #0000))
+        fi
+        if [ "$_spri" = '-' ] ; then
+             [ -n "$_vnam" ] && _spri='%s' || _spri=$"Elapsed time: %s [ms]"
+        fi
+        printf -v _time "$_spri" "$_time"
+        [ -n "$_mesg" ] && $_mesg $_aopt -- "$_time" "$@"
+    fi
+
+    # option -s: save
+    if [ -n "$_vnam" ] ; then
+        [ -z "$_time" ] && _time="$CEN_UTL_STIME"
+        printf -v "$_vnam" "%s" "$_time"
+    fi
+
+    # option -l: poll loop (reimplements -w)
+    if [ -n "$_stic" ] ; then
+        [ "$_call" = ':' ] && _cen_abort = '-c'
+        [ -z "$_swai" ] && _cen_abort = '-w'
+        [ -z "$CEN_UTL_SLEEP" ] && sysfind -f -b -s CEN_UTL_SLEEP -- sleep
+        local _tbeg _tend _tnow _twai
+        _cen_timer_cvt "$EPOCHREALTIME" ; _tnow="$_time"
+        _cen_timer_cvt "$_swai" ; _twai="$_time"
+        ((_twai -= 1000000000))                     # convert to [ms]
+        _tbeg="$_tnow" ; _tend=$((_tbeg + _twai))   # start/end in [ms]
+        while [ "$_tnow" -lt "$_tend" ] ; do
+            $_call -l "$((_tnow - _tbeg))" "$_twai" ; _stat=$?
+            [ "$_stat" = 1 ] || break ; _stat=
+            dryrun $_ropt "$CEN_UTL_SLEEP $_stic" || $CEN_UTL_SLEEP $_stic
+            _cen_timer_cvt "$EPOCHREALTIME" ; _tnow="$_time"
+            [ "$_tnow" -lt "$_tbeg" ] && ((_tnow += 1000000000))
+        done
+        if [ -z "$_stat" ] ; then
+            $_call -l "$((_tnow - _tbeg))" "$_twai"  ; _stat=$?
+        fi
+
+    # option -w: simple sleep
+    elif [ -n "$_swai" ] ; then
+        [ -z "$CEN_UTL_SLEEP" ] && sysfind -f -b -s CEN_UTL_SLEEP -- sleep
+        if [ "$_swai" != '-' ] ; then
+            dryrun $_ropt "$CEN_UTL_SLEEP $_swai" || $CEN_UTL_SLEEP $_swai
+        fi
+    fi
+
+    # option -i: (re-)initialize
+    if [ -n "$_sset" ] ; then
+        [ "$_sset" = '-' ] && CEN_UTL_STIME="$EPOCHREALTIME" || CEN_UTL_STIME="$_sset"
+    fi
+
+    [ -z "$_stat" ] && _stat=0
+    $_call -e $_stat
+    [ -n "$_hopt" ] && context -t -
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# trimjoin - remove leading/trailing whitespace and optionally join
+#
+# Call:     (1) trimjoin [-s <name>] [-a] [-l|-t] [-m <maxl>] [-c] [-w]
+#           (2) trimjoin [-s <name>] [-a] [-l|-t] [-m <maxl>] [-c] [-w] [--] <text>
+#           (3) trimjoin [-s <name>] [-a] [-d <deli>] [-m <maxl>] [-l|-t] [-c] [-w] [--] <text>...
+#
+#           Form (1) works inplace and form (3) does a join operation
+#
+# Options:  -a  append to output
+#           -c  replace all control chars with spaces
+#           -d  use <deli> to separate items (default is ' ')
+#           -l  don't trim trailing (default is trim leading and trailing)
+#           -m  shorten string if <maxl> is exceeded
+#           -t  don't trim leading
+#           -s  use <name> to save result (default is CEN_TRIMJOIN)
+#           -w  simplify whitespace (<TAB>, <CR> and <LF> are whitspace)
+#
+# Arguments:<maxl>  max. columns or '+' for max. width or '-' for indentation
+#           <name>  variable name
+#           <text>  text to process
+#
+#.Examples: trimjoin -- "  hi  "                    # trim into CEN_TRIMJOIN
+#.          trimjoin -a -- "there"                  # append
+#.          trimjoin -a -t " right trim only"
+#
+#.          local test ; printf -v test "  hello\t \aworld\a  \n\r"
+#.          trimjoin -c -w -s text                  # inplace operation
+#
+#.          trimjoin -d ", " "one" "two" "three"    # comma separated list
+# ------------------------------------------------------------------------------
+CEN_TRIMJOIN=
+trimjoin() {
+    local _oapp _octl _olea=1 _omax _otra=1 _ospa _deli=' ' _drun _strm _snam='CEN_TRIMJOIN'
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   _oapp=1 ;;
+      -c)   _octl=1 ;;
+      -d)   shift ; _deli="$1" ;;
+      -l)   _otra= ;;
+      -m)   shift ; _omax="${1:--}" ;;
+      -s)   shift ; _snam="$1" ;;
+      -t)   _olea= ;;
+      -w)   _ospa=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    local -n _svar="$_snam"
+    [ $# = 0 ] && set -- "$_svar"                   # allow inplace operation
+    [ -z "$_oapp" ] && _svar=
+    for _strm in "$@" ; do
+        _svar+="$_drun"
+        [ -n "$_octl" ] && _strm="${_strm//[[:cntrl:]]/ }"
+        [ -n "$_otra" ] && _strm="${_strm%"${_strm##*[![:space:]]}"}"
+        [ -n "$_olea" ] && _strm="${_strm#"${_strm%%[![:space:]]*}"}"
+        _svar+="$_strm" ; _drun="$_deli"
+    done
+
+    if [ -n "$_ospa" ] ; then
+        _strm="${_svar//[[:space:]]/ }" ; _strm="${_strm//  / }"
+        while [ "$_strm" != "$_svar" ] ; do
+            _svar="$_strm" ; _strm="${_svar//    / }" ; _strm="${_svar//  / }"
+        done
+    fi
+    [ -n "$_omax" ] && _cen_compactify "$_snam" "$_omax"
+    return 0
+}

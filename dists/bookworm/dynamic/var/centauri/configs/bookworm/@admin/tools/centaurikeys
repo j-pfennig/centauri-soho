@@ -1,0 +1,985 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2015-2024; BSD License"
+CEN_TITLE="Manage ssh keys using a key store"
+# ------------------------------------------------------------------------------
+
+# Import the bash library, set name and version
+PATH="$PATH:.:${0%/*}" . _centauri_bash_lib -a -d -y - '0.17:2' || exit 2
+
+# data for options
+CEN_OPT_CREATE=         # see --create
+CEN_OPT_REPLACE=        # see --replace
+CEN_OPT_ALL=            # see --all
+CEN_OPT_DOMAIN=         # see --domain
+CEN_OPT_BASE=           # see --base
+CEN_OPT_HOST=           # see --host
+CEN_OPT_WHOM=           # see --whom
+
+# global variables
+DAT_HOST_MAPPED=        # see host_folder()
+DAT_HOST_FOLDER=        # see host_folder()
+DAT_FIND_FILE=()	    # see find_file()
+DAT_AUTH_KEYS=()	    # see copy_file() and make_auth()
+DAT_WHOM_USER=          # see check_whom
+DAT_WHOM_HOME=          # see check_whom
+DAT_WHOM_FROM=          # see check_whom
+DAT_USER_LIST=()        # see user_list()
+
+# ------------------------------------------------------------------------------
+# Helper functions
+# ------------------------------------------------------------------------------
+
+# backup/create .ssh: <user> <path>
+backup_ssh() {
+    local user="$1" bssh="$2"
+    if [ ! -d "$bssh" ] ; then
+        if [ -h "$bssh" ] ; then
+            if resolve -m -q -- "$bssh" ; then
+                [ -w "${CEN_RESOLVE%/*}" ] && bssh="$CEN_RESOLVE" || bssh=
+            else
+                bssh=
+            fi
+            if [ -z "$bssh" ] ; then
+                warning "Unaccessible .ssh for for '$user'" ; return 1
+            fi
+        fi
+        confirm -a -y "Create .ssh folder for '$user'" || return 1
+        folder -m -- "$bssh" || return 1
+    fi
+
+    if [ "$CEN_YESNO" = 'n' ] ; then
+        remove "$bssh"/*.pub "$bssh"/*.rsa "$bssh/id_rsa" "$bssh/authorized_keys"
+        return
+    fi
+
+    system -e touch "$bssh/authorized_keys"
+
+    local bdir="$bssh/backup" btmp="$bssh.$$.bakup"
+    system -f -p mkdir "$btmp"
+    if [ -d "$bdir" ] ; then
+        system -p mv -f "$bdir"/* "$btmp"
+        system -p rmdir "$bdir"
+    fi
+    system -p mv -f "$bssh"/* "$btmp"
+    system -p mv -f "$btmp" "$bdir"
+    return 0
+}
+
+# split --whom user@from, call worker: <home> <user> <work>
+check_whom() {
+    DAT_WHOM_HOME="$1" ; DAT_WHOM_USER="$2" ; DAT_WHOM_FROM=
+    if [ -z "$CEN_OPT_WHOM" ] ; then
+        invoke -e "missing '--whom=user@from' option" ; return 1
+    fi
+    local uarg="${CEN_OPT_WHOM%%@*}"
+    DAT_WHOM_FROM="${CEN_OPT_WHOM##*@}"
+    [ "$DAT_WHOM_FROM" = "$CEN_OPT_WHOM" ] && DAT_WHOM_FROM=
+    if ! [ -n "$uarg" -a -n "$DAT_WHOM_FROM" ] ; then
+        invoke -e "invalid '--whom=user@from' option" ; return 1
+    fi
+    splitjoin -x "$3" -d ',;:' -- "$uarg" && return 0
+    invoke -e "Error processing user" "'$DAT_WHOM_USER'" ; return 1
+}
+
+# check if path points to a key-store: [<path>]
+check_base() {
+    local opte ; [ "$1" = '-e' ] && { opte=1 ; shift ; }
+    local base="${1:-$CEN_OPT_BASE}"
+    if [ "$CEN_ACTION" = 'setup' ] ; then
+        [ -n "$base" ] ; return                 # return status
+    else
+        [ -n "$base" -a -f "$base/mapping" ] && return 0
+    fi
+    [ -n "$opte" ] && quit -e "Not a valid key-store: $base"
+    return 1
+}
+
+# copy files from DAT_FIND_FILE list: [-a|-i] <dest>
+#   option -a   fill DAT_AUTH_KEYS list
+#          -i   identity, make symlinks: -i <dest>
+copy_file() {
+    local frun auth iden
+    if [ "$1" = "-a" ] ; then
+        auth=1 ; shift
+    elif [ "$1" = "-i" ] ; then
+        iden=1 ; shift
+    fi
+    for frun in "${DAT_FIND_FILE[@]}" ; do
+        [ -s "$frun" ] || continue
+        if [ -n "$auth" ] ; then
+            case "$frun" in
+                *_@other.pub)	;;
+                *.pub)		DAT_AUTH_KEYS+=($frun) ;;
+            esac
+        elif [ -n "$iden" ] ; then
+            local ifil="${frun##*/}"
+            local iext="${ifil##*.}"
+            local irsa="$1/id_rsa"
+            [ "$iext" = "pub" ] && irsa+=".pub"
+            remove "$irsa" "$1/$ifil"
+            system -p cp --preserve=mode,timestamps "$frun" "$irsa"
+            symlink -n -- "${irsa##*/}" "$1/$ifil"
+        else
+            system -p cp --preserve=mode,timestamps "$frun" "$1/$ifil"
+        fi
+    done
+}
+
+# build a file list: <dusr>|- <ddef>|- <name>...
+find_file() {
+    DAT_FIND_FILE=()
+    local dusr="${1:--}" ; shift
+    local ddef="${1:--}" ; shift
+    local frun
+    for frun in "$@" ; do
+        if   [ "$dusr" != "-" -a -f "$dusr/$frun" ] ; then
+            DAT_FIND_FILE+=("$dusr/$frun")
+        elif [ "$ddef" != "-" -a -f "$ddef/$frun" ] ; then
+            DAT_FIND_FILE+=("$ddef/$frun")
+        fi
+        done
+    [ "$#" = "${#DAT_FIND_FILE[*]}" ]           # retrun status
+}
+
+# make list of public keys: <dusr>|- <ddef>|-
+find_pubs() {
+    DAT_FIND_FILE=()
+    local dusr="${1:--}" ; shift
+    local ddef="${1:--}" ; shift
+    local frun
+    if [ "$dusr" != "-" ] ; then
+        for frun in "$dusr"/*.pub ; do
+            DAT_FIND_FILE+=("$frun")
+        done
+    elif [ "$ddef" != "-" ] ; then
+        for frun in "$ddef"/*.pub ; do
+            DAT_FIND_FILE+=("$frun")
+        done
+    fi
+    [ "${#DAT_FIND_FILE[*]}" != 0 ]             # retrun status
+}
+
+# find identities (rsa/pub pair):  <dusr>|- <ddef>|- <class> <user>
+find_iden() {
+    local dusr="${1:--}" ; shift
+    local ddef="${1:--}" ; shift
+    local clas="${CEN_OPT_DOMAIN}_$1_" user="$2"
+
+    find_file "$dusr" - "$clas$user.rsa"  "$clas$user.pub"  && return 0
+    find_file - "$ddef" "$clas$user.rsa"  "$clas$user.pub"  && return 0
+    find_file - "$ddef" "$clas@other.rsa" "$clas@other.pub" && return 0
+    return 1
+}
+
+# get domain name (1st part only)
+get_domain() {
+    [ -z "$CEN_OPT_HOST" ] && CEN_OPT_HOST="$HOSTNAME"
+    [ -n "$CEN_OPT_DOMAIN" ] && return 0
+    netquery -s CEN_OPT_DOMAIN domain
+    CEN_OPT_DOMAIN="${CEN_OPT_DOMAIN%%.*}"
+    [ -n "$CEN_OPT_DOMAIN" ]            # return status
+}
+
+# get the keystore base folder
+get_base() {
+    get_domain || return 1
+    [ -n "$CEN_OPT_BASE" ] && prettypath -f -s CEN_OPT_BASE -- "$CEN_OPT_BASE"
+    # base specified by option
+    if [ -n "$CEN_OPT_BASE" ] ; then
+        if check_base ; then
+            local bdom="${CEN_OPT_BASE##*/}"
+            [ "$CEN_OPT_DOMAIN" = "$bdom" ] && return 0
+            fatal "Conflicting domain in --base path: $bdom"
+        fi
+        CEN_OPT_BASE+="/$CEN_OPT_DOMAIN"
+        check_base -e && return 0
+    fi
+
+    # try some heuristics
+    CEN_OPT_BASE="$PWD/$CEN_OPT_DOMAIN"
+    check_base && return 0
+    CEN_OPT_BASE="$PWD/ssh-keys/$CEN_OPT_DOMAIN"
+    if ! check_base ; then
+        matchpath -o -e -- ~/Privat*/"ssh-keys/$CEN_OPT_DOMAIN" && CEN_OPT_BASE="$CEN_MATCHPATH"
+    fi
+    if [ -z "$1" ] ; then
+        check_base -e
+    else
+        check_base || CEN_OPT_BASE="$1"
+    fi
+    return 0
+}
+
+# map host name to folder: [<host>]
+host_folder() {
+    local host="${1:-$CEN_OPT_HOST}" clas
+    local mout mlis mrun
+
+    # pass 1: is host a class name?
+    while read clas mrun ; do
+        [ "$host" = "$clas" ] && break
+    done < "$CEN_OPT_BASE/mapping"
+
+    # pass 2: map host to class
+    [ -z "$clas" ] && while read -a mlis ; do
+        [ -z "$mlis" -o "$mlis" = "#" ] && continue
+        for mrun in "${mlis[@]:1}" - ; do
+            [[ "$host" = $mrun ]] && break
+        done
+        [ "$mrun" != - ] && break
+    done < "$CEN_OPT_BASE/mapping"
+
+    DAT_HOST_ACTIVE="$host"
+    DAT_HOST_MAPPED="${mlis:-$host}"
+    DAT_HOST_FOLDER="$CEN_OPT_BASE/$DAT_HOST_MAPPED"
+    [ "$CEN_ACTION" = 'create' ] && folder -f -m "$DAT_HOST_FOLDER"
+    [ -d "$DAT_HOST_FOLDER" ] && return 0
+    error "Host not found: $DAT_HOST_MAPPED" ; return 1
+}
+
+# create authorized_keys: <user> <path>
+make_auth() {
+    local ecnt frun fusr="$1" fdir="$2" faut="$2/authorized_keys"
+    if [ -e "$faut" ] ; then
+        trace -i "Not replacing: $faut"
+    else
+        ecnt="${#DAT_AUTH_KEYS[@]}"
+        if [ "$ecnt" = 0 ] ; then
+            trace -i "No authorized keys"
+        elif dryrun -s "Creating: $faut ($ecnt entries)" ; then
+            :
+        else
+            trace -i "Creating: $faut ($ecnt entries)"
+            cat "${DAT_AUTH_KEYS[@]}" >> "$faut"
+        fi
+    fi
+    DAT_AUTH_KEYS=()
+    system -p chown -R "$fusr:" "$fdir"
+    system -p chmod -R g-rwx,o-rwx "$fdir"
+}
+
+# get a list is ssh users, create .ssh: [-c] [<user> <home>]
+user_list() {
+    local fcre
+    [ "$1" = '-c' ] && { fcre='-c' ; shift ; }
+
+    # add a single user to user list
+    if [ -n "$1" ] ; then
+        local user="$1" home="$2"
+        if [ ! -d "$home/.ssh" ] ; then
+            if [ -h "$home/.ssh" ] ; then
+                warning "User '$user' has a stale symlink to '.ssh' folder" ; return
+            elif [ -e "$home/.ssh" ] ; then
+                warning "User '$user' has a '.ssh' that is not a folder" ; return
+            fi
+            [ -z "$fcre" ] && return
+            confirm -a -y "User '$user' has no '.ssh' folder. Create one" || return
+            folder -m "$home/.ssh" 700 || return
+        fi
+        DAT_USER_LIST+=("$user $home") ; return
+    fi
+
+    local entr flds lraw lusr=()                    # password lines
+    system -e -p -a lraw -- getent passwd
+    for entr in "${lraw[@]}" ; do
+        case "$entr" in
+        */nologin)  ;;                              # no login allowed ...
+        */false)    ;;
+        */true)     ;;
+        nobody*)    ;;
+        *)          # ignoe non-existing or forbidden home folders ...
+                    splitjoin -s flds -d ':' -- "$entr"
+                    [ -d "${flds[5]}" ] || continue
+                    case "${flds[5]}" in
+                    /run|/tmp)      continue ;;
+                    /home|*/bin)    continue ;;
+                    *)  lusr+=("$flds ${flds[5]}")
+                    esac
+        esac
+    done
+    extsort -a lraw -u -i lusr                      # might have double entries
+    DAT_USER_LIST=()
+    for entr in "${lraw[@]}" ; do                   # check .ssh dirs
+        [ -n "$entr" ] && user_list $fcre "${entr%% *}" "${entr#* }"
+    done
+}
+
+# install into user ssh folder: <user> <home>
+user_inst() {
+    local user="$1" home="$2"
+    local dssh="$home/.ssh"
+    if [ "$user" = "remote" -a "$DAT_HOST_MAPPED" != "server" ] ; then
+        invoke -w "Ignoring user 'remote' (host is not server)" ; return
+    elif [ ! -d "$dssh" ] && [ "$CEN_YESNO" = 'n' ] ; then
+        invoke -w "Ignoring user '$user' (no $dssh)" ; return
+    fi
+
+    local dusr="$DAT_HOST_FOLDER/$user"
+    local ddef="$DAT_HOST_FOLDER/@other"
+    [ -d "$dusr" ] || dusr=
+    message -a -p "Install user %-12s %s" "'$user'" "(${dusr:-$ddef} => $home)"
+    # backup data (only without --no option) and clear .ssh folder
+    backup_ssh "$user" "$dssh" || return
+
+    # build 'authorized_keys' file
+    DAT_AUTH_KEYS=()
+    find_pubs "$dusr" "$ddef" && copy_file -a "$dssh"
+
+    # get (potential) class/host folders
+    local clis clas cusr copt
+    matchpath -a clis -d -- "$CEN_OPT_BASE"/*
+
+    # copy ids found, symlink local id
+    for clas in "${clis[@]}" ; do
+        cusr="$clas/$user" ; ddef="$clas/@other" ; clas="${clas##*/}"
+        [ -d "$cusr" ] && ddef='-'
+        [ "$cusr" = "$dusr" ] && copt='-i' || copt=
+        find_iden "$cusr" "$ddef" "$clas" "$user" && copy_file $copt "$dssh"
+    done
+
+    make_auth "$user" "$dssh"
+    trace -i "User: ${user//?/ } (install completed)"
+}
+
+# ------------------------------------------------------------------------------
+# run action: <folder> <user>
+# ------------------------------------------------------------------------------
+worker_create() {
+    local name="${CEN_OPT_DOMAIN}_${DAT_HOST_MAPPED}_$2"
+    local path="$1/$name" user="$2"
+    local temp="new-key-$$"
+
+    message "User: $user (path: $path)"
+
+    if [ -e "$path.rsa" -a -e "$path.pub" ] ; then
+        if [ -z "$CEN_OPT_REPLACE" ] ; then
+            confirm -a -b -n "Replace an existing key" || return
+        fi
+
+    elif [ -e "$path.pub" ] ; then
+        error "Have public key only (consider deleting $path.pub)"
+    elif [ -e "$path.rsa" ] ; then
+        error "Missing private key (consider deleting $path.rsa)"
+
+    else
+        if [ -z "$CEN_OPT_CREATE" ] ; then
+           confirm -a -b -n "Create a new key" || return
+        fi
+    fi
+
+    error -t || return
+
+    if system -f -p ssh-keygen -q -N "" -C "${path##*/}" -f "$temp" ; then
+        copy -- "$temp"     "$path.rsa"
+        copy -- "$temp.pub" "$path.pub"
+    fi
+    remove -- "$temp" "$temp.pub"
+    message -i "User: $user (created ssh key)"
+}
+
+# ------------------------------------------------------------------------------
+# run action: <folder> <user>
+# ------------------------------------------------------------------------------
+worker_auth() {
+    check_whom "$1" "$2" worker_auth_whom
+}
+
+worker_auth_whom() {
+
+    # grant jpf@client and jpf@mobile access to local@server and root@server
+    #   centaurikeys auth --whom=jpf@client local root
+    #   centaurikeys auth --whom=jpf@mobile local root
+
+    # grant root@server and local@server access to local@client and root@client
+    #   centaurikeys auth --whom=root,local@server --host=client local root
+
+    # grant local@client and root@client access to lo local@client and root@client
+    #   centaurikeys auth --whom=root,local@client --host=client local root
+
+    # --whom is a list of users whose public keys get copied to '$home'
+    # --host and the user list produce "$user" and "home"
+
+    local user="$1" home="$DAT_WHOM_HOME"
+    message -p "$CEN_ACTION: %-18s (at: $DAT_WHOM_USER@$DAT_HOST_MAPPED)" "$user@$DAT_WHOM_FROM"
+    local orig="$CEN_OPT_BASE/$DAT_WHOM_FROM/$user"
+    local name="${CEN_OPT_DOMAIN}_${DAT_WHOM_FROM}_$user.pub"
+    $CEN_TRACE2 -i "      orig: $orig"
+    $CEN_TRACE2 -i "      dest: $home"
+    $CEN_TRACE2 -i "      name: $name"
+
+    if [ ! -d "$orig" ] ; then
+        error "No such folder (from): $orig" ; return 1
+    elif [ ! -d "$home" ] ; then
+        error "No such folder (auth): $home" ; return 1
+    elif [ ! -f "$orig/$name" ] ; then
+        error "No such key (from): $orig/$name" ; return 1
+    fi
+
+    if [ "$CEN_ACTION" = "auth" ] ; then
+        trace -i "User: $user ($orig  -->  $home)"
+        copy -o -x -- "$orig/$name" "$home/$name"
+    elif [ "$CEN_ACTION" = "unauth" ] ; then
+        if [ -e "$home/${name/.pub/.rsa}" ] ; then
+            trace -i "User: $user ($orig  <.>  $home [has id, ignored]"
+        else
+            trace -i "User: $user ($orig  <x>  $home)"
+            remove "$home/$name"
+        fi
+    else
+        fatal -t
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# run action: <folder> <user>
+# ------------------------------------------------------------------------------
+worker_unauth() {
+    check_whom "$1" "$2" worker_auth_whom
+}
+
+# ------------------------------------------------------------------------------
+# run action: <folder> <user>
+# ------------------------------------------------------------------------------
+worker_export() {
+    local name="${CEN_OPT_DOMAIN}_${DAT_HOST_MAPPED}_$2"
+    local path="$1" user="$2"
+
+    message "User: $user (keys: $path/*.pub)"
+
+    local skey snam spub
+    for skey in "$path/"*.rsa ; do
+        [ -e "$skey" ] || continue
+        snam="${skey%.rsa}"
+        spub="$snam.pub"
+        snam="${snam##*/}"
+        if ! [ -e "$spub" ] ; then
+            warning -i "$snam - missing public key"
+        elif system -p cp -au "$skey" "$spub" . ; then
+            message -i "$snam - exported"
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# run action: <folder> <user>
+# ------------------------------------------------------------------------------
+worker_list() {
+    local name="${CEN_OPT_DOMAIN}_${DAT_HOST_MAPPED}_$2"
+    local path="$1" user="$2"
+
+    message "User: $user (keys: $path/*.pub)" 2>&1
+
+    local slen=999 soff
+    embed -m _centauri_bash_con                 # get screen info
+    [ -n "$CEN_COLS" ] && slen=$((CEN_COLS - 33 - ${#CEN_NAME}))
+
+    local shdr skey stxt soff
+    cat "$path/"*.pub 2>/dev/null |
+    while read shdr skey stxt ; do
+        [ "$shdr" = "ssh-rsa" ] || continue
+        soff=$((${#skey} - slen))
+        [ $soff -gt 0 ] && skey="...${skey:$soff}"
+        if [ -e "$path/$stxt.rsa" ] ; then
+            message -i -p -d 1 "%-22.22s  ID  %s%s" "$stxt" "$skey" 2>&1
+        else
+            message -i -p      "%-22.22s      %s"   "$stxt" "$skey" 2>&1
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# helpers to dispatch actions
+# ------------------------------------------------------------------------------
+dispatch_setup() {
+    get_base || return
+    trace "Root  folder: $CEN_OPT_BASE"
+    host_folder || return
+    trace -i "Host mapping: $DAT_HOST_FOLDER ($DAT_HOST_ACTIVE => $DAT_HOST_MAPPED)"
+    if [ -n "$CEN_OPT_ALL" ] ; then
+        [ "$1" = 0 ] || error "No arguments allowed"
+    else
+        [ "$1" = 0 ] && error "Missing '<user>...' arguments or '--all' option"
+    fi
+}
+
+# action on folders: [<folder> <user>]...
+dispatch_execute() {
+    # check folders
+    local args=("$@")
+    while [ $# -gt 1 ] ; do
+        [ "$CEN_ACTION" = 'create' ] && folder -f -m "$1"
+        [ -d "$1" ] || error "No such user: $2 (folder $1)"
+        shift 2
+    done
+    error -t || return
+
+    # perform action
+    set -- "${args[@]}"
+    while [ $# -gt 1 ] ; do
+        if ! error -t ; then
+            confirm -i -b -n "Continue anyhow" || return
+        fi
+        worker_$CEN_ACTION "$1" "$2"
+        shift 2
+    done
+}
+
+# ------------------------------------------------------------------------------
+# create/copy host keys: [<orig>] <dest>
+# ------------------------------------------------------------------------------
+actionHostkeys() {
+    local mesg ssho sshd orig optz='-z'
+    [ "$CEN_VERB" -lt 1 ] && optz=
+
+    # ssh-host keys
+
+    if [ "$#" -gt 1 ] ; then
+        folder -n -s orig -- "$1" || return
+        folder -n -s ssho -- "$orig/etc/ssh" || return
+        folder -c -n -s sshd -- "$2/etc/ssh" || return
+        mesg="Copy existing ssh-host keys: $sshd"
+    else
+        folder -c -n -s sshd -- "${1:-/etc/ssh}" || return
+        mesg="Generate new ssh-host keys: $sshd"
+
+    fi
+
+    if confirm -n "$mesg" ; then
+        local file kind
+        for kind in 'ecdsa' 'ed25519' 'rsa' ; do
+            file="ssh_host_${kind}_key"
+            if [ -n "$orig" ] ; then
+                remove -- "$file" "$file.pub"
+                copy -a -- "$ssho/$file" "$ssho/$file.pub" .
+            else
+                remove "$file" "$file.pub"
+                system -e -p $optz -- ssh-keygen -q -f "$file" -N '' -t "$kind"
+                system -e -p $optz -- ssh-keygen -l -f "$file.pub"
+            fi
+        done
+    fi
+
+    # machine-id and kerberos keytab
+
+    if [ -n "$orig" ] ; then
+        folder -c -f ..
+        confirm -n "Copy machine-id and keytab : $PWD" &&
+            copy -a "$orig/etc/machine-id" "$orig/etc/krb5.keytab" .
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# create known-hosts list: <dest>|-|+ <key>...
+# ------------------------------------------------------------------------------
+actionKnown() {
+    local fhan=1 dest="${1:--}" ; shift
+    case "$dest" in
+    -)      dest='/etc/ssh/ssh_known_hosts' ;;
+    +)      dest="$HOME/.ssh/known_hosts" ;;
+    *.pub|*.rsa)
+            invoke -e "Bad destination:" "$dest" ; return ;;
+    esac
+
+    if [ $# = 0 ] ; then
+        if [ -z "$CEN_OPT_ALL" ] ; then
+            invoke -e "No arguments (use option --all for all keys in key-store)" ; return
+        fi
+        shortpath -e 'staging' || return
+        set -- "$CEN_SHORTPATH"/*/repository/configs/*/centauri/*/?_etc_ssh+ssh_host*_key.pub
+    fi
+
+    local fkey flds host temp list=() lout
+    for fkey in "$@" ; do
+        case "$fkey" in
+        *_key)      key+='.pub' ;;
+        *_key.pub)  ;;
+        *)          invoke -w "Ignoring:" "$fkey"
+        esac
+        if [ ! -r "$fkey" ] ; then
+            invoke -e "Cannot read:" "$fkey" ; continue
+        fi
+        splitjoin -s flds -d " \n" -i - <"$fkey"
+        host="${flds[2]%%.*}"
+        list+=("${host#*@} ${flds[0]} ${flds[1]}")
+    done
+    extsort -u -i list -a lout || return
+    pluralize -s temp -z -p 'Write %s %s to' -- ${#lout[@]} "entry" "entries"
+    confirm -y "$temp '$dest'" || return
+    outdata -o lout -t -- "$dest"
+}
+
+# ------------------------------------------------------------------------------
+# import keys to local ssh folder: [<what>|- [<user>]]
+# ------------------------------------------------------------------------------
+actionImport() {
+    local serv dnam tdir dssh="$HOME/.ssh" what="${1:--}" user="${2:--}"
+    [ "$what" = '-' ] && what='client'
+    [ "$user" = '-' ] && user="$USER"
+    if netquery -f -q server ; then
+        invoke -w "You are on a server, nothing to import" ; return
+    fi
+    serv="$CEN_OPT_HOST"
+    [ -z "$serv" ] && netquery -s serv current
+    [ -z "$serv" ] && fatal "No known server, please use '--host=<serv>'"
+    netquery -f -q -s dnam domain
+
+    # build: <user>@<server>:<base>/<domain>_<what>_<user>
+    local addr="$user@$serv:.ssh"
+    local name="${dnam%%.*}_${what}_$user"
+    local base="$addr/$name"
+
+    # scp into tmp folder to avoid multiple password prompts
+    folder -m -s tdir -t '_import' 700
+    while : ; do
+        local file copy lraw lcpy=()
+        system -e -p -- scp -p "$addr/*[._]*" "$tdir" || break
+        backup_ssh "$user" "$dssh" || break
+        matchpath -f -a lraw -- "$tdir"/*.pub "$tdir"/*.rsa "$tdir/authorized_keys"
+        for file in "${lraw[@]}" ; do
+            copy="${file##*/}"
+            case "$copy" in
+                $name.pub)          ;;
+                $name.rsa)          ;;
+                id_rsa|id_rsa.pub)  continue ;;
+                authorized_keys)    ;;
+                *)                  file=
+            esac
+            if [ -n "$file" ] ; then
+                trace -a -c "File to import" "$copy"
+                lcpy+=("$file")
+            else
+                trace -a -c "File to skip" "$copy"
+            fi
+        done
+    if [ -z "$lcpy" ] ; then
+        invoke -e "Got no key(s) from server" ; return
+    fi
+        copy -q -- "${lcpy[@]}" "$dssh" || break
+        [ -e "$dssh/$name.rsa" -a -e "$dssh/$name.pub" ] || break
+        rename "$dssh/$name.rsa" "$dssh/id_rsa"
+        rename "$dssh/$name.pub" "$dssh/id_rsa.pub"
+        symlink -n "id_rsa" "$dssh/$name.rsa"
+        symlink -n "id_rsa.pub" "$dssh/$name.pub"
+        break
+    done
+    remove -d -- "$tdir"
+    if error -t ; then
+        message -a "Import for user '$user' succeeded"
+    else
+        invoke -e "for user '$user' failed"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# install: <user...>
+# ------------------------------------------------------------------------------
+actionInstall() {
+    dispatch_setup "$#"
+    error -t || return
+
+    local entr user home args=()
+    if [ $# = 0 ] ; then                            # all suitable users ...
+        user_list -c
+        for entr in "${DAT_USER_LIST[@]}" ; do
+            user="${entr%% *}" ; home="${entr#* }"
+            message -a -p "user: %-12s %s" "$user" "$home"
+        done
+    else                                            # command line users ...
+        for user in "$@" ; do
+            eval home=~"$user"
+            if [ ! -d "$home" ] ; then
+                warning -i "User '$user' has no home folder"
+            else
+                user_list -c "$user" "$home"
+            fi
+        done
+    fi
+    entr="${#DAT_USER_LIST[@]}"
+    if [ "$entr" = 0 ] ; then
+        message "Nothing to install" ; return
+    fi
+
+    pluralize -a -z -p 'Install ssh keys for %s %s ...' -- ${#DAT_USER_LIST[@]} "user"
+    for entr in "${DAT_USER_LIST[@]}" ; do
+        user_inst "${entr%% *}" "${entr#* }"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# setup a new keystore: [<dnam>]
+# ------------------------------------------------------------------------------
+actionSetup() {
+    get_domain || return
+    if [ -z "$CEN_OPT_BASE" ] ; then
+        local priv="$HOME/Private" ; [ -d "$priv" ] || priv="$HOME"
+        CEN_OPT_BASE="$priv/ssh-keys/$CEN_OPT_DOMAIN"
+    else
+        CEN_OPT_BASE+="/$CEN_OPT_DOMAIN"
+    fi
+    get_base || return
+    folder -m -f "$CEN_OPT_BASE" 700
+    if [ "$CEN_ACTION" = 'setup' ] ; then
+        local mape=(
+        '# By default keys would be generated in a per-host folder. In this file'
+        '# hostnames can be mapped to arbitrary classes so that all hosts mapped'
+        '# to the same class share the same keys ...' '' )
+        if [ $# = 0 ] ; then
+            mape+=('server  server0 server1'
+                   'mobile  phone* notebook*'
+                   'client  client*' )
+        else
+            mape+=("$@") ; optt='-t'
+        fi
+        create -v mape $optt -- "$CEN_OPT_BASE/mapping"
+        confirm -b -y "Edit mapping file now" &&
+            system -e editor "$CEN_OPT_BASE/mapping"
+    else
+        system -e editor "$CEN_OPT_BASE/mapping"
+    fi
+    message "Done, mappings are in file:" "$CEN_OPT_BASE/mapping"
+}
+
+# ------------------------------------------------------------------------------
+# store: <user...>
+# ------------------------------------------------------------------------------
+actionStore() {
+    dispatch_setup "$#"
+    error -t || return
+    [ -n "$CEN_OPT_ALL" ] && set -- "$DAT_HOST_FOLDER"/*
+
+    local user home args=()
+    for user in "$@" ; do
+        case "$user" in
+            /*)     home="$user" ; user="${user##*/}" ;;
+            *)      home="$DAT_HOST_FOLDER/$user"
+        esac
+        args+=("$home" "$user")
+    done
+    dispatch_execute "${args[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# List keys in user folder: [<user>]
+# ------------------------------------------------------------------------------
+actionUser() {
+    if [ $# = 0 ] ; then
+        user_list
+        for entr in "${DAT_USER_LIST[@]}" ; do
+            user="${entr%% *}" ; home="${entr#* }"
+            message -a -p "ssh user: %-12s %s" "$user" "$home"
+        done
+        return
+    fi
+
+    local path="$1"
+    [ -d "$path" ] || eval path=~$path
+    [ ! -r "$path/authorized_keys" ] && path+="/.ssh"
+    if [ ! -r "$path/authorized_keys" ] ; then
+        warning "Cannot read from: $path/authorized_keys"
+        return
+    fi
+    message "Authorized keys from: $path/authorized_keys" 2>&1
+    local slen=999
+    embed -m _centauri_bash_con                 # get screen info
+    [ -n "$CEN_COLS" ] && slen=$((CEN_COLS - 33 - ${#CEN_NAME}))
+
+    local shdr skey stxt soff
+    while read shdr skey stxt ; do
+        [ "$shdr" = "ssh-rsa" ] || continue
+        soff=$((${#skey} - slen))
+        [ $soff -gt 0 ] && skey="...${skey:$soff}"
+        if [ -e "$path/$stxt.rsa" ] ; then
+            message -i -p -d 1 "%-22.22s  ID  %s%s" "$stxt" "$skey" 2>&1
+        else
+            message -i -p      "%-22.22s      %s"   "$stxt" "$skey" 2>&1
+        fi
+    done < "$path/authorized_keys"
+}
+
+# ------------------------------------------------------------------------------
+# implement option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    -C|--cre*)
+        optarg 'create'     CEN_OPT_CREATE  ;;              # a simple flag
+    -R|--rep*)
+        optarg 'replace'    CEN_OPT_REPLACE ;;              # a simple flag
+
+    -A|--all)
+        optarg 'all'        CEN_OPT_ALL     ;;              # a simple flag
+    -B|--bas*)
+        optarg 'base'       CEN_OPT_BASE -t ;;              # text
+    -D|--dom*)
+        optarg 'domain'     CEN_OPT_DOMAIN -t ;;            # text
+    -H|--hos*)
+        optarg 'host'       CEN_OPT_HOST -t ;;              # text
+    -W|--who*)
+        optarg 'whom'       CEN_OPT_WHOM -t ;;              # text
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing
+# ------------------------------------------------------------------------------
+
+# if actions() is ommitted the framwork calls run() with all arguments...
+actions() {
+    case "$CEN_ACTION" in
+
+    hos*)
+        invoke -r 'hostkeys' -            0 2 ;;
+    kno*)
+        invoke -r 'known'    -            1 + ;;
+    cre*)
+        invoke -r 'create'   actionStore      ;;
+    map*)
+        invoke -r 'mapping'  actionSetup  0 0 ;;
+    set*)
+        invoke -r 'setup'    -                ;;
+
+    aut*)
+        invoke -r 'auth'     actionStore      ;;
+    una*)
+        invoke -r 'unauth'   actionStore      ;;
+
+    exp*)
+        invoke -r 'export'   actionStore      ;;
+    imp*)
+        invoke    'import'   -            0 2 ;;
+    ins*)
+        invoke -r 'install'  -                ;;
+
+    lis*)
+        invoke -r 'list'     actionStore      ;;
+    use|user)
+        invoke    'user'     -            0 1 ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    local indenter="${CEN_NAME//?/ }"
+
+    get_base "-none-"
+
+    usageset \
+        -o - \
+        -o "-C --create          "$"Create a new key without confirmation" \
+        -o "-R --replace         "$"Replace an existing key without confirmation" \
+        -o - \
+        -o "-A --all             "$"all users (no non-option arguments allowed)" \
+        -o "-B --base   <fldr>   "$"ssh-key tree base folder" \
+        -o "-D --domain <dnam>   "$"override domain name" \
+        -o "-H --host   <what>   "$"override host name" \
+        -o "-W --whom   <iden>   "$"identiry of key that gets (un-)authorized"
+
+    usageset \
+        -l $"arguments" \
+        -t "<file>               "$"a file path" \
+        -t "<fldr>               "$"a folder path" \
+        -t "<dnam>               "$"domain name (1st part only, no dots)" \
+        -t "<host>               "$"computer name or mapping class" \
+        -t "<iden>               "$"user at class or host: <user>@<what>" \
+        -t "<orig> <dest>        "$"orign and destination root-fs folders" \
+        -t "<key>                "$"path of a public key file" \
+        -t "<mape>               "$"mapping entry: <class> <glob>..." \
+        -t "<what>               "$"a host or a class name" \
+
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+       current key store:   $CEN_OPT_BASE
+       host and domain  :   $CEN_OPT_HOST   $CEN_OPT_DOMAIN
+
+$CEN_USE_OPTIONS
+
+actions:
+       hostkey [<dest>]     generate new host keys   (default: /etc/ssh)
+       hostkey <orig> <dest>
+                            copy host keys, machine-id and keytab
+       known   <file>|-|+ <key>...
+                            create known hosts list from public keys
+
+       create  <user>...    create new ssh ids for users  (in key store)
+       mapping              edit 'host -> class' mapping file
+       setup   <mape>...    setup a new keystore for domain
+
+       auth    <user>...    links public keys to users    (in key store)
+       unauth  <user>...    unlink public keys from users (in key store)
+
+       import  <what> <user>
+                            import class keys from server to ~/.ssh
+       export  <user>...    export ids to current folder  (from key store)
+       install <user>...    install to user .ssh folders  (from key store)
+       list    <user>...    list ids/keys for users       (in key store)
+       user    [<user>]     list users or keys in <user> .ssh folder
+
+       All actions except 'import' need root permissions and should not be
+       run on client machines. See also "centaurissh import" which calls
+       $CEN_NAME, and "centaurissh auth" which displays authorized ids.
+
+$CEN_USE_OTHER
+
+**Keys are stored in a tree hierarchy:** <domain>/<class|host>/<keyfile>
+
+Instead of using lots of host names, the host can be mapped to a class
+and the class name replaces the host name. See: mapping file.
+
+**Each <keyfile> name has three fields:** <domain>_<class|host>_<user>
+
+The special user name '@other' is used with action 'create' to generate
+default keys for users that have no own keys, see 'export' and 'install'.
+
+**Key store data becomes effective at the server only after 'install'**
+
+Client users will 'import' ids and keys from their server side '.ssh'
+folders. File '/etc/ssh/ssh_known_hosts' is distributed via repository.
+
+examples:
+       $CEN_NAME import --host=mobile        # download keys from server
+
+       $CEN_NAME list local                  # list server id of local
+       $CEN_NAME --host=client list --all    # list all client ids
+
+       $CEN_NAME hostkey /mnt/etc/ssh        # create new ssh host keys
+       $indenter                             # copy keys, machine-id, keytab
+       $CEN_NAME hostkey /mnt/vol0/Volumes/Root.saved /mnt/root
+
+       $indenter                             # create user keys
+       $CEN_NAME create root local user1 user2
+       $CEN_NAME create --host=client local user1 user2
+       $CEN_NAME create --host=mobile local user1 user2
+
+       # grant local and root from client and mobile access to root at server
+       $CEN_NAME authorize --whom=local,root@client root
+       $CEN_NAME authorize --whom=local,root@mobile root
+
+       # grant root from server access to local and root at client and mobile
+       $CEN_NAME authorize --whom=root@server --host=mobile local root
+       $CEN_NAME authorize --whom=root@server --host=client local root
+
+       $CEN_NAME install --all               # install (server) user keys
+       $CEN_NAME known --all -               # generate known hosts from staging
+
+setup: **Create a new key store. Populate, install and build ssh_known_hosts:**
+
+       $CEN_NAME --domain=worms setup 'server worm[01]' 'client *'
+       $CEN_NAME --domain=worms create root local -- create @other
+       $CEN_NAME --domain=worms --all install -- known -
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+
+main "$@" ; quit
+
+# the end

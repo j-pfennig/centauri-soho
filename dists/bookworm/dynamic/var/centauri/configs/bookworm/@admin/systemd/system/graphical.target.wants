@@ -1,0 +1,42 @@
+# always start these ...
+
++ centaurifilter.service
++ centauriroute.service
++ centaurisecrets.service
++ centauriswap.service
++ centauriswitch.service
+
+# don't start here ...
+
+- centauri-net-svc.service
+- centauriwsdd.service
+
+# tools started via 'centauriswitch' for the master server only
+
+- dnsmasq.service
+- slapd.service
+- samba-ad-dc.service
+- cyrus-imapd.service
+- exim4.service
+- krb5-kdc.service
+- ntpsec.service
+- openvpn.service
+
+# never start these automatically ...
+
+- fetchmail.service
+- lightdm-xdmcp.service
+- nmbd.service
+- nfs-blkmap.service
+- nfs-client.target
+- nfs-server.service
+- rpcbind.service
+- saned.service
+- smartd.service
+- smartmontools.service
+- sshd.service
+- smbd.service
+- rsnyc.service
+- vsftpd.service
+
+# end

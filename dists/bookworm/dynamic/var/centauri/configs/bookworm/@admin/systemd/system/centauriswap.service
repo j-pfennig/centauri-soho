@@ -1,0 +1,15 @@
+[Unit]
+Description=Swap File/Partition Service
+After=network.target sssd.service network-online.target remote-fs.target autofs.service centaurimounter.service
+Wants=network-online.target
+ConditionPathExists=!/run/centauri/centauriswap.run
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/var/centauri/tools/centauriswap --daemon=0 start
+ExecStop=/var/centauri/tools/centauriswap --daemon=0 --force stop
+
+[Install]
+WantedBy=multi-user.target
+WantedBy=runlevel3.target

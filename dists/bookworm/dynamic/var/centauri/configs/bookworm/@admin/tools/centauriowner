@@ -1,0 +1,279 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
+CEN_TITLE="Save and restore system file ownership and rights"
+
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d - '0.14' || exit 2
+
+# Options
+CEN_OPT_ALL=            # see --all
+CEN_OPT_BASE=           # see --path
+CEN_OPT_CHECK=          # see --check
+CEN_OPT_FULL=           # see --full
+CEN_OPT_GROUP=          # see --group
+CEN_OPT_NOMODE=         # see --nomode
+CEN_OPT_USER=           # see --user
+CEN_OPT_EXCLUDE=()      # see -exclude
+
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+do_checkpath() {
+    CEN_OPT_BASE="${CEN_OPT_BASE%/}/"
+    folder -f "$CEN_OPT_BASE"
+}
+
+_excludes=()
+do_exclude() {
+    local or="-o"
+    if [ "$1" = "-i" ] ; then
+        _excludes=() ; shift
+    fi
+    case "$1" in
+    "")             return ;;
+    /*|./*|../*)    error "invalid exclusion: $1" ;;
+    *)              [ -z "$_excludes" ] && or=
+                    _excludes+=($or -wholename "$CEN_OPT_BASE$1")
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# actions
+# ------------------------------------------------------------------------------
+actionSave() {
+    do_checkpath
+
+    do_exclude -i "tmp"
+    if [ -z "$CEN_OPT_ALL" ] ; then
+        do_exclude "home"
+        do_exclude "var/cache"
+        do_exclude "var/centauri"
+        do_exclude "var/tmp"
+    fi
+    local excl
+    for excl in "${CEN_OPT_EXCLUDE[@]}" ; do
+        do_exclude "$excl"
+    done
+    error -q
+
+    local item temp list file="${1:-OWNERS}"
+    if [ "${1:--}" = '-' ] ; then
+        file='-'
+    else
+        outfile -l -s file -- "$1" || return
+    fi
+
+    local pusr pgrp
+    [ "$CEN_OPT_USER" = 0 ]  && pusr="( -uid -1000 )" ||
+                                pusr="( -uid +$((CEN_OPT_USER - 1)) -uid -1000 )"
+    [ "$CEN_OPT_GROUP" = 0 ] && pgrp="( -gid -1000 )" ||
+                                pgrp="( -gid +$((CEN_OPT_GROUP - 1)) -gid -1000 )"
+
+    if [ -z "$CEN_OPT_FULL" ]  ; then
+        system -e -p -a list -- find "$CEN_OPT_BASE" -xdev \
+            \( "${_excludes[@]}" \) -prune -o \( \
+            \( $pusr -o $pgrp \) -printf "%-8u %-8g %4m %P\n" \)
+    else
+        system -e -p -a list -- find "$CEN_OPT_BASE" -xdev \
+            \( "${_excludes[@]}" \) -prune -o -printf "%-8u %-8g %4m %P\n"
+    fi
+
+    if [ "$file" != '-' ] ; then
+        create -f -t -c      -- "$file" <<!EOF
+# This file can be used by '$CEN_NAME restore' to set file owners and mode.
+# Created by: $CEN_NAME ${CEN_CMDOPTS[@]} ${CEN_CMDARGS[@]}
+
+!EOF
+        create -f -a -v list -- "$file"
+    fi
+
+    if [ -n "$CEN_OPT_CHECK" ] ; then
+        for item in "${list[@]}" ; do
+            temp="${item/ /:}" ; temp="${temp%% *}"
+            [ "${temp//[!0-9:]/}" = ':' ] && continue
+            printf "%s\n" "$item"
+        done
+    fi
+
+    if dryrun || [ "$file" = '-' ] ; then
+        quit "No data written"
+    else
+        quit -a "${#list[@]} file(s) found"
+    fi
+}
+
+actionRestore() {
+    do_checkpath
+    redirect -h 0 -i "${1:--}"
+    error -q
+
+    local ouid ogid mode path lpat lown lmod list
+
+    # change owner/mode: <owner>|- <mode>|- <path>
+    ___restore_file() {
+        if [ "$CEN_ACTION" = 'show' ] ; then
+            [ "$2" != '-' ] && [ -h "$3" ] && set -- "$1" - "$3"
+            printf '%-20s %-8s %s\n' "$@"
+            return
+        else
+            trace -a -c -p "restore file" '%-20s %-8s %s' "$@"
+            dryrun && return
+        fi
+        [ "$1" != '-' ] && system -w -p -- chown -h "$1" "$3"
+        [ "$2" != '-' -a -z "$CEN_OPT_NOMODE" ] && [ ! -h "$3" ] &&
+                           system -w -p -- chmod "$2" "$3"
+    }
+
+    ___restore_block() {
+        [ -z "$lpat" ] && return
+        local stat indx=0
+        system -r -w -p -a stat -- stat --printf "%U:%G %a %n\n" "${lpat[@]}"
+        $CEN_TRACE2 -a -c "restore block" "${#lpat[@]} ${#stat[@]}"
+        while [ -n "${lpat[indx]}" ] ; do
+            mode="${stat[indx]}" ; ouid="${mode%% *}"
+            path="${mode#* }" ; mode="${path%% *}" ; path="${path#* }"
+            if [ "${lpat[indx]}" = "$path" ] ; then
+                [ "${lown[indx]}" != "$ouid" ] && ___restore_file "${lown[indx]}" - "$path"
+                [ "${lmod[indx]}" != "$mode" ] && ___restore_file - "${lmod[indx]}" "$path"
+            else
+                ___restore_file "${lown[indx]}" "${lmod[indx]}" "${lpat[indx]}"
+            fi
+            ((indx += 1))
+        done
+        lown=() ; lmod=() ; lpat=()
+    }
+
+    while read -e ouid ogid mode path ; do
+        [ "$ouid" = "#" -o -z "$path" ] && continue
+        path="$CEN_OPT_BASE$path"
+        [ -e "$path" ] || continue
+        if [ -n "$CEN_OPT_CHECK" ] ; then
+            list+=("$ouid $ogid $mode $path")
+            continue
+        fi
+        lown+=("$ouid:$ogid")
+        lmod+=("$mode")
+        lpat+=("$path")
+        [ "${#lpat[@]}" -ge 64 ] && ___restore_block
+    done
+    ___restore_block
+
+    if [ -n "$CEN_OPT_CHECK" ] ; then
+        local item temp
+        for item in "${list[@]}" ; do
+            temp="${item/ /:}" ; temp="${temp%% *}"
+            [ "${temp//[!0-9:]/}" = ':' ] && continue
+            printf "%s\n" "$item"
+        done
+        message "Nothing restored (--check option)"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    '') if [ -n "$CEN_OPT_FULL" ] ; then
+            [ -n "$CEN_OPT_USER" -o -n "$CEN_OPT_GROUP" ] &&
+                optarg - - -m "--full and --group|--user"
+        else
+            : ${CEN_OPT_GROUP:=1} ${CEN_OPT_USER:=1}
+        fi
+        ;;
+    -A|--all)
+        optarg 'all'     -             ;;       # flag
+    -B|--bas*)
+        optarg 'base'    -          -t ;;       # any text
+    -C|--che*)
+        optarg 'check'   -             ;;       # flag
+    -F|--ful|--full)
+        optarg 'full'    -             ;;       # flag
+    -G|--gro*)
+        optarg 'group'   -          -n ;;       # number
+    -N|--nom*)
+        optarg 'nomode'  -             ;;       # flag
+    -U|--use*)
+        optarg 'user'    -          -n ;;       # number
+    -X|--exc*)
+        optarg 'exclude' []         -t ;;       # an array of text
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+    res*)
+        invoke -r 'restore' - 0 1 ;;                # one arg
+    sav*)
+        invoke -r 'save'    - 0 1 ;;                # one arg
+    sho|show)
+        invoke -r 'show'    actionRestore 0 1 ;;    # one arg
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -A --all             [*] do not apply some default exclusions
+       -B --base    <root>  base folder (default: /)
+       -C --check           [*] check for unknown (numeric) user or group id
+       -F --full            [*] include all user/group ids
+       -G --group   <gid>   [*] minimum group id
+       -N --nomode          [**] do not modify file modes
+       -U --user    <uid>   [*] minimum user id
+       -X --exclude <fldr>  [*] add a folder to the exclusion list
+
+       [*]  has effect for action 'save' only
+       [**] has effect for action 'restore' only
+
+actions:
+       save    <file>       save information to file
+       restore <file>       restore information from file
+
+arguments:
+       <file>               a file path
+       <fldr>               a relative path (no starting with / ./ or ../)
+       <gid>                minimum GID (default: 1)
+       <root>               alternate root prefix, example: /mnt/xxx
+       <uid>                minimum UID (default: 1)
+
+remarks:
+       This tool was written to allow save/restore of ownerships and modes
+       when entries in '/etc/passwd' and/or '/etc/group' must be modified.
+
+       Options --full and --base allow use cases like fixing ownerships
+       after cloning from git, having used a FAT-like filesystem, android
+       or 'fakeroot'.
+
+       Unless option --full is used, the maximum <gid> and <uid> value is
+       set to 1 by default.
+
+examples:
+       # save system users in whole root FS
+       $CEN_NAME save OWNERS
+
+       # save everything in curent folder and below
+       $CEN_NAME --all --full --base=. save OWNERS
+
+       # restore everything in curent folder and below
+       $CEN_NAME --base=. restore OWNERS
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

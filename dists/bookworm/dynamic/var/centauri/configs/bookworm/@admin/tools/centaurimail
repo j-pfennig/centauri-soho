@@ -1,0 +1,665 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2005-2023; BSD License"
+CEN_TITLE="Tool to handle fetchmail and to do some exim4/cyrus maintenance"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -s -y - '0.35:' 0 || exit 2
+
+# data for extra options
+CEN_OPT_CLIENT=         # see --client
+CEN_OPT_SERVER=         # see --server
+CEN_OPT_SHOW=           # see --show
+
+DAT_CYRUS_DATA="/var/Mail"  # should be /var/centauri/mail
+[ -d "/var/centauri/mail" ] && DAT_CYRUS_DATA="/var/centauri/mail"
+                            # script to create/delete a mailbox
+DAT_CYRUS_MBOX="$DAT_CYRUS_DATA/cyrus-mbox.pl"
+DAT_CYRUS_PASSWD="$DAT_CYRUS_DATA/cyrus-passwd"
+
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+
+# check if links to cyrus folders are ok: [-q]
+cyrus_data() {
+    ___check_cyrus() {
+        [ -d "$DAT_CYRUS_DATA" ] || return 1
+        [ "/var/lib/cyrus"   -ef "$DAT_CYRUS_DATA/var_lib_cyrus"   ] || return 1
+        [ "/var/spool/cyrus" -ef "$DAT_CYRUS_DATA/var_spool_cyrus" ] || return 1
+        [ "/var/spool/sieve" -ef "$DAT_CYRUS_DATA/var_spool_sieve" ] || return 1
+        folder -c -f "$DAT_CYRUS_DATA"
+        return 0
+    }
+
+    if [ -n "$CEN_OPT_SILENT" -a "$CEN_ACTION" != "setup" ] ; then
+        [ -d "$DAT_CYRUS_DATA" ] || quit
+    fi
+
+    if ! [ -e /usr/sbin/cyrus ] ; then
+        warning "Could not find the 'cyrus' utility"
+        return 1
+    fi
+    ___check_cyrus && return 0
+    [ "$1" = "-q" ] || error "Please run '$CEN_NAME setup' first"
+    return 1
+}
+
+# frozen mail command: t (unfreeze) | rm (remove)
+frozen_mail() {
+    if [ -z "$1" ] ; then
+        mailq | awk '/frozen/{print $3}'
+    else
+        local acmd="/frozen/{print \"exim4 -M$1 \" \$3}"
+        mailq | awk "$acmd" | /bin/sh
+    fi
+}
+
+create_deny() {
+    [ -d "/var/lib/cyrus" ] || return
+    local deny="/var/lib/cyrus/user_deny.db"
+    [ -e "$deny" ] && return
+    message -a "Creating empty user_deny database..."
+    system -e -p -- touch "$deny"
+    system -e -p -- chmod 600 "${deny}"
+    system -e -p -- chown cyrus:mail "${deny}"
+}
+
+have_cyrus() {
+    [ -e "/usr/sbin/cyrus" ] && return 0
+    trace -a "$CEN_ACTION: cyrus is not installed" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# akonadi maintenance: <subcmd>
+# ------------------------------------------------------------------------------
+actionAkonadi() {
+    # The should be a Private/akonadi folder
+    local pako pdes pdir="$HOME/Private" ; [ -d "$pdir" ] || pdir="$HOME/Privat"
+    pako="$pdir/akonadi"
+    pdes="$HOME/.local/share/akonadi"
+    if [ ! -e "$pdes" ] ; then
+        symlink -f "$pako" "$pdes"
+    elif [ ! -h "$pdes" ] ; then
+        warning "akonadi folder is not encrypted:" "$pdes"
+    fi
+    folder -f -- "$pdes"
+
+    local acmd aerr= alog="$TMP/akonadi-$$.log"
+    local aloc=("$HOME/.local/share/akonadi/file_db_data"
+                "$HOME/.local/share/akonadi/db_data"
+                "$HOME/.local/share/akonadi/search_db")
+
+
+    ### TODO resources
+    #           "$HOME/.config/akonadi*"
+
+    CEN_AUTOIND=
+
+    case "${1:-repair}" in
+    cle*)       acmd='clean'  ;;
+    lin|link)   acmd='link'   ;;
+    rep*)       acmd='repair' ;;
+    set*)       acmd='setup'  ;;
+    *)          error $"Argument of 'akonadi' can be: clean|link|repair|setup" ; return
+    esac
+
+    system -c -e akonadictl find || return           # not installed
+
+    #local pitm="$pdir/.not-archived/akonadi_${aloc##*/}"
+    #if ! [ -d "$aloc" -o -L "$aloc" -o -d "$pitm" ] ; then
+    #    error "No akonadi data found"": $aloc" ; return
+    #fi
+
+    if [ -d "$pdir/.not-archived" ] ; then
+        trace -a $"Checking links to private folder:" "$pdir"
+        for pitm in "${aloc[@]}" ; do
+            if [ -L "$pitm" -o ! -e "$pitm" ] ; then
+                pdes="$pdir/.not-archived/akonadi_${pitm##*/}"
+                folder -m "$pdes" && symlink -n "$pdes" "$pitm"
+            fi
+        done
+    fi
+
+
+### TODO create .not-archived
+### TODO db_misc
+
+    pdes="$HOME/.local/share/akonadi"
+    if [ ! -s "$pdes/db_data" ] || [ "$acmd" = 'setup' ] ; then
+        if [ -s "$pdes/akonadi_db_data.tgz" ] ; then
+            confirm -n -y "No existing akonadi data, setup from template" || return
+            acmd='setup'
+        else
+            warning "Missing template:" "$pdes/akonadi_db_data.tgz"
+            error "No existing akonadi database and no template found" || return
+        fi
+    fi
+
+    [ "$acmd" = 'link' ] && return
+#quit "$acmd"
+
+# see: ~/.config/emailidentities
+#      ~/.config/akonadi_imap_resource_?rc
+#      ~/.config/akonadi/agentsrc
+#      ~/.config/akonadi/agent_config_akonadi_imap_resource_?
+
+    trace -a "Starting akonadi $acmd"
+    local aerr=0 alog="$TMP/akonadi-$$.log"
+    dryrun "akonadi $acmd" || while : ; do
+        akonadictl stop && sleep 3
+        if [ "$acmd" = 'clean' ] ; then
+            system -e -p -- find "${aloc[0]}/" -mindepth 1 -delete
+            system -e -p -- find "${aloc[2]}/" -mindepth 1 -delete
+        elif [ "$acmd" = 'setup' ] ; then
+            system -e -p -- find "${aloc[0]}/" -mindepth 1 -delete
+            system -e -p -- find "${aloc[1]}/" -mindepth 1 -delete
+            system -e -p -- find "${aloc[2]}/" -mindepth 1 -delete
+      #  quit "$PWD"
+            system -e -p -- tar --directory "${aloc[1]}" -xaf "$pdes/akonadi_db_data.tgz"
+
+
+           # rm -r Akonadi.error* db_* file_db_data* search_db* socket-alpha8-default*
+           # rm -r "$pdir/.not-archived/akonadi_*"
+        fi
+#  break  ###      quit xxxxx
+        akonadictl start || {  aerr=$?; break ; }
+        sleep 5
+        akonadictl fsck  || {  aerr=$?; break ; }
+        break
+    done &>"$alog"
+#quit LOG $alog
+    trace -a "akonadi $acmd done, error $aerr, logfile: $alog"
+    if [ "$aerr" != "0" ] ; then
+        printf -v aerr $"akonadi %s reported error %s, show: %s" "$acmd" "$aerr" "$alog"
+        if confirm -a -y -d $"yes" "$aerr" ; then
+            $CEN_PAGER create -c -- "$alog"
+        fi
+    else
+        message -a -p $"akonadi %s reported no error, deleting log file" "$acmd"
+        system -r -q -- rm  "$alog"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# cyrus administration: [create|delete|passwd <user> [<pasw>]]
+# ------------------------------------------------------------------------------
+
+DAT_SERVER=
+# get active server name into DAT_SERVER(master domain)
+server_info() {
+    if [ -z "$DAT_SERVER" ] ; then
+        embed -r -a DAT_SERVER centauriname --active --domain
+        [ -z "$DAT_SERVER" ] && DAT_SERVER='-'
+    fi
+    [ "$DAT_SERVER" != "-" ] && return 0
+    error $"No active server found" ; return 1
+}
+
+actionCyrus() {
+    # create/delete mbox: create|delete <user>
+    ___cyrus_mbox() {
+        if [ ! -x "$DAT_CYRUS_MBOX" ] ; then
+            invoke -e "Cannot manage mbox (missing %s)" "$DAT_CYRUS_MBOX"
+            return
+        fi
+        if [ ! -r "$DAT_CYRUS_PASSWD" ] ; then
+            invoke -e "Cannot manage mbox (missing %s)" "$DAT_CYRUS_PASSWD"
+            return
+        fi
+
+        local xxxx pasw
+        read pasw xxxx <"$DAT_CYRUS_PASSWD"
+        system -e -p -- "$DAT_CYRUS_MBOX" "$@" <<<"$pasw"
+    }
+
+    # run cyrus admin shell
+    ___cyrus_admin() {
+        system -e -c -- cyradm || return
+        server_info || return
+        system -e -z -- cyradm --user 'cyrus' "$DAT_SERVER"
+    }
+
+    local   sopt sdom spin mbox fake
+    case "$1" in
+        cre*)   sopt='-c' ; mbox='create' ; [ "${3:--}" != '-' ] && spin='-p'
+                ;;
+        del*)   sopt='-d' ; mbox='delete'
+                ;;
+        lis?)   system -e -p -z -- sasldblistusers2 ; return
+                ;;
+        pas*)   [ "${3:--}" != '-' ] && spin='-p'
+                ;;
+        "")     ___cyrus_admin ; return
+                ;;
+        *)      invoke -e $"Invalid operation: %s" "$1" ; return
+    esac
+
+    # list cyrus mailboxes via: /usr/lib/cyrus/bin/quota
+    system -c -e -- saslpasswd2 getent || return
+    if [ "${2:--}" = '-' ] ; then
+        invoke -e $"Missing user name" ; return
+    fi
+    server_info || return ; sdom="${DAT_SERVER[1]}"         # get domain name
+
+    # We don't use linux users but only sasldb entries for cyrus. Linux and
+    # sasld users are completely independent.
+
+  #  if [ "$sopt" != "-d" ] && system -r -q -- getent passwd "$2" ; then
+  #      #trace -a "Not creating a sasldb entry for linux/domain user"
+  #      #spin= ; sopt=
+  #      trace -a $"Not saving password to sasldb for linux/domain user"
+  #      spin='-p' ; fake="$2\$linux" ; set -- "$1" "$2" 'xxxx'
+  #  fi
+
+    if [ -n "$spin" ] ; then                                # set sasl password
+        if [ ${#3} -lt 4 ] ; then
+            invoke -e $"Password too short" ; return
+        fi
+        [ -z "$fake" ] && system -e -p -n -- saslpasswd2 -u "$sdom" $sopt $spin "$2" <<<"$3"
+        system -e -p -n -- saslpasswd2 $sopt $spin "${fake:-$2}" <<<"$3"
+    elif [ -n "$sopt" ] ; then                              # create/delete sasl entry
+        system -e -p -z -n -- saslpasswd2 -u "$sdom" $sopt "$2"
+        system -q -n -- saslpasswd2 $sopt "$2"
+        [ "$sopt" = "-d" ] && system -q -n -- saslpasswd2 -d "$2\$linux"
+    fi
+
+    [ "$mbox" ] && ___cyrus_mbox "$mbox" "$2" "$DAT_SERVER" # create/delete mailbox
+}
+
+# ------------------------------------------------------------------------------
+# run fetchmail: [QUIET]
+# ------------------------------------------------------------------------------
+actionFetch() {
+    FETCHMAIL_CONF=/etc/fetchmail.conf
+    if [ ! -f $FETCHMAIL_CONF ] ; then
+        trace "fetch: not configured, no file:" "$FETCHMAIL_CONF" ; return
+    fi
+
+    # do not execute if we are not the domain master
+    [ -f $CEN_ROOT/transient/network_status ] && . $CEN_ROOT/transient/network_status
+    if [ "${CEN_NET_MODE:-MASTER}" != "MASTER" ] ; then
+        trace "fetch: will run on MASTER only:" "$CEN_NET_MODE" ; return
+    fi
+
+    local fmsg
+    system -e -p chown cyrus $FETCHMAIL_CONF
+    system -e -p chmod 600   $FETCHMAIL_CONF
+    system -m -s fmsg -u cyrus -- fetchmail -f $FETCHMAIL_CONF
+    FMAIL_CODE="$?"
+
+    # fetchmail running in background ...
+    if [ "$FMAIL_CODE" = 8 ] ; then
+        system -m -s fmsg -u cyrus -- fetchmail
+        FMAIL_CODE="$?"
+    fi
+
+    [ "$FMAIL_CODE" -le 1 ] && return           # 1 := no new mails
+    error -s 1 ; [ "$1" == "QUIET" ] && return
+    message -a -n "$fmsg" ; error "fetchmail returned status $FMAIL_CODE"
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+actionBackup() {
+    have_cyrus || return
+    cyrus_data || return
+
+    message -a "Checkpointing dbs and saving mailbox list..."
+    system -e -p -u cyrus -- /bin/bash -c \
+        "/usr/sbin/cyrus ctl_cyrusdb -c ; /usr/sbin/cyrus mboxlist -d >list_of_mailboxes"
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+actionRestore() {
+    have_cyrus || return
+    cyrus_data || return
+    create_deny
+
+    message -a "Loading list of mailboxes..."
+    system -e -p -u cyrus -- /usr/sbin/cyrus ctl_mboxlist -u < list_of_mailboxes
+    error -t || return
+
+    message -a "Restoring data bases ..."
+    system -e -p -- rm -f var_lib_cyrus/db/*
+    system -e -p -u cyrus -- /usr/sbin/cyrus ctl_cyrusdb -r
+    system -e -p -u cyrus -- /usr/sbin/cyrus reconstruct -f
+    error -t || return
+
+    message -a "Cyrus restore completed."
+}
+
+# ------------------------------------------------------------------------------
+# general
+# ------------------------------------------------------------------------------
+actionSetup() {
+    local frun
+
+    ___setup_folder() {
+        folder -f -c -m "$1"
+        system -e -p -- chmod 770 . ; system -e -p -- chown cyrus:mail .
+    }
+
+    ___setup_link() {
+        # link exists
+        if [ -L "$1" ] ; then
+            [ -d "$DAT_CYRUS_DATA/$2" ] && return
+            ___setup_folder "$DAT_CYRUS_DATA/$2" ; return 0
+        fi
+
+        # make link
+        [ -e "$DAT_CYRUS_DATA/$2" ] && fatal "Please remove: $DAT_CYRUS_DATA/$2"
+        move -- "$1" "$DAT_CYRUS_DATA/$2"
+        symlink -- "$DAT_CYRUS_DATA/$2" "$1"
+    }
+
+    # do we have $DAT_CYRUS_DATA? Check...
+    if [ -d $DAT_CYRUS_DATA ] ; then
+        message -a "Check $DAT_CYRUS_DATA ..."
+        cyrus_data -q && return
+    fi
+
+    # Create folder and symlinks ...
+    ___setup_folder "$DAT_CYRUS_DATA"
+    if runservice status cyrus-imapd ; then
+        runservice stop cyrus-imapd
+        frun=1
+    fi
+
+    message -a "Setup $DAT_CYRUS_DATA ..."
+    ___setup_link "/var/lib/cyrus"   "var_lib_cyrus"
+    ___setup_link "/var/spool/cyrus" "var_spool_cyrus"
+    ___setup_link "/var/spool/sieve" "var_spool_sieve"
+
+    [ -n "$frun" ] && runservice start cyrus-imapd
+}
+
+# ------------------------------------------------------------------------------
+# general, run server side  (triggered by --server)
+# ------------------------------------------------------------------------------
+actionServer() {
+    actionFetch QUIET
+    echo $CEN_EXIT $FMAIL_CODE
+}
+
+# ------------------------------------------------------------------------------
+# general, run client  (triggered by --client)
+# ------------------------------------------------------------------------------
+actionClient() {
+    system -e -c netcat || return
+    local actv
+    embed -r -s actv centauriname --active
+    if [ -n "$actv" ] ; then
+        dryrun "... netcat ..." && return
+        set -- `netcat -v $actv 50`
+        CEN_EXIT="${1:-8}"
+        CEN_EXIT="${CEN_EXIT//[!0-9]/}" ; [ -z "$CEN_EXIT" ] && CEN_EXIT=0
+        echo "${2:-8}"
+    else
+        error $"No active server"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# general - show dialog, run client (triggered by --show)
+# ------------------------------------------------------------------------------
+actionShow() {
+    embed -m _centauri_bash_win
+    windows -i 1 -e || return
+    system -c -f kmail dbus-send
+    dryrun "... kmail ..." && return
+
+    progress $"Look for new mail and display with kmail"  # show dialog, set label
+    local dcmd="dbus-send --print-reply --dest=org.kde.kmail /KMail org.kde.kmail.kmail.checkMail"
+    while : ; do
+        sleep 0.2
+        # wmctrl -R "- $CEN_NAME" -b add,above
+        windows -l kmail || break
+        progress -c 10
+        actionClient
+        progress -c 70
+        if ! system -n -q -- $dcmd ; then                  # wait for kmail
+            progress -c 80 ; sleep 1
+            if ! system -n -q -- $dcmd ; then
+                progress -c 90 ; sleep 1
+                system -n -p -- $dcmd || break
+            fi
+        fi
+        progress -c 99
+        break
+    done
+    progress
+}
+
+# ------------------------------------------------------------------------------
+# cyrus
+# ------------------------------------------------------------------------------
+actionIndex() {
+    have_cyrus || return
+    create_deny
+
+    local tmpf="/tmp/sqidx_$$"
+    system -e -r -u cyrus -- /usr/sbin/cyrus ctl_mboxlist -d >"$tmpf"
+    if [ $? = 0 ] ; then
+        system -e -p -u cyrus -- /bin/bash -c "
+            ierr=0
+            while read mbox dumy ; do
+                echo \"Indexing \$mbox\"
+                /usr/sbin/cyrus squatter \"\$mbox\" || ierr=\$?
+            done <\"$tmpf\" ; exit \$ierr"
+        [ $? = 0 ] || error -s 3
+    else
+        error -s 4
+    fi
+    system -e -p -r -- rm -f "$tmpf"
+}
+
+# ------------------------------------------------------------------------------
+# cyrus
+# ------------------------------------------------------------------------------
+actionPrune() {
+    have_cyrus || return
+    create_deny
+    system -e -p -u cyrus -- /usr/sbin/cyrus expire -E 3 -D 8 -X 8
+}
+
+# ------------------------------------------------------------------------------
+# exim4 purge queued mails: <no args>
+# ------------------------------------------------------------------------------
+actionPurge() {
+    local qlis
+    system -e -c mailq exim4 awk || return
+    system -e -p -n -r -s qlis -- mailq || return
+    if [ -z "$qlis" ] ; then
+        message -a $"No queued mails." ; return
+    fi
+    confirm -y -a $"Really delete all queued mails" || return
+    dryrun "awk ... exim4 -Mrm" && return
+    awk <<<"$qlis" '/^ *[0-9]+[mhd]/{print "exim4 -Mrm " $3}' | /bin/sh
+}
+
+# ------------------------------------------------------------------------------
+# exim4 run queue: <no args>
+# ------------------------------------------------------------------------------
+actionQueue() {
+    if ! system -c exim4 ; then
+        [ -z "$CEN_OPT_SILENT" ] &&
+            message -a "exim4 is not installed - action '$CEN_ACTION' skipped"
+        return
+    fi
+    system -e -c pgrep || return
+
+    if system -q -r -n -- pgrep -x exim4 ; then
+        trace -a "$CEN_ACTION: exim4 deamon running, no action"
+    elif [ "$CEN_ACTION" = "force" ] ; then
+        message -a "$CEN_ACTION:" $"running exim4 to enforce queue"
+        system -e -p -n -- exim4 -qf
+    else
+        message -a "$CEN_ACTION:" $"running exim4 to process queue"
+        system -e -p -n -- exim4 -q
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# exim4 Frozen Messages
+# ------------------------------------------------------------------------------
+actionFrozen() {
+    system -e -c mailq || return
+
+    case "$1" in
+    unf*)       frozen_mail t  ;;
+    rm|del*)    frozen_mail rm ;;
+    ""|sho*)    frozen_mail ;;
+    *)          error $"Argument of 'frozen' can be: show, unfreeze, delete"
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# cyrus, update mailboxes: <server>
+# ------------------------------------------------------------------------------
+actionUpdate() {
+    local serv="${1:--}" stat
+    have_cyrus || return
+    cyrus_data || return
+    if [ "$serv" = '-' ] ; then
+        server_info || return ; serv="${DAT_SERVER[0]}" # get domain name
+    fi
+    confirm -n "Update mailboxes from:" "$serv" || return
+
+    if runservice status cyrus-imapd ; then
+        stat=1
+        runservice -e stop cyrus-imapd || return
+    fi
+
+    embed -z centauricopy sync "$serv:"/var/Mail /var/Mail \
+                        -i list_of_mailboxes \
+                        -i 'var_spool_cyrus/***' \
+                        -i 'var_spool_sieve/***' \
+                        -i 'var_lib_cyrus/***' -x '*'
+
+    confirm -n "Rebuild the cyrus database" && invoke restore -
+
+    [ -n "$stat" ] && runservice -e start cyrus-imapd
+}
+
+# ------------------------------------------------------------------------------
+# option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    "") CEN_FEATURE_S="-s --silent          exit silently if '$DAT_CYRUS_DATA' does not exit"
+        ;;
+
+    --cli*)
+        optarg "client"  CEN_OPT_CLIENT  ;;             # a simple flag
+    --ser*)
+        optarg "server"  CEN_OPT_SERVER  ;;             # a simple flag
+    --sho*)
+        optarg "show"    CEN_OPT_SHOW    ;;             # a simple flag
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    "") [ -n "$CEN_OPT_CLIENT" ] && CEN_ACTION+="client"
+        [ -n "$CEN_OPT_SERVER" ] && CEN_ACTION+="server"
+        [ -n "$CEN_OPT_SHOW"   ] && CEN_ACTION+="show"
+        if [ -n "$CEN_ACTION" ] ; then
+            [ "${#CEN_ACTION}" -gt 6 ] &&
+                fatal $"The options --client, --server cannot be combined"
+            CEN_CMDARGS=("$CEN_ACTION")
+        fi ;;
+
+    ako*)
+        invoke    "akonadi" -            0 1 ;;
+    ba[ck]*)
+        invoke -r "backup"  -            0 ;;
+    cli*)
+        invoke    "client"  -            0 ;;
+    cyr*)
+        invoke -r "cyrus"   -            0 3 ;;
+    fet*)
+        invoke -r "fetch"   -            0 ;;
+    for*)
+        invoke -r "force"   actionQueue  0 ;;
+    fro*)
+        invoke -r "frozen"  -            0 1 ;;
+    ind*)
+        invoke -r "index"   -            0 ;;
+    pru*)
+        invoke -r "prune"   -            0 ;;
+    pur*)
+        invoke -r "purge"   -            0 ;;
+    que*)
+        invoke -r "queue"   -            0 ;;
+    res*)
+        invoke -r "restore" -            0 ;;
+    ser*)
+        invoke    "server"  -            0 ;;
+    set*)
+        invoke -r "setup"   -            0 ;;
+    sho|show)
+        invoke    "show"    -            0 ;;
+    upd*)
+        invoke    "update"  -            0 1 ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -o "" \
+        -o "   --client          [*] run fetchmail on server" \
+        -o "   --server          [*] implement serverside of --client" \
+        -o "   --show            [*] start kmail, use --client for fetchmail" \
+        -o "" \
+        -o "[*] These options cannot be combined and no action should be given."
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+actions:
+       ••• general actions •••
+       akonadi [clean|link|repair|setup]
+                            clean or repair akonadi mail store
+       fetch                run fetchmail to download new mail
+       setup                migrate cyrus folders to: $DAT_CYRUS_DATA
+
+       ••• exim4 (mail transport) •••
+       force                run 'exim4 -qf' to enforce the send queue
+       frozen  [show|rm|unfreeze]
+                            manage frozen mails (default is "show")
+       purge                remove all queued messages
+       queue                run 'exim4 -q' to process the send queue
+
+       ••• cyrus (mail store) •••
+       backup               let cyrus make some data base clean-ups
+       cyrus                start cyrus admin tool
+       cyrus   create|delete|passwd [<user> [<pasw>|-]]
+                            manage mailboxes
+       cyrus   list         list sasl (e.g. non-linux) users
+       index                run squatter to build search indices
+       prune                let cyrus prune the delivery queue
+       restore              rebuild the cyrus data base
+       update  [<remote>]   update mailboxes from another server
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

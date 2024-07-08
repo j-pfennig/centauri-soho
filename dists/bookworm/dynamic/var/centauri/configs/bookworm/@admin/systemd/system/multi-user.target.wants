@@ -1,0 +1,71 @@
+# This file is interprepreted when installing centauri-bash-lib. It's
+# purpose is to avoid *.override [Install] patches for service.units:
+
+# always start these ...
+
++ centaurifilter.service
++ centauriroute.service
++ centaurisecrets.service
++ centauriswap.service
++ centauriswitch.service
++ centaurimounter.service
+
++ centauricron-hourly.timer
++ anacron.timer
++ /lib/systemd/system/apt-daily.timer
++ /lib/systemd/system/apt-daily-upgrade.timer
++ /lib/systemd/system/logrotate.timer
++ /lib/systemd/system/man-db.timer
++ /lib/systemd/system/plocate-updatedb.timer
+
+# don't start here ...
+
+- centauri-net-svc.service
+- centauri-network.service
+- centauriwsdd.service
+- anacron.service
+- autofs.service
+- wpa_supplicant
+
+# tools started via 'centauriswitch' for the master server only
+
+- dnsmasq.service
+- slapd.service
+- samba-ad-dc.service
+- cyrus-imapd.service
+- exim4.service
+- krb5-kdc.service
+- ntpsec.service
+- openvpn.service
+
+# started by centauri-network
+
+- gmediarender.service
+- minidlna.service
+- cups-browsed.service
+- lightdm-xdmcp.service
+
+# started by centauri-router
+
+- lighttpd.service
+- squid.service
+- hostapd.service
+
+# never start these automatically ...
+
+- fetchmail.service
+- nmbd.service
+- nfs-blkmap.service
+- nfs-client.target
+- nfs-server.service
+- rpcbind.service
+- saned.service
+- smartd.service
+- smartmontools.service
+- sshd.service
+- smbd.service
+- rsnyc.service
+- vsftpd.service
+- winbind.service
+
+# end

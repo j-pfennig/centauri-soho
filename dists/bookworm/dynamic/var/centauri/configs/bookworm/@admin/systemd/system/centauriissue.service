@@ -1,0 +1,25 @@
+[Unit]
+Description=Run /var/centauri/persistent/issue script
+After=systemd-user-sessions.service plymouth-quit-wait.service
+After=centaurisysinit.service console-setup.service
+IgnoreOnIsolate=yes
+
+ConditionPathExists=/var/centauri/persistent/issue.d
+
+[Service]
+ExecStartPre=/usr/bin/chvt 8
+ExecStart=/var/centauri/tools/centaurisysinit issue exec
+Type=oneshot
+StandardInput=tty
+StandardOutput=tty
+UtmpIdentifier=tty8
+TTYPath=/dev/tty8
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+KillMode=process
+IgnoreSIGPIPE=no
+SendSIGHUP=yes
+
+[Install]
+WantedBy=centaurisysinit.service

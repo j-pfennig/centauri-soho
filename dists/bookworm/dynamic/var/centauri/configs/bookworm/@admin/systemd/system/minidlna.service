@@ -1,0 +1,17 @@
+# jpf@centauri
+[Unit]
+Description=Centauri Start MiniDLNA
+PartOf=centauri-network.service
+ConditionPathExists=/usr/sbin/minidlnad
+After=centaurimounter.service multi-user.target
+
+[Install]
+WantedBy=centauri-network.service
+
+[Service]
+User=minidlna
+Type=simple
+RuntimeDirectory=minidlna
+ExecStart=/usr/sbin/minidlnad -S
+ExecReload=/bin/kill -s HUP $MAINPID
+

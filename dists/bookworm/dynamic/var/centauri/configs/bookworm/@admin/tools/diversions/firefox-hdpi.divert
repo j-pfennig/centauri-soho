@@ -1,0 +1,15 @@
+status=off
+target=/usr/bin/firefox
+
+divert() {
+    # get proxy config
+    unset http_proxy https_proxy no_proxy
+    local prox='/var/centauri/transient/network_proxy'
+    [ -r "$prox" ] && . "$prox"
+
+    # read GDK_DPI_SCALE
+    [ -r /etc/bash.local ] && . /etc/bash.local
+    [ -n "$GDK_DPI_SCALE_FIREFOX" ] && export GDK_DPI_SCALE="$GDK_DPI_SCALE_FIREFOX"
+
+    exec /usr/bin/firefox.distrib "$@"
+}

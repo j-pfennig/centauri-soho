@@ -1,0 +1,15 @@
+# centauri-network.service
+[Unit]
+Description=Minimal network services
+Wants=networking.service inetd.service lighttpd.service lightdm-xdmcp.service
+Wants=cups.service gmediarender.service minidlna.service tinyproxy.service
+
+[Service]
+Restart=no
+TimeoutSec=60
+IgnoreSIGPIPE=no
+KillMode=process
+GuessMainPID=no
+RemainAfterExit=yes
+ExecStart=/bin/true
+

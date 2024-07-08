@@ -1,0 +1,242 @@
+# jpf@centauri 2017-12-19
+
+# BEWARE: make sure that include paths end with a dot if you want symlinks to be
+#         dereferenced by tar. Example: Picture/.
+
+# ------------------------------------------------------------------------------
+# macros
+# ------------------------------------------------------------------------------
+macro  excl_vol
+    exclude ./backup
+    exclude ./Autosave
+    exclude ./Backup
+    exclude ./History
+    exclude ./Deleted/*
+    exclude ./lost+found
+    exclude .Trash-*
+
+macro   excl_home
+    exclude ./.audacity-data
+    exclude ./.cache
+    exclude ./.config/decibel-audio-player/Library
+    exclude ./.davfs2
+    exclude ./.dbus
+    exclude ./.local/share/Trash
+    exclude ./.local/share/akonadi
+    exclude ./.local/share/baloo
+    exclude ./.local/share/digikam
+    exclude ./.local/share/marble
+    exclude ./.marble
+    exclude ./.mediathek3
+    exclude ./.mozilla/firefox/*/Cache
+    exclude ./.mozilla/firefox/*/storage/temporary
+    exclude ./.mozilla/firefox/*/urlclassifier*.sqlite
+    exclude ./.netbeans/*/var/cache
+    exclude ./.kde/share/apps/kmail
+    exclude ./.kde/share/apps/libkface
+    exclude ./.kde/share/apps/nepomuk
+    exclude ./.kde/share/apps/okular/docdata
+    exclude ./.QMapShack/*/*
+    exclude ./.thumbnails
+    exclude ./.xsession-errors
+    exclude ./Privat/*
+    exclude ./Private/*
+    exclude thumbnails-digikam.db
+
+# ------------------------------------------------------------------------------
+# main targets (group disk)
+# ------------------------------------------------------------------------------
+target root             System root without /export and ~vbox
+    default disk
+
+    expand  excl_vol    .
+    expand  excl_home   ./root
+
+    skiptag WARNING_FOLDER_NOT_ARCHIVED
+
+    exclude ./Vol0/*
+    exclude ./Vol1/*
+    exclude ./.secrets/*
+    exclude ./.swapfile
+    exclude ./.centauriswap
+    exclude ./dev
+    exclude ./export
+    exclude ./home
+    exclude ./media/*
+    exclude ./mnt/*
+    exclude ./proc
+    exclude ./sys
+    exclude ./tmp/*
+    exclude ./usr
+    exclude ./var/Cvsroot
+    exclude ./var/Mail
+    exclude ./var/adm/backup/*
+    exclude ./var/backups/*
+    exclude ./var/cache/apt*
+    exclude ./var/cache/command-not-found
+    exclude ./var/cache/cups/*
+    exclude ./var/cache/debconf/*-old
+    exclude ./var/cache/dwww
+    exclude ./var/cache/locate
+    exclude ./var/cache/man
+    exclude ./var/cache/minidlna/*
+    exclude ./var/cache/samba
+    exclude ./var/cache/squid*
+    exclude ./var/cache/.security.db
+    exclude ./var/centauri/vbox/*
+    exclude ./var/centauri/backup
+    exclude ./var/lib/apt/lists
+    exclude ./var/lib/centauri/*
+    exclude ./var/lib/flatpak
+    exclude ./var/lib/mlocate/*
+    exclude ./var/log/calamaris
+    exclude ./var/log/journal/*
+    exclude ./var/log/lastlog
+    exclude ./var/lib/samba/private/msg.sock/*
+    exclude ./var/lib/sddm/.*
+    exclude ./var/log/squid3
+    exclude ./var/lib/sss/pipes/private/*
+    exclude ./var/log/wtmp
+    exclude ./var/run/*
+    exclude ./var/spool/cups*
+    exclude ./var/spool/squid*
+    exclude ./var/swap
+    exclude ./var/tmp/*
+    exclude .Trash-*
+
+target usr              System usr folder
+    default disk
+    include ./usr
+
+    expand  excl_vol ./usr
+
+    skiptag WARNING_FOLDER_NOT_ARCHIVED
+
+target home             system home folder
+    default data
+    folder  ./Home
+    folder  ./home
+
+    expand  excl_vol    .
+    expand  excl_home   ./*
+
+    skiptag WARNING_FOLDER_NOT_ARCHIVED
+
+target boot             efi boot folder
+    default disk
+    folder  ./mnt/boot
+    folder  ./efi/boot/../..
+    folder  ./boot/efi/EFI/..
+    folder  ./boot/firmware
+
+    exclude .swapfile*
+    exclude [sS]wapfile*
+
+target shared           Data shared between uses
+    defaut  disk
+    folder  ./Shared
+    folder  ./shared
+
+    expand  excl_vol    .
+
+    exclude .dtrash
+    exclude ./Centauri/*
+
+    skiptag WARNING_FOLDER_NOT_ARCHIVED
+
+target windows          The windows partition (/mnt/windows)
+    folder  ./mnt/windows
+    default phys lzop
+    clone
+
+# ------------------------------------------------------------------------------
+# export    These archives are relative to /export (which can be a symlink)
+# ------------------------------------------------------------------------------
+
+target picture          Picture (relative to /export)
+    default data
+    folder  ./export
+    include ./Picture/.
+    include ./Bilder/.
+    skiptag WARNING_FOLDER_NOT_ARCHIVED
+
+target geodata          Geodata  (relative to /export)
+    default data
+    folder  ./export
+    include ./GeoData/.
+    skiptag WARNING_FOLDER_NOT_ARCHIVED
+
+target archive          Archive  (relative to /export)
+    default data
+    folder  ./export
+    include ./Archive/.
+    skiptag WARNING_FOLDER_NOT_ARCHIVED
+
+# ------------------------------------------------------------------------------
+# other targets
+# ------------------------------------------------------------------------------
+
+target hass             Home Assistant
+    default data
+    folder  ./shared/HomeAssistant
+    folder  ./srv/HomeAssistant
+
+target maildb           Mail queues and stores
+    default data
+    folder  ./var
+    include ./Mail
+    exclude cyrus.squat
+    exclude ./Mail/*/db.backup*
+    exclude ./Mail/var_lib_cyrus/socket/*
+
+target vbox             VirtualBox home dir (without disk data)
+    default data
+    folder  ./mnt/vbox
+
+    expand  excl_vol    .
+    expand  excl_home   ./Home
+
+    exclude ./Drives/*
+    exclude ./Machines/*
+
+    skiptag WARNING_FOLDER_NOT_ARCHIVED
+
+# ------------------------------------------------------------------------------
+# groups
+# ------------------------------------------------------------------------------
+group   disk            System backup excluding /export und ~vbox
+    default disk
+    member  root
+    member  home
+    member  usr
+    member  +boot
+
+group   data            Data backup including /home and parts of /export
+    default data
+    member  hass
+    member  home
+    member  maildb
+
+group   export          Data backup parts of /export
+    default data
+    member  archive
+    member  geodata
+    member  picture
+
+    ### centauridata target ###
+
+group   daily           For "centauridata daily": data
+    member  home
+    member  maildb
+
+group   weekly          For "centauridata weekly": geodata
+#    member  archive
+#    member  geodata
+#    member  picture
+    member  vbox
+
+group   monthly         For "centauridata monthly": geodata archive picture
+#    member  archive
+    member  geodata
+#    member  picture
+    member  vbox

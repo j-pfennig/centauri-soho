@@ -1,0 +1,109 @@
+#!/bin/bash
+# /etc/default/centauricrontab - configure standard cron actions
+# ------------------------------------------------------------------------------
+# This file is sourced by centauricron.  The defined functions are optional and
+# correspond to actions.  The functions can contain any commands.  Builtin
+# 'default' will run some default actions and 'status' is used to report any
+# problems.  If a function is not present the default actions will be run.
+#
+# Supported functions (rename to noXXXX to disable a function):
+#
+#   [no]hourly
+#   [no]daily
+#   [no]weekly
+#   [no]monthly
+#
+#   [no]boot        runs at boot time (*)
+#   [no]midnight    runs at boot time (*)
+#   [no]shutdown    runs after daily/weekly/monthly (*)
+#
+# (*) To implement a shutdown after daily maintenance the 'default' method must
+#     be called in boot/midnight/shutdown if any of these functions is defined.
+#     The shutdown itself can be configured via /etc/defaults/daily_shutdown.
+# ------------------------------------------------------------------------------
+
+# This should be invoked via anacrontab every few hours
+hourly() {
+
+    # run the default
+    default
+}
+
+# This should be invoked via anacrontab once per day
+daily() {
+
+    # make btrfs snapshots
+    if [ -d "/mnt/vol0" ] ; then
+        if execute -c mirror-server check ; then
+            header "Creating minimal snapshots (replicating master)"
+            execute centaurisnapshot --silent --yes quota off -- delete daily 2 ..
+            execute centaurisnapshot --silent --yes create daily
+            
+            header "Mirroring server"
+            execute mirror-server cron
+            autoshutdown
+        else
+            header "Creating snapshots"
+            execute centaurisnapshot --silent --yes daily
+        fi
+    fi
+
+    # do we have a mirror volume?
+    if [ -d "/mnt/mirror/Volumes" ] ; then
+        header "Backup data to mirror"
+        execute centaurisnapshot --base=/mnt/mirror --silent --yes daily
+        local brun
+        for brun in /mnt/mirror/vol?-to-mirror ; do
+            [ -x "$brun" ] && embed "$brun" --silent 
+        done
+    fi
+
+    header "Running defaults tasks"
+
+    # renew kerberos tickets
+    system -c krenew && execute centaurikerberos renew +
+
+    # run the default
+    default
+}
+
+# This should be invoked via anacrontab once per week
+weekly() {
+    local post="centauricleanup --embed=$CEN_NAME:a --all --snapshot --yes --base" 
+
+    # make btrfs snapshots
+    execute centaurisnapshot --silent --yes --post="$post" weekly
+
+    # do we have a mirror volume?
+    [ -d "/mnt/mirror/Volumes" ] &&
+        execute centaurisnapshot --base=/mnt/mirror --silent --yes --post="$post" weekly
+
+    # run the default
+    default
+}
+
+# This should be invoked via anacrontab once per month
+monthly() {
+    local post="centauricleanup --embed=$CEN_NAME:a --all --snapshot --yes --base" 
+
+    # make btrfs snapshots
+    execute centaurisnapshot --silent --yes --post="$post" monthly
+ 
+    # do we have a mirror volume?
+    [ -d "/mnt/mirror/Volumes" ] &&
+        execute centaurisnapshot --base=/mnt/mirror --silent --yes --post="$post" monthly
+
+    # run the default
+    default
+
+    # run a system backup (servers only)
+    if netquery server && shortpath disk ; then
+        execute centauriremove --purge --yes disk
+        execute centauribackup disk 
+    fi
+
+    # purge backups, update history
+    execute centauridata --zombie purge -- history
+}
+
+# end

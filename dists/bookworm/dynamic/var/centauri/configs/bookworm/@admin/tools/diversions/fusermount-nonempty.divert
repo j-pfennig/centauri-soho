@@ -1,0 +1,14 @@
+status=off
+target=/usr/bin/fusermount3
+
+divert() {
+    local item list=()
+    while [ $# -gt 0 ] ; do
+        item="$1" ; shift
+        list+=("$item")
+        [ "$item" = '-o' ] || continue
+        item="$1" ; shift
+        list+=("${item/,nonempty/}")
+    done    
+    exec /usr/bin/fusermount3.distrib "${list[@]}"
+}

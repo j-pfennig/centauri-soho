@@ -1,0 +1,28 @@
+[Unit]
+Description=Autologin user %I at tty6
+After=systemd-user-sessions.service plymouth-quit-wait.service
+After=centaurisysinit.service console-setup.service
+Before=getty.target
+Wants=console-setup.service sssd.service
+IgnoreOnIsolate=yes
+
+ConditionKernelCommandLine=centaurilogin
+ConditionPathExists=/var/centauri/tools/centaurisession
+
+[Service]
+ExecStart=/var/centauri/tools/centaurisession autologin %I 6
+Type=idle
+Restart=always
+RestartSec=1
+UtmpIdentifier=tty6
+TTYPath=/dev/tty6
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+KillMode=process
+IgnoreSIGPIPE=no
+SendSIGHUP=yes
+
+[Install]
+WantedBy=getty.target
+DefaultInstance=root

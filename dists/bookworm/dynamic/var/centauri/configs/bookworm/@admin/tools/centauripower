@@ -1,0 +1,664 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2022; BSD License"
+CEN_TITLE="Helper to process ACPI events"
+
+# Import the bash library, set name and version
+PATH+=":/usr/local/bin:${0%/*}" . _centauri_bash_lib -d -f -m svc -s "$0" "0.39:1" || exit 2
+
+# /usr/bin/logger -t centauripower "$0 $*"
+
+# used by links from /etc/acpi and /lib/systemd/system-sleep - see setup
+case "$CEN_NAME" in
+    #lid-acpi-support.sh)
+    #    # arguments should be: 'button/lis' 'LID' 'open'/'close'
+    #    [ "$3" = "close" ] || exit 0
+    #    set "lidclose" ; CEN_NAME="centauripower" ;;
+    powerbtn-acpi-support.sh)
+        set "powerbutton" ; CEN_NAME="centauripower" ;;
+    brightness-acpi-support.sh)
+        set "brightness" "$1" -v ; CEN_NAME="centauripower" ;;
+    centauri-sleep)
+        set "systemsleep" "$1" ; CEN_NAME="centauripower" ;;
+esac
+
+# options
+
+CEN_OPT_CANCEL=             # see --cancel
+CEN_OPT_DRYRUN=	            # see --dryrun
+CEN_OPT_NOLOGOUT=           # see --nologout
+CEN_OPT_PLYMOUTH=           # see --plymouth
+
+# data
+DAT_MYNAME="$CEN_NAME"
+DAT_CONFIG="/etc/default/$CEN_NAME"
+DAT_HAVE_CONFIG=
+DAT_MESSAGE='trace'
+
+# from config file
+LIDCLOSE_IGNORE=
+POWERBUTTON_IGNORE=
+DISABLE_USBWAKEUP=
+STOP_AUTOFS=
+STOP_ENCFS=
+
+# ------------------------------------------------------------------------------
+# helper
+# ------------------------------------------------------------------------------
+
+# test for vt >= 7 or Xorg running
+___gui_console() {
+    local cons
+    system -q -r -s cons -- "fgconsole" || return 1
+    [ "$cons" -lt 7 ] && return 1
+    system -r -q -- pgrep -x "^startkde.*|^startplasma.*"   # return status
+}
+
+# find dbus via startkde: [<user>|- <pid>]
+___find_dbus() {
+    local unam="${1:--}" pids="$2" envf envv
+    [ -n "$DBUS_SESSION_BUS_ADDRESS" -a "$unam" = "-" -a -z "$pids" ] && return 0
+    if [ "$unam" = "-" -a -z "$pids" ] ; then
+        system -r -q -a pids -- pgrep "^startkde"
+        if [ -z "$pids" ] ; then
+            trace -a "No kdeinit process found at all" ; return 1
+        fi
+    elif [ -z "$pids" ] ; then
+        [ "$unam" = "-" ] && unam="$LOGNAME"
+        system -r -q -a pids -- pgrep -u "$unam" "^startkde"
+        if [ -z "$pids" ] ; then
+            trace -a "No kdeinit process found for user '$unam'" ; return 1
+        fi
+    fi
+
+    envf="/proc/$pids/environ"
+    if [ ! -r "$envf" ] ; then
+        trace -a "Cannot read environment: $envf" ; return 1
+    fi
+
+    while IFS= read -r -d '' envv ; do
+        [ "${envv::25}" = "DBUS_SESSION_BUS_ADDRESS=" ] && break
+    done < "$envf"
+
+    if [ -z "$envv" ] ; then
+        trace -a "Could not find DBUS_SESSION_BUS_ADDRESS" ; return 1
+    fi
+    export "$envv" && return 0
+}
+
+# run command for all kde users: <prog> <arg>...
+___all_users() {
+    local stat=0 fone pids item user kapp="kuiserver5"
+    if [ "$1" = "-s" ] ; then
+        fone=1 ; shift
+    fi
+    system -c "$kapp" || kapp="kuiserver"   # kde4
+    system -r -q -a pids -- pidof "$kapp"
+    if [ -z "$pids" ] ; then
+        trace -a "No kde users found" ; return 1
+    fi
+    for item in "${pids[@]}" ; do
+        ___find_dbus - "$item" || continue
+        # user user name from pid
+        system -r -q -s user -- ps -o user= "$item"
+        trace "Env: $DBUS_SESSION_BUS_ADDRESS"
+        trace "Run: $*"
+        eval "$@" || stat=$?
+        [ -n "$fone" ] && break
+    done
+    return $stat
+}
+
+___one_users() {
+        ___find_dbus || return 1
+        eval "$@"
+}
+
+# check it --dryrun is set
+drymsg() {
+    [ -n "$CEN_OPT_DRYRUN" ] || return 1
+    [ -n "$*" ] && message -a "[dryrun] $*"
+    return 0
+}
+
+config() {
+    [ -n "$DAT_HAVE_CONFIG" ] && return 0
+    [ -e "$DAT_CONFIG" ] || return 1
+    . "$DAT_CONFIG"
+    DAT_HAVE_CONFIG=1
+}
+
+# check if host is in list: <list>
+checkHost() {
+    local host stat
+
+    # disable globing and loop over list
+    set -f
+    for host in $1 ; do
+        if [ "$host" = "*" -o "$HOSTNAME" = "$host" ] ; then
+            message -a -- "$host ${2:-ignores} '$CEN_ACTION'"
+            stat=1 ; break
+        fi
+    done
+
+    # reenable globing, return status
+    set +f ; return ${stat:-0}
+}
+
+# try to shutdown via kde: shutdown|reboot
+kdeShutdown() {
+    [ -n "$CEN_OPT_NOLOGOUT" ] && return 1	# disabled by option
+    system -c dbus-send || return 1
+
+    local requ="$1" kcod=0
+    [ "$requ" = "reboot" ]   && kcod=1
+    [ "$requ" = "shutdown" ] && kcod=2
+    local lmsg="$requ request after '$CEN_ACTION'"
+
+    local p sarg kver=5 kapp="kded5"
+    if [ ! -d "/usr/share/kf5/locale" ] ; then
+        kver=4 ; kapp=kded4
+    fi
+    for p in $(pidof $kapp); do
+        ___find_dbus - "$p" || continue
+        local dses="$DBUS_SESSION_BUS_ADDRESS"
+        sarg=$(ps -o user= $p)
+        lmsg="kde$kver $lmsg [pid=$p user=$sarg]"
+
+        drymsg "$lmsg" && return 0
+
+        # arg1: 0=no prompt   1=prompt
+        # arg2: 0=logout 1:reboot 2:shutdown
+        # arg3: 2:force
+        $DAT_MESSAGE -a -- "$lmsg"
+        # removed: --print-reply
+        if [ "$kver" -lt 5 ] ; then
+            su $sarg -s /bin/sh -c "$dses dbus-send --type=method_call \
+                --dest=org.kde.ksmserver /KSMServer org.kde.KSMServerInterface.logout \
+                int32:0 int32:$kcod int32:2" && return 0
+        else
+            su $sarg -s /bin/sh -c "$dses qdbus org.kde.ksmserver /KSMServer logout 0 $kcod 2" && return 0
+        fi
+    done
+    return 1
+}
+
+# call init: shutdown|reboot
+runShutdown() {
+    context -r
+
+    if [ -n "$CEN_OPT_PLYMOUTH" -a -x /sbin/plymouthd ] ; then
+       $DAT_MESSAGE -a "starting plymouth"
+       if ! drymsg ; then
+          #/sbin/plymouthd --mode=$1 --attach-to-session
+          /sbin/plymouthd --mode=shutdown --tty=tty1
+          /bin/plymouth show-splash
+          local ptxt="Shutting down system..."
+          [ "$1" = "shutdown" ] || ptxt="Restarting system..."
+	      /bin/plymouth message --text="$ptxt"
+       fi
+    fi
+
+    # get config
+    config
+    local safs sefs
+    case "$STOP_AUTOFS" in
+        a*|A*|"")   [ /sbin/init -ef /lib/systemd/systemd ] && safs=1 ;;
+        y*|Y*)      safs=1 ;;
+    esac
+    case "$STOP_ENCFS" in
+        a*|A*|"")   sefs=1 ;;
+        y*|Y*)      sefs=1 ;;
+    esac
+
+    # stop autofs
+    if [ -n "$safs" ] && runservice test 'autofs' ; then
+        $DAT_MESSAGE -a "stopping autofs"
+        runservice stop 'autofs'
+    fi
+
+    # unmount unused encfs
+    if [ -n "$sefs" ] ; then
+        $DAT_MESSAGE -a "unmount unused encfs"
+        drymsg || embed -v centauriencfs cleanup
+    fi
+
+    # run shutdown
+    if [ /sbin/init -ef /lib/systemd/systemd ] ; then
+        local verb
+        [ "$1" = "shutdown" ] && verb="poweroff" || verb="reboot"
+        $DAT_MESSAGE -a "invoking 'systemctl $verb' for $1"
+        system -e -p -- systemctl --no-wall "$verb"
+    else
+        local icod=0
+        [ "$1" = "shutdown" ] || icod=6
+        $DAT_MESSAGE -a "invoking 'init $icod' for $1"
+        drymsg || /sbin/init $icod
+    fi
+}
+
+# suspend or hibernate
+runSuspend() {
+    ___make_noise() {
+        system -q -- play -q -v 0.6 "/usr/share/sounds/$1"
+    }
+
+    system -c -e systemctl xset qdbus || return
+
+    # try via dbus (returns invalid dbus address)
+    #___find_dbus ||
+    inhibitor
+
+    system -q -- xset dpms force standby
+    local senv="DBUS_SESSION_BUS_ADDRESS=\$DBUS_SESSION_BUS_ADDRESS"
+    local scmd="qdbus org.freedesktop.ScreenSaver /ScreenSaver Lock"
+    ___all_users system -z -u \$user -- /bin/sh -c \"$senv $scmd \&\"
+    ___make_noise "KDE-Sys-App-Positive.ogg"
+    sleep 3
+
+    #if [ -n "$DBUS_SESSION_BUS_ADDRESS" ] ; then
+    #    local sact="suspendToRam"
+    #    [ "$CEN_ACTION" = "hibernate" ] && sact="suspendToDisk"
+    #    scmd="qdbus org.freedesktop.PowerManagement /org/kde/Solid/"
+    #    scmd+="PowerManagement/Actions/SuspendSession $sact"
+    #    # must search our DBUS because we run as root via sudo
+    #    ___all_users -s system -z -u \$user -- /bin/sh -c \"$senv $scmd\" && return
+    #fi
+
+    # retry with systemd
+    system -e -p -- systemctl "$CEN_ACTION" && return
+
+    # error - make noise
+    system -q -- xset dpms force on
+    sleep 1 ; ___make_noise "KDE-Sys-App-Error-Critical.ogg"
+    sleep 1 ; ___make_noise "KDE-Sys-App-Error-Critical.ogg"
+    sleep 1 ; ___make_noise "KDE-Sys-App-Error-Critical.ogg"
+}
+
+# ------------------------------------------------------------------------------
+# inhibit systemd power key handling (does not inhibit powerdevil etc.)
+# ------------------------------------------------------------------------------
+inhibitor() {
+    system -c systemd-inhibit || return 1
+    message -a "inhibit sleep for 60s (ACTION=$CEN_ACTION PID=$$)"
+    system -q -- systemd-inhibit \
+        --what=handle-power-key:handle-suspend-key:handle-hibernate-key:handle-lid-switch \
+        --who="$CEN_NAME" --why="Recursion workaround" --mode=block sleep 60 &
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# setup action: [remove]
+# ------------------------------------------------------------------------------
+actionSetup() {
+    local sopt='-i'
+    if [ "${1::3}" = 'rem' ] ; then
+        sopt='-r'
+    elif [ -n "$1" ] ; then
+        invoke -e "Invalid argement:" "$1" ; return
+    fi
+    embed -m _centauri_bash_ext
+    error -t || return
+
+    # backup and link: -i|-r <file>
+    ___setup_link() {
+        local frem="$1" ; shift
+        local ekey ehan="/etc/acpi/$1.sh" evnt="/etc/acpi/events/$1"
+        [ -n "$4" ] && evnt+="-$4"
+        if [ "$frem" = '-r' ] ; then
+            remove "$ehan" "$evnt"
+            return
+        fi
+
+        # link action handler
+        symlink -m "$CEN_TOOLS/$DAT_MYNAME" "$ehan"
+        #create event entry
+        ekey="button[ /]$2"
+        [ "$2" = "brightness" ] && ekey=video/brightness$4
+        create -c "$evnt" <<!EOF
+event=$ekey
+action=$ehan $3
+!EOF
+    }
+
+    ___setup_acpi() {
+        if [ "$1" = '-i' ] ; then
+            if ! system -c acpid ; then
+                message -a "Setup for 'acpid' ignored, not installed"
+                return
+            fi
+            folder -m "/etc/acpi" || return
+            message -a "Setup for 'acpid' in '/etc/acpi'"
+        else
+            [ -d "/etc/acpi" ] || return
+            message -a "Uninstall for 'acpid' in '/etc/acpi'"
+        fi
+
+        ___setup_link "$1" "powerbtn-acpi-support"    "power"
+        ___setup_link "$1" "brightness-acpi-support"  "brightness" + "up"
+        ___setup_link "$1" "brightness-acpi-support"  "brightness" - "down"
+
+        # remove old style envents, create README
+        remove /etc/acpi/lid-acpi-support.sh /etc/acpi/powerbtn.sh
+        remove /etc/acpi/events/lid-acpi-support /etc/acpi/events/powerbtn /etc/acpi/events/powerbtn.dpkg-bak
+
+        if system -c systemctl ; then
+            [ "$1" = '-i' ] && system -e -p -- systemctl enable acpid
+            system -e -p -- systemctl restart acpid
+        fi
+
+        if [ "$1" = '-i' ] ; then
+            create -t "/etc/acpi/README_CENTAURI" <<!EOF
+# powerbutton events are handled by $DAT_MYNAME, see /etc/acpi/events.
+!EOF
+        else
+            remove "/etc/acpi/README_CENTAURI"
+        fi
+    }
+
+    ___setup_systemd() {
+        if [ ! -d "/lib/systemd/system-sleep" ] ; then
+            message -a "Setup for 'system-sleep' ignored, no config folder"
+            return
+        fi
+        if [ "$1" = '-r' ] ; then
+            remove "/lib/systemd/system-sleep/$CEN_NAME"
+        else
+            symlink "$CEN_ROOT/tools/$CEN_NAME" "/lib/systemd/system-sleep/centauri-sleep"
+        fi
+        remove "/lib/systemd/system-sleep/centauri"
+    }
+
+    ___setup_acpi "$sopt"
+    ___setup_systemd "$sopt"
+    [ "$sopt" = '-r' ] && return
+
+    # write config file
+    if [ -e "$DAT_CONFIG" ] ; then
+        $DAT_MESSAGE -a "Configuration not modified: $DAT_CONFIG"
+    else
+        create -c "$DAT_CONFIG" <<!EOF
+# Use the value of "*" to globally disable an ACPI action, an empty string to
+# enable it globally or a space separated list of hosts names to be disabled:
+
+LIDCLOSE_IGNORE=""
+POWERBUTTON_IGNORE=""
+
+# Use the value of "*" to globally disable USB wakeup, an empty string to keep
+# the current state or a space separated list of hosts names to be disabled:
+
+DISABLE_USBWAKEUP=""
+
+# stop autofs/encfs yes|no|auto (default auto)
+#STOP_AUTOFS=no
+#STOP_ENCFS=no
+!EOF
+        message -a "Configuration file created: $DAT_CONFIG"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# adjust screen brightness: +|-|<percent>
+# ------------------------------------------------------------------------------
+actionBrightness() {
+    if [ -z "$CEN_OPT_FORCE" ] && ___gui_console ; then
+       message "ignoring" "$CEN_ACTION" "$1"
+       return
+    fi
+    message "running" "$CEN_ACTION" "$1"
+
+    local bdev bbas='/sys/class/backlight/'
+    for bdev in 'intel_backlight' 'amdgpu_bl0' 'acpi_video0' 'rpi_backlight' ; do
+        bdev="$bbas$bdev"
+        [ -d "$bdev" ] && break
+    done
+    if [ ! -e "$bdev/brightness" ] ; then
+        trace -a "No backlight device found" ; return
+    fi
+
+    local bcur bmax binc
+    [ -r "$bdev/actual_brightness" ] && read bcur < "$bdev/actual_brightness"
+    [ -z "$bcur" -a -r "$bdev/brightness" ] && read bcur < "$bdev/brightness"
+    [ -r "$bdev/max_brightness" ] && read bmax < "$bdev/max_brightness"
+    if [ -z "$bcur" -o -z "$bmax" ] || [ ! -w "$bdev/brightness" ] ; then
+        trace -a "Backlight device not usable" ; return
+    fi
+
+    binc=$(((bmax + 11) / 12))
+    if [ "$1" = "++" ] ; then
+        bcur="$bmax"
+    elif [ "$1" = "+" ] ; then
+        bcur=$((bcur + binc)) ; [ "$bcur" -gt "$bmax" ] && bcur="$bmax"
+    elif [ "$1" = "-" ] ; then
+        bcur=$((bcur - binc)) ; [ "$bcur" -lt "0" ] && bcur="0"
+    elif [ -z "${1//[0-9]/}" ] ; then
+        if [ "$1" -lt 0 -o "$1" -gt 100 ] ; then
+            invoke -e "Value out of range: %s" "$1" ; return
+        fi
+        bcur=$((bmax * $1 / 100)) ; [ "$bcur" -gt "$bmax" ] && bcur="$bmax"
+    else
+        invoke -e "Invalid argument: %s" "$1" ; return 1
+    fi
+    drymsg "$bcur > $bdev/brightness" && return
+    echo "$bcur" > "$bdev/brightness"
+}
+
+actionDbus() {
+    ___all_users "$@"
+}
+
+# ------------------------------------------------------------------------------
+# power button action
+# ------------------------------------------------------------------------------
+actionPower() {
+
+    # ignore configured?
+    config
+    checkHost "$POWERBUTTON_IGNORE" || return
+
+    kdeShutdown "shutdown" && return
+
+    inhibitor
+    $DAT_MESSAGE -a "Invoke shutdown after 'powerbutton' event"
+    runShutdown "shutdown"
+}
+
+# ------------------------------------------------------------------------------
+# shutdown/reboot action
+# ------------------------------------------------------------------------------
+actionShutdown() {
+    if [ -n "$CEN_OPT_CANCEL" -a "$CEN_ACTION" = "shutdown" ] ; then
+        system -e -p -- shutdown -c ; return
+    fi
+
+    kdeShutdown "$CEN_ACTION" && return
+    [ "$CEN_ACTION" = "logout" ] && return
+
+    inhibitor
+    $DAT_MESSAGE -a "Invoke $CEN_ACTION after command"
+    runShutdown "$CEN_ACTION"
+}
+
+# ------------------------------------------------------------------------------
+# suspend action
+# ------------------------------------------------------------------------------
+actionSuspend() {
+    dryrun "ignore" "$CEN_ACTION" && return
+    $DAT_MESSAGE "running" "$CEN_ACTION"
+    runSuspend
+}
+
+# ------------------------------------------------------------------------------
+# systemd-sleep action
+# ------------------------------------------------------------------------------
+actionSystemsleep() {
+    case "$1" in
+    pre)
+        message "Preparing for suspend"
+        local mpid mcnt=10
+
+        # get centaurimounter's PID and try to stop it
+        #if pidfile -c centaurimounter ; then
+        #    read mpid <"$CEN_PIDFILE"
+        #    systemctl stop centaurimounter &
+        #fi
+
+        if [ "/etc/network/interfaces" -ef "/etc/network/interfaces.simple" ] ||
+            [ "/etc/network/interfaces" -ef "/etc/network/interfaces.smart"  ] ; then
+
+            # stop gmediarender and mindlna as they dislike sleep...
+            systemctl stop centauri-wsdd centauri-network &
+        fi
+
+        if [ "/etc/network/interfaces" -ef "/etc/network/interfaces.simple" ] ||
+            [ "/etc/network/interfaces" -ef "/etc/network/interfaces.smart"  ] ; then
+
+            # NetworkManager would cause a switch to 'local' after resume. Better
+            # do it here ...
+
+            centauriswitch local &
+        fi
+
+        # wait some time for services to stop, otherwise systemd may suspend while
+        # some services have not yet finished to stop ...
+        sleep 0.5
+        #[ -n "$mpid" ] &&
+        #    while kill -0 "$mpid" 2>/dev/null ; do
+        #        trace "Waiting for 'centaurimounter' PID=$mpid #$mcnt"
+        #        sleep 0.5
+        #        ((mcnt--)) && continue
+        #        warning "Timeout, 'centaurimounter' failed to stop" ; break
+        #    done
+            ;;
+
+    post)
+        message "Resuming after suspend"
+        #if system -q -- systemctl is-enabled centaurimounter ; then
+        #    systemctl start centaurimounter
+        #fi
+        ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# usb wakeup action
+# ------------------------------------------------------------------------------
+actionWakeup() {
+    # loop over devices and list or set: [enable|disable]
+    ___usbWakeup() {
+        local curr="*${1}d"
+        local name mode stat addr
+        while read -e name mode stat addr ; do
+            case "$name" in
+            *USB*)  : ;;
+            *)      continue ;;
+            esac
+            [ -z "$1" ] && echo "$name $mode $stat $addr"
+            [ "$stat" = "$curr" ] && continue
+            drymsg "toggle wakeup: $name" && continue
+            echo "$name" > /proc/acpi/wakeup
+        done < /proc/acpi/wakeup
+    }
+
+    case "$1" in
+    ""|lis*)    ___usbWakeup  ;;
+    ena*|on)    ___usbWakeup "enable"  ;;
+    dis*|off)   ___usbWakeup "disable" ;;
+    sus*)       config
+                checkHost "$DISABLE_USBWAKEUP" "disables" && return
+                ___usbWakeup "disable"  ;;
+    *)          fatal "Invalid mode '$1', expected 'on' or 'off'" ;;
+    esac
+}
+
+
+# ------------------------------------------------------------------------------
+# option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    -c|--can*)
+        optarg "cancel"      CEN_OPT_CANCEL ;;
+    -N|--nol*)
+        optarg "nologout"    CEN_OPT_NOLOGOUT ;;
+    -P|--ply*)
+        optarg "plymouth"    CEN_OPT_PLYMOUTH ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    bri*)
+        invoke -s "brightness"  -              1 ;;
+    dbu|dbus)
+        invoke -s "dbus"        -            3 + ;;
+    hib*)
+        invoke    "hibernate"   actionSuspend  0 ;;
+    log*)
+        invoke    "logout"      actionShutdown 0 ;;
+    pow*)
+        invoke    "powerbutton" actionPower    0 ;;
+    reb*)
+        invoke -s "reboot"      actionShutdown 0 ;;
+    set*)
+        invoke -r "setup"       -            0 1 ;;
+    shu*)
+        invoke -s "shutdown"    -              0 ;;
+    sus*)
+        invoke -s "suspend"     -              0 ;;
+    sys*)
+        invoke -r "systemsleep" -              1 ;;
+    wak*)
+        invoke -r "wakeup"      -            0 1 ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -c --cancel          used with 'shutdown' to cancel a pending shutdown
+       -N --nologout        do not try to logout from KDE
+       -P --plymouth        start plymouth (used with --nologout from kdm)
+
+actions:
+       powerbutton          (internal) process ACPI powerbutton event
+       systemsleep  <evnt>  (internal) process systemd-sleep events
+
+       brightness   <bval>  process ACPI brightness events
+
+       logout               terminate kde session
+       reboot               reboot the system
+
+       hibernate            hibernate the system (power off)
+       shutdown             shutdown the system
+       suspend              enter suspend to ram
+
+       setup  [remove]      install links in /etc/acpi and /lib/systemd/system-sleep
+       wakeup [on|off|suspend]
+                            enable/disable or list USB wakeup. Suspend does a
+                            conditional disable based on config file setting
+
+arguments:
+       <bval>               can be 0..100 (percent), '++' (100%), '-' or '+'
+       <evnt>               see systemd-sleep documentation
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

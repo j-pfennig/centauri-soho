@@ -1,0 +1,1565 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2024 BSD License"
+CEN_TITLE="Tool to manage btrfs volumes and snapshots"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -m bat -m win -s -y - "0.56:2" || exit 2
+
+# Data
+
+CEN_OPT_ALL=                            # see --all
+CEN_OPT_BASE=()                         # see --base
+CEN_OPT_NICKNAME=                       # see --nickname
+CEN_OPT_POST=                           # see --post
+CEN_OPT_SUFFIX="old"                    # see --suffix
+CEN_OPT_WRITE=                          # see --writable
+
+CEN_DAT_BDEF="/mnt/vol?"                # see --base
+CEN_DAT_PERIOD=                         # set in snapshot_folder()
+CEN_DAT_ROOT=()                         # base folder
+CEN_DAT_DIR="$PWD"                      # initial directory
+
+CEN_DAT_DEFVOL=                         # default volume
+
+# ------------------------------------------------------------------------------
+# helpers
+# ------------------------------------------------------------------------------
+
+# find volume by name: <volu>
+#
+# Options:
+#       -s silent mode
+#
+_volume_find=
+volume_find() {
+    local root vols=() volu ecmd=error
+    [ -n "$CEN_OPT_ZOMBIE" ] && ecmd=message
+    _volume_find=
+
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -s)   ecmd=":" ;;
+      *)    fatal -t - "$1"
+      esac ; shift
+    done
+    volume_name "$ecmd" "$1" || return 1
+    volu="$_volume_name"
+
+    # make list for volume base folders
+    for base in "${CEN_DAT_ROOT[@]}" ; do
+        if [ -d "$base/Volumes/$volu" ] ; then
+            _volume_find="$base/Volumes/$volu" ; return 0
+        fi
+        vols+=("$base/Volumes")
+    done
+
+    # callback for lower case compare of folder name and <volu>
+    __volume_find_dir() {
+        [ "$CEN_WALK_LEVEL" -le 1 ] && return 1
+        local _fldr=${1##*/}
+        [ "${_fldr,,}" = "${volu,,}" ] || return 1
+        _volume_find="$2" ; return 3
+    }
+
+    # search <volu> in volume base folders
+    walk -d __volume_find_dir -f false  -r -l 1 "${vols[@]}"
+    [ -n "$_volume_find" ] && return 0
+    $ecmd "Volume not found: $1" ; return 1
+}
+
+# generate a list of volumes suitable for an action: <root> <action>
+_volume_list=
+volume_list() {
+    if [ -z "$CEN_OPT_NICKNAME" ] ; then
+        sysversion -u
+        CEN_OPT_NICKNAME="${CEN_SYS_NICKNAME:--}"
+        trace -a -c "Nickname used" -- "$CEN_OPT_NICKNAME"
+    fi
+    local volu vkey vnam actn="${2::3}" mesg
+    _volume_list=()
+    for volu in "$1/Volumes"/* ; do
+        vkey="${volu##*/}" ; vnam="${vkey,,}"
+
+        # step 1: filter by name (nickname removed)
+
+        if [ -n "$CEN_OPT_ALL" ] ; then             # no default exclusions
+            :
+        elif [ "$actn" = 'sna' ] ; then
+            case "${vnam%-*}" in
+                bak[0-9])   continue ;;
+                autosave)   continue ;;
+                backup)     continue ;;
+                history)    continue ;;
+            esac
+        elif [ "$actn" = 'def' -o "$actn" = 'ded' ] ; then
+            case "${vnam%-*}" in
+                vbox)       continue ;;
+            esac
+        fi
+
+        # step 2: filter by nickname
+        case "$vnam" in
+            *.*)        continue ;;
+            *-*)        [ "${CEN_OPT_NICKNAME:--}" = '-' ] && continue
+                        [ "${vnam##*-}" = "$CEN_OPT_NICKNAME" ] || continue ;;
+            *)          if [ "${CEN_OPT_NICKNAME:--}" != '-' ] ; then
+                            [ -d "$volu-$CEN_OPT_NICKNAME" ] && continue
+                        fi
+        esac
+
+        # step 3: other filters
+
+        filter -i -- "$vkey" || continue
+        [ -d "$volu" ] || continue
+        _volume_list+=("$volu") ; mesg+="${mesg:+ }$vkey"
+    done
+    trace -a -c "Volumes found" -- "${mesg:--none-}"
+    [ -n "$_volume_list" ]                  # return status
+
+}
+
+# make a valid volume name: [-c]|<ecmd> <name>
+_volume_name=
+volume_name() {
+    _volume_name="${2^}"
+    if [[ "$_volume_name" == [![:alpha:]]* ]] ; then
+        :
+    elif [ "$1" = '-c' ] ; then            # strict name check
+        [[ "$_volume_name" == *[-_./\ ]* ]] || return 0
+    else
+        [[ "${_volume_name%.*}" == *[./\ ]* ]] || return 0
+    fi
+    ${1/-c/error} "Invalid volume name:" "$2"
+    _volume_name= ; return 1
+}
+
+# find snapshot or volume by name or path: [-s] <name>|<volu>|<path>
+#
+# Options:
+#       -n don't search volumes if no suffix in argument
+#       -s silent mode
+#
+_snapshot_find=
+snapshot_find() {
+    local slnt nvol mesg="Cannot find snapshot for:"
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -n)   nvol=1 ;;
+      -s)   mesg= ;;
+      *)    fatal -t - "$1"
+      esac ; shift
+    done
+
+    _snapshot_find=
+    folder -f -c "$CEN_DAT_DIR"                 # back to initial folder
+
+    local base root snap sper snam suff
+    case "$1" in
+    /*)                                         # absolute path
+                snap="$1" ;;
+    ./*)                                        # relative path
+                prettypath -c -q -s snap -- "$1" ;;
+
+    Snapshots/*/*)                              # path in snapshot folder
+                snam="${1##*/}" ; snap="$1" ;;
+    */*)                                        # period and name
+                sper="${1%/*}" ; snam="${1##*/}"
+                if ! listsearch -- "$sper" 'daily' 'weekly' 'monthly' 'all' ; then
+                    error "Period must be one of: daily weely monthly all" ; return 1
+                fi
+                ;;
+    *)                                          # name
+                snam="$1" ;;
+    esac
+
+    if [ -n "$snap" -a -z "$snam" ] ; then
+        mesg="No such snapshot or subvolume:"
+    else
+        suff="${snam##*.}" ; [ "$suff" = "$snam" ] && suff=
+        snam="${snam%.*}"  #### ; snam="${snam^}"
+
+        # no date given
+        if [ "${snam%_*}" = "$snam" ] ; then
+            # can it be a volume backup?
+            [ -n "$suff" ] && nvol=
+            if [ -z "$sper" -a -z "$nvol" ] ; then
+               if volume_find -s -- "$snam.${suff:-$CEN_OPT_SUFFIX}" ; then
+                    _snapshot_find="$_volume_find" ; return 0
+               elif volume_find -s -- "$snam" ; then
+                    _snapshot_find="$_volume_find" ; return 0
+               fi
+            fi
+            # append current date
+            snapshot_name snam "$snam" -
+        fi
+
+        # must be a snapshot
+        snam+=".${suff:-snapshot}"
+        for root in "${CEN_DAT_ROOT[@]}" ; do
+            if [ -z "$snap" ] ; then
+                :
+            elif [ -d "$snap" ] ; then
+                _snapshot_find="$snap" ; return 0
+            elif [ -d "$root/$snap" ] ; then
+                _snapshot_find="$root/$snap" ; return 0
+            fi
+            base="$root/Snapshots"
+            if [ "${sper:-all}" != "all" ] ; then
+                snap="$base/$sper/$snam"
+            else
+                snap="$base/monthly/$snam"
+                if [ ! -d "$snap" ] ; then
+                    snap="$base/weekly/$snam"
+                    [ -d "$snap" ] || snap="$base/daily/$snam"
+                fi
+            fi
+        done
+    fi
+
+    if [ ! -d "$snap" ] ; then
+        [ -n "$mesg" ] && error "$mesg" "$1"
+        return 1
+    fi
+    _snapshot_find="$snap" ; return 0
+}
+
+# check for snapshot folder: [-a] [-e] [-b base] [-s] [<period>]
+#
+# Options:
+#       -a allow "all" as period, use "all" as default
+#       -e error if <period> folder not existing>
+#       -s silent mode
+#
+snapshot_folder() {
+    local slnt smsg="message -i" dflt="daily" base
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   dflt="all" ;;
+      -b)   shift ; base="$1" ;;
+      -e)   smsg="error" ;;
+      -s)   slnt=1 ;;
+      *)    fatal "Bad 'snapshot_folder' argument: $1"
+      esac ; shift
+    done
+
+    if [ -z "$base" ] ; then
+        base="$CEN_DAT_ROOT/Snapshots"
+        [ -n "${CEN_DAT_ROOT[1]}" ] && warning "Action '$CEN_ACTION': multiple bases, consider using single '--base'"
+    fi
+
+    case "${1:-$dflt}" in
+        *[!a-z]*)   invoke -e "no valid <period> no <snapshot> argument"
+                    return 1 ;;
+        da[iy]*)    CEN_DAT_PERIOD="daily" ;;
+        wee*)       CEN_DAT_PERIOD="weekly" ;;
+        mon*)       CEN_DAT_PERIOD="monthly" ;;
+        *)          CEN_DAT_PERIOD=
+                    if [ "$dflt" != "all" -o "${1:-all}" != "all" ] ; then
+                        invoke -e "<period> must be one of: daily weekly monthly"
+                        return 1
+                    fi
+    esac
+
+    if ! folder -c "$base" ; then
+        [ -z "$slnt" ] &&
+            fatal "Found no snapshot folder, use '--base <fldr>' to override base"
+    elif [ -z "$CEN_DAT_PERIOD" -o -d "$CEN_DAT_PERIOD" ] ; then
+        return 0
+    else
+        [ -z "$slnt" ] &&
+            $smsg "No snapshots : $base (for '$CEN_DAT_PERIOD' period)"
+    fi
+    return 1
+}
+
+# check for a snapshot volumes
+snapshot_volume() {
+    local base ecmd=fatal
+    CEN_DAT_ROOT=()
+    if [ -n "$CEN_OPT_BASE" ] ; then
+        for base in "${CEN_OPT_BASE[@]}" ; do
+            [ -d "$base/Volumes" ] || continue
+            CEN_DAT_ROOT+=("$base")
+        done
+    else
+        for base in $CEN_DAT_BDEF ; do
+            [ -d "$base/Volumes" ] || continue
+            CEN_DAT_ROOT+=("$base")
+        done
+    fi
+    if [ -z "$CEN_DAT_ROOT" ] ; then
+        # no error for actions: init, prepare and cron
+        case "${CEN_ACTION::3}" in
+            ini|pre)    return ;;
+            cro)        ecmd="trace -a"
+        esac
+
+        [ -n "$CEN_OPT_SILENT" -o -n "$CEN_OPT_ZOMBIE" ] && [ "$ecmd" = "fatal" ] &&
+            quit "No BTRFS base folders found"
+        $ecmd "No BTRFS base folders found, consider using '--base'" ; return 1
+    fi
+    trace "BTRFS Base folders:" "${CEN_DAT_ROOT[@]}"
+}
+
+# generate a snapshot name: <vnam> <name> [<suff>]
+snapshot_name() {
+    local suff="${3:-snapshot}"
+    [ "$suff" = '-' ] && suff= || suff=".${suff#.}"
+    printf -v "$1" "%s_%(%Y-%m-%d)T%s" "${2^}" -1 "$suff"
+}
+
+# make --include/--exclude options for centauriarchive: <array>
+archive_opts() {
+    declare -n _oarr="$1"
+    local _excl="include" _valu
+    for _valu in "${CEN_OPT_INCLEXCL[@]}" ; do
+        _valu="${_valu#\*}" ; _valu="${_valu%\*}"
+        [ -n "$_valu" ] && _oarr+=("--$_excl=$_valu")
+        [ "$_excl" = "include" ] && _excl="exclude" || _excl="include"
+    done
+}
+
+# find subvolume id by name: <path>
+_subvol_id=
+subvol_id() {
+    _subvol_id=
+    local item iarr ivol inam rarr root
+    root="${1%%/Volumes/*}" ; root="${root%%/Snapshots/*}"
+    system -r -e -p -a rarr -d "\n" btrfs subvolume list -t "$root"
+    for item in "${rarr[@]}" ; do
+        splitjoin -s iarr -- "$item"
+        ivol="${iarr[0]}"
+        inam="${iarr[${#iarr[@]}-1]}"
+        [ "$inam" = "$1" -o "$root/$inam" = "$1" ] || continue
+        _subvol_id="$ivol" ; return 0
+    done
+
+    # try toplevel (id is hardcoded = 5)
+    for item in "${CEN_DAT_ROOT[@]}" ; do
+        [ "$1" -ef "$item" ] || continue
+        _subvol_id=5 ; return 0
+    done
+    return 1
+}
+
+# manage properties: -d|-r|-s <snap>|<subvol> <value>
+_property_tool=
+property_tool() {
+    local ddir dvol pval="$3" snap="${2:--}"
+    _property_tool=
+
+    if [ "$1" = "-d" ] ; then
+        if subvol_id "$snap" ; then
+            system -e -p btrfs subvolume set-default "$_subvol_id" "$snap"
+            return
+        fi
+        error "Could not find id for subvolume, default not set"
+        return 1
+    elif [ "$1" = "-r" ] ; then
+        system -e -p btrfs property set -ts "$snap" ro "$pval"
+        return
+    fi
+
+    if [ -z "$CEN_DAT_DEFVOL" ] ; then
+        CEN_DAT_DEFVOL=()
+        for ddir in "${CEN_DAT_ROOT[@]}" ; do
+            system -e -p -r -s dvol btrfs subvolume "get-default" "$ddir"
+            [ -z "$dvol" ] && dvol='-'
+            CEN_DAT_DEFVOL+=("$ddir/${dvol##* }")
+        done
+    fi
+
+    [ "$snap" = '-' ] && return 0
+    system -e -p -r -s pval btrfs property get -ts "$snap" ro || return 1
+    [ "$pval" = "ro=true"  ] && _property_tool="READONLY"
+    [ "$pval" = "ro=false" ] && _property_tool="WRITABLE"
+    for ddir in "${CEN_DAT_DEFVOL[@]}" ; do
+        [ "$snap" -ef "$ddir" ] || continue
+        _property_tool+=" DEFAULT" ; break
+    done
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# copy snapshots: <period> [<host>:]<dest> <parent> <snap>....
+# ------------------------------------------------------------------------------
+actionCopy() {
+    local host dest dbas orig item ssuf asnp=() prnt="${3:--}"
+    folder -f -c "$CEN_DAT_DIR"                 # back to initial folder
+    orig="$PWD"
+    dest="${2//[a-zA-Z0-9-\.]/}"                # strip allowed hostname chars
+    if [ "${dest::1}" = ":" ] ; then            # is remote ...
+        host="${2%%:*}" ; dest="${2#*:}"
+        warning -a "Cannot run checks on remote host:" "$host:$dest"
+        host="centaurissh --user=root@$host batch "
+    else
+        folder -f -c "$2" ; dest="$PWD"         # get destination
+### TODO:    folder -f -c "$CEN_DAT_DIR"                 # back to initial folder
+    fi
+    if [ "$1" = '-' ] ; then                    # send a volume
+        ssuf="_9990"
+        if [ $# != 4 ] ; then
+            error "Volume copy with bad argument count" ; return
+        fi
+        prettypath -b -c -e -s orig -- "$4"
+    else
+        snapshot_folder -s -- "$1" || return    # snapshot period ok?
+        orig="${CEN_DAT_PERIOD:-$orig}"
+        dest+="/$CEN_DAT_PERIOD"
+    fi
+    dbas="$dest"
+    shift 3
+
+    # check items to be sent
+    for item in "$@" ; do
+        item="${item%/}" ; item="${item##*/}"
+        if ! [ -e "$orig/$item" ] ; then
+            error   "No such snapshot:" "$item"
+        elif [ -z "$host" -a -e "$dest/$item" ] ; then
+            warning "Existing destination:" "$item"
+        else
+            asnp+=("$item")
+        fi
+    done
+    if [ -z "$asnp" ] ; then
+        message "Nothing to copy"
+        return
+    fi
+
+    # search a parent (must be older than 1st snapshot to be sent)
+    if [ "$prnt" = "+" -a -d "$orig/$item" ] ; then
+        local inam mvol="${1%_*}" ; mvol="${mvol%.*}"
+        local ppre="$CEN_DAT_ROOT/Snapshots"
+        prnt=
+        for item in "$ppre"/*/${mvol##*/}*.snapshot ; do
+            inam="${item##*/}"
+            [ "$inam" \< "${asnp%.*}$ssuf" ] || continue
+            if [ -z "$host" ] ; then
+                [ -e "${dest%/*}/${item#$ppre}" ] || continue
+            fi
+            [ "$inam" \> "${prnt##*/}" ] && prnt="$item"
+        done
+        [ -n "$prnt" ] || error "Could not find a parent"
+
+    # validate that parent exists (local filesystem only)
+    elif [ "$prnt" != '-' ] ; then
+        if [ -e "$orig/$prnt" ] ; then
+            prnt="$orig/$prnt"
+        else
+            if [ -e "$PWD/$prnt" ] ; then
+                prnt="$PWD/$prnt"
+            elif [ ! -e "$prnt" ] ; then
+                error "Parent not found:" "$prnt"
+            fi
+        fi
+        [ -n "$host" -o -e "$prnt" ] || error "Parent not found:" "$prnt"
+    fi
+    error -q
+
+    for item in "${asnp[@]}" ; do
+        if [ "$prnt" = '-' ] ; then
+            message -i "Copy $orig/$item  (full copy)"
+            if [ -z "$CEN_OPT_DRYRUN" ] ; then
+                system -e -p -z -- btrfs send "$orig/$item" |
+                system -e -p -- ${host}btrfs receive "$dest"
+                [ "${PIPESTATUS[0]}${PIPESTATUS[1]}" = '00' ] || break
+            else
+                message -a "> btrfs" send "$orig/$item |"
+                message -a "  ${host}btrfs" receive "$dest"
+            fi
+        else
+            #[ "${prnt::1}" = "/" ] || prnt="$orig/$prnt"
+            message -i "Copy $orig/$item  (parent: $prnt)"
+            if [ -z "$CEN_OPT_DRYRUN" ] ; then
+                system -e -p -z -- btrfs send -p "$prnt" "$orig/$item" |
+                system -e -p -- ${host}btrfs receive "$dest"
+                [ "${PIPESTATUS[0]}${PIPESTATUS[1]}" = '00' ] || break
+            else
+                message -i "> btrfs" send -p "$prnt" "$orig/$item |"
+                message -i "  ${host}btrfs" receive "$dest"
+            fi
+        fi
+        #[ $? = 0 ] || quit "Stop after error"
+        prnt="$orig/$item"                      # next parent
+    done
+}
+
+# ------------------------------------------------------------------------------
+# create/delete snapshots: <period>
+# ------------------------------------------------------------------------------
+actionCron() {
+    local base rlis=("${CEN_DAT_ROOT[@]}")      # save root list
+    for base in "${CEN_DAT_ROOT[@]}" ; do       # loop over roots...
+        CEN_DAT_ROOT=("$base")
+        snapshot_folder -s -- "$1" || continue
+        message -c "Cron ${CEN_DAT_PERIOD:-all}" -- "$base"
+
+        actionQuota off                         # ignore errors ...
+        actionDelete "$1" --- 2 ..              # keep one snapshot
+        actionDedup
+        [ "${1::2}" != "da" ] && actionDefrag   # not for daily
+        actionSnap "$1"                         # make snapshots
+        [ "${1::2}" = "mo" ] && actionScrub     # monthly only
+    done
+    CEN_DAT_ROOT=("${rlis[@]}")                 # restore roots
+}
+
+# ------------------------------------------------------------------------------
+# deduplicate: [reset]
+# ------------------------------------------------------------------------------
+actionDedup() {
+    ___dedup_res_bedup() {
+        yes | system -e -n bedup reset --db-path="$1/bedup.db" "$1"
+        ___dedup_run_bedup "$1"
+    }
+    ___dedup_run_bedup() {
+        system -e -n -- $nexe bedup dedup --db-path="$1/bedup.db" --size-cutoff=60000 --defrag "$1"
+    }
+    ___dedup_res_duperemove() {
+        remove "$1/duperemove.hash" ; ___dedup_run_duperemove "$1"
+    }
+    ___dedup_run_duperemove() {
+        volume_list "$1" 'dedup' || return
+        # backup/defragment hash table
+        if [ -e "$1/duperemove.hash" ] ; then
+            rename -o -- "$1/duperemove.hash" "$1/duperemove.hash.old"
+            copy -a -n -- "$1/duperemove.hash.old" "$1/duperemove.hash"
+        fi
+        system -e -n -- $nexe duperemove -b 1M --io-threads=2 -drh --hashfile="$1/duperemove.hash" "${_volume_list[@]}"
+        #system -e -n -- $nexe duperemove -q -b 1M --io-threads=2 -drh --hashfile="$1/duperemove.hash" "${_volume_list[@]}"
+    }
+
+    local inst="/usr/local/bin" ddup base nexe bsta="$CEN_EXIT"
+    system -c ionice && nexe="ionice -c idle "
+    system -c nice && nexe+="nice"
+
+    if [ "${PATH/$inst/}" = "$PATH" ] ; then
+        PATH+=":$inst" ; export PATH
+    fi
+    for ddup in duperemove bedup - ; do
+        if [ "$ddup" = '-' ] ; then
+            invoke -e "neither 'duperemove' nor 'bedup' is installed"
+            [ "$CEN_ACTION" != "dedup" ] && return
+            error -s 2 ; return
+        fi
+        system -c "$ddup" && break
+    done
+
+    for base in "${CEN_DAT_ROOT[@]}" ; do
+        message -a -c -p "Deduplicating" "%s (logfile: %s)" "$base" "$base/$ddup.log"
+        if [ -n "$CEN_OPT_DRYRUN" ] ; then
+            case "$1" in
+                res*)   ___dedup_res_$ddup "$base" ;;
+                "")     ___dedup_run_$ddup "$base" ;;
+                *)      error "Bad '$CEN_ACTION' argument: $1" ;;
+            esac
+        else
+            case "$1" in
+                res*)   ___dedup_res_$ddup "$base" 2>&1 ;;
+                "")     ___dedup_run_$ddup "$base" 2>&1 ;;
+                *)      error "Bad '$CEN_ACTION' argument: $1" ;;
+            esac >"$base/$ddup.log"
+        fi
+    done
+    [ "$bsta" = "0" ] && error -c           # ignore dedup errors
+}
+
+# ------------------------------------------------------------------------------
+# defragment: -none-
+# ------------------------------------------------------------------------------
+actionDefrag() {
+    local root nexe bsta="$CEN_EXIT"
+    system -c ionice && nexe="ionice -c idle "
+    system -c nice && nexe+="nice"
+
+    for root in "${CEN_DAT_ROOT[@]}" ; do
+        volume_list "$root" 'defragment' || continue
+        message -a -p "Defragmenting '%s' (logfile '%s')" "$root" "$root/defrag.log"
+        if [ -n "$CEN_OPT_DRYRUN" ] ; then
+            {   # ignore error (may find busy files)
+                system -e -n -- $nexe btrfs fi defragment "${_volume_list[@]}" -r -t 1M
+                system -e -n -- $nexe btrfs balance start -dusage=50 -dlimit=4 -musage=50 -mlimit=4 "$root"
+            }
+        else
+            {   # ignore error (may find busy files)
+                system -e -n -- $nexe btrfs fi defragment "$root/Volumes"/* -r -t 1M 2>&1
+                system -e -n -- $nexe btrfs balance start -dusage=50 -dlimit=4 -musage=50 -mlimit=4 "$root" 2>&1
+            } >"$root/defrag.log"
+        fi
+    done
+    [ "$bsta" = "0" ] && error -c           # ignore defrag errors
+}
+
+# ------------------------------------------------------------------------------
+# delete snapshots: <snap>...
+#                   <period> <args>...
+# ------------------------------------------------------------------------------
+actionDelete() {
+    while snapshot_find -s -- "$1" ; do
+        if confirm -n "Delete snapshot '$_snapshot_find'" ; then
+            if findmount -- "$_snapshot_find" ; then
+                error "Cannot delete mounted volume:" "$CEN_MOUNT_DIR"
+            else
+                system -e -p btrfs subvolume delete "$_snapshot_find"
+            fi
+        fi
+        shift ; [ $# = 0 ] && return
+    done
+    error -t || return
+
+    local opts=() peri="${1:-all}" mage root
+    case "$peri" in
+        da[iy]*)    opts=("--level=1" "--folder=./daily")   ; mage=8   ; shift ;;
+        wee*)       opts=("--level=1" "--folder=./weekly")  ; mage=32  ; shift ;;
+        mon*)       opts=("--level=1" "--folder=./monthly") ; mage=124 ; shift ;;
+        all)        opts=("--level=2") ; shift ;;
+        "+"|'-')    opts=("--level=2") ; peri="all"
+    esac
+
+    archive_opts opts
+    case "$1" in
+        "+")        shift ; set -- 1 .. 1 ;;
+        '-')        opts+=("--reverse") ; shift ; set -- 1 .. 1 ;;
+        *)          [ -n "$mage" ] && opts+=("--minage=$mage")
+    esac
+
+    for root in "${CEN_DAT_ROOT[@]}" ; do
+        snapshot_folder -a -b "$root/Snapshots" -s -- "$peri" || continue
+        embed -v -y -z centauriarchive -q "${opts[@]}" \
+                 exec --exec "btrfs subvolume delete" --write "Delete" "$@"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# initialize volume: <mountpoint> [<device> [<label>|-|+ [<defvol>|-] ] ]
+# ------------------------------------------------------------------------------
+actionInit() {
+    local adir="$1" adev="$2" albl="$3" dvol="${4:-Root}"
+    folder -f -c "$CEN_DAT_DIR"                 # back to initial folder
+
+    if [ "${adev:--}" != '-' ] ; then
+        if [ -z "$CEN_OPT_DRYRUN" ] ; then
+            [ -b "$adev" ] || error "Not a block device: $adev"
+            [ -d "$adir" ] || error "Not a folder: $adir"
+            error -t || return
+        fi
+        system -q umount "$adev"
+
+        [ "$albl" = '+' ] && albl=
+        if [ "$albl" = '-' ] ; then
+            if [ "$CEN_ACTION" != "prepare" ] ; then
+                confirm -a -y "Format '$adev' as btrfs (no label)" || return
+            fi
+            system -e -p mkfs.btrfs -f "$adev" || return
+        elif [ -n "$albl" ] ; then
+            if [ "$CEN_ACTION" != "prepare" ] ; then
+                confirm -a -y "Format '$adev' as btrfs (label '$albl')" || return
+            fi
+            system -e -p mkfs.btrfs -f -L "$albl" "$adev"
+            error -t || return
+        fi
+
+        trace -a "Mounting: $adev (subvol=/)"
+        system -e -p mount "$adev" "$adir" -o subvol=/
+        error -t || return
+
+        actionInit "$adir" - "$albl" "$dvol"
+        [ "$CEN_ACTION" = "prepare" ] && return 0
+
+        trace -a "Unmounting: $adev"
+        system -e -q cd /
+        system -e -p umount "$adev"
+        return
+    elif [  "$CEN_ACTION" != "prepare"  -a ! -d "$adir/Volumes" ] ; then
+        confirm -a "Found no '$adir/Volumes' folder. Run full init" || return
+    fi
+
+    local iter rarr fcre pref="${albl%%_*}"
+    folder -c "$adir" || return
+    system -p -f -r -s iter stat --format "%T" --file-system "$PWD"
+    if [ -z "$CEN_OPT_DRYRUN" ] && [[ $iter != *btrfs* ]] ; then
+        error "Not a btfs filesystem:" "$PWD"
+        return
+    fi
+    [ "${pref:--}" != '-' ] && system -e -p touch "${albl^^}"
+
+    message -a "Creating Folders in:" "$PWD"
+    local dirc=()
+    local dirs=("Volumes" "Snapshots" "Snapshots/daily" "Snapshots/weekly" "Snapshots/monthly")
+    for iter in "${dirs[@]}" ; do
+        [ -d "$iter" ] && continue
+        if [ "${iter/\//}" != "$iter" ] ; then
+            filter -i -- "$iter" || continue
+            confirm -i -y -q "Create '$adir/$iter'" || continue
+        fi
+        dirc+=("$iter")
+        [ -z "$CEN_OPT_DRYRUN" ] && folder -f -m "$iter"
+    done
+    if [ -n "$dirc" ] ; then
+        system -p -e chmod 775 "${dirc[@]}" ; system -p -e chown root:wheel "${dirc[@]}"
+        system -p -e chmod 770 "$dirc"
+    fi
+
+    message -a "Creating BTRFS subvolumes..."
+
+    if [ "${#CEN_OPT_INCLEXCL[@]}" -a "${adev:--}" != '-' ] ; then
+        optarg - - -i 'Root' ; optarg - - -i 'Home'
+    fi
+
+    for iter in 'Root' 'Export' 'Home' 'Archive' 'Backup' 'Shared' 'VBox' ; do
+        if ! [ -e "Volumes/$iter" ] ; then
+            filter -i -- "$iter" || continue
+            if ! [ "$iter" = 'Root' -o "$iter" = 'Home' ] ; then
+                confirm -i -y -q "Create '$adir/Volumes/$iter'"|| continue
+            fi
+            system -e -p btrfs subvolume create "Volumes/$iter"
+            error -t || continue
+            [ "${pref:--}" != '-' ] && system -e -p touch "Volumes/$iter/${pref^^}_${iter^^}"
+            fcre=1
+        fi
+        if [ "$iter" = "${dvol^}" ] ; then
+            message -i "Set as default subvolume:" "Volumes/$iter"
+            dryrun "property_tool ..." || property_tool -d "$adir/Volumes/$iter"
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# List versions: <path> [+|-|.]
+# ------------------------------------------------------------------------------
+actionList() {
+    folder -f -c "$CEN_DAT_DIR"                 # back to initial folder
+    local fmod="${2:- }"
+    [[ $fmod == [+\-\.\ ] ]] || fatal "$CEN_ACTION: 2nd argument must be one of: +-."
+
+    local mvol pvol parg path mntp lfil
+    system -r -e -p -s path readlink -f "${1:-.}" || return
+    if [ -e "$path" ] ; then
+        trace -a -c "Existing" -- "$path"
+        lfil="$path"
+        system -r -e -p -s mntp stat -c "%m" "$path" || return
+    else
+        # folder might exist in a snapshot, try base folder
+        trace -a c "Missing" -- "$path"
+        mntp="${path%/*}"
+        system -r -e -p -s mntp stat -c "%m" "${mntp:-/}" || return
+    fi
+
+    prettypath -c -q -s parg "$path"
+
+    # array of volume folders
+    ___path_volume() {
+        pvol+=("$1/Volumes")
+    }
+    splitjoin -x ___path_volume -i CEN_DAT_ROOT
+
+    # loop over all volumes to match mountpoint
+    ___list_volume() {
+        [ "$1" -ef "$mntp" ] || return 0        # wrong volume
+        mvol="${2##*/}" ; mvol="${mvol,}"       # volume name
+        path="/${path:${#mntp}}"                # path in volume
+        return 3                                # stop walk
+    }
+    mvol="<unknown>"
+    walk -d ___list_volume -f false -r -l 1 "${pvol[@]}"
+
+    volume_find -- "$mvol" || return
+    mvol="${_volume_find##*/}"
+
+    local root="${_volume_find%%/Volumes/*}"
+    local base="$root/Snapshots"
+    trace -a -c "Volume" -- "$root/Volumes/$mvol"
+    trace -a -c "Path"   -- "$base/*/${mvol%%-*}_*.snapshot$path"
+
+    local indx=0 item name fldr skey list last anam=() ecmd=error
+    for item in "$base"/*/${mvol%%-*}_*.snapshot ; do
+        if ! [ -e "$item" ] ; then
+            [ -n "$CEN_OPT_ZOMBIE" ] && ecmd=message
+            $ecmd "Volume '$mvol' has no snapshots:" "$parg"
+            return
+        fi
+        name="${item##*/}" ; fldr="${item%/*}"
+        filter -i -- "$name" || continue
+        skey="${name##*_}"
+        case "$fldr" in
+        *daily)         skey+=":3" ;;
+        *weekly)        skey+=":2" ;;
+        *monthly)       skey+=":1" ;;
+        esac
+        list+="$skey"$'\t'"$name"$'\t'"$fldr"$'\n'
+    done
+    system -r -e -p -a anam sort -r <<<"$list" || return
+
+    [ -n "$CEN_OPT_ALL" ] && lfil="."
+    [ "${lfil:-.}" != "." ] && [ ! -f "$lfil" ] && lfil="."
+
+    local lres resu=()
+    if [ "$fmod" = "+" ] ; then
+        ___result()  { echo "$1" ; anam=() ; }
+        ___dolphin() { : ; }
+    elif [ "$fmod" = '-' ] ; then
+        ___result()  { lres="$1" ; }
+        ___dolphin() { [ -n "$lres" ] && echo "$lres" ; }
+    elif [ "$fmod" = "." ] ; then
+        snapshot_name lres "${mvol%-*}"                 # gen. snapshot name, no nick
+        ___result()  { [ "$lres" = "$name" ] || return
+                       echo "$1" ; anam=() ; }
+        ___dolphin() { : ; }
+    elif windows ; then
+        ___result()  { resu+=("$1") ; }
+        ___dolphin() {
+            if [ ${#resu[@]} -lt 2 ] ; then
+                message "Found no older versions for:\n$parg"
+                return
+            fi
+            local velt fldr name="${1##*/}" irun=0
+            folder -m -c -t -r -s fldr -- $$
+            trace "Temp folder: $fldr"
+            for velt in "${resu[@]}" ; do
+                trace -i "[$irun] $name  =>  $velt"
+                symlink -- "$velt" "[$irun] $name"
+                irun=$((irun + 1))
+            done
+            system -p -e dolphin --new-window "$fldr"
+            folder -c -f ..
+            remove -d -r -- "$fldr"
+        }
+    else
+        ___result()  { echo "$1" ; }
+        ___dolphin() { : ; }
+    fi
+
+    [ "$fmod" = " " -a -e "$parg" ] && ___result "$parg"
+
+    while [ -n "${anam[indx]}" ] ; do
+        name="${anam[indx+1]}"          # snapshot name
+        fldr="${anam[indx+2]}"          # snapshot folder
+        indx=$((indx + 3))
+        [ "$name" = "$last" ] && continue ; last="$name"
+        [ -e "$fldr/$name$path" ] || continue
+
+        # follow-up folder
+        if [ "$lfil" = "." ] ; then
+            :
+        # follow-up file
+        elif [ -n "$lfil" ] ; then
+            cmp --quiet "$lfil" "$fldr/$name$path" && continue
+            lfil="$fldr/$name$path"
+        # first file
+        elif [ -f "$fldr/$name$path" ] ; then
+            lfil="$fldr/$name$path"
+        # first folder
+        else
+            lfil="."
+        fi
+
+        ___result "$fldr/$name$path"
+    done
+    ___dolphin "$parg"
+}
+
+# ------------------------------------------------------------------------------
+# Get/set default volume: <snap>|root
+# ------------------------------------------------------------------------------
+actionMain() {
+    local path leng root
+    case "$1" in
+    "")         for root in "${CEN_DAT_ROOT[@]}" ; do
+                    system -e -p -r -s path -- btrfs subvolume get-default "$root" ||
+                        continue
+                    path="${path##* }"
+                    message -i "Default volume: $root/$path"
+                done ; return
+                ;;
+    */*)        snapshot_find -- "$1" || return 1
+                folder -c -f "$_snapshot_find"
+                ;;
+    *)          volume_find -- "$1" || return 1
+                folder -c -f "$_volume_find"
+    esac
+
+    confirm -n "Set default volume to: $PWD" || return
+    if subvol_id "$PWD" ; then
+        system -e -p btrfs subvolume set-default "$_subvol_id" "."
+    else
+        error "Could not find id for subvolume, default not set"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Open parent in dolphin: <path>
+# ------------------------------------------------------------------------------
+actionOpen() {
+    folder -f -c "$CEN_DAT_DIR"                 # back to initial folder
+    local bdir name logi
+    if [ -d "$1" ] ; then
+        bdir="$1"
+    else
+        system -r -e -p -s logi readlink -f "$1" || return
+        bdir="${logi%/*}"
+        name="${logi##*/}"
+    fi
+    embed -r -s logi centauripaths --logical "$bdir" || return
+    system -e -p dolphin --select "$logi/$name"
+}
+
+# ------------------------------------------------------------------------------
+# snapshot property: <volu|snap> [<prop>]
+# ------------------------------------------------------------------------------
+actionProperty() {
+    local prop pval
+    case "$2" in
+    "")         ;;
+    wri*)       prop="-r" ; pval="false" ;;
+    rea*)       prop="-r" ; pval="true"  ;;
+    def*)       prop="-d" ;;
+    *)          fatal "Invalid property: $2 (use readonly|writable|default)"
+    esac
+
+    local dvol ddir smsg snap
+    if volume_find -s "$1" ; then
+        snap="$_volume_find"
+    else
+        snapshot_find -- "$1" || return
+        snap="$_snapshot_find"
+    fi
+
+    if [ -z "$prop" ] ; then
+        property_tool -s "$snap" || return
+        message -i -p "%-60s  %s" "$snap" "$_property_tool"
+    else
+        property_tool "$prop" "$snap" "$pval"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# purge snapshots: <keep_month> <keep_week> <keep_day>
+# ------------------------------------------------------------------------------
+actionPurge() {
+    ___purge() {
+        local keep="$3" ; [ "${keep:--}" = '-' ] && return
+        local fldr="$1/Snapshots/$2" ; [ -d "$fldr" ] || return
+        [ "$keep" = "+" ] && keep="$4"
+        if [ -n "${keep//[0-9]/}" ] ; then
+            error "Positive integer expected:" "$keep" ; return
+        fi
+        if [ "$5" != '-' ] ; then
+            embed -i -y -v -z centauriarchive exec \
+                    "--exec=btrfs subvolume delete" "--write=Purge $2" \
+                    "--folder=$fldr" "${opts[@]}" --not .. $keep
+        elif [ "$CEN_YESNO" = "y" ] ; then
+            pflg='-' ; return
+        else
+            local fldr item
+            embed -r -a fldr centauriarchive list "--folder=$fldr" "${opts[@]}" --not .. $keep
+            for item in "${fldr[@]}" ; do
+                trimjoin -s item -t -- "$item"
+                item="${item##* }"          # snapshot name don't have spaces
+                [ "${item%.snapshot}" != "$item" ] && pflg=$((pflg + 1))
+            done
+        fi
+    }
+
+    [ "$#" = 0 ] && set -- + + +
+    local root opts=("--silent" "--level=2")
+    archive_opts opts pflg
+
+    for root in "${CEN_DAT_ROOT[@]}" ; do
+        ___purge "$root" "monthly" "$1" 2 -
+        ___purge "$root" "weekly"  "$2" 3 -
+        ___purge "$root" "daily"   "$3" 4 -
+    done
+    error -t || return 1
+    if [ "${pflg:-0}" = "0" ] ; then
+        message -a "Found no snapshots that can be purged" ; return
+    elif [ "$pflg" != '-' ] ; then
+        message -a -p "Found %s snapshot(s) that can be purged" "$pflg"
+    fi
+
+    for root in "${CEN_DAT_ROOT[@]}" ; do
+        ___purge "$root" "monthly" "$1" 2 ; error -t || return
+        ___purge "$root" "weekly"  "$2" 3 ; error -t || return
+        ___purge "$root" "daily"   "$3" 4 ; error -t || return
+    done
+}
+
+# ------------------------------------------------------------------------------
+# enable/disable quota: [on|off]
+# ------------------------------------------------------------------------------
+actionQuota() {
+    ___rescan_stat() {
+        local stat
+        system -q -s stat btrfs quota rescan -s "$1" || return 1
+        [ "${stat/running//}" != "$stat" ]              # return status
+    }
+
+    local ison irun root
+    for root in "${CEN_DAT_ROOT[@]}" ; do
+        ison=
+        system -q btrfs qgroup show "$root" && ison=1
+
+        if [ -z "$1" ] ; then
+            if [ -n "$ison" ] ; then
+                message -a "Quota is enabled: $root"
+            else
+                message -a "Quota not ready : $root (try '$CEN_NAME quota on')"
+            fi
+        elif [ "$1" = "on" ] ; then
+            [ -n "$ison" ] && return
+            sleep 1
+            system -e -p btrfs quota enable "$root" || continue
+            for irun in 1 2 3 ; do
+                ___rescan_stat "$root" && break
+                system -e -p btrfs quota enable "$root" || continue
+                sleep 1
+            done
+            message -a "Quota enabled : $root (takes a while to get ready)"
+        elif [ "$1" = "off" ] ; then
+            [ -n "$ison" ] || return
+            system -e -p btrfs quota disable "$root" || continue
+            message -a "Quota disabled: $root"
+        else
+            error "Invalid 'quota' argument: $1"
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# restore snapshot: <snap>
+# ------------------------------------------------------------------------------
+actionRestore() {
+    local aarg=() vnam snap warn root
+    while [ $# -gt 0 ] ; do
+        snapshot_find -n -- "$1" || return
+        shift ; snap="$_snapshot_find"
+        root="${snap%%/Volumes/*}" ; root="${root%%/Snapshots/*}"
+        vnam="${snap##*/}" ; vnam="${vnam%%_*}" ; vnam="${vnam%.*}"
+        folder -f -c "$root/Volumes"
+        if [ "$snap" -ef "$vnam.$CEN_OPT_SUFFIX" ] ; then
+            error "Restoring volume backup '$vnam.$CEN_OPT_SUFFIX': use a different '--suffix'"
+            return
+        fi
+
+        confirm -n -y -q "Restore '$snap'" || continue
+        if [ -e "$vnam.$CEN_OPT_SUFFIX" ] ; then
+            confirm -y -i -q "Remove volume backup '$vnam.$CEN_OPT_SUFFIX'" || continue
+        fi
+        aarg+=("$snap")
+    done
+
+    for snap in "${aarg[@]}" ; do
+        root="${snap%%/Volumes/*}" ; root="${root%%/Snapshots/*}"
+        vnam="${snap##*/}" ; vnam="${vnam%%_*}" ; vnam="${vnam%.*}"
+        folder -f -c "$root/Volumes"
+        message "Restore: $snap  =>  $PWD/$vnam"
+
+        [ -e "$vnam.$CEN_OPT_SUFFIX" ] &&
+            system -f -p btrfs subvolume delete "$vnam.$CEN_OPT_SUFFIX"
+
+        [ -e  "$vnam" ] && system -f -p mv "$vnam" "$vnam.$CEN_OPT_SUFFIX"
+        system -f -p btrfs subvolume snap "$snap" "$vnam" ; warn=1
+
+        if [ "$vnam" = 'Root' ] ; then
+            message -i "Set as default subvolume:" "$PWD/$vnam"
+            if subvol_id "$PWD/$vnam" ; then
+                system -e -p btrfs subvolume set-default "$_subvol_id" "."
+            else
+                error "Could not find id for subvolume, default not set"
+            fi
+        fi
+    done
+    [ -n "$warn" ] &&
+        warning "Operation may need remount or reboot to become effective"
+}
+
+# ------------------------------------------------------------------------------
+# save volume(s): <volu>...
+# ------------------------------------------------------------------------------
+actionSave() {
+    local vols=() volu
+    while [ $# -gt 0 ] ; do
+        volume_find -- "$1" || return
+        shift ; volu="$_volume_find"
+        if [ -d "$volu.$CEN_OPT_SUFFIX" ] ; then
+            confirm -y -n -q "Remove volume backup '$volu.$CEN_OPT_SUFFIX'" || continue
+        fi
+        vols+=("$volu")
+    done
+    for volu in "${vols[@]}" ; do
+        message "Save: ${volu##*/}  =>  $volu.$CEN_OPT_SUFFIX"
+        [ -e "$volu.$CEN_OPT_SUFFIX" ] &&
+            system -f -p btrfs subvolume delete "$volu.$CEN_OPT_SUFFIX"
+        system -f -p btrfs subvolume snap "$volu" "$volu.$CEN_OPT_SUFFIX"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# invoke scrub: start|stop|status
+# ------------------------------------------------------------------------------
+actionScrub() {
+    local root mode='status' mesg bdev
+    [ "$CEN_ACTION" = 'cron' ] && set -- 'cron'
+
+    case "$1" in
+    cron)       mode='cron' ;;
+    start)      mode='start' ;;
+    stop|can*)  mode='cancel' ;;
+    stat*|"")   ;;
+    *)          invoke -e "argument must be one of: start stop status"
+                return
+    esac
+    for root in "${CEN_DAT_ROOT[@]}" ; do
+        if [ "$mode" = 'cron' ] ; then
+            findmount -d -- "$root"
+            bdev="${CEN_MOUNT_DEV#/dev/}"
+            case "$bdev" in
+            mmcblk*)        bdev="${bdev%p?}" ;;
+            nvme*)          bdev="${bdev%p?}" ;;
+            sd[a-z][0-9])   bdev="${bdev%?}" ;;
+            *)              continue ;;
+            esac
+            [ -r "/sys/block/$bdev/queue/rotational" ] || continue
+            [ "$(</sys/block/$bdev/queue/rotational)" = "0" ] || continue
+            mode='start'
+        fi
+        if [ "$mode" = "start" ] ; then
+            echo -n "$CEN_NAME: " >&2 ; btrfs scrub $mode "$root"
+        else
+            system -e -m btrfs scrub $mode "$root"
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# show snapshots: <period> <args>...
+# ------------------------------------------------------------------------------
+actionShow() {
+    local opts=() peri="${1:-all}" alis=() list=() anam=() root
+    case "$peri" in
+        da[iy]*)    opts=("--level=1" "--folder=./daily") ; shift ;;
+        wee*)       opts=("--level=1" "--folder=./weekly") ; shift ;;
+        mon*)       opts=("--level=1" "--folder=./monthly") ; shift ;;
+        all)        opts=("--level=2") ; shift ;;
+        vol*)       peri= ;;
+        "+"|'-')    opts=("--level=2") ; peri="all"
+    esac
+
+    if [ -n "$peri" ] ; then                            # get snapshot info...
+        archive_opts opts
+        case "$1" in
+            "+")        shift ; set -- 1 .. 1 ;;
+            '-')        opts+=("--reverse") ; shift ; set -- 1 .. 1
+        esac
+
+        for root in "${CEN_DAT_ROOT[@]}" ; do
+            snapshot_folder -a -b "$root/Snapshots" -s -- "$peri" || continue
+            embed -r -a alis centauriarchive -q "${opts[@]}" exec "$@"
+            local item indx=0 name fldr last
+            for item in "${alis[@]}" ; do
+                name="${item##*/}" ; fldr="${item%/*}"
+                filter -i -- "$name" || continue
+                case "$fldr" in
+                *daily)         skey="1" ;;
+                *weekly)        skey="2" ;;
+                *monthly)       skey="3" ;;
+                *)              skey="4"
+                esac
+                list+="$skey"$'\t'"$name"$'\t'"$fldr"$'\n'
+            done
+        done
+        system -r -e -p -a anam sort <<<"$list" || return
+    fi
+
+    ___show_vol() {
+        [ "$CEN_WALK_LEVEL" = "1" ] && return 1
+        anam+=('-' "${2##*/}" "${2%/*}")
+        return 1
+    }
+    if [ "${peri:-all}" = "all" ] ; then
+        for root in "${CEN_DAT_ROOT[@]}" ; do
+            walk -i -l 1 -r -f false -d ___show_vol -- "$root/Volumes"
+        done
+    fi
+
+    while [ -n "${anam[indx]}" ] ; do
+        name="${anam[indx+1]}"          # snapshot name
+        fldr="${anam[indx+2]}"          # snapshot folder
+        indx=$((indx + 3))
+
+        if [ "$CEN_VERB" -gt 1 ] ; then
+            if [ "$fldr" != "$last" ] ; then
+                #[ -n "$last" ] && echo
+                message -- "$fldr" ; last="$fldr"
+            fi
+            property_tool -s "$fldr/$name"
+            message -i -p -- "%-32s %s" "$name" "$_property_tool"
+        elif [ "$CEN_VERB" -gt 0 ] ; then
+            if [ "$fldr" != "$last" ] ; then
+                [ -n "$last" ] && echo
+                last="$fldr"
+            fi
+            echo "$fldr/$name"
+        else
+            echo "$fldr/$name"
+        fi
+    done
+    #[ "$CEN_VERB" -gt 1 -a -n "$last" ] && echo
+}
+
+# ------------------------------------------------------------------------------
+# take a snapshot: <period>|- [<name>]
+# ------------------------------------------------------------------------------
+actionSnap() {
+    local root base farg
+    case "${1:--}" in
+        da[iy]*|wee*|mon*) ;;
+        -)  farg="${2:--}" ;;
+        *)  farg="${1:--}"
+    esac
+
+    # create subvol in Volumes
+    if [ -n "$farg" ] ; then
+        [ "$farg" = '-' ] && return
+        folder -f -c "$CEN_DAT_DIR"                 # back to initial folder
+        local svol="${farg##*/}" ; base="$CEN_DAT_ROOT/Volumes"
+        [ "$svol" = "$farg" ] || base="${farg%/*}"
+        volume_name -c "$svol" || return ; svol="$_volume_name"
+        if [ -d "$base" ] ; then
+            if [ -d "$base/$svol" ] ; then
+                invoke -w "Already exists:" "$base/$svol" ; return
+            fi
+            confirm -a -y "Create subvolume '$base/$svol'" || return
+            system -e -p btrfs subvolume create "$base/$svol"
+            set -- "$base"/../[A-Z]*_VOL[0-9]
+            if [ -e "$1" ] ; then
+                farg="${1##*/}" ; farg="${farg%_*}_$svol"
+                system -e -p -- touch "$base/$svol/${farg^^}"
+            fi
+        else
+            error "No 'Volumes' folder found:" "$base"
+        fi
+        return
+    fi
+
+    # create a Snapshot
+    for root in "${CEN_DAT_ROOT[@]}" ; do
+        base="$root/Snapshots"
+        snapshot_folder -b "$base" -- "$1" || continue
+        local mode="$PWD/$CEN_DAT_PERIOD" snap vnam ropt="-r"
+        message -i -c "Snapshots at" "$mode"
+
+        [ -n "$CEN_OPT_WRITE" -o -n "$CEN_OPT_POST" ] && ropt=
+        volume_list "$root" 'snapshot' || continue
+
+        for vnam in "${_volume_list[@]}" ; do
+            snap="${vnam%-*}"                       # remove nickname
+            snapshot_name snap "$mode/${snap##*/}"
+            if [ -d "$snap" ] ; then
+                message -i "Snapshot '$snap' exists, skipping"
+                continue
+            fi
+            system -e -p btrfs subvolume snapshot $ropt "$vnam" "$snap" &&
+                message -i "Snapshot '$snap' created"
+
+            [ -n "$CEN_OPT_POST" ] || continue
+            system -e -- $CEN_OPT_POST "$snap"
+            [ -n "$CEN_OPT_WRITE" ] && continue
+            system -e -p btrfs property set -ts "$snap" ro true
+        done
+    done
+}
+
+# ------------------------------------------------------------------------------
+# show snapshots: <period> <args>...
+# ------------------------------------------------------------------------------
+actionSize() {
+    ___2GByte() {
+        declare -n sret="$1"
+        local stmp=$(($2 / (10240 * 1024)))
+        case "$stmp" in
+        0)          stmp= ;;
+        [0-9])      stmp="0.0$stmp" ;;
+        [0-9][0-9]) stmp="0.$stmp" ;;
+        [0-9]*)     stmp="${stmp%??}.${stmp:${#stmp}-2}" ;;
+        esac
+        sret="$stmp"
+    }
+
+    declare -A mnam msnp mvsz
+    local root base aout slca="$LC_ALL" peri="$1" fltr anam=() sifs="$IFS"
+    for root in "${CEN_DAT_ROOT[@]}" ; do
+        base="$root/Snapshots"
+        if [ "${peri::3}" = "vol" ] ; then
+            fltr="Volumes/*"
+        else
+            snapshot_folder -a -b "$base" -s -- "$peri" || continue
+            [ -n "$CEN_DAT_PERIOD" ] && fltr="Snapshots/$CEN_DAT_PERIOD/*"
+        fi
+        anam=() ; mnap=() ; msnp=() ; mvsz=()
+        export LC_ALL=C
+        local item size excl tsiz=0 texc=0 tcnt=0
+        system -a anam -d "\n" -p -e -r -- btrfs subvolume list -t "$root" || continue
+        for item in "${anam[@]:2}" ; do
+            IFS=$'\t' ; set -f ; set -- $item ; set +f ; IFS="$sifs"
+            mnam[$1]="$4"
+        done
+
+        if ! system -q -a anam -r -- btrfs qgroup show --raw "$root" ; then
+            # retry for old btrfs-tools (no --raw)
+            if ! system -a anam -p -e -r -- btrfs qgroup show "$root" ; then
+                message -i "quota not ready, try '$CEN_NAME quota on'." ; continue
+            fi
+        fi
+        LC_ALL="$slca"
+
+        [ -n "$aout" ] && echo
+        local name ronl ssnp; aout=
+        for item in "${anam[@]:2}" ; do
+            [ "${item::2}" = "0/" ] || continue     # not a subvolume qgroup
+            set -- ${item:2}
+            name="${mnam[$1]}"
+            if [ -z "$name" ] ; then
+                [ "$1" -le 256 ] && continue
+                system -e -p btrfs qgroup destroy "0/$1" "$root"
+                continue
+            fi
+
+            [ -n "$fltr" ] && [[ "$name" != $fltr ]] && continue
+            filter -i -- "${name##*/}" || continue
+
+            ssnp="${name##*/}" ; ssnp="${ssnp%_*}"
+            if [ "${name::8}" != "Volumes/" ] ; then            # have snapshot?
+                msnp["$ssnp"]=$((${msnp["$ssnp"]} + 1))         # count snapshots
+                tcnt=$((tcnt + 1))
+            else
+                mvsz["$ssnp"]="$3"                              # save volume size
+                tsiz=$((tsiz + $2))
+            fi
+
+            system -q -s ronl btrfs property get -ts "${root}/$name" ro
+            if [ "$ronl" = "ro=true" ] ; then
+                ronl="*"
+            else
+                ronl=
+            fi
+
+            ___2GByte size "$2" #; [ "${name::10}" = "Snapshots/" ] || tsiz=$((tsiz + $2))
+            ___2GByte excl "$3" ; texc=$((texc + $3)) #; tcnt=$((tcnt + 1))
+            printf -v item "%-50s %1s %10s %10s\n" "$name" "$ronl" "$size" "$excl"
+            item="${item/\/daily\///:1:daily\/}"
+            item="${item/\/weekly\///:2:weekly\/}"
+            item="${item/\/monthly\///:3:monthly\/}"
+            aout+="$item"
+        done
+
+        [ -z "$aout" ] && continue
+        printf "%-49s %s\n" "Name [$root]" "RO  Size [GB]  Excl [GB]"
+        echo "──────────────────────────────────────────────────────────────────────────"
+        name=
+
+        local -a aitm
+        extsort -a aitm -- "${aout::${#aout}-1}"
+        for item in "${aitm[@]}" ; do
+            aout="${item:10:3}" ; [ "${aout/[123]/}" = "::" ] || aout=":4:"
+            if [ -n "$name" -a "$name" != "$aout" ] ; then
+                echo "──────────────────────────────────────────────────────────────────────────"
+            fi
+            name="$aout"
+            item="${item/:[123]:/}"
+            if [ "${item::8}" = "Volumes/" ] ; then             # volumes may have no snapshots
+                ssnp="${item:8}" ; ssnp="${ssnp/ */}"
+                local nsnp="${msnp["$ssnp"]}"
+                if [ "${nsnp:-0}" = "0" ] ; then                # no snapshot ...
+                    #echo "${item::37} -no- snapshots ${item:53:10}"
+                    echo "${item::37}                ${item:53:10}"
+                    texc="$((texc - ${mvsz["$ssnp"]:-0}))"      # adjust total exclusive size
+                else                                            # has snapshot ...
+                    printf "%-37s %4d snapshots %s\n" "${item::37}" "$nsnp" "${item:53}"
+                fi
+            else                                                # this is a snapshot
+                echo "$item"
+            fi
+        done
+        echo "──────────────────────────────────────────────────────────────────────────"
+        ___2GByte size "$tsiz"
+        ___2GByte excl "$texc"
+        printf "%-52s %10s %10s\n" "Total (${#mvsz[*]} volumes, $tcnt snapshots)" "$size" "$excl"
+        echo "══════════════════════════════════════════════════════════════════════════"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    -A|--all)
+        optarg 'all'      -         ;;   # simple flag
+    -B|--bas*)
+        optarg 'base'     []    -d  ;;   # existing folder
+    -N|--nic*)
+        optarg 'nickname' -     -t  ;;   # text
+    -O|--pos*)
+        optarg 'post'     -     -t  ;;   # text
+    -S|--suf*)
+        optarg 'suffix'   -     "[^/.]+" ;;
+    -W|--wri*)
+        optarg 'write'    -         ;;   # simple flag
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing
+# ------------------------------------------------------------------------------
+
+actions() {
+    [ -z "$CEN_DAT_ROOT" -a -n "$CEN_ACTION" ] &&
+        snapshot_volume                                     # find base folder
+
+    case "$CEN_ACTION" in
+    cop|copy)
+        invoke -r "copy"        -           4 + ;;          # 4 or more args
+    cre*)
+        invoke -r "create"      actionSnap  0 2 ;;          # 0 or 1 arg
+    cro|cron)
+        invoke -r "cron"        -           1 ;;            # one arg
+    ded*)
+        invoke -r "dedup"       -           0 1 ;;          # 0 or 1 arg
+    def*)
+        invoke -r "defrag"      -           0 ;;            # no args
+    del*)
+        invoke -r "delete"      -           1 + ;;          # one or more args
+    ini|init)
+        invoke -r "init"        actionInit  1 4 ;;          # 1..4 args
+    lis|list)
+        invoke    "list"        -           0 2 ;;          # 0 or 1 arg
+    mai|main)
+        invoke -r "main"        -           0 1 ;;          # 0 or 1 arg
+    ope|open)
+        invoke    "open"        -           1 ;;            # one arg
+    pre*)
+        invoke -r "prepare"     actionInit  1 4 ;;          # 1..4 args
+    pro*)
+        invoke -r "property"    -           0 2 ;;          # 1..2 args
+    quo*)
+        invoke -r "quota"       -           0 1 ;;          # 0 or 1 arg
+    pur*)
+        invoke -r "purge"       -           0 3 ;;          # 0..3 args
+    res*)
+        invoke -r "restore"     -           1 + ;;          # one or more args
+    sav|save)
+        invoke -r "save"        -           1 + ;;          # one or more args
+    scr*)
+        invoke -r "scrub"       -           0 1 ;;          # 0 or 1 arg
+    sho|show)
+        invoke    "show"        -           - - ;;          # no check
+    siz|size)
+        invoke -r "size"        -           0 1 ;;          # 0 or 1 arg
+
+    da[iy]*|wee*|mon*)
+        invoke    "cron"        -           1 - "$@"        # implied action
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -A --all             exclude no volumes, list command: show all files
+       -B --base   <fldr>   override location              (default: $CEN_DAT_BDEF)
+       -O --post   <exec>   run <exec> as post-processor   ("cron" or "create")
+       -S --suffix <text>   suffix for "save|restore|revert"    (default "$CEN_OPT_SUFFIX")
+       -W --writable        create writable snapshot       ("cron" or "create")
+
+actions:
+       [cron]   <period>    delete/create snapshots
+       copy     <period>|- [<host>:]<dest> <prnt>|+|- <snap>...
+                            copy snapshots incrementally  (see: man brtfs-send)
+       create   [<period>]  create snapshots                   (default: daily)
+       create   [-] <path>|<name>
+                            create subvolume by path or name
+       dedup    [reset]     deduplicate volumes         ('reset' to rescan all)
+       defrag               defragment volumes
+       delete   [[<period>|all] [+|-]] | <snap>...
+                            delete snapshots by expiration or snapshot name
+       delete   (<path>|<name>)...
+                            delete subvolumes by path or name
+       init     <fldr> [<part> [<label>|-]]
+                            initialize BTRFS partition mounted at <fldr>,
+                            <label>|- triggers formatting, <part> does mount
+       list     [<item> [+|-|.]]
+                            timeline in snapshots for a file or folder
+       main     [<snap>|root]
+                            default mount volume      ('root' for Volumes/Root)
+       property <volu|snap> [readonly|writable|default]
+                            set/show readonly/writable or default property
+       purge    [<keep> [<keep> [<keep>]]]
+                            purge old snapshots, keep monthly/weekly/daily
+       quota    [on|off]    enable/disable brtfs quota       (used with 'size')
+       restore  <snap>...   restore snapshot(s), create backup volume(s)
+       save     <volu>...   backup volumes(s)
+       scrub    [start|stop|status]
+                            use btrfs scrub to check data consistency
+       size     [<period>|all|volumes]
+                            show snapshot sizes, needs quota on  (default: all)
+       show     [<period>|all|volumes] [+|-]
+                            show snapshots, details w. --verbose (default: all)
+
+arguments:
+       <exec>               command string, snapshot path gets appended
+       <fldr>               path of a folder
+       <item>               path of a folder or file
+       <keep>               num. of snapshots to keep: '-' for all, '+' default
+       <label>              partition label  -or-  '-' for no label
+       <part>               disk partition
+       <period>             snapshot period: daily, weekly, monthly
+       <prnt>               parent name  -or- '-' for none  -or- '+' to guess
+       <snap>               a snapshot name  -or-  a folder path (/* or ./*)
+       <volu>               a volume name
+
+examples:
+       $CEN_NAME create weekly --base=/mnt/xxx    # snapshots at /mnt/xxx
+       $CEN_NAME create monthly --include=Shared  # snapshot volume Shared
+
+       $CEN_NAME monthly --post="/dir/prog -X"    # cron monthly, run "prog"
+
+       $CEN_NAME list /etc/fstab                  # file/folder timeline
+       $CEN_NAME list /home .                     # today's snapshot only
+       $CEN_NAME show --include=Home day +        # most recent snapshots
+
+       cd /mnt/vol0/Snapshots                            # copy snapshots ...
+       $CEN_NAME copy weekly /mnt/dst/Snapshots - monthly/Home*
+       $CEN_NAME copy weekly /mnt/dst/Snapshots + weekly/Home*
+       cd /mnt/vol0/Volumes                              # copy a volume ...
+       $CEN_NAME copy - /mnt/dst/Volumes + Home
+
+       $CEN_NAME delete daily                     # del older 8 days
+       $CEN_NAME delete weekly/Root_2016-01-01    # del by snapshot name
+       $CEN_NAME delete monthly -                 # del oldest snapshots
+       $CEN_NAME del all --- --cond=month --not   # extra options, see ---
+
+       $CEN_NAME purge 3                          # keep 3 monthly snapshots
+
+       $CEN_NAME rest Home                        # restore volume (reboot)
+       $CEN_NAME save Home --suffix=example       # create a backup
+       $CEN_NAME rest Home.example                # restore backup (reboot)
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

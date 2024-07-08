@@ -1,0 +1,772 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2024; BSD License"
+CEN_TITLE="Session configuration script"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t -m sys -y - '0.16:2' 2 || exit 2
+
+# Data
+# context -v 2      ##### DEBUG
+
+# KDE paths (_centauri_bash_sys loaded via '-m sys' sets version)
+if [ "$CEN_SYS_KDEVERS" '<' '005.000.000' ] ; then
+    DAT_KDE_APPS='.kde/share/apps'
+    DAT_KDE_KWAL='kwallet'
+else
+    DAT_KDE_APPS='.local/share'
+    DAT_KDE_KWAL='kwalletd'
+fi
+
+# Localized data pairs
+DAT_DESKT=('Desktop'   $"Desktop"   'Schreibtisch')
+DAT_DOCUS=('Documents' $"Documents" 'Dokumente')
+DAT_PUBLI=('Public'    $"Public"    'Öffentlich')
+DAT_SHARE=('Shared'    $"Shared"    'Geteilt')
+DAT_LOCAL=('Local'     $"Local"     'Lokal')
+DAT_ENCFS=('Private'   $"Private"   'Privat')
+
+# folder for issue data
+DAT_ISSUE_DIR="$CEN_ROOT/persistent/issue.d"
+
+# ------------------------------------------------------------------------------
+# Helpers for translated folder names
+# ------------------------------------------------------------------------------
+
+# build translated pairs (remove duplicates): <xlat-list>...
+___xlat_pairs() {
+    while [ -n "$1" ] ; do
+        local -n _xlat="$1" ; shift
+        [ "${_xlat[1]}" = "${_xlat[2]}" ] && _xlat=("${_xlat[@]::2}")
+        [ "$_xlat" = "${_xlat[1]}" ] && _xlat=("${_xlat[@]:1}")
+        trace -a "Translated folder name: ${_xlat[*]}"
+    done
+}
+
+# search translated folder: <retval> <condition>|+ <xlat-list> [<base>]
+___xlat_find() {
+    local -n _xitm="$1" _xlat="$3"
+    local _xcnd="${2:-+}" _xrun _xnam _xbas
+    if [ "$_xcnd" = "+" ] ; then        # check dir but always set name
+        _xcnd="-d" ; _xnam="${_xlat[-1]}"
+    fi
+    for _xrun in "${_xlat[@]}" ; do     # loop over translated/original name
+        [ -n "$4" ] && _xrun="$4/$_xrun"
+        _xitm="$_xrun"                  # bash bug: cannot use for _xitm ...
+        if [ -h "$_xrun" ] ; then
+            trace -a "Ignoring symlink:" "$_xrun"
+            continue
+        fi
+        [ $_xcnd "$_xrun" ] && return 0
+    done
+    _xitm="$_xnam" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# autologin helper: [<user> [ntty>]]
+# ------------------------------------------------------------------------------
+actionAutologin() {
+    local word wrds home user="${1:-}" ntty="${2:-6}"
+    if [ "$user" = '-' ] ; then
+        readline -a wrds -i '/proc/cmdline' -x -w
+        if ! listsearch -g -m word -i wrds -- 'centaurilogin=*' ; then
+            invoke -e $"No 'centaurilogin=*' kernel parameter found" ; return
+        fi
+        word="${word#*=}"
+        [ -n "$word" ] && user="$word"
+    fi
+    [ "$user" = 'root' ] && home='/root' || eval home="~$word"
+    if ! [ -d "$home" ] ; then
+        invoke -e "No home folder for '%s'" "$user" ; return
+    fi
+
+    sysfind -c -e -p "$PATH:/usr/bin:/usr/sbin" chvt agetty || return
+    sysrun -e    -- chvt "$ntty"
+    system -e -x -- agetty --autologin "$user" --noclear "tty$ntty" linux
+}
+
+# ------------------------------------------------------------------------------
+# Bash login: -no arg-
+# ------------------------------------------------------------------------------
+actionBashrc() {
+    if [ "$XDG_VTNR" = "6" -a -x "$HOME/.autologin" ] ; then
+        system -e -- chvt 6
+        system -e -- $HOME/.autologin
+        error -s 127 ; return       # used by /etc/bash.centauri: no logout
+    elif ! [ "$HOME/.autologin" -ef "/dev/null" ] ; then
+        embed centauristartx -C0
+        if [ $? = 127 ] ; then
+            error -s 127 ; return   # used by /etc/bash.centauri: no logout
+        fi
+    else
+        error -s 127 ; return       # used by /etc/bash.centauri: no logout
+    fi
+    error -t || sleep 5             # pause after error
+}
+
+# ------------------------------------------------------------------------------
+# Enable/disable encrypted Private: -no arg-
+# ------------------------------------------------------------------------------
+actionEncrypt() {
+    local fnam emnt sp=$'\n'
+
+    # check if we have an encfs mounted: <xlat-list>
+    ___is_encfs() {
+        ___xlat_find emnt -d $1 || return 1    # no mount point
+        findmount "encfs" "$HOME/$emnt" && return 0
+        emnt= ; return 1
+    }
+
+    # remove stale symlink: <path>
+    ___del_stale() {
+        [ -h "$1" ] || return
+        [ -e "$1" ] || remove -- "$1"
+    }
+
+    ___del_dir() {
+        local ndel="$1.deleted"
+        [ -d "$ndel" ] && remove -d -- "$ndel"
+        remove -d -- "$1" && return 0
+        [ -n "$CEN_OPT_DRYRUN" ] && return 0
+        warning -a -p $"Cannot delete now, renaming '%s' to '%s'" "$1" "$ndel"
+        system -f -p -- mv -f "$1" "$ndel"
+    }
+
+    # move a file and make symlink: <src> <dest>
+    ___move_encr() {
+        [ ! -e "$1" -a ! -e "$2" ] && return 1
+        [ "$1" -ef "$2" ] && return 1               # symlink is current
+        [ -d "$1" -a -d "$2" ] && ___del_dir "$2"
+        system -p -- mv -f "$1" "$2" &&
+        system -p -- ln -s "$2" "$1" && return 0
+        [ -z "$CEN_OPT_DRYRUN" ] && error -p $"Cannot move/link '%s' to '%s'" "$1" "$2"
+        return 1
+    }
+
+    # move a file, replace symlink: <dest> <src>
+    ___move_decr() {
+        [ -e "$2" ] || return 1
+        [ -h "$1" ] && remove -- "$1"
+        if [ -e "$1" -a -z "$CEN_OPT_DRYRUN" ] ; then
+            error -p $"Cannot restore '%s' - '%s' is not a link" "$2" "$1"
+            return 1
+        fi
+
+        if [ -d "$2" ] ; then
+            system -p -- cp -a "$2" "$1" && ___del_dir "$2" && return 0
+        else
+            system -p -- mv "$2" "$1" && return 0
+        fi
+        [ -z "$CEN_OPT_DRYRUN" ] && error -p $"Cannot restore '%s'" "$2"
+        return 1
+    }
+
+    # move file/folder and make symlink: <src> <dest>
+    ___move_link() {
+        local dest="$emnt/$2"
+        [ "${1/\//}" = "$1" ] || dest="$HOME/$dest"
+        trace -a -p "___move_link %-34s %s" "$1" "$dest" # ; return
+
+        ___del_stale "$1"
+        ___del_stale "$dest"
+
+        if [ "$CEN_ACTION" = "encrypt" ] ; then
+            ___move_encr "$1" "$dest" && message -a $"encrypted:" "$1"
+        else
+            ___move_decr "$1" "$dest" && message -a $"decrypted:" "$1"
+        fi
+    }
+
+    # check if mounted
+    if ! ___is_encfs DAT_ENCFS ; then
+        message -n $"Found no mounted encfs for folder" "'${DAT_ENCFS}'." $"Please run:" \
+                    " $sp $sp" \
+                    "    centauriencfs create $DAT_ENCFS" \
+                    " $sp $sp" \
+                   $"to create an encfs. To mount an existing encfs use:" \
+                    " $sp $sp" \
+                    "    centauriencfs mount $DAT_ENCFS" \
+                    " $sp $sp"
+        return
+    fi
+
+    local cdir napr='.not-archived/'
+    cdir="$emnt/${napr}cache"
+
+    # .cache is handled via centauriencfs, also creates the $napr folder ...
+    if [ "$CEN_ACTION" = "encrypt" ] ; then
+        folder -m "$emnt/$napr" || return 1
+        [ '.cache' -ef "$cdir" ] || embed -v -- centauriencfs --yes cache on
+    fi
+    [ -d "$emnt/$napr" ] || napr="."                # backward compatibility
+
+    # move and link ...
+    ___move_link .dav2fs                            "${napr}dav2fs"
+    ___move_link .thumbnails                        "${napr}thumbnails"
+    ___move_link .local/share/akonadi/file_db_data  "${napr}akonadi_file_db_data"
+    ___move_link .local/share/akonadi/db_data       "${napr}akonadi_db_data"
+    ___move_link .local/share/akonadi/search_db     "${napr}akonadi_search_db"
+    ___move_link .local/share/local-mail            ".local-mail"
+    ___move_link "$DAT_KDE_APPS/$DAT_KDE_KWAL"      ".$DAT_KDE_KWAL"
+    ___move_link .ssh                               .ssh
+    ___move_link .gnupg                             .gnupg
+
+    # .cache is handled via centauriencfs, also deletes the $napr folder ...
+    if [ "$CEN_ACTION" != "encrypt" ] ; then
+        [ '.cache' -ef "$cdir" ] && embed -v -- centauriencfs --yes cache off
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Setup home folder for local mode: [<roaming>]
+# ------------------------------------------------------------------------------
+actionLocal() {
+    local ddoc ; ___xlat_find ddoc + DAT_DOCUS              # Documents folder
+    local dloc ; ___xlat_find dloc + DAT_LOCAL              # Local folder
+    local dpub ; ___xlat_find dpub + DAT_PUBLI              # Public folder
+    local dsha ; ___xlat_find dsha + DAT_SHARE              # Shared folder
+    local droa="Roaming"
+    local ddld="Downloads"
+    local ldoc="$dloc/${ddoc}_$dloc"    # Local/Documents_Local
+    local lroa="$dloc/${droa}_$dloc"    # Local/Roaming_Local
+
+    # remove 'Local' and 'Roaming', remove 'Documents' link
+    local item mesg
+    if [ -z "$1" ] ; then
+        if [ -e "$dloc" ] ; then
+            printf -v mesg $"Delete the '%s' folder and content" "$dloc"
+            if confirm -a -q "$mesg" ; then
+                remove -d "$dloc"
+                [ -d "$ddoc.$CEN_NAME" ] && rename "$ddoc.$CEN_NAME" "$ddoc"
+            fi
+        fi
+        [ -h "$droa" ] && remove "$droa"
+        [ -h "$ddoc" ] && remove "$ddoc"
+        remove ".$CEN_NAME"
+    elif [ -d "$ddoc" ] ; then
+        warning -l -a -p $"Rename existing '%s' to '%s'" "$ddoc" "$ddoc.$CEN_NAME"
+        rename "$ddoc" "$ddoc.$CEN_NAME"
+    fi
+
+    # create Shared and Public and subfolders of Roaming
+    local repo="$CEN_TOOLS/kde/Roaming"
+    local mask icon list
+    list=("$dsha:07:directory_data" \
+          "$dpub:02:directory_publ" \
+          "$ddld:07:directory_data" \
+          "$HOME::directory_user")
+    [ -z "$1" ] && list+=(
+          "$ddoc::directory_docs" )
+    [ -n "$1" ] && list+=(
+          "$dloc::directory_none" \
+          "$lroa::directory_none" \
+          "$lroa/Profiles/win:077:" \
+          "$ldoc::directory_docs" )
+
+    local umsk=$(umask) ; umask 077                         # make all private
+    for item in "${list[@]}" ; do
+        icon="${item##*:}" item="${item%:*}"
+        mask="${item##*:}" item="${item%:*}"
+        umask ${mask:-02}
+        if [ ! -d "$item" ] ; then
+            #[ -z "$mask" ] && continue
+            dryrun "folder -m '$item'" && continue
+            folder -m -- "$item" || continue
+        fi
+        [ -n "$icon" -a -e "$repo/$icon" ] || continue
+        [ -e "$item/.directory" ] || copy -q -- "$repo/$icon" "$item/.directory"
+    done
+    umask "$umsk"                                           # restore settings
+
+    # create warning for local documents
+    if [ -d "$ldoc" ] ; then
+        local rdme=$"WARNING__THIS_FOLDER_IS_LOCAL__PLEASE_READ_THIS"
+        [ -e "$ldoc/$rdme" ] || cat <<!EOF1 >"$ldoc/$rdme"
+This folder was created locally because the server was unavailable.
+The real location is: '$HOME/$dloc/$ddoc_$dloc'.
+This folder will not be deleted automatically, so it can safely be
+used for local work.
+
+At a later login when your server is again available you should see
+your server data again in the '$HOME/$ddoc' folder.  Simply
+move local changes from '$HOME/$dloc/$ddoc_$dloc' to the server
+side '$ddoc' folder (also check your profile data in 'Roaming').
+!EOF1
+            [ -e "$lroa/$rdme" ] || cat <<!EOF2 >"$lroa/$rdme"
+This folder was created locally because the server was unavailable.
+The real location is: '$HOME/$dloc/Roaming_$dloc'.
+!EOF2
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Setup home folder for roaming mode: [online|offline|auto]
+#
+# Step 1: In auto mode this action does nothing if:
+#         - Documents is a real folder
+#         - There is no network folder
+#         - The user is not in group roaming
+# Step 2: Create folders
+# Step 3: Link Documents/Roaming
+# ------------------------------------------------------------------------------
+actionRoaming() {
+    local mode="${1:-auto}"
+    case "$mode" in
+        aut*)   mode='auto' ;;
+        onl*)   mode='online' ;;
+        off*)   mode='offline' ;;
+        *)      invoke -e $"mode '%s' invalid (use 'online' 'offline' or 'auto')" "$mode"
+                return
+    esac
+
+    local ddoc ; ___xlat_find ddoc + DAT_DOCUS          # Documents folder
+    local netw='/network'                               # get network folder path
+    shortpath 'network' && netw="$CEN_SHORTPATH"
+
+    # --------------------------------------------------------------------------
+    # check pre-conditions for roaming
+    # --------------------------------------------------------------------------
+    if [ -z "$CEN_OPT_FORCE" ] ; then
+
+        # early stop if Documents is a real folder
+        if [ -d "$ddoc" -a ! -h "$ddoc" ] ; then
+            trace -a -p $"Action '%s' disabled: existing '%s' folder" "$CEN_ACTION" "$ddoc"
+            return
+        fi
+
+        # centauri clients must have a network folder
+        if ! [ -d "$netw" ] ; then
+            trace -a -p $"Action '%s' disabled: no '$netw' folder" "$CEN_ACTION"
+            return
+        fi
+
+        # are we a roaming user?
+        local agrp item mwhy
+        if [ "$EUID" \< 10000 ] ; then           # id < 10000 cannot be roaming
+            mwhy='UID < 1000'
+        else
+            mwhy=$"not a member of group 'roaming'"
+            system -a agrp -d " \t" -e -p -r -- id -Gn
+            for item in "${agrp[@]}" "" ; do
+                [ "$item" = "roaming" ] && break
+            done
+        fi
+        if [ -z "$item" ] ; then
+            message -a $"This user is not roaming" "($mwhy)"
+            return
+        fi
+    fi
+
+    # --------------------------------------------------------------------------
+    # main part
+    # --------------------------------------------------------------------------
+    local dloc ; ___xlat_find dloc + DAT_LOCAL              # Local folder
+    local dsvr ; ___xlat_find dsvr -d DAT_DOCUS "$netw$HOME" # Home on Server
+    local ldoc="$dloc/${ddoc}_$dloc"
+    local lroa="$dloc/Roaming_$dloc"
+    local rsvr="$netw$HOME/Roaming"
+
+    # create folders if documents does not yet exist
+    [ -e "$ddoc" -o -n "$CEN_OPT_FORCE" ] || actionLocal Roaming
+
+
+    # helpeer to check networstatus (memb=) and/or home mount (memb=1)
+    ___chk_home() {
+        if [ -z "$memb" ] ; then
+            netserver || return 1               # read network status
+            case "${CEN_NET_MODE:-UNKNOWN}" in
+            UNKNOWN)    trace -a "Waiting for network"
+                        sleep 1 ; return 0 ;;
+            SINGLE)     trace "This is a single computer"
+                        memb=2 ; return 1 ;;    # not a domain member
+            GUEST)      trace "This is a guest computer"
+                        memb=3 ; return 1 ;;
+            *)          trace "This is a member computer"
+                        memb=1 ; return 0 ;;
+            esac
+
+        fi
+
+        trace -a -c "Checking home" "$netw/home"
+        [ -d "$netw/home" ] && [ ! "$netw/home" -ef '/home' ] &&
+            return 1                    # ready, stop progress
+        # in local mode $netw/home is a symlink to /home
+        sleep 1 ; return 0              # waiting
+    }
+
+    # roaming or local mode?
+    local fonl wonl=3
+    if [ "$mode" = 'online' ] ; then
+        fonl=1
+    elif [ "$mode" = 'auto' ] ; then
+        local memb=0                    # used by ___chk_home
+        if ___chk_home ; then           # if home folder is not mounted ...
+            memb=                       # do network check
+            if ___chk_home ; then       # still no home, show gui
+                context -g -            # enter GUI mode if needed
+                progress -w ___chk_home -d 0.1 -s 20:1 -c $"%-2s of %s [s]" \
+                            $"Waiting for network/server - " -
+                [ -z "$memb" ] && trace $"This computer is not a domain member"
+            fi
+            ___xlat_find dsvr -d DAT_DOCUS "$netw$HOME" # Home on Server
+        fi
+
+        if [ '$netw/home' -ef '/home' ] ; then
+            mode="offline (local $netw/home)"
+        elif [ -d "$dsvr" -a -d "$lroa" ] ; then
+            fonl=1 ; mode="online"
+        else
+            mode="offline (missing folder)"
+        fi
+    fi
+    #trace "roaming status: $mode $memb - folders: $dsvr $lroa - network mode: $CEN_NET_MODE"
+
+    # special handling for slave server ...
+    #if [ -n "$froa" ] ; then
+    #    # if $netw/home is /home the computer is a master server
+    #    if [ "$netw/home" -ef "/home" ] ; then
+    #        froa=
+    #        [ -h "Roaming" ] && remove "Roaming"
+    #        [ -h "$ddoc" ] && remove "$ddoc"
+    #        [ -d ".roaming_slave" -a ! -d "Roaming" ] && rename .roaming_slave Roaming
+    #    # slave server: move loacal roaming folder away
+    #    elif [ ! -h "Roaming" -a -e "$rsvr" ] ; then
+    #        [ -e "Roaming" ] && rename -o "Roaming" ".roaming_slave"
+    #        symlink "$rsvr"
+    #    fi
+    #fi
+
+    local item deco='-a'
+    for item in "${DAT_DOCUS[@]}" ; do
+        [ "$ddoc" = "$item" ] && continue
+        [ -h "$item" ] && remove "$item"
+    done
+
+    if [ -n "$fonl" ] ; then
+        if [ "$KDE_FULL_SESSION" = 'true' ] ; then
+            context -g -                    # enter GUI mode if needed
+            deco='-l -d +3'
+        fi
+        message $deco -p $"On-line - linking (%s, Roaming) to server home" "$ddoc"
+        symlink -m "$dsvr" "$ddoc"
+        symlink -m "$rsvr"
+    else
+        context -g -                        # enter GUI mode if needed
+        warning -l -a -p $"No server - using local (%s, Roaming) folders" "$ddoc"
+        symlink -m -r "$ldoc" "$ddoc"
+        symlink -m -r "$lroa" "Roaming"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Setup home folders (Documents Roaming Local): -no args-
+# ------------------------------------------------------------------------------
+# This action should be called from bashrc.login, e.g. any login shell. It can
+# be disabled via .centaurisession settings.
+#
+# The action will and install .kde/.mozilla if needed and setup roaming folders.
+# ------------------------------------------------------------------------------
+actionLogin() {
+    folder -f -c "$HOME"
+
+    # check/create .centaurisession status file
+    local RUN_AT_LOGIN="yes"
+    if [ -z "$CEN_OPT_FORCE" ] ; then
+        if [ -r "$HOME/.$CEN_NAME" ] ; then
+            . "$HOME/.$CEN_NAME"
+            [ "$CEN_VERB" = 1 ] && context -v 0
+        elif [ -z "$CEN_OPT_DRYRUN" ] ; then
+            local mesg=( "# "$"Set to 'no' to disable runnig $CEN_NAME at login/logout"
+                         "RUN_AT_LOGIN=yes" "RUN_AT_LOGOUT=yes")
+            create -v mesg "$HOME/.$CEN_NAME"
+        fi
+        if [ "$RUN_AT_LOGIN" = "no" ] ; then
+            trace -a -p $"Action '%s' disabled: via '%s'" $CEN_ACTION ".$CEN_NAME"
+            return
+        fi
+    fi
+
+    # extract kde profile
+    export CEN_SYS_VERSION CEN_SYS_KDEVERS
+    if [ -d ".kde" -o -e ".config/kwinrc" -a -z "$CEN_OPT_FORCE" ] ; then
+        message -a $"Existing KDE configuration not changed"
+    else
+        embed -i -v -y -z -- centauriprofile -S1 -y apply +
+    fi
+
+    # extract mozilla profile
+    if [ -d ".mozilla" -a -z "$CEN_OPT_FORCE" ] ; then
+        message -a $"Existing Mozilla configuration not changed"
+    else
+        embed -i -v -y -z -- centauriprofile -S2 -y apply +
+    fi
+
+    # setting security
+    if [ -f ".centaurisecurity" -a -z "$CEN_OPT_FORCE" ] ; then
+       message -a $"Existing '.centaurisecurity' not changed"
+    else
+        embed -r -s item -- centauriprofile info "dot_security"
+        if [ "${item:--}" != "-" ] ; then
+            message -a -p $"Installing '.centaurisecurity' from '%s'" "$item"
+            copy "$item" ".centaurisecurity"
+        fi
+    fi
+
+    # renew .xsession-errors
+    if [ -s ".xsession-errors" ] ; then
+        rename -o ".xsession-errors" ".xsession-errors.old"
+        message -a $"Moved '.xsession-errors' to '.xsession-errors.old'"
+    fi
+
+    # symlink pulse audio cookie
+    if ! [ '.config/pulse/cookie' -ef '/etc/pulse/cookie' ] ; then
+        trace -a "Symlink PULSE AUDIO cookie"
+        folder -m '.config/pulse' && symlink -m '/etc/pulse/cookie' '.config/pulse/cookie'
+    fi
+
+    # setup folders
+    actionRoaming
+
+    # pending issue?
+    if [ -d "$DAT_ISSUE_DIR" ] ; then
+        context -g 1
+        confirm -y $"There is at least one pending issue, handle it now?" &&
+            embed centaurisysinit issue test -
+    fi
+
+    # get kerberos ticket
+    [ -x "$CEN_TOOLS/centaurikerberos" -a -e "/etc/krb5.conf" ] &&
+                                         embed -v centaurikerberos -q ticket -
+}
+
+# ------------------------------------------------------------------------------
+# Unmount encfs, destroy kerberos ticket: -no args-
+# ------------------------------------------------------------------------------
+actionLogout() {
+    # check/create .centaurisession status file
+    local RUN_AT_LOGIN="yes" RUN_AT_LOGOUT
+    if [ -z "$CEN_OPT_FORCE" ] ; then
+        [ -r "$HOME/.$CEN_NAME" ] && . "$HOME/.$CEN_NAME"
+        if [ "${RUN_AT_LOGOUT:-$RUN_AT_LOGIN}" != "yes" ] ; then
+            trace -a -p $"Action '%s' disabled: via '%s'" $CEN_ACTION ".$CEN_NAME"
+            return
+        fi
+    fi
+
+    # we must be the users last session
+    ___last_session() {
+        system -c -e id loginctl || return 1
+        local alis item coun=0
+        system -a alis -r -e -p -- loginctl list-sessions --no-pager --no-legend || return 1
+        for item in "${alis[@]}" ; do
+            set -- $item
+            [ "$3" = "$LOGNAME" ] && ((coun += 1))
+        done
+        if [ $coun = 1 ] ; then
+            trace -a "Logout: last session of this user" ; return 0
+        fi
+        trace -a "Logout: user has $coun session(s)" ; return 1
+    }
+    ___last_session || return
+
+    # run in background
+    [ -x "$CEN_TOOLS/centauriencfs" ] && embed -v centauriencfs umount - &
+    [ -x "$CEN_TOOLS/centaurikerberos" -a -e "/etc/krb5.conf" ] &&
+                                         embed -v centaurikerberos destroy &
+    wait
+}
+
+# ------------------------------------------------------------------------------
+# Setup home folder: -no args-
+# ------------------------------------------------------------------------------
+actionNetwork() {
+    # get computer's network status
+    if [ -z "$CEN_NET_MODE" ] ; then
+        netserver
+        if [ -z "$CEN_NET_MODE" ] ; then
+            message -a $"Cannot get network status" ; return
+        fi
+    fi
+    trace -a "Computer mode is '$CEN_NET_MODE'"
+
+    # get network folder path
+    local netw='/network'
+    shortpath 'network' && netw="$CEN_SHORTPATH"
+
+    # stop if no $netw folder
+    if [ ! -d "$netw" ] ; then
+        warning -a $"Computer has no '$netw' folder"
+        return
+    fi
+
+    # only for a master where $netw/home must be a link to /home
+    if [ "$CEN_NET_MODE" = 'MASTER' ] ; then
+        if ! [ "$netw/home" -ef '/home' ] ; then
+            [ -h "$netw/home" ] && remove "$netw/home"
+            [ -d "$netw/home" ] && rename "$netw/home" "$netw/.home_mount"
+        fi
+        symlink "/home" "$netw/home"
+    elif [ -d "$netw/.home_mount" ] ; then
+        remove "$netw/home"
+        rename "$netw/.home_mount" "$netw/home"
+    fi
+
+    # adjust the master home link
+    if [ -n "$CEN_NET_MASTER" ] ; then
+       if ! [ "$netw/$CEN_NET_SERVER" -ef "$netw/$CEN_NET_MASTER" ] ; then
+           trace -a "Updating '/home/$CEN_NET_SERVER' to $CEN_NET_MASTER"
+           [ -h "$netw/$CEN_NET_SERVER" ] && remove -f "$netw/$CEN_NET_SERVER"
+           [ -d "$netw/$CEN_NET_SERVER" ] || symlink -f -i "$netw/$CEN_NET_MASTER" "$netw/$CEN_NET_SERVER"
+       fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Check/fix XDG_RUNTIME_DIR and .cache
+# ------------------------------------------------------------------------------
+# This action should be called from .profile, e.g. every shell:
+#
+# [ -d "$XDG_RUNTIME_DIR" -a -d ".cache" ] || eval $(centaurisession profile)
+#
+# It does:
+#   (1) check XDG_RUNTIME_DIR and echo a valid XDG_RUNTIME_DIR=xxx if needed
+#   (2) check $HOME/.cache and fix it by calling centauriencfs
+#
+# /tmp/user should be a symlink to /run/user. The later is managed by systemd.
+# If the user has no session, there is no /run/user/$EUID, in this case use
+# and create /tmp/runtime-$LOGNAME.
+# ------------------------------------------------------------------------------
+actionProfile() {
+
+    # step 1 - check runtime directory
+
+    if [ ! -d "$XDG_RUNTIME_DIR" ] ; then
+        local drun="/run/user/$EUID"            # created by systemd (not sudo)
+        if [ ! -d "$drun" ] ; then
+            drun="/tmp/runtime-${USER:-$EUID}"
+            trace -a $"Creating XDG_RUNTIME_DIR at"": $drun"
+            folder -m "$drun" 700
+        fi
+        echo "export XDG_RUNTIME_DIR='$drun'"
+        export XDG_RUNTIME_DIR="$drun"
+    fi
+
+    # step 2 - check cache
+
+    if [ ! -d "$HOME/.cache" ] && [ -h "$HOME/.cache" ] ; then
+        # the link may point to an encrypted folder, XDG_RUNTIME_DIR or
+        # /tmp/runtime-$LOGNAME
+        embed -v -z centauriencfs cache link
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Create profile tgz: <user>
+# ------------------------------------------------------------------------------
+actionSave() {
+    #[ -d "$RKDE" -o -d "$BORG/$1" ]
+    if confirm -a -q $"Save output as default profile" ; then
+        embed -v centauriprofile --user "${1:--}" create +
+    else
+        embed -v centauriprofile --user "${1:--}" create -
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    # helper to check context before invoke
+    ___invoke() {
+       [ -z "$LOGNAME" ] && fatal '$LOGNAME is not set'
+       [ -z "$HOME" ] && fatal '$HOME is not set'
+       folder -c -f "$HOME"
+       invoke "$@"
+    }
+
+    case "$CEN_ACTION" in
+    '')
+       ___xlat_pairs DAT_DESKT DAT_DOCUS DAT_PUBLI DAT_SHARE DAT_LOCAL DAT_ENCFS
+       ;;
+
+    aut*)
+        invoke -r 'autologin' -         0 2 ;;
+    bas*)
+        ___invoke 'bashrc'  -             0 ;;
+    dec*)
+        ___invoke 'decrypt' actionEncrypt 0 ;;
+    enc*)
+        ___invoke 'encrypt' actionEncrypt 0 ;;
+    login|logout)
+        ___invoke -         -             0 ;;
+    net*)
+        invoke -r 'network' -             0 ;;
+    pro*)
+        ___invoke 'profile' -             0 ;;
+    loc*)
+        ___invoke 'local'   -             0 ;;
+    roa*)
+        ___invoke 'roaming' -           0 1 ;;
+    sav|save)
+        ___invoke 'save'    -             0 ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+actions:
+       ••• normal use •••
+       encrypt              Move config data to the encrypted '$DAT_ENCFS' folder
+       decrypt              Restore encrypted config data to default locations
+
+       save    [<user>]     Creates a backup of kde and mozilla configurations
+
+       roaming [<mode>]     Switch to roaming profile and documents
+       local                Switch to local profile and documents
+       ••• called via .bashrc and .profile •••
+       bashrc               called by bash after login
+       login                setup folder links, install profiles, kerberos ticket
+       logout               unmount encfs, destroy kerberos ticket
+       profile              setup XDG_RUNTIME_DIR and encrypted .cache
+       ••• for administrators •••
+       autologin [<user> [<ntty>]]
+                            Backend for centaurilogin@.service
+       network              Configure network folder for master/slave server
+
+arguments:
+       <user>               a user name (needs root for a different user)
+       <mode>               can be online|offline|auto (mostly for testing)
+       <ntty>               a tty number (default: 6)
+
+$CEN_NAME is called from .bashrc or .profile (see /etc/bash.centauri).
+This happens up to four times to handle the following cases:
+
+        (1) any shell calls '$CEN_NAME profile' to sanitize \$TMP and centauriencfs
+        (2) A login shell starts '$CEN_NAME login' the initialize the environment
+        (3) A bash shell runs '$CEN_NAME profile', checks ~/.autologin (see below)
+        (4) At logout bash calls '$CEN_NAME logout' to run 'centauriencfs umount'
+
+The kernel command line argument 'centaurilogin=<user>' will cause case (3) to:
+
+        (3.1) do nothing if ~/.autologin is a symlink to /dev/null
+        (3.2) run centauristartx if ~/.autologin is missing (only for tty >= 3)
+        (3.3) exececute ~/.autologin for all other cases.
+
+See 'centaurikiosk --help' for some additional information on autologin.
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

@@ -1,0 +1,101 @@
+# The file is used by centauricopy the exclude items by volume,
+# see options --all and --volume.
+
+# This configuration works with centaurimirror to update and or
+# replace the Root volume of an installed system using  removable
+# boot media:
+#
+# (1) boot from removable medium
+# (2) mount root volume:
+#     mount -L target_root /mnt/xxx -o subvol=/
+# (3) use centaurimirror to replace/update 
+#     centaurimirror -M /mnt/xxx -N target -O delete copy -i root
+#     centaurimirror -M /mnt/xxx -N target -O sync -i root
+
+# default excludes (no --all option specified)
+
+[]
+    exclude /lost+found/*
+    exclude .Trash-[0-9]*
+    exclude .centauritime.*
+    exclude .dtrash
+
+# excludes by volume
+
+# exclude   # used always, causes deletion on target
+# nocopy    # see option --nocopy and verb 'mirror'
+
+[Root]
+    nocopy  /[A-Z]*_ROOT
+    nocopy  /boot/efi
+    nocopy  /boot/grub
+    nocopy  /etc/network/interfaces*
+    nocopy  /mnt
+    nocopy  /var/backups
+    nocopy  /var/lib/apt
+    nocopy  /var/log/*
+
+    nocopy  /.centauriswap 
+
+    # keep hostname and machine id
+    nocopy  /etc/hostname
+    nocopy  /etc/machine-id
+    nocopy  /var/lib/dbus/machine-id
+
+    # do not copy/remove private repositories
+    nocopy  /var/centauri/archived
+    nocopy  /var/centauri/configs/*/[!@]*/[!@]*
+    nocopy  /var/centauri/secrets
+
+    exclude /data/*
+    exclude /home/*
+    exclude /root/.cache/*
+    exclude /root/.dbus
+    exclude /root/.local/share/Trash/*
+    exclude /tmp/* 
+    exclude /var/cache/apt
+    exclude /var/cache/backups
+    exclude /var/cache/fontconfig
+    exclude /var/cache/cups/*
+    exclude /var/cache/debconf
+    exclude /var/cache/man
+    exclude /var/cache/minidlna
+    exclude /var/cache/samba
+    exclude /var/centauri/backup
+    exclude /var/centauri/persistent/*
+    exclude /var/lib/apt/lists/*.*
+    exclude /var/lib/centauri 
+    exclude /var/lib/sddm/.*
+    exclude /var/lib/sss/pipes/private/*
+    exclude /var/log/lastlog
+    exclude /var/spool/cups*
+    exclude /var/spool/squid*
+    exclude /var/tmp/*
+    exclude /var/lib/upower/history-*
+    exclude /var/lib/sddm/.cache/* 
+    exclude /var/lib/samba/private/msg.sock/*
+
+[Home]
+    nocopy  /[A-Z]*_HOME
+    exclude /*/.cache/*
+    exclude /*/.dbus
+    exclude /*/.local/share/Trash/*
+
+[Archive]
+    nocopy  /[A-Z]*_ARCHIVE
+    exclude /Deleted
+
+[Backup]
+    nocopy  /[A-Z]*_BACKUP
+    exclude /Deleted
+    exclude /Autosave
+    exclude /Spielfilm
+#    exclude /Windows*
+
+[Shared]
+    nocopy  /[A-Z]*_SHARED
+    nocopy  /[lL]local
+    nocopy  /Downloads
+    nocopy  /*.tgz
+    exclude /Deleted
+    exclude /Video_Kaffeine

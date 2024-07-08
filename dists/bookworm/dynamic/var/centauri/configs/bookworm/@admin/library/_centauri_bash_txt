@@ -1,0 +1,579 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_txt = centauri-bash-lib: Text tools (grep, sort)
+#
+# Call:     . _centauri_bash_txt
+#
+#+General:  Four of the functions in this module internally share the same logic, as
+#           they transform an input array to an output array. The input array can
+#           be passed by the caller, generated from arguments or from stdin (useful
+#           to read files). The output array can be passed to the caller, converted
+#           to a return string or written to stdout (useful to write files):
+#
+#,          - [[txtsort()]] - Simple internal sort of text lines
+#,          - [[extsort()]] - Run external sort/uniq to sort lines of text
+#,          - [[txtgrep()]] - Lightweight internal text filter (like grep)
+#,          - [[extgrep()]] - Extended text filter (using external grep)
+#
+#+          The functions extsort and extgrep will load the [[_centauri_bash_pip]]
+#           module (on demand) to run the external command via [[syspipe()]].
+#
+#.Examples: # sort argument list to array
+#.          txtsort -a data -- Franziska Johan John Marc Mary
+#
+#.          # grep an array to a file (via stdout redirection)
+#.          txtgrep -i data -s - -x "^([A-M]|[a-m])" > "$my_file"
+#
+# Copyright Dr. J. Pfennig (c) 2021-2024
+# ------------------------------------------------------------------------------
+
+CEN_MODULES["_centauri_bash_txt"]="0.03:2"
+
+CEN_TXT_SORT=                   # paths of tools
+CEN_TXT_UNIQ=
+CEN_TXT_GREP=
+
+# ------------------------------------------------------------------------------
+# txtsort - Simple internal sort of text lines
+#
+# Calls:    (1) txtsort [-a|-s <var>] [-m <max>] [-n] [-r] [-f|-q] -i <var>
+#           (2) txtsort [-a|-s <var>] [-m <max>] [-n] [-r] [-f|-q] [--] <line>...
+#
+# Options:  -a  save result to array <var>
+#           -f  make errors fatal
+#           -i  input from <var> (**-** for stdin), can be array or string
+#           -m  max input lines, use [[extsort()]] for more input
+#           -n  perform a numerical sort (default is lexical)
+#           -q  do not report errors
+#           -r  reverse sort order
+#           -s  save result to <var> (**-** for stdout)
+#
+# Arguments:<var>   name of a string variable or array
+#           <max>   line count threshold (default 15)
+#           <line>  text line to be sorted
+#
+# Return:   **true** at success or **false** otherwise.
+#
+# Example:  In-place (same input/output array) numberic sort
+#
+#.          local data=(343 332 22)
+#.          txtsort -n -i data -a data
+#
+#+This function runs a simple bubble sort unless the line count threshold
+# gets exceeded. In the later case [[extsort()]] is invoked. The rationale
+# is to prevent forking an external sort programm for trival cases.
+#
+#+On a numerical sort only the leading digits are used as key, empty
+# keys are treated as zero and the resulting order of non-numeric
+# items is undefined.
+# ------------------------------------------------------------------------------
+txtsort() {
+    #$CEN_DEBUG -c -- "$*"
+    local _ffat _fqui _fmax=15 _frev _farr _leng _xopt _stat=0
+    local _vinp _vout="-s -" _vsys _cen_sort_aarg
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _farr="$1" ; _vout="-s $1" ; _vsys="-a $1"  ;;
+      -f)   _ffat="-f" ;;
+      -i)   shift ; _vinp="$1" ;;
+      -m)   shift ; _fmax="$1" ;;
+      -n)   _xopt="-o -n" ;;
+      -q)   _fqui="-q" ;;
+      -r)   _frev="-r" ;;
+      -s)   shift ; _vout="-j $1 -d \n" ; _vsys="-s $1" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # get input, set _varr
+    local -n _varr
+    if [ -z "$_vinp" ] ; then               # sort call arguments
+        _cen_sort_aarg=("$@")
+        _varr="_cen_sort_aarg" ; _vinp="_cen_sort_aarg"
+    elif [ "$_vinp" = '-' ] ; then          # sort stdin
+        IFS=$'\n' read -r -d '' -a _cen_sort_aarg || true
+        _varr="_cen_sort_aarg" ; _vinp="_cen_sort_aarg"
+    else                                    # sort string/array
+        _varr="$_vinp"
+        if [ "${#_varr[@]}" = 1 ] ; then    # could be string
+            local -n _varr="_cen_sort_aarg"  # redefine (no unset needed)
+            splitjoin -s _cen_sort_aarg -n -i "$_vinp"
+            _vinp="_cen_sort_aarg"
+        fi
+    fi
+
+    # pass large array to extsort and return status
+    _leng="${#_varr[@]}"
+    if [ "$_leng" -gt "$_fmax" ] ; then
+        extsort $_vsys -i "$_vinp" $_xopt $_frev $_ffat $_fqui || _stat=1 ;
+        return $_stat
+    fi
+
+    # get/set/fill sort array
+    if [ -n "$_farr" ] ; then               # use output array
+        local -n _barr="$_farr"
+    else                                    # local array
+        local _barr
+    fi
+    _barr=("${_varr[@]}")                   # copy input
+
+    # performing a bubble sort
+    local _iter _curr _next _temp _oper=">"
+    [ -n "$_frev" ] && _oper="<"
+
+    for ((_iter=0; _iter < _leng; _iter++)) ; do
+        if [ -n "$_xopt" ] ; then           # numeric sort
+            for ((_curr=0; _curr < _leng-_iter-1; _curr++)) ; do
+                ((_next=_curr+1))
+                if ((${_barr[_curr]%%[!0-9]*} $_oper ${_barr[_next]%%[!0-9]*})) ; then
+                    _temp="${_barr[_curr]}"
+                    _barr[_curr]="${_barr[_next]}"
+                    _barr[_next]="$_temp"
+                fi
+            done 2>/dev/null
+        else                                # lexical sort
+            for ((_curr=0; _curr < _leng-_iter-1; _curr++)) ; do
+                ((_next=_curr+1))
+                if [ "${_barr[_curr]}" $_oper "${_barr[_next]}" ] ; then
+                    _temp="${_barr[_curr]}"
+                    _barr[_curr]="${_barr[_next]}"
+                    _barr[_next]="$_temp"
+                fi
+            done
+        fi
+    done
+
+    [ -z "$_farr" ] && splitjoin $_vout -l -i _barr || true
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# extsort - Run external sort/uniq to sort lines of text
+#
+# Calls:    (1) extsort [-a|-s <var>] -i <var> [-o <opt>] [-r] [-u] [-f|-q]
+#           (2) extsort [-a|-s <var>] [-o <opt>] [-r] [-u] [-f|-q] [--] <line>...
+#
+# Options:  -a  save result to array <var>
+#           -f  make errors fatal
+#           -i  input from <var> (**-** for stdin), can be array or string
+#           -o  pass <opt> as option string to **/usr/bin/sort**
+#           -q  do not report errors
+#           -r  reverse sort order
+#           -s  save result to <var> (or use "-s -" for stdout)
+#           -u  pass sort result trough **/usr/bin/uniq**
+#
+# Arguments:<var>   name of a variable or array
+#           <opt>   option string (example "-k2 --ignore-case")
+#           <line>  text line to be sorted
+#
+#.Examples: extsort -a dout -i -      # sort stdin, output to array
+#.          extsort -s dout -i dinp   # sort array, output to string
+#.          extsort -a dout -- "$@"   # sort arguments, output to array
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#+The function runs the **/usr/bin/sort** and **/usr/bin/uniq** utilities
+# by calling [[syspipe()]].
+# ------------------------------------------------------------------------------
+extsort() {
+    #$CEN_DEBUG -c -- "$*"
+    local _ferr='-e' _fopt _frev _funi _fnam _vinp _vout='-s -' _acmd
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _fnam="$1" ; _vout="-a $1" ;;
+      -f)   _ferr="-f" ;;
+      -i)   shift ; _vinp="-i $1" ;;
+      -o)   shift ; _fopt="$1" ;;
+      -q)   _ferr="-q" ;;
+      -r)   _frev="-r" ;;
+      -s)   shift ; _fnam="$1" ; _vout="-s $1" ;;
+      -u)   _funi=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+                                                    # install check...
+    if [ -z "$CEN_TXT_SORT" ] ; then
+        sysfind ${_ferr/-q/} -s CEN_TXT_SORT -c sort || return 1
+        embed -m '_centauri_bash_pip'
+    fi
+    if [ -z "$_funi" ] ; then                       # simple sort
+        _acmd=("$CEN_TXT_SORT" $_frev $_fopt)
+    else                                            # sort with uniq
+        _acmd=('_cen_sort_uniq')
+        if [ -z "$CEN_TXT_UNIQ" ] ; then
+            sysfind ${_ferr/.q/} -s CEN_TXT_UNIQ -c uniq || return 1
+            _cen_sort_uniq() {                      # helper for uniq
+                set -o pipefail ; "$CEN_TXT_SORT" $_frev $_fopt | "$CEN_TXT_UNIQ"
+            }
+        fi
+    fi
+
+    if [ -z "$_vinp" ] ; then                       # sort call arguments
+        local _cen_sort_aarg=("$@") ; _vinp='-i _cen_sort_aarg'
+    fi
+
+    dryrun -r 'extsort:' "$CEN_TXT_SORT" $_frev $_fopt "${_funi:+| $CEN_TXT_UNIQ}" || true
+    local _sout _stat=0 _copr
+
+    [ "$CEN_PIP_BUSY" = "$BASHPID" ] || _copr='-x'  # can use bash coproc
+    syspipe -r $_ferr $_copr -n -y  $_vinp $_vout -- "${_acmd[@]}" || _stat=$?
+    [ "$_stat" = 0 ] && return 0
+
+    # additional error reporting
+    if [ -n "$_fnam" -o "$_ferr" != '-q' ] ; then
+        splitjoin -d "\n" -i "$_fnam" -j _sout
+        message -a -n -- "$_sout"
+    fi
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# txtgrep - Lightweight internal text filter (like grep)
+#
+# Calls:    (1) txtgrep [-a|-s <var>] -i <var> [-m] [-n] -x|-y <expr>
+#           (2) txtgrep [-a|-s <var>] [-m] [-n] -x|-y <expr> [--] <line>...
+#
+# Options:  -a  save result to array <var>
+#           -i  input from <var> (**-** for stdin), can be array or string
+#           -m  stop after 1st match
+#           -n  invert condition
+#           -s  save result to <var> (**-** for stdout)
+#           -x  use regular expression
+#           -y  use bash glob pattern
+#
+# Arguments:<var>   name of a variable or array
+#           <expr>  regular expression -or- bash glob pattern
+#           <line>  text line to be searched
+#
+#.Examples: # use a glob expression to remove comment lines
+#.          txtgrep -n -y "#*" -a data -i - <file.txt
+#
+#.          # in-place filtering
+#.          local days=(monday montag wednesday mercredi friday)
+#.          txtgrep -o days -i days -x ".*day"
+#
+#+Return:   Without option -a or -s status **true** is returned after the 1st match
+#           and **false** if no match is found (this implies option -m).
+#
+#           With option -a -or -s are used always **true** is returned.
+#
+#+The function works on text, line by line. Bash regular expressions can be slow.
+# For larger amounts of data [[extgrep()]] may perform better.
+# ------------------------------------------------------------------------------
+txtgrep() {
+    #$CEN_DEBUG -c -- "$*"
+    local _fnam _fnot _fexp _expr _vinp _vout _stop
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _vout="$1" ;;
+      -i)   shift ; _vinp="$1" ;;
+      -m)   _stop='break' ;;
+      -n)   _fnot=1 ;;
+      -s)   shift ; _fnam="$1" ;;
+      -x)   shift ; _expr="$1" ; _fexp=1 ;;
+      -y)   shift ; _expr="$1" ; _fexp=2 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ -z "$_fexp" ] && _cen_abort + '-x|-y'
+    [ -n "$_fnot" ] && ((_fexp += 2))
+    [ -z "$_vout" -a -z "$_fnam" ] && _stop='break'
+
+    # implementation uses input and output arrays
+    local -n _varr _rslt
+    local _cen_grep_aarg _txtgrep_rarg _line
+
+    # get input, set _varr
+    if [ -z "$_vinp" ] ; then               # grep call arguments
+        _cen_grep_aarg=("$@") ; _varr='_cen_grep_aarg'
+    elif [ "$_vinp" = '-' ] ; then          # grep stdin
+        IFS=$'\n' read -r -d '' -a _cen_grep_aarg ; _varr="_cen_grep_aarg"
+    else                                    # grep string/array
+        _varr="$_vinp"
+        if [ "${#_varr[@]}" = 1 ] ; then    # could be string
+            local -n _varr='_cen_grep_aarg' # redefine (no unset needed)
+            splitjoin -s _cen_grep_aarg -n -i "$_vinp"
+        fi
+    fi || :
+
+    # get output, set _rslt
+    if [ "$_vinp" = "$_vout" ] ||           # in-place, copy temp output
+       [ "${_vout:--}" = '-' ] ; then       # grep to stdout or string
+        _txtgrep_rarg=() ; _rslt='_txtgrep_rarg'
+    else
+        _rslt="$_vout"
+    fi
+    _rslt=()
+
+    # do the grep
+    if [ "$_fexp" = 1 ] ; then
+        for _line in "${_varr[@]}" ; do
+            [[ "$_line" =~ $_expr ]] || continue
+            _rslt+=("$_line") ; $_stop
+        done
+    elif [ "$_fexp" = 2 ] ; then
+        for _line in "${_varr[@]}" ; do
+            [[ "$_line" == $_expr ]] || continue
+            _rslt+=("$_line") ; $_stop
+        done
+    elif [ "$_fexp" = 3 ] ; then
+        for _line in "${_varr[@]}" ; do
+            [[ "$_line" =~ $_expr ]] && continue
+            _rslt+=("$_line") ; $_stop
+        done
+    else
+        for _line in "${_varr[@]}" ; do
+            [[ "$_line" == $_expr ]] && continue
+            _rslt+=("$_line") ; $_stop
+        done
+    fi
+
+    # return status only
+    if [ -n "$_stop" -a -z "$_vout" -a -z "$_fnam" ] ; then
+        [ "${#_rslt[@]}" = 0 ] && return 1 || return 0
+    fi
+
+    # output to stdout or string
+    if [ "${_vout:--}" = '-' ] ; then
+        splitjoin -j "${_fnam:--}" -n -l -i _rslt
+    elif [ "$_vinp" = "$_vout" ] ; then         # in-place, copy temp output
+        local -n _vslt="$_vout" ; _vslt=("${_rslt[@]}")
+    fi || :
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# extgrep - Extended text filter (using external grep)
+#
+# Calls:    (1) extgrep [-a|-s <var>] -i <var> [-o <opt>] [-r] [-f|-q]
+#           (2) extgrep [-a|-s <var>] [-o <opt>] [-r] [-f|-q] [--] <line>...
+#
+# Options:  -a  save result to array <var>
+#           -f  make errors fatal
+#           -i  input from <var> (**-** for stdin), can be array or string
+#           -l  return line numbers             (grep -n
+#           -m  stop after 1st match            (grep -q)
+#           -n  invert condition                (grep -v)
+#           -o  append <opt> verbatim to the grep command
+#           -q  do not report errors
+#           -s  save result to <var> (**-** for stdout)
+#           -u  case independent matching       (grep -i)
+#           -x  extended regular expression     (grep -E)
+#           -y  basic reqular expression
+#
+#+          Using -l|-m|-u|-x adds the corresponding grep options to the
+#           command. -x|-y add grep's **-e°"<pattern>"**. The argument of -o
+#           is finally appended to the generated command.
+#
+# Arguments:<var>   name of a variable or array
+#           <opt>   additional options for grep
+#           <line>  text line to be filtered
+#
+#.Examples: extgrep -x "[Hh]ello" -a dout -i -      # from stdin, to array
+#.          extgrep -y "[Hh]ello" -s dout -i dinp   # from array, to string
+#.          extgrep -o "[Hh]ello" -a dout -- "$@"   # from arguments, to array
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#+Please don't get confused, the function options are not the same as grep
+# options. See this function as something that is as easy to use as
+# [[txtgrep()]] but can handle large amounts of data faster and that has
+# more features by using the **/usr/bin/grep** utility. It is possible to
+# pass grep options verbatim using "-o".
+#
+#+To run **/usr/bin/grep**, an external process must be started and the data
+# must be copied between the script and the external process. In many cases the
+# internal [[txtgrep()]] may be faster. The function uses [[syspipe()]] to run
+# grep.
+# ------------------------------------------------------------------------------
+extgrep() {
+    #$CEN_DEBUG -c -- "$*"
+    local _ferr='-e' _fexp _fnam _vinp _vout='-s -' _acmd=('-') _aopt
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _fnam="$1" ; _vout="-a $1" ;;
+      -f)   _ferr="-f" ;;
+      -i)   shift ; _vinp="-i $1" ;;
+      -l)   _acmd+=('-n') ;;
+      -m)   _acmd+=('-q') ;;
+      -n)   _acmd+=('-v') ;;
+      -o)   shift ; _aopt+=("$1") ;;
+      -q)   _ferr="-q" ;;
+      -s)   shift ; _fnam="$1" ; _vout="-s $1" ;;
+      -u)   _acmd+=('-i') ;;
+      -x)   shift ; _fexp=1 ; _acmd+=('-e' "$1") ;_acmd+=('-E') ;;
+      -y)   shift ; _fexp=2 ; _acmd+=('-e' "$1") ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ -z "$_fexp" ] && _cen_abort + '-x|-y'
+                                                    # install check...
+    if [ -z "$CEN_TXT_GREP" ] ; then
+        sysfind ${_ferr/-q/} -s CEN_TXT_GREP -c grep || return 1
+        embed -m '_centauri_bash_pip'
+    fi
+    _acmd[0]="$CEN_TXT_GREP" ; _acmd+=("${_aopt[@]}")
+
+    if [ -z "$_vinp" ] ; then                       # grep call arguments
+        local _cen_grep_aarg=("$@") ; _vinp='-i _cen_grep_aarg'
+    fi
+
+    dryrun -r "extgrep: ${_acmd[@]}" || true
+    local _sout _stat=0 _copr
+
+    [ "$CEN_PIP_BUSY" = "$BASHPID" ] || _copr='-x'  # can use bash coproc
+    syspipe -r $_ferr -g $_copr -n -y $_vinp $_vout -- "${_acmd[@]}" || _stat=$?
+    [ "$_stat" = 0 ] && return 0
+
+    # additional error reporting
+    if [ -n "$_fnam" -o "$_ferr" != '-q' ] ; then
+        splitjoin -d "\n" -i "$_fnam" -j _sout
+        message -a -n -- "$_sout"
+    fi
+    return $_stat
+}
+
+
+# ------------------------------------------------------------------------------
+# txtfold - folding of long text lines, fetch limited text size
+#
+# Call:     txtfold [-d <deli>] [-f <fixl>] -m <maxi> -s <vout> [--] <vinp>
+#
+# Options:  -d  delimiter for joining multiple output lines
+#           -f  fixup function to increase <maxi> for markup sequences
+#           -m  maximum characters to fetch
+#           -s  save result into this variable
+#
+# Arguments:<maxi>  maximum number of characters to return
+#           <deli>  a delimiter string (use - for newline)
+#           <vinp>  variable holding input
+#           <vout>  variable to receice the output
+#
+# Return:   **true** if text is returned, **false** if no input is left
+#
+#+Markup:   If a text contains markup like ''"one°**two**°tree"'' a fixup
+#           routine can be used to increase <maxi>. In the example case
+#           4 would be added to <vmax>:
+#
+#           Call: <fixl> <vout> <vmax>      # 2 variable name arguments
+#
+#+          The fixup routine may also update <vout> if it fixes <vmax>
+#           correctly.
+#
+# Example:  (1) simple line folding into a buffer
+#.          local data="$*" text
+#.          txtfold -m 70 -d - -s text -- data
+#
+#           (2) fetch limited size and iterate over input
+#.          local data="$*" line
+#.          while txtfold -m 70 -s line -- data ; do
+#.              message -a -- "$line"
+#.          done
+#
+#+ This function removes the returned text from the input variable. The
+#  result has simplified whitespace and is trimmed.
+#
+#+ txtfold is not very fast (roughly 500µs per 80 char line) but
+#  for modest sizes the time scales almost linear with the input size.
+# ------------------------------------------------------------------------------
+txtfold() {
+    local _deli _nmax _sout _frmt=:
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -d)   shift ; _deli="${1:--}" ;;
+      -f)   shift ; _frmt="$1" ;;
+      -m)   shift ; _nmax="$1" ;;
+      -s)   shift ; _sout="$1" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ -z "$_sout" -o "${_nmax:-0}" -lt 1 ] && _cen_abort -  # missing name or size
+    [ "$_deli" = '-' ] && _deli=$'\n'
+
+    _cen_txt_fold "$_nmax" "$1" "$_sout" || return 1    # overwrite output buffer
+
+    local -n _vcur="$_sout" _vxxx="$1"
+    local _cen_txt_more _nmor _ncur=${#_vcur}           # _ncur is output length
+    $_frmt "$_sout" _nmax                               # reduce output, update max
+
+    while : ; do                                        # loop to join output lines
+        # does more text fit into result?
+        _rest=$((_nmax - _ncur))                        # remaining length
+        while [ "$_rest" -gt 1 ] ; do                   # until output is full
+            _cen_txt_fold - "$1" _cen_txt_more || break # trim remainder and get 1st word
+            _nmor="${#_cen_txt_more}"
+            $_frmt _cen_txt_more _nmax
+            ((_ncur += ${#_cen_txt_more} + 1))          # resulting size
+            [ "$_ncur" -gt "$_nmax" ] && break          # return if it does not fit
+            _vcur+=" $_cen_txt_more"
+            _vxxx="${_vxxx:_nmor+1}"
+            _rest=$((_nmax - _ncur - 1))                # remaining free
+        done
+
+        # an output line was filled
+        [ -z "$_vxxx" ] && break                        # no input text left
+        [ -z "$_deli" ] && break                        # not joining output
+        _vcur+="$_deli"
+        _cen_txt_fold "$_nmax" "$1" _cen_txt_more || return 1
+        _vcur+="$_cen_txt_more" ; _ncur=${#_cen_txt_more}
+    done
+    return 0
+}
+
+# helper to fetch text: <maxi>|- <vinp> <vout>
+_cen_txt_fold() {
+    local _omax="$1"
+    local -n _vtxt="$2" _vout="$3"
+
+    # trim input and return 1st word
+    if [ "$_omax" = '-' ] ; then
+        _vtxt="${_vtxt#"${_vtxt%%[![:space:]]*}"}"
+        [ -z "$_vtxt" ] && return 1                 # no input left
+        _vout="${_vtxt%% *}"
+        return 0
+    fi
+
+    # get left-trimmed text
+    _vout="${_vtxt%%[![:space:]]*}"
+    local _trim=${#_vout}
+    _vout="${_vtxt:_trim:_omax+1}"              # one character more
+    if [ -z "$_vout" ] ; then                   # reached end of text
+        _vtxt= ; return 1
+    fi
+
+    # do we have a space at end?
+    local _nout=${#_vout} ; ((_nout += _trim))
+    local _vtmp="${_vout%[[:space:]]}"          # trim trailing space
+    if [ "$_vtmp" = "$_vout" ] ; then           # no space!
+
+        # in most cases we will chop off a word, so find start of last word
+        if [ $_nout -gt $_omax ] ; then
+            _vtmp="${_vout%[[:space:]]*}"       # remove last fragment
+            if [ "$_vtmp" = "$_vout" ] ; then
+                _vout="${_vtmp::_omax}"
+            else
+                _vout="$_vtmp"
+            fi
+            _nout=${#_vout} ; ((_nout += _trim))
+        fi
+    else                                        # got trailing space
+        _vout="$_vtmp"
+    fi
+    _vtxt="${_vtxt:_nout}"                      # remainder of input
+
+    # simplify whitespace and trim right
+    _vtmp="${_vout//[[:space:]]/ }" ; _vtmp="${_vtmp//  / }"
+    while [ "$_vtmp" != "$_vout" ] ; do
+        _vout="$_vtmp"
+        _vtmp="${_vout//  / }"
+    done
+    _vout="${_vout%"${_vout##*[! ]}"}"
+    return 0
+}
+
+# end

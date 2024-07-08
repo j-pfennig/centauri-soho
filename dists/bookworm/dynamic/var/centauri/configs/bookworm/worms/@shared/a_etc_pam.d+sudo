@@ -1,0 +1,8 @@
+#%PAM-1.0
+
+@include common-auth
+@include common-account
+@include common-session-noninteractive
+
+# jpf: dynamic group assignment
+auth       optional   pam_group.so

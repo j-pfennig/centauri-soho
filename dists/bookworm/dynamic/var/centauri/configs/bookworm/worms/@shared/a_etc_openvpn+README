@@ -1,0 +1,39 @@
+This folder contains OpenVPN configurations for Centauri-SOHO linux. The
+files 'server.conf' and 'client.conf' are installed from the repository
+and usually don't need modifications.
+
+Server OpenVPN configuration:
+
+    The 'server/<domain>/server.conf' file refers to the following files
+    that must be installed in 'server/<domain>' (symlinks are ok):
+
+    ca.crt          # certificate authority, see centauricerts
+    crl.pem         # certificate revokation list
+    dh.pem          # diffie hellman parameters
+    server.crt      # server certificate
+    server.key
+    ta.key          # transport authority (a 128 bit random number)
+    updown          # script to configure network, see centauriswitch
+
+    All files can be generated and installed using 'centauricerts'. And
+    'server.conf' should be symlinked to '/etc/openvpn'. So this server
+    can be started via systemd: 'systemctl start openvpn@server'.
+
+Client configuration:
+
+    The 'client/<domain>/client.conf' file refers to the following files:
+
+    ca.crt          # certificate authority, see centauricerts
+    client.crt      # client certificate
+    client.key
+    ta.key          # transport authority (a 128 bit random number)
+
+    These files can be generated and exported using 'cetauricerts'. Export
+    generates a tar file that can be extracted into 'client/<domain>'. The
+    'client.conf' (but not 'app-client.conf') should be symlinked to the
+    '/etc/openvpn' folder. So 'openvpn --config /etc/openvpn/client.conf'
+    can start an OpenVPN client instance.
+
+    Usually NetworkManager is used to start OpenVPN clients. The repository
+    contains 'OpenVPN-Centauri.nmconnection' to add a NM system connection.
+ 

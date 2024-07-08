@@ -1,0 +1,524 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2022; BSD License"
+CEN_TITLE="Swap File/Partition Tool and Service"
+
+### BEGIN INIT INFO
+# Provides:          centauriswap
+# Required-Start:    $network $remote_fs $syslog autofs
+# Required-Stop:
+# Default-Start:     3 4 5
+# Default-Stop:      0 6
+# Short-Description: Swap file/partion service
+# Description:       Create/mount a swap file/partion at boot time
+### END INIT INFO
+
+### TODO zwap support - echo 1 > /sys/modules/zswap/enabled ... max_percentage
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -v -y "$0" "0.24" || exit 2
+
+CEN_SVC_SHORT="Swap File/Partition Service"
+CEN_SVC_WANTED_BY="multi-user.target"
+
+CEN_OPT_BASE=                   # see --base
+CEN_OPT_TARGET=                 # see --target
+
+# Data
+CEN_DAT_SWAP="/.$CEN_NAME"      # swapfile or symlink
+
+CEN_DAT_LCURR=                  # current swap location (for delete)
+CEN_DAT_TCURR=                  # current type: file|folder|device
+
+CEN_DAT_LDEST=                  # new swap location (for create)
+CEN_DAT_TDEST=                  # destination type: file|folder|device
+
+# ------------------------------------------------------------------------------
+# helpers
+# ------------------------------------------------------------------------------
+
+# get swap locations: [-d|-f|-s] <dest> <label>
+swap_location() {
+    CEN_DAT_LCURR= ; CEN_DAT_TCURR=             # current location/type
+    CEN_DAT_LDEST= ; CEN_DAT_TDEST=             # destination location/type
+
+    # destination type options
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      -)    break ;;
+      --)   shift ; break ;;
+      -d)   CEN_DAT_TDEST="device" ;;
+      -f)   CEN_DAT_TDEST="file" ;;
+      -s)   CEN_DAT_TDEST="folder" ;;
+      *)    fatal "Bad 'swap_location' argument: $1"
+      esac ; shift
+    done
+
+    # resolv link destination
+    if   [ -h "$CEN_DAT_SWAP" ] ; then
+        resolve -q -m -s CEN_DAT_LCURR -- "$CEN_DAT_SWAP"
+    elif [ -e "$CEN_DAT_SWAP" ] ; then
+        CEN_DAT_LCURR="$CEN_DAT_SWAP"
+    fi
+
+    # get swap type
+    if   [ -b "$CEN_DAT_SWAP" ] ; then
+        CEN_DAT_TCURR="device"
+    elif [ -d "$CEN_DAT_SWAP" ] ; then
+        CEN_DAT_TCURR="folder"
+    elif [ -f "$CEN_DAT_SWAP" ] ; then
+        CEN_DAT_TCURR="file"
+    fi
+
+    # new swap location
+    if [ "${1:--}" = "-" ] ; then
+        CEN_DAT_LDEST="${CEN_DAT_LCURR:-$CEN_DAT_SWAP}"
+        # do not use current if type does not match
+        [ -n  "$CEN_DAT_TCURR" -a "$CEN_DAT_TCURR" != "$CEN_DAT_TDEST" ] &&
+            CEN_DAT_LDEST="$CEN_DAT_SWAP"
+    elif ! resolve -s CEN_DAT_LDEST -- "$1" ; then
+        error "Invalid destination: $1"
+        return 1
+    fi
+
+    # check destination type
+    case "$CEN_DAT_TDEST" in
+    device)     [ -b "$CEN_DAT_LDEST" ] && return 0
+                ;;
+    folder)     [ -d "$CEN_DAT_LDEST" ] && return 0
+                ;;
+    "")         return 0 ;;
+    *)          [ -h "$CEN_DAT_SWAP" -a "$CEN_DAT_SWAP" = "$CEN_DAT_LDEST" ] && return 0
+                [ -b "$CEN_DAT_LDEST" -o -d "$CEN_DAT_LDEST" ] || return 0
+    esac
+    fatal "Destination is not a $CEN_DAT_TDEST: $CEN_DAT_LDEST"
+}
+
+# delete swapfile: [-d|-k]
+swap_delete() {
+    # must disable swapping
+    if [ -z "$CEN_OPT_BASE" ] ; then
+        message -a "Disable swapping ..."
+        system -q swapoff -a
+        [ "$1" = "-d" ] && return 0
+    fi
+
+    [ -n "$CEN_DAT_LCURR" -a -z "$CEN_OPT_TARGET" ] || return 0
+    confirm -a "Delete swap $CEN_DAT_TCURR '$CEN_DAT_LCURR'" || return 1
+
+    # check current type
+    local fdel="$CEN_DAT_LCURR"
+    case "$CEN_DAT_TCURR" in
+    file)       ;;
+    folder)     fdel+="/$CEN_NAME" ;;
+    *)          fdel=
+    esac
+
+    # remove swap file
+    if [ -e "$fdel" ] ; then
+        message -a "Delete existing swap file: $fdel"
+        remove -- "$fdel"
+        if [ -e "$fdel" -a -z "$CEN_OPT_DRYRUN" ] ; then
+            error "Failed to delete swap file: $fdel"
+            return 1
+        fi
+    fi
+
+    # remove symlink
+    [ -h "$CEN_DAT_SWAP" -a "$1" != "-k" ] && remove -- "$CEN_DAT_SWAP"
+    return 0
+}
+
+# create swap file/partion: -f|-p|-s <size>|<label>
+swap_create() {
+    confirm -a "Create swap $CEN_DAT_TDEST '$CEN_DAT_LDEST'" || return 1
+
+    ___legacy_alloc() {
+        curr=$((curr + $3))
+        while ionice dd if=/dev/zero of="$1" count=1 bs=1M seek=$curr &>/dev/null ; do
+            trace -a "Allocated $((curr + 1)) MiB"
+            [ "$2" != "0" -a "$((curr + 1))" -ge $2 ] && break
+            [ -n "$CEN_OPT_DRYRUN" ] && break
+            curr=$((curr + $3))
+        done
+    }
+
+    ___swap_to_file() {
+        local curr=-1 smsg="${2}MByte"
+        [ "$2" = "0" ] && smsg="maximum"
+        remove -- "$1"
+
+        message -a "New swapfile: $1 ($smsg)"
+        if [ "$2" = "0"  -o "$CEN_ACTION" = "legacy" ] ; then
+            system -e -p touch "$1"
+            error -t || return 1
+            [ "$2" = "0" -o "$2" -gt 512 ] && ___legacy_alloc "$1" "$2" 512
+            [ "$2" = "0" -o "$((curr + 1))" -lt "$2" ] && ___legacy_alloc "$1" "$2" 64
+        else
+            system -e -p fallocate -l "${2}M" "$1"
+            error -t || return 1
+        fi
+        system -e -p chmod 600 "$1"
+        system -e -p mkswap "$1"
+        [ "$1" -ef "$CEN_DAT_SWAP" ] || symlink -n -- "${CEN_OPT_TARGET:-$1}" "$CEN_DAT_SWAP"
+        error -t || return 1
+
+        [ "$CEN_ACTION" = "start" -o -n "$CEN_OPT_BASE" ] && return 0
+        message -a "Enable swapping ..."
+        system -e -p swapon "$1"
+        error -t                                        # return status
+    }
+
+    if [ "$1" = "-p" ] ; then
+        local labl="${2:--}" ; [ "$2" = "-" ] && labl="${HOSTNAME}_swap"
+        message -a "New swap device: $CEN_DAT_LDEST  (Label=$labl)"
+        system -e -p mkswap -L "$labl" "$CEN_DAT_LDEST"
+        if error -t && [ -z "$CEN_OPT_BASE" ] ; then
+            message -a "Enable swapping ..."
+            system -e -p swapon "$CEN_DAT_LDEST" || break
+        fi
+        error -t && symlink -n -- "${CEN_OPT_TARGET:-$CEN_DAT_LDEST}" "$CEN_DAT_SWAP"
+
+    elif [ "$1" = "-f" ] ; then
+        # create new swap file and run swapon
+        local lsiz="${2:-2048}"
+        ___swap_to_file "$CEN_DAT_LDEST" "$lsiz"
+
+    elif [ "$1" = "-s" ] ; then
+        # check if hiberfil exists (with 'e')
+        if [ -e "$CEN_DAT_LDEST/hiberfil.sys" ] ; then
+            error "Found 'hiberfil.sys' but hibernation must be disabled"
+            return 1
+        fi
+
+        # remove old swapfile and winswap
+        local lsiz=0 lfil="$CEN_DAT_LDEST/$CEN_NAME"
+        remove -- "$CEN_DAT_LDEST/pagefile.sys"
+        remove -- "$lfil"
+
+        # create new swap file and run swapon
+        error -t && ___swap_to_file "$lfil" "$lsiz"
+    fi
+
+    error -t && return 0                                            # return if ok
+    error "Failed to create swap $CEN_DAT_TDEST: $CEN_DAT_LDEST"
+    return 1
+}
+
+# show status
+swap_stat() {
+    [ -n "$CEN_OPT_TARGET" ] && return
+    local pfmt="%-7s swap location: %-20s %s\n"
+    if [ "$CEN_OPT_BASE" = "-" ] ; then
+        :
+    elif [ -n "$CEN_DAT_LCURR" ] ; then
+        message -a -p "$pfmt" "Current" "$CEN_DAT_LCURR" "Type: ${CEN_DAT_TCURR:--unknown-}"
+    else
+        message -a -p "$pfmt" "Current" "-No configured swap file or partition-"
+    fi
+    if [ -n "$CEN_DAT_TDEST" ] ; then
+        message -a -p "$pfmt" "New" "$CEN_DAT_LDEST" "Type: ${CEN_DAT_TDEST:--unknown-}"
+    fi
+}
+
+# mount swap folder: <dest>
+swap_mount() {
+    # is in mtab?
+    local dest="$1" mdev mmnt mxxx
+    while read mdev mmnt mxxx ; do
+        [ -z "$mdev" -o "${mdev::1}" = "#" ] && continue
+        [ "$mmnt" = "$dest" ] && break
+    done < /etc/fstab
+
+    if [ "$mmnt" != "$dest" ] ; then
+        error "Folder '$dest' not found in '/etc/fstab'"
+        return 1
+    fi
+
+    # mount the folder
+    while read mdev mmnt mxxx ; do
+        [ -z "$mdev" -o "${mdev::1}" = "#" ] && continue
+        [ "$mmnt" = "$dest" ] && break
+    done < /etc/mtab
+    if [ "$mmnt" != "$dest" ] ; then
+        if ! system -p -e mount "$dest" ; then
+            error "Failed to mount '$dest'"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# try to fix missing .centauriswap link: [-f|-d]
+swap_repair() {
+    [ -z "$CEN_OPT_BASE" ] || return
+    if [ "$1" = "-f" -a -z "$CEN_DAT_LCURR" ] ; then
+        local fswp="/mnt/boot/${HOSTNAME}_boot/swapfile"
+        if [ -f "$fswp" ] ; then
+            CEN_DAT_LCURR="$fswp" ; CEN_DAT_TCURR="file"
+        fi
+    elif [ "$1" = "-d" -a -z "$CEN_DAT_LCURR" -a "$CEN_DAT_TDEST" = "device" ] ; then
+        CEN_DAT_LCURR="$CEN_DAT_LDEST" ; CEN_DAT_TCURR="device"
+    fi
+    [ -z "$CEN_DAT_LCURR" -o -e "$CEN_DAT_SWAP" ] ||
+        symlink -- "$CEN_DAT_LCURR" "$CEN_DAT_SWAP"
+}
+
+# find swap parition by label
+_find_swap=
+find_swap() {
+    _find_swap=
+    local driv
+    for driv in /dev/disk/by-label/* ; do
+        case "$driv" in
+            *swap)  resolve -q -s _find_swap -- "$driv"
+                    break ;;
+        esac
+    done
+    [ -z "$_find_swap" ] && return 1
+    [ -b "$driv" ]                      # return status
+}
+
+# check if swap is configured in fstab: [-w|-e]
+check_fstab() {
+    [ "$CEN_OPT_BASE" = "-" ] && return 0
+    [ -r "$CEN_OPT_BASE/etc/fstab" ] || return 0
+
+    local mtyp=message madd
+    [ "$1" = "-e" ] && mtyp=error
+    [ "$1" = "-w" ] && mtyp=warning
+
+    local mdev mmnt ftyp mxxx
+    while read mdev mmnt ftyp mxxx ; do
+        [ -z "$mdev" -o "${mdev::1}" = "#" ] && continue
+        [ "$ftyp" = "swap" ] && break
+    done < "$CEN_OPT_BASE/etc/fstab"
+    [ "$ftyp" = "swap" ] || return 0
+
+    [ "$mtyp" = "warning" ] || madd=" (no action taken)"
+    $mtyp "Swap is configured in '$CEN_OPT_BASE/etc/fstab'$madd"
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# shared swap: <folder>
+# ------------------------------------------------------------------------------
+actionShare() {
+    check_fstab -e || return
+    swap_location -s "$1" || return
+    swap_stat
+
+    # mount the folder
+    swap_mount "$CEN_DAT_LDEST" || return
+
+    # create $CEN_NAME as swap
+    swap_create -s
+}
+
+# ------------------------------------------------------------------------------
+# remove swap: -no args-
+# ------------------------------------------------------------------------------
+actionNone() {
+    check_fstab -w
+    if swap_location ; then
+        [ "$CEN_DAT_LCURR" = '/dev/null' ] && return
+        swap_stat
+        swap_delete
+    fi
+    symlink -x -- '/dev/null' "$CEN_DAT_SWAP"
+}
+
+# ------------------------------------------------------------------------------
+# action file: <path> <size>
+# ------------------------------------------------------------------------------
+actionFile() {
+    check_fstab -e || return
+    swap_location -f "$1" || return
+    swap_repair -f
+    swap_stat
+    swap_delete || return
+    swap_create -f "$2"
+}
+
+# ------------------------------------------------------------------------------
+# action swap: [<part>] [<label>]
+# ------------------------------------------------------------------------------
+actionSwap() {
+    check_fstab -e || return
+
+    local driv labl part="-"
+    if [ "${1:--}" = "-" ] ; then
+        shift
+    elif [ "${1::1}" = "/" ] ; then           # partion argument
+        part="$1" ; shift
+    fi                                        # label argument
+    labl="${1:--}"
+
+    # try by label
+    if [ "$part" = "-" -a "$labl" = "-" ] ; then
+        if ! find_swap ; then
+             error "Cannot find a swap device" ; return 1
+        fi
+        part="$_find_swap"
+    elif [ "$part" = "-" ] ; then
+        driv="/dev/disk/by-label/$labl"
+        if ! [ -b "$driv" ] ; then
+            error "Cannot find device for label: $labl" ; return 1
+        fi
+        resolve -q -s part -- "$driv"
+    fi
+
+    swap_location -d "$part" || return
+    swap_repair -d
+    swap_stat
+    swap_delete || return
+    swap_create -p "$labl"
+}
+
+# ------------------------------------------------------------------------------
+# action status - list secrets files: -no args-
+# ------------------------------------------------------------------------------
+actionStatus() {
+    check_fstab -w
+    swap_location
+    swap_stat
+    local sswa
+    system -e -s sswa swapon -s
+    [ -n "$sswa" ] && echo -e "\n$sswa\n" 1>&2
+}
+
+# ------------------------------------------------------------------------------
+# action status - list secrets files: -no args-
+# ------------------------------------------------------------------------------
+actionStart() {
+    check_fstab || return
+
+    swap_location
+    if [ -z "$CEN_DAT_LCURR" ] ; then
+        if ! find_swap ; then
+            message "Swap not configured and no swap partion found"
+            return
+        fi
+        CEN_DAT_LCURR="$_find_swap" ; CEN_DAT_TCURR="device"
+        swap_repair
+    fi
+
+    local swap="$CEN_DAT_LCURR"
+    if [ "$CEN_DAT_TCURR" = "folder" ] ; then
+        swap_mount "$CEN_DAT_LCURR" || return
+        swap+="/$CEN_NAME"
+
+        if ! [ -e "$swap" ] ; then              # recreate when deleted
+            CEN_DAT_LDEST="$CEN_DAT_LCURR"
+            CEN_DAT_TDEST="folder"
+            CEN_YESNO="y"                       # imply --yes for confirm
+            swap_create -s || return
+        fi
+    fi
+
+    if [ "$swap" = '/dev/null' ] ; then
+        message -i "Swaping disabled"
+    elif system -q swapon "$swap" ; then
+        message -i "Swap $CEN_DAT_TCURR enabled: $swap"
+    else
+        warning "Could not enable swap $CEN_DAT_TCURR: $swap"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# action status - list secrets files: -no args-
+# ------------------------------------------------------------------------------
+actionStop() {
+    check_fstab || return
+    swap_location
+
+    if [ -z "$CEN_DAT_LCURR" -o "$CEN_DAT_TCURR" != "folder" ] ; then
+        swap_delete -d
+
+    elif ! [ -e "$CEN_DAT_LCURR/$CEN_NAME.delete" ] ; then
+        message "Not deleting swapfile, no '$CEN_NAME.delete' file"
+        swap_delete -d
+
+    else
+        CEN_YESNO="y"                       # imply --yes for confirm
+        swap_delete -k
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    "") if [ "${CEN_OPT_BASE:--}" != "-" ] ; then
+            folder -c -f "$CEN_OPT_BASE"
+            CEN_OPT_BASE="$PWD" ; [ "$CEN_OPT_BASE" = "/" ] && CEN_OPT_BASE=
+            CEN_DAT_SWAP="$CEN_OPT_BASE$CEN_DAT_SWAP"
+            message -a "Base folder:" "${CEN_OPT_BASE:-/}"
+        fi
+        ;;
+    -B|--bas|--base)
+        optarg "base"     CEN_OPT_BASE    -t ;;         # text
+    -T|--tar*)
+        optarg "target"   CEN_OPT_TARGET  -t ;;         # text
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    # service commands
+    start)
+        invoke -        -            0 ;;
+    stop)
+        invoke -        -            0 ;;
+    sta|stat|sta*)
+        invoke "status" -            0 ;;
+
+    # other commands
+    non*)
+        invoke "none"   -            0 ;;
+    fil*)
+        invoke "file"   -            0 2 ;;
+    leg*)
+        invoke "legacy" actionFile   0 2 ;;
+    sha*)
+        invoke "share"  -            1 ;;
+    swa*)
+        invoke "swap"   -            0 2 ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+    -o - \
+    -o "-B --base   <fldr>   "$"mount folder for target system (no swapon/swapoff)" \
+    -o "-T --target <dest>   "$"override link target for /.centauri"
+    usageset \
+    -a "none                 "$"disable service (link $CEN_DAT_SWAP to /dev/null)" \
+    -a "file   [<path>|- [<mbyte>]" \
+    -a "                     "$"create swap file, '-' for default location" \
+    -a "legacy ...           "$"like 'file' if fallocate fails (fat32 etc.)" \
+    -a "share  <part>        "$"share a partition for windows/linux swap files" \
+    -a "swap   [<part>|-] [<label>]" \
+    -a "                     "$"create/label swap partition, '-' try to find"
+    usageset \
+    -t $"Creates either a real swapfile (action: file) --or-- a link to a mounted folder" \
+    -t $"on a (vfat)partition with a swapfile (action: share)  --or--  a link to a swap" \
+    -t $"device (action: swap).  The file or link path is: $CEN_DAT_SWAP ."
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

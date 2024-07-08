@@ -1,0 +1,43 @@
+# jpf@centauri - file gets sourced at login - 2019-05-12
+
+do_async() {
+    # pulseaudio is started via systemd --user
+    # do not start pulse via /etc/xdg/autostart
+    #if [ -x /usr/bin/pulseaudio ] ; then
+    #    unset PULSE_SERVER
+    #    #[ -d "$HOME/.config/pulse" ] || mkdir "$HOME/.config/pulse"
+    #    /usr/bin/pulseaudio --start
+    #fi
+
+    # load display profile
+    [ -x /usr/bin/xcalib -a -r /etc/default/display.icc ] &&
+		/usr/bin/xcalib /etc/default/display.icc
+
+    # enable DPMS, no need for xorg.conf entry
+    xset dpms 600
+
+    # Runs xmodmap if mappings are found. Useful for re-arranging mouse buttons.
+
+    SYSMODMAP=/etc/X11/Xmodmap
+    USRMODMAP=$HOME/.Xmodmap
+
+    [ -f $SYSMODMAP ] && xmodmap $SYSMODMAP
+    [ -f $USRMODMAP ] && xmodmap $USRMODMAP
+}
+
+do_async &
+
+# init if not run by a login shell
+if [ -z "$CEN_ROOT" ] && [ -f "/etc/bash.centauri" ] ; then
+    echo "xsession: running 'bash.centauri PROFILE'"
+    . /etc/bash.centauri PROFILE
+fi
+
+# check Private folder
+centauriencfs login
+
+# proxy settings
+[ -r /var/run/centauri/network_proxy ] && . /var/run/centauri/network_proxy
+
+#/usr/bin/logger "XSESSION centauri"
+# done

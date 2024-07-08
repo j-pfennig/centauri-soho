@@ -1,0 +1,23 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+
+# Options -a enables module auto-load, -t enables translations
+PATH+=":${0%/*}" . _centauri_bash_lib -a -t - '0.00:2' || exit 2
+
+# ------------------------------------------------------------------------------
+# No extras like help, options or verbs
+# ------------------------------------------------------------------------------
+
+[ $# = 1 ] || quit -p -s 1 $"Usage: %s <weekday>" "$CEN_NAME"
+
+declare indx word
+listsearch -n indx -m word -d ' ' -u -- "$1" \
+           $"Monday Tuesday Wednesday Thursday Friday Saturday Sunday"
+
+case $? in
+    0)  echo "$indx $word" ;;
+    1)  quit -e -s 2 $"Not a weekday:" "$1" ;;
+    *)  quit -e -s 2 $"Ambiguous input:" "$1"
+esac
+
+# the end

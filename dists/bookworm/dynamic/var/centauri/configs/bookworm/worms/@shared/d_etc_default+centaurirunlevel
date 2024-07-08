@@ -1,0 +1,58 @@
+# The centauri configuration uses systemd.targets like SysV runlevels:
+#
+#   runlevel2.target    maintenance
+#   runlevel3.target    minimal networking, automounter
+#   multi-user.target   full system without display manager
+#   graphical.target    full system with display manager
+
+# This tool works fine for service that still have SysV init files. Non
+# SysV services may use $CEN_ROOT/systemd/system config files.
+
+# ==============================================================================
+[any]
+# ==============================================================================
+
+# incompatible with centauri
+remove       systemd-resolved cups-browsed
+
+# (re)started via centauriswitch
+remove       dnsmasq cyrus-imapd exim4 hostapd ntp openvpn slapd samba-ad-dc saslauthd
+
+# these services are optionally started via inetd
+inetd        rsync ssh smbd saned vsftpd
+
+# started via anacron
+remove       cron fetchmail smartmontools
+
+# manual start only
+remove       brouter-svc
+remove       cachefilesd
+remove       kexec kexec-load
+remove       nfs-blkmap nfs-server nfs-kernel-server
+remove       openvpn
+remove       vboxweb virtualbox
+
+# run-level dependent
+disable 234  sddm lightdm apache2 squid3 squid 
+disable 23   anacron atd gmediarender minidlna virtualbox inetd weewx
+disable 23   nmbd tinyproxy unattended-upgrades winbind
+disable 2    avahi-daemon bluetooth cups cups-browsed lighttpd networking
+disable 2    network-manager nmbd ntpsec plymouth 
+disable 2    rmnologin radv samba-ad-dc smdb ssh sssd
+
+enable  345  lighttpd bluetooth
+enable  45   weewx
+
+# ==============================================================================
+[workstation]
+# ==============================================================================
+remove       exim4 rsync
+disable 23   tinyproxy
+disable 2345 nfs-server rcp-svcgssd
+
+# ==============================================================================
+[server]
+# ==============================================================================
+restore      exim4 rsync
+disable 2345 tinyproxy
+enable  345  nfs-server rpc-svcgssd

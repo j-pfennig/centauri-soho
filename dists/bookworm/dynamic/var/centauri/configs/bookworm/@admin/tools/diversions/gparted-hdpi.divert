@@ -1,0 +1,8 @@
+status=off
+target=/usr/sbin/gparted
+
+divert() {
+    # read GDK_DPI_SCALE
+    [ -r /etc/bash.local ] && . /etc/bash.local
+    exec /usr/sbin/gparted.distrib "$@"
+}

@@ -1,0 +1,11 @@
+# This file is interprepreted when installing centauri-bash-lib. It's
+# purpose is to avoid *.override [Install] patches for service.units:
+
+# always start these ...
+
++ centaurisysinit.service
+
+# don't start here ...
+
+- systemd-boot-update.service
+

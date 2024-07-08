@@ -1,0 +1,10 @@
+# /etc/cron.d/anacron: crontab entries for the anacron package
+
+# Centauri: cron got replaced by systemd timers.  This file was used by cron
+#           to launch anacron periodically and is now just a placeholder.
+
+
+#SHELL=/bin/sh
+#PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+# Centauri: run anacron every 3 hours at 11 minutes. See /etc/crontab
+#11 2,5,8,11,14,17,20,23	* * *	root    test -x /etc/init.d/anacron && service anacron start >/dev/null

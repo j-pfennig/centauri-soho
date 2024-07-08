@@ -1,0 +1,1466 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_svc = centauri-bash-lib: Service and syslog support
+#
+# Call:     . _centauri_bash_svc [-n|-s]
+#
+# Options:  -n      disable service initialization, no service verbs or options
+#           -i      force automatic service initialization (this option is set
+#                   when loading _centauri_bash_lib with option -v (service)
+#
+#+This module can make the user script a daemon, SysV service or systemd
+# service.  But it also contains a couple of functions that can be used
+# without being a service (module load option -n can be used to disable
+# service functions on load):
+#
+#, - [[background]]  run a script in background (like **nohup**))
+#, - [[pidfile]]     manage PID files
+#, - [[runservice]]  start/stop services, get service status
+#
+#+The module also adds **syslog** support and the --syslog option unless
+# disabled via option -n. All _centauri_bash_lib output, except [[trace()]],
+# can be sent to **syslog**.
+#
+#+The function to initialize/check the service state is [[isservice()]].
+# This function also initializes **syslog** output. If the module is not
+# loaded with option -i (or _centauri_bash_lib with option -v), the
+# script must call [[isservice()]] explicitly to become a service.
+#
+#+The user script is made a service when the module was not loaded with
+# option -n and if one of the following conditions is met:
+#
+#, - CEN_SVC_SHORT                     § is set
+#, - a systemd CEN_SVC_xxx variable    § is set
+#, - **actionStart** | **actionStop**  § is defined
+#
+# More documentation can be found in module [[_centauri_bash_ins]]:
+#
+#, - [[Service and Daemon]] - How Services and Daemons are supported
+#, - [[Service Types]]      - Supported Service Types
+#, - [[Service Config]]     - Writing a Service (LSB-Header, Config Variables)
+#, - [[Service Setup]]      - Installing a Service
+#, - [[Systemd Config]]     - Overriding the Configuration of systemd Services
+#
+# Variables:CEN_SVC_SHORT    should be set to a very short description ot the
+#                            service (default is CEN_TITLE)
+#           CEN_SVC_NOROOT   user defined actions do not check for user root
+#           CEN_SVC_xxx      **systemd** related variables, see below
+#           CEN_OPT_SYSLOG   controls where the output goes:
+#                            **0**: no output,  **1**: stderr and syslog,  **2**: syslog only
+#
+#+SysV-init:Must have an **lsb-header**. **SysV** services will always be enabled by
+#           **systemd** unless they have a vendor preset file or are removed from
+#           "/etc/init.d". At setup time no service unit is created.
+#
+#+systemd:  If the user script has no **lsb-header** or one of the following variables
+#           is set, a **systemd** service unit is created at setup time by default:
+#
+#           CEN_SVC_AFTER       service ordering via **After=** directive
+#                               (default is networking services/targets)
+#           CEN_SVC_WANTED_BY   list of targets for a **WantedBy=** directive
+#                               (default: "multi-user.target")
+#           CEN_SVC_WANTS       service dependency via **Wants=** directive, also
+#                               added to default **After=** directive
+#           CEN_SVC_TYPE        generates a **Type=** directive, the value can be
+#                               "once|oneshot|simple|daemon|auto" (default: "simple")
+#           CEN_SVC_PRESET      generates a preset file to control whether the
+#                               service is enabled by default. The value can be
+#                               "enable" or "disable" (default: "enable")
+#
+#+Daemon:   The script can implement a daemon (that cannot use the 'setup' command)
+#           by setting CEN_SVC_TYPE="daemon" .
+#
+#+Template: The **centauriService** and **centauriDaemon** templates are good starting
+#           points for writing a service or a daemon script.
+#
+#+Actions:  Default implementations for service actions **start stop restart** and
+#           **status** are provided. There is also a default **setup** action.
+#
+#+          A user script can reimplement **status** (the default does nothing) and
+#           **setup**. The default **setup** installs and enables the service. When
+#           **setup** is reimplemented, the default will be run after return only
+#           if CEN_ARGS is non-empty.
+#
+#+          When the **setup** action is invoked, the user script is scanned for an
+#           **lsb-header**. If present it will be made a SysV service, otherwise a
+#           **systemd** unit will be generated.
+#
+#+Running:  The sevice will usually perform it's work in the **start** action. On return
+#           from **start** the service will terminate (unless a background thread was
+#           started).
+#
+#+Stopping: When the service is stopped via SysV or systemd, the **stop** action will
+#           run. The default implementation of **stop** will forward a **TERM** signal to
+#           the service process. The code running in the **start** action should stop
+#           after receiving **TERM**.
+#
+# Example:  Providing a custom setup function
+#.          setup() {
+#.              if [ "$1" != "install" ] ; then
+#.                  :                       # ignore this call
+#.              elif [ "$1" != 'status' ] ; then
+#.                  message "Service type is: ${CEN_SVC_TYPE:--SysV}"
+#.              elif [ -z "$CEN_SVC_TYPE" ] ; then
+#.                  warning "Installing a SysV service"
+#.              else
+#.                  my_service_unit         # will not be overridden
+#.
+#.                  [ "$CEN_SVC_PRESET" = "disable" ] &&
+#.                      warning "Service must be enabled manually"
+#.              fi
+#.              CEN_ARGS=1                  # continue with default setup
+#.          }
+#
+#           Invoking the setup function of "myservice"
+#.          myservice setup install
+#.          myservice setup status
+#.          myservice setup uninstall
+#
+# Copyright Dr. J. Pfennig (c) 2015-2024
+# ------------------------------------------------------------------------------
+
+CEN_MODULES['_centauri_bash_svc']='0.37:2'
+
+CEN_IS_SERVICE=                 # used by _cen_svc_action (internal)
+
+CEN_OPT_DAEMON=                 # see --daemon
+CEN_OPT_TOOL=                   # see --tool
+export CEN_OPT_SYSLOG                 # 0:off 1:copy 2:only, see _cen_message
+
+CEN_SVC_RUNNING=                # used by _cen_svc_action (internal)
+CEN_SVC_STARTSTOP=              # set by start/stop/restart
+CEN_SVC_AUTO_INIT=              # init early as service, see -n on load
+CEN_SVC_INHIBIT=                # see inhibit
+CEN_SVC_LOGPID=                 # used for logger
+CEN_SVC_NOROOT=                 # no root check
+
+export CEN_SVC_SYSLOG           # actual logging mode (environment import)
+
+CEN_SVC_SYSD="$CEN_ROOT/systemd"        # systemd service folder (only if installed)
+CEN_SVC_SYSV="${CEN_PATHS[2]}/init.d"   # SysV service folder
+
+                                # systemd base locations
+CEN_SVC_SYSX=("${CEN_PATHS[2]}/systemd" "$CEN_PATHS/run/systemd"
+              "$CEN_PATHS/usr/local/lib/systemd" "${CEN_PATHS[5]}/systemd")
+
+# Imported from user script (must not be defined here) ...
+
+# CEN_SVC_SHORT=                # short description
+# CEN_SVC_AFTER=                # explicit After= argument
+# CEN_SVC_WANTS=                # After= and Wants= argument
+# CEN_SVC_WANTED_BY=            # WantedBy target list
+# CEN_SVC_TYPE=                 # one of: once, oneshot, simple, daemon, auto
+# CEN_SVC_PRESET=               # make a preset file
+# CEN_SYC_SCOPE=                # systemd scope: system user private
+# ------------------------------------------------------------------------------
+# progress (service) - Legacy SysV fancy progress reporting
+#
+# Call:     progress <text>...
+#
+#+Legacy, does not make sense with a **systemd** service. The <text> arguments
+# are joined into a string that is passed to the **log_progress_msg()**
+# function, see **/lib/lsb/init-functions**.
+# ------------------------------------------------------------------------------
+# provide a dummy even if not a service...
+isfunction -y progress
+
+# ------------------------------------------------------------------------------
+# background - Run a script in background, redirect input/output
+#
+# Call:     (1) background [-m <suff>] [-n] [-o <file>|-s] [-w] <script> <arg>...
+#           (2) background -c <pid>|<file> /|<pown>...
+#
+#+          Form (1) starts a background subshell, see examples. Form (2) sets the
+#           **cgroup** of process-id <pid> (<pid> can be the path of a pidfile).
+#
+# Options:  -c  move <pid> into cgroup "_centauri-bash-lib" or <pown>
+#           -m  move non-empty output-file (overrides previous backup)
+#           -n  don't background, just redirect input/output
+#           -i  input from file (redirects **stdin**)
+#           -o  output to file (redirects **stdout** and **stderr**)
+#           -s  output to **syslog** (via [[message()]] et al)
+#           -w  no disown, simple subshell, set CEN_QUIT_WSUB for [[quit()]]
+#
+#+Cgroups:  <pown>... is a list of potential destination cgroups, the 1st existing
+#           will be used. Specifying "/" uses "centauti-bash-lib" which will be
+#           created if needed.
+#
+# Variable: CEN_BACKGROUND  process-id of the ''background'' process
+#
+#+Warning:  If (1) is used by a systemd service, it will not prevent systemd from
+#           terminating the background thread when the service **cgroup** is closed.
+#           Consider using (2) to move the process to another **cgroup**.
+#
+#.Examples: run_bgnd() {                            # list environment
+#.              local larr=()
+#.              system -a larr -- env
+#.              splitjoin -x message -i larr
+#.          }
+#.
+#.          background run_bgnd                     # no output
+#.          background -c "$CEN_BACKGROUND" "/"     # optional: change cgroup
+#.
+#.          background -s run_bgnd                  # output to syslog
+#.          background -o "$CEN_NAME.log" run_bgnd  # ... to file
+#.          background -n -o x.log -m old run_bgng  # logfile only
+#.          background -w -o - run_bgnd             # keep output, no disown
+#
+#+Uses in/out redirection and bash's **disown** command by default. In contrast to
+# **/usr/bin/nohup** this function does not start a new shell. This can be used to run
+# a subroutine of a script in ''background''.  The ''background'' process will not be
+# terminated when the main shell exits. Option -w disables using **disown** but sets
+# CEN_QUIT_WSUB to make [[quit()]] wait for all subshells to terminate.
+#
+#+The function is in module [[_centauri_bash_svc]] because it optionally uses
+# **syslog** output. This will cause a conflict with the [[_centauri_bash_con]] or
+# the [[_centauri_bash_win]] module.
+#
+#+When running ''background'' process (subshell) the CEN_QUIT_WSUB is set, causing
+# [[quit()]] to wait for all subshells to terminate before running the quit
+# hook. This will prevent the main shell to delete files created by [[tmpfile()]]
+# from a subshell.
+# ------------------------------------------------------------------------------
+CEN_BACKGROUND=
+background() {
+    local _cgrp _fmov _fnot _finp _fout _fwai _slog="$CEN_SVC_SYSLOG" _mesg="<none>"
+    CEN_BACKGROUND=
+
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -c)   shift ; _cgrp="$1" ;;
+      -i)   shift ; _finp="$1" ;;
+      -m)   shift ; _fmov="$1" ;;
+      -n)   _fnot=1 ;;
+      -o)   shift ; _fout="${1:-}" ; CEN_SVC_SYSLOG=0 ;;
+      -s)   _fout= ; CEN_SVC_SYSLOG=2 ;;
+      -w)   _fwai=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # change cgroup of a process
+    if [ -n "$_cgrp" ] ; then
+        if [ ! -e '/proc/self/cgroup' ] ; then
+            message -a -c " cgrp" "Not supported" ; return 1
+        fi
+        local _curr _cpro
+        if [ -n "${_cgrp//[0-9]/}" ] ; then             # got a pid file
+            if ! read _cgrp 2>/dev/null <"$_cgrp" ; then
+                error "background: Cannot read:" "$_cgrp" ; return 1
+            fi
+        fi
+
+        for _curr in "$@" ; do
+            if [ "$_curr" = '/' ] ; then
+                _curr="/sys/fs/cgroup/centauri-bash-lib"
+                folder -m "$_curr" || return 1
+                _cpro="$_curr/cgroup.procs"
+            else
+                _cpro="/sys/fs/cgroup/system.slice/$_curr/cgroup.procs"
+                [ -e "$_cpro" ] || continue
+            fi
+            if echo 2>/dev/null "$_cgrp" >"$_cpro" ; then
+                $CEN_TRACE -a -c -p ' cgrp' $"Moved 'pid=%s' to '%s'" "$_cgrp" "$_curr"
+                return 0
+            fi
+            error -p 'background: '$"Failed to move 'pid=%s' to '%s'" "$_cgrp" "$_curr"
+            return 1
+        done
+        error 'background: '$"New cgroup not found" ; return 1
+    fi
+
+    # run in background
+    if [ -n "$_fmov" ] && [ -s "$_fout" ] ; then
+        [ "${_fmov/./}" = "$_fmov" ] && _fmov="$_fout.$_fmov"
+        $CEN_TRACE -a $"Renaming old output:" "$_fout  => $_fmov"
+        move -- "$_fout" "$_fmov"
+    fi
+    [ "$CEN_SVC_SYSLOG" = 1 ] && CEN_SVC_SYSLOG=2       # syslog only -or- file
+    [ "${CEN_SVC_SYSLOG:-0}" = 0 ] || _mesg="<syslog>"
+
+    if [ -n "$_fnot" ] ; then
+        $CEN_TRACE -a -p $"Run in foreground (output '%s'): %s" "${_fout:-$_mesg}" "$*"
+        JOURNAL_STREAM= "$@" <"${_finp:-/dev/null}" &>>"${_fout:-/dev/null}"
+    elif [ "$_fout" = '-' ] ; then
+        $CEN_TRACE -a $"Run in background:" "$*"
+        {   [ -z "$_fwai" ] && tmpfile -i               # own base folder
+            CEN_EXIT=0 ; "$@"
+            [ "$CEN_EXT_TPID" = "$BASHPID" ] && tmpfile -d
+            exit ${CEN_EXIT:-0}
+        } <"${_finp:-/dev/null}" &
+        CEN_BACKGROUND=$!
+        [ -n "$_fwai" ] && CEN_QUIT_WSUB=1 || disown -h $!
+    else
+        $CEN_TRACE -a -p $"Run in background (output '%s'): %s" "${_fout:-$_mesg}" "$*"
+        {   [ -z "$_fwai" ] && tmpfile -i               # own base folder
+            CEN_EXIT=0 ; JOURNAL_STREAM= "$@"
+            [ "$CEN_EXT_TPID" = "$BASHPID" ] && tmpfile -d
+            exit ${CEN_EXIT:-0}
+        } <"${_finp:-/dev/null}" &>>"${_fout:-/dev/null}" &
+        CEN_BACKGROUND=$!
+        [ -n "$_fwai" ] && CEN_QUIT_WSUB=1 || disown -h $!
+    fi
+    CEN_SVC_SYSLOG="$_slog" ; return 0                  # restore callers syslog
+}
+
+# ------------------------------------------------------------------------------
+# inhibit - Disable start/stop/restart of the service
+#
+# Call:      inhibit <message>
+#
+#            This function is a no-operation for systemd --user services.
+#
+# Arguments:<message>  output on attemps to start/stop or restart a disabled
+#                      service. Must not be empty.
+#
+#+The function can be placed in a service script before the [[main()]]
+# routine. When a file named "$CEN_ROOT/transient/$CEN_NAME-disable"
+# exists the call will disable the service.
+#
+#+The call only sets a flag, it is [[isservice()]] that decides on init
+# whether to start the service or not. The command line option --force
+# can be used to override the disabled state.
+# ------------------------------------------------------------------------------
+inhibit() {
+    [ -e "$CEN_ROOT/transient/${CEN_NAME}-disable" ] && CEN_SVC_INHIBIT="$*"
+}
+
+# ------------------------------------------------------------------------------
+# pidfile - create/delete PID file, check status, terminate process
+#
+# Call:     (1) pidfile -w <pid>|- [--] [[<path>/]<name>]
+#           (2) pidfile [-c|-d|-n] [-s vnam] [--] [[<path>/]<name>]
+#           (3) pidfile [-d] -k <signal> [-s vpid] [--] [[<path>/]<name>]
+#
+#+          Form (1) creates a pid file, form (2) returns pid file information or
+#           deletes a pid file. A signal can be sent to a process using form (3).
+#
+# Options:  -c  check if saved PID is still running
+#           -d  delete the PID file
+#           -k  send a signal to the saved PID
+#           -n  get PID file name and return
+#           -r  use extension .run instead of .pid
+#           -s  save the PID (empty string on error)
+#           -w  create a PID file
+#
+# Arguments:<name>    PID file name (default is $CEN_NAME)
+#           <path>    path starting with "/", enables validation
+#           <pid>     PID of main process or "0" for oneshot
+#           <signal>  signal name/number to be sent (default is SIGTERM)
+#           <vnam>    variable name
+#
+# Files:    $CEN_ROOT/transient/<prog>.pid  # the default PID file
+#           /run/<prog>.pid                 # used if needed
+#           $TMP/<prog>.pid                 # used if needed
+#
+#+Return:   **true** on success or **false** on error or failed test.
+#           On success CEN_PIDFILE is set to a PID file path.
+#
+#+This function implements the standard PID file actions and is used to
+# implement service state handling. The function itself does not register
+# any hook to catch signals or to remove the pidfile.
+#
+#+Using a full path as program name argument enables a validation against the
+# process name to prevent killing a process using a stale pid file. The code
+# checks if "/proc/<pid>/exe" is the same file as the given path. For bash all
+# paths will match.
+# ------------------------------------------------------------------------------
+CEN_PIDFILE=
+pidfile() {
+    CEN_PIDFILE=
+    local _flgd _flgs _flgw _fsav _fext=".pid"
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -c)   ;;
+      -d)   _flgd=1 ;;
+      -k)   shift ; _flgs="${1:--}" ;;
+      -n)   _flgw='-' ;;
+      -r)   _fext=".run" ;;
+      -s)   shift ; _fsav="${1:--}" ; printf -v "$_fsav" '0' ;;
+### TODO -u for user/private pid
+      -w)   shift ; _flgw="${1:--}" ; [ "$_flgw" = '-' ] && _flgw=$$ ;;
+
+      # internal use: <pid> <program> <pidfile>
+      -v)   shift ; [ "${2::1}" = "/" ] || return 0     # no check
+            [ "${1:-0}" = 0 ] && return 0               # nothing to check
+            [ "/proc/$1/exe" -ef "$2" ] && return 0     # success
+            [ "/proc/$1/exe" -ef "$BASH" ] && return 0
+            [ -r "/proc/$1/exe" ] || return 0           # no check
+            remove -- "$3" ; return 1 ;;                # failure
+
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    local _name="${1:-$CEN_NAME}" _file="$CEN_ROOT/transient" _temp
+    [ -w "$_file" ] || _file="/run"
+    [ -w "$_file" ] || _file="${TMPDIR:-$TMP}"
+    _file+="/${_name##*/}$_fext"
+
+    if [ -n "$_flgw" ] ; then                           # write pid file...
+        if [ "$_flgw" != '-' ] ; then
+            create -r -t -v _flgw -- "$_file" 600 || return 1
+        fi
+        CEN_PIDFILE="$_file" ; return 0
+    fi
+
+    if ! [ -e "$_file" ] ; then                         # no PID file
+        $CEN_TRACE "pidfile: no file:" "$_file"
+        return 1
+    elif [ -z "$_flgd" -o -n "$_flgs" ] ; then            # read PID file
+        if ! read _temp 2>/dev/null <"$_file" ; then
+            $CEN_TRACE "pidfile: cannot read:" "$_file"
+            return 1
+        fi
+        [ "$_fsav" ] && printf -v "$_fsav" '%s' "$_temp"
+    fi
+
+    if [ -n "$_flgd" -o -n "$_flgs" ] ; then
+        pidfile -v "$_temp" "$_name" "$_file" || return 3   # wrong process
+        [ -n "$_flgd" ] && remove -r -- "$_file"
+        [ "${_temp:-0}" = 0 ] && return 0               # nothing to kill
+        [ "${_flgs:--}" = '-' ] && _flgs="SIGTERM"
+        $CEN_TRACE "pidfile: send signal:" "$_flgs $_temp"
+        [ -z "${_flgs//[0-9]/}" ] && _flgs="-n $_flgs" || _flgs="-s $_flgs"
+        kill $_flgs $_temp 2>/dev/null ; return        # return status
+    fi
+
+    [ -z "$_temp" ] && return 1                         # no PID file
+    if [ "$_temp" != 0 ] ; then
+        if ! kill -0 "$_temp" 2>/dev/null ; then        # PID not valid
+            remove -r -- "$_file" ; return 2            # delete stale pid file
+        fi
+        pidfile -v "$_temp" "$_name" "$_file" || return 3   # wrong process
+    fi
+    CEN_PIDFILE="$_file"; return 0                      # return ok
+}
+
+# ------------------------------------------------------------------------------
+# isservice - check if we run as service and initialize syslog output
+#
+# Call:     isservice [-r] [-i|-n] [-s <0|1|2>] [-l <text>...]
+#
+# Options:  -i  initialize explicitly
+#           -l  log message to syslog
+#           -n  do not init, just check service conditions
+#           -r  check if caller is **root**
+#           -s  override CEN_OPT_SYSLOG (no checks made)
+#
+# Return:   **true** if we run as a service or daemon, otherwise **false**
+#
+#+The function also starts SysV (fancy) progress reporting and/or syslog
+# output. It gets called internally unless disabled at module load time.
+#
+#+The [[_centauri_bash_svc]] module supports three ways to run scripts as
+# a service or daemon:
+#
+#- 1) a systemd service (via systemctl start|stop)
+#- 2) a SysV service (via /etc/init.d/<script> start|stop)
+#- 3) daemon without installation (/<path>/<script> start|stop)
+#
+#+A PID file and a RUN file are used to interlock methods 1/2 and 3. A service
+# started with systemd will not allow manual stop|stop and vice versa. Scripts
+# that have **CEN_SVC_TYPE=daemon** cannot be installed via systemd or SysV and
+# must be started|stopped manually (but behave otherwise like services).
+#
+# If CEN_OPT_DAEMON is empty the following rules apply:
+#
+#- 1) set CEN_OPT_DAEMON=1 if the script is linked to /etc/init.d
+#- 2) set CEN_OPT_DAEMON=1 if systemd is not the init system
+#- 3) set CEN_OPT_DAEMON=1 if the script is started from a tty
+#- 4) set CEN_OPT_DAEMON=0 otherwise.
+#
+#+If CEN_OPT_SYSLOG is empty and CEN_OPT_DAEMON is 0 or 1, CEN_OPT_SYSLOG is
+# set accordingly (2 or 0).
+#
+#+It is the purpose of CEN_OPT_DAEMON to flag that a script was not started by
+# systemd (in this case the value is 0) but is to be daemonized (value is 1).
+#
+#+If systemd is not installed or for CEN_OPT_DAEMON=1 the following applies:
+#
+#- 1) For CEN_SVC_TYPE=simple create PID file and daemonize
+#- 2) otherwise create PID file
+#
+# for CEN_OPT_DAEMON=1 (the RUN file can block start/stop via systemd):
+#
+#- 1) For CEN_SVC_TYPE=simple create PID file and RUN file and daemonize
+#- 2) otherwise create PID file and RUN file
+#
+#+for CEN_OPT_DAEMON=0 (PID file without RUN file blocks builtin start/stop):
+#
+#- 1) For CEN_SVC_TYPE=simple create PID file (systemd daemonizes the script)
+#- 2) otherwise create PID file
+# ------------------------------------------------------------------------------
+isservice() {
+    # we must set CEN_OPT_LOG here because _cen_message can call isservice and
+    # could cause a recursion ...
+    if [ -z "$CEN_SVC_SYSLOG" ] ; then
+        CEN_SVC_SYSLOG="$CEN_OPT_SYSLOG"
+        if [ -z "$CEN_SVC_SYSLOG" ] ; then
+            # output to file or pipe, no output hook
+            if [ -f "/dev/stderr" ] || [ -p "/dev/stderr" ] ; then
+                CEN_SVC_SYSLOG=0
+            # interactive mode: 0 (stderr only) else 2 (syslog only)
+            elif [ -t 0 -o -t 1 -o -t 2 ] ; then
+                CEN_SVC_SYSLOG=0
+            else
+                CEN_SVC_SYSLOG=2
+            fi
+        fi
+    fi
+
+    local _flgn _flgi _flgl
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -i)   _flgi=1 ;;
+      -l)   shift ; _flgl="$1" ;;
+      -n)   _flgn=1 ;;
+      -r)   [ "$CEN_SVC_TYPE" = "daemon" -o -n "$CEN_OPT_TOOL" ] || context -r ;;
+      -s)   shift ; CEN_SVC_SYSLOG="$1" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # generate a syslog entry
+    if [ -n "$_flgl" ] ; then
+        _cen_svc_logger "$_flgl" "$@"
+        [ -z "$_flgi" -a -z "$_flgn" ] && return 0
+    fi
+
+    # is already initialized?
+    if [ -z "$_flgi" ] ; then
+        [ "$CEN_IS_SERVICE" = "0" ] && return 1
+        [ -n "$CEN_IS_SERVICE" ] && return 0
+        [ -z "$CEN_SVC_AUTO_INIT" ] && return 1
+    fi
+
+    # check service conditions
+    local _fsvc _fpro
+    if [ -n "$CEN_SVC_SHORT" -o -n "$CEN_SVC_TYPE" ] ||
+       [ -n "$CEN_SVC_WANTED_BY" -o -n "$CEN_SVC_WANTS" -o \
+         -n "$CEN_SVC_AFTER" -o -n "$CEN_SVC_PRESET" ] ; then
+        if   isfunction actions ; then
+            _fsvc=3
+        elif isfunction run ; then
+            _fsvc=2
+            isfunction -y actions                   # create dummy (enables hook)
+        else
+            _fsvc=1
+        fi
+    fi
+
+    if [ -z "$CEN_SVC_HOOK_OPTIONS" ] ; then        # hook option parsing
+        CEN_SVC_HOOK_OPTIONS="$CEN_HOOK_OPTIONS"
+        CEN_HOOK_OPTIONS="_cen_svc_option"
+    fi
+
+    if [ -z "$CEN_SVC_HOOK_MESSAGE" ] ; then        # hook output
+        CEN_SVC_HOOK_MESSAGE="$CEN_HOOK_MESSAGE"
+        CEN_HOOK_MESSAGE="_cen_svc_message"
+    fi
+
+    if [ -z "$_fsvc" ] ; then                       # cannot run as a service
+        CEN_IS_SERVICE=0 ; return 1
+    fi
+
+    if [ -z "$CEN_SVC_HOOK_ACTIONS" ] ; then        # hook action parsing
+        CEN_SVC_HOOK_ACTIONS="$CEN_HOOK_ACTIONS"
+        CEN_HOOK_ACTIONS="_cen_svc_action"
+    fi
+
+    if [ "${CEN_SVC_TYPE:-auto}" = "auto" ] ; then
+        CEN_SVC_TYPE="oneshot"
+        isfunction run && CEN_SVC_TYPE="simple"
+    fi
+
+    case "$CEN_SVC_SCOPE" in
+    '')         CEN_SVC_SCOPE='system' ;;
+    system)     ;;
+    user)       ;;
+    private)    ;;
+    *)          fatal -p $"Invalid 'CEN_SVC_SCOPE=%s', expecting: %s" \
+                         "$CEN_SVC_SCOPE" 'system|user|private' ;;
+    esac
+    [ "$CEN_SVC_SCOPE" = 'system' ] ||
+        fatal -p $"Not yet implemented: CEN_SYC_SCOPE=%s" "$CEN_SVC_SCOPE"
+
+    [ -n "$_flgn" ] && return 0                 # was just a query
+    CEN_IS_SERVICE=1                            # becoming svc or daemon
+    [ -z "$CEN_SVC_SHORT" ] && CEN_SVC_SHORT="${CEN_TITLE:-$CEN_NAME}"
+
+    if [ "$CEN_SVC_TYPE" = "oneshot" ] ; then
+        [ "$_fsvc" -lt 3 ] &&
+            fatal $"A 'oneshot' service needs an 'actions' function"
+    elif [ "$_fsvc" -lt 2 ] ; then
+        fatal $"A 'simple' service needs an 'actions' or 'run' function"
+    fi
+
+    # register action hook
+    if [ -z "$CEN_SVC_HOOK_ACTIONS" ] ; then
+        CEN_SVC_HOOK_ACTIONS="$CEN_HOOK_ACTIONS"
+        CEN_HOOK_ACTIONS="_cen_svc_action"
+    fi
+
+    # Using SysV defaults CEN_OPT_DAEMON to 1
+    if [ -z "$CEN_OPT_DAEMON" ] ; then
+        if [ "${1:-${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}}" -ef \
+             "$CEN_SVC_SYSV/$CEN_NAME" ] ; then # sysv svc, force daemon
+            CEN_OPT_DAEMON=1 ; _fpro=1
+        elif [ ! -d "$CEN_SVC_SYSD" ] ; then    # no systemd, force daemon
+            CEN_OPT_DAEMON=1 ; _fpro=1
+        fi
+    fi
+
+    # no terminal -> run a daemon
+    if [ -t 0 -o -t 1 -o -t 2 ] ; then
+        [ -z "$CEN_OPT_DAEMON" ] && CEN_OPT_DAEMON=1
+        _fpro=                              # interactive, no fancy reporting
+    else
+        [ -z "$CEN_OPT_DAEMON" ] && CEN_OPT_DAEMON=0
+    fi
+
+    # sysv fancy mode or dummy progress reporting
+    if [ -n "$_fpro" ] ; then
+        if   [ -f "$CEN_PATHS/lib/init/vars.sh" ] ; then
+            . "$CEN_PATHS/lib/init/vars.sh"
+        elif [ -f "${CEN_PATHS[6]}/rcS" ]  ; then
+            . "${CEN_PATHS[6]}/rcS"
+        fi
+        if [ "${VERBOSE:-no}" = "no" ] ; then
+            _fpro=
+        elif [ ! -e "$CEN_PATHS/lib/lsb/init-functions" ] ; then
+            _fpro=
+        fi
+    fi
+    if [ -n "$_fpro" ] ; then
+        CEN_IS_SERVICE=2
+        . "$CEN_PATHS/lib/lsb/init-functions"
+        progress() { _cen_svc_fancy prog "$*" ; }
+    else
+        progress() { : ; }
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# runsysddir - get or iterate systemd directories
+#
+# Call:     runsysddir -r                       # reset, unset CEN_RUNSYSDDIR
+#           runsysddir [-d] [-b|-u]             # return list in CEN_RUNSYSDDIR
+#           runsysddir [-d] [-b|-u]             # iterate over list
+#
+# Options:  -b  base folder names only (no '/system' appended)
+#           -d  include only existing folders
+#           -i  iterate, current item returned in CEN_RUNSYSDDIR
+#           -u  use 'user' instances (default is 'system')
+#
+#+Return:   Data is returned in CEN_RUNSYSDDIR which is a simple values or a list
+#           depending on the call options. On succes the function returns **true**
+#           or **false** on error or end of iteration.
+#
+# Variables:CEN_RUNSYSDIDX  iterator index, clear to restart iteration
+#           CEN_RUNSYSDDIR  return value or list
+#
+#+This functions is used by [[runservice()]], so CEN_RUNSYSDDIR and CEN_RUNSYSDIDX
+# are volatile.
+#
+#+See the [[runservice()]] documentation for the list of searched systemd folders.
+# ------------------------------------------------------------------------------
+CEN_RUNSYSDDIR=
+CEN_RUNSYSDIDX=
+runsysddir() {
+    local _chck _indx _inst='/system' _iter _sdir
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -b)   _inst= ;;
+      -d)   _chck=1 ;;
+      -i)   _iter=1 ;;
+      -r)   _rset=1 ;;
+      -u)   _inst='/user' ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    if [ -n "$_rset" ] ; then
+        unset CEN_RUNSYSDDIR ; CEN_RUNSYSDIDX=
+        return 0
+    fi
+    if [ "$_inst" = '/user' ] ; then
+        _sdir=(~/.config/systemd ~/.local/share/systemd "${CEN_SVC_SYSX[@]}")
+    else
+        _sdir=("${CEN_SVC_SYSX[@]}")
+    fi
+
+    if [ -z "$_iter" ] ; then
+        CEN_RUNSYSDDIR=() ; CEN_RUNSYSDIDX= ;
+        for _indx in "${_sdir[@]}" ; do
+            _indx+="$_inst"
+            [ -n "$_chck" ] && [ ! -d "$_indx" ] && continue
+            CEN_RUNSYSDDIR+=("$_indx")
+        done
+        return 0
+    fi
+
+    _indx="${CEN_RUNSYSDIDX:-0}"
+    while [ -n "$_indx" ] ; do
+        CEN_RUNSYSDDIR="${_sdir[_indx]}"
+        if [ -n "$CEN_RUNSYSDDIR" ] ; then
+            ((_indx += 1)) ; CEN_RUNSYSDDIR+="$_inst"
+            [ -n "$_chck" ] && [ ! -d "$CEN_RUNSYSDDIR" ] && continue
+            CEN_RUNSYSDIDX="$_indx" ; return 0
+        fi
+        break
+    done
+    unset CEN_RUNSYSDDIR ; CEN_RUNSYSDIDX= ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# runservice - start/stop/test services
+#
+# Call:     runservice [-d] [-r] [-u] [-e|-f] [-v] [-n] <verb> <name>...
+#
+#           runservice [-r] [-u] [-e|-f] [-v] **status** <name>
+#           runservice [-r] [-u] [-e|-f] [-v] **enabled** <name>
+#
+#           runservice [-u] [-e|-f] [-v] **test** <name>...     # unmasked services
+#           runservice [-u] [-e|-f] [-v] **sytemd** <name>...   # systemd services
+#           runservice [-u] [-e|-f] [-v] **masked** <name>...   # masked services
+#
+# Options:  -d  run as a daemon, needs no root priviledge or service install
+#           -e  report errors
+#           -f  make errors fatal
+#           -n  non-blocking operation (systemd only)
+#           -r  ignore dryrun
+#           -s  silent mode, don't report invalid services or no find
+#           -u  use systemd user instance (error if not running systemd)
+#           -v  verbose, report status (implies -e)
+#
+# Arguments:<verb>  **start**|**stop**|**reload**|**restart**
+#           <name>  A service, target or unit name (**NOT** a path)
+#
+#+Return:   The **status** command returns **true** if the service is active. On
+#           error a status bit mask is returned, see below.
+#
+#+          **enabled** works like **status** but adds an extra 'is-enabled' test for an
+#           inactive service (systemd only). For an enabled service it returns **true**.
+#
+#+          The **test** command returns **true** if all services are found and not
+#           masked. On error a status bit mask is returned, see below. The **systemd**
+#           and **masked** commands behave like **test** but check for a systemd unit
+#           or a systemd masked symlink instead.
+#
+#+          All other verbs return **true** on success or a status bit mask otherwise,
+#           see below.
+#
+#+          For existing and unmasked service(s) CEN_RUNSERVICE is set to localized
+#           description depending on the command verb (but not for **test**).
+#
+#           Status bits:    64  no valid service to found
+#                            8  service not enabled
+#                            4  got start/stop error or not active
+#                            2  got masked service
+#                            1  got invalid service
+#
+# Variable: CEN_RUNSERVICE  "[failed]"  operation failed (translated)
+#                           "started"   (text translated)
+#                           "stopped"   (text translated)
+#                           "reloaded"  (text translated)
+#                           "restarted" (text translated)
+#           CEN_RUNSYSDDIR  not conserved, used internally
+#
+# This method only searches the following subset of **systemd** paths (the user mode
+# search order differs from systemd defaults):
+#
+# - "~/.config/systemd/user"       § (option -u only) ...
+# - "~/.local/share/systemd/user"
+# - "/etc/systemd/*"               § (no -u option) ...
+# - "/run/systemd/*"
+# - "/usr/local/lib/systemd/*"
+# - "/usr/lib/systemd/*" (or "/lib/systemd/*")
+#
+# **SysV** services are searched in "/etc/init.d" only.
+#
+# Internally it uses [[runsysddir()]], so CEN_RUNSYSDDIR is not conserved.
+#
+#.Examples: runservice [test] inetd     # test if inetd is installed and not masked
+#.          runservice stop inetd nmbd  # stop inetd and nmbd
+#.          runservice -d start dscript # start 'dscript' as daemon
+# ------------------------------------------------------------------------------
+CEN_RUNSERVICE=
+runservice() {
+    CEN_RUNSERVICE=
+    local _daem _rdry _user _oslt _onob _verb='trace' _oerr='trace'
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -d)   _daem=1 ;;
+      -e)   _oerr='error' ;;
+      -f)   _oerr='fatal' ;;
+      -n)   _onob='--no-block' ;;
+      -r)   _rdry='-r' ;;
+      -s)   _oslt='trace' ;;
+      -u)   if [ -z "$CEN_SVC_SYSD" ] ; then
+                error $"Service command depends on 'systemd'" ; return 1
+            fi
+            _user='--user' ;;
+      -v)   _verb='message' ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    [ -z "$_oslt" ] && _oslt="$_oerr"
+    [ "$_verb" = 'message' -a "$_oerr" = 'trace' ] && _oerr='message'
+    [ "$_oerr" != 'trace' ] && _verb='message'
+    local _stmp _scmd="$1" _ssys ; shift
+
+    # check verb
+    case "$_scmd" in
+    start|stop|restart|reload|status|enabled)  ;;
+    systemd|masked) [ "$_oerr" = 'trace' ] && _oerr=':'
+                    _ssys=1 ;;                      # systemd only
+    test)           [ "$_oerr" = 'trace' ] && _oerr=':' ;;
+    *)
+        [ $# = 0 ] || _cen_abort - "$_scmd"
+        # single argument: assume "test"
+        set -- "$_scmd" ; _scmd='test'
+    esac
+
+    # test if services exist and are not masked
+
+    local _curr _suff _serr=0 _sarg _slst=()
+    [ $# -gt 1 ] && _sarg="$*"
+    while [ $# -gt 0 ] ; do
+        local _name="$1" ; _suff="${_name##*.}"
+        [ "$_suff" = "$_name" ] && _suff= || _name="${_name%.*}"
+        local _base="${_name%%@*}" ; [ "$_name" = "$_base" ] || _base+='@'
+        # run as a daemon?
+        if [ -n "$_daem" ] ; then
+            if [ -x "$_name" ] ; then
+                _slst+=("$_name")
+            else
+                $_oerr -a $"Not a daemon" "($_scmd): $_name"
+                _serr=1
+            fi
+
+        # do we have a valid service?
+        else
+            # is it an unmasked service?
+            if [ -n "$CEN_SVC_SYSD" ] ; then
+                CEN_RUNSYSDIDX=
+                while runsysddir -d -i ${_user:+-u} ; do    # iterate existing folders
+                    _curr="$CEN_RUNSYSDDIR"
+                    if   [ -n "$_suff" ] ; then
+                         [ -e "$_curr/$_base.$_suff" ] || continue
+                    elif [ -e "$_curr/$_base.service" ] ; then
+                        _suff='service'
+                    elif [ -e "$_curr/$_base.target" ] ; then
+                        _suff='target'
+                    else
+                        continue
+                    fi
+                    if [ "$_scmd" = 'masked' ] ; then
+                        if [ "$_curr/$_base$._suff" -ef '/dev/null' ] ; then
+                            $CEN_TRACE2 -a -c $"Masked service" "($_scmd) $_base ($_curr/$_base.$_suff)"
+                            _slst+=("$_name.$_suff")
+                        else
+                            ((_serr |= 1))
+                        fi
+                    elif [ "$_curr/$_base.$_suff" -ef '/dev/null' ] ; then
+                        $_oslt -a -c $"Masked service" "($_scmd) $_base ($_curr/$_base.$_suff)"
+                        ((_serr |= 2))
+                    else
+                        _slst+=("$_name.$_suff")
+                    fi
+                    break
+                done
+            fi
+
+            if [ -z "$_curr" -o -z "$CEN_SVC_SYSD" ] ; then
+                # check for sysv
+                if [ -z "$_ssys" ] && [ -x "$CEN_SVC_SYSV/$_name" ] ; then
+                    _curr="$CEN_SVC_SYSV/$_name"
+                    _slst+=("$_name")
+                else
+                    [ -z "$_sarg" -a "$_oerr" != 'trace' ] &&
+                        $_oerr -c $"Not a service" "($_scmd) $_name"
+                    [ -z "$_sarg" -a "$_oerr"  = 'trace' ] &&
+                        $_verb -a -c $"Not a service" "($_scmd) $_name"
+                    ((_serr |= 1))
+                fi
+            fi
+        fi
+        shift
+    done
+    if [ -z "$_slst" ] ; then
+        [ -n "$_sarg" ] && $_oslt -a $"No valid service found" "($_scmd): $_sarg"
+        ((_serr |= 64)) ; return $_serr
+    elif [ "$_serr" != 0 ] ; then
+        $_oslt $"Invalid service(s) found" "($_scmd)"
+    fi
+
+    # translate operation text
+    local _kind _info
+    case "$_scmd" in
+    test|systemd|masked)
+             return $_serr ;;
+    start)   CEN_RUNSERVICE=$"started" ;;
+    stop)    CEN_RUNSERVICE=$"stopped" ;;
+    reload)  CEN_RUNSERVICE=$"reloaded" ;;
+    restart) CEN_RUNSERVICE=$"restarted" ;;
+
+    enabled|status)
+            [ "${#_slst[@]}" -gt 1 ] && _cen_abort "'$scmd' allows only 1 arg"
+            if [ -n "$CEN_SVC_SYSD" ] ; then
+                 if ! sysrun -q -r -n -a _info -- systemctl $_user is-active "$_slst" ; then
+                    if [ "$_scmd" = 'status' ] ; then
+                        ((_serr |= 4))
+                    else
+                        sysrun -q -r -n -a _info -- systemctl $_user is-enabled "$_slst" || ((_serr |= 12))
+                    fi
+                 fi
+                 _kind=$"Service (systemd)"
+            else
+                if sysrun -q -r -n -- "$CEN_SVC_SYSV/$_slst" 'status' ; then
+                   _info=$"active"
+                else
+                   _info=$"inactive" ; ((_serr |= 4))
+                fi
+                _kind=$"Service (SysV)"
+            fi
+            CEN_RUNSERVICE="${_info:-unknown}"
+            $_verb -a "$_kind" "$_slst" "$CEN_RUNSERVICE" ; return $_serr ;;
+
+    *)      CEN_RUNSERVICE="$_scmd"
+    esac
+
+    # try start/stop
+    local _stat=0
+    if [ -n "$_deam" ] ; then
+        for _stmp in "${_slst[@]}" ; do
+            embed -- "$_stmp" $_scmd --daemon=1 || _stat=$? ; _kind=$"Daemon"
+        done
+    elif [ -n "$CEN_SVC_SYSD" ] ; then
+        sysrun $_rdry -n -p -- systemctl $_onob $_user "$_scmd" "${_slst[@]}"
+        _stat=$? ; _kind=$"Service (systemd)"
+    else
+        for _stmp in "${_slst[@]}" ; do
+            sysrun $_rdry -p -- "$CEN_SVC_SYSV/$_stmp" "$_scmd" || _stat=$?
+        done
+        _kind=$"Service (SysV)"
+    fi
+
+    if [ "$_stat" = "0" ] ; then
+        $_verb -a -p "%s %s: %s" "$_kind" "$CEN_RUNSERVICE" "${_slst[*]}"
+    else
+        CEN_RUNSERVICE=$"[failed]"
+        $_oerr -a -p "%s '%s' %s: %s" "$_kind" "$_scmd" "$CEN_RUNSERVICE" "${_slst[*]}"
+    fi
+    [ "$_stat" -gt 0 ] && ((_serr |= 4)) ; return $_serr
+}
+
+# ------------------------------------------------------------------------------
+# Write to systemlog: <prio>|- <text>...
+# ------------------------------------------------------------------------------
+_cen_svc_logger() {
+    local _spri="${1:-}" _bpid="--id=$BASHPID" ; shift
+    local _lmsg=(command logger -t "$CEN_NAME")
+    [ "$_spri" != '-' ] && _lmsg+=(-p "$_spri")
+    case "$CEN_SVC_LOGPID" in
+        2)  "${_lmsg[@]}" "$_bpid" -- "$*" ;;
+        1)  "${_lmsg[@]}" -- "$*" ;;
+        0)  return 1 ;;
+        *)  if ! system -c logger ; then                # logger installed?
+                CEN_SVC_SYSLOG=0 ; CEN_SVC_LOGPID=0
+            elif [ "$EUID" != 0 ] ; then                # only root has --id=<pid>
+                CEN_SVC_LOGPID=1 ; "${_lmsg[@]}" -- "$*"
+            else                                        # check logger version
+                # check: --id=xxx may result in an error message but with zero return status
+                _spri=$("${_lmsg[@]}" "$_bpid" -- "$*") || _spri=1
+                if [ -z "$_spri" ] ; then
+                    CEN_SVC_LOGPID=2
+                # option --id=<pid> might be unsupported, retry without
+                else
+                    CEN_SVC_LOGPID=1 ; "${_lmsg[@]}" -- "$*"
+                fi
+            fi
+    esac  &>/dev/null
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Output a message (options -b/-d/-n ignored), overrides _centauri_bash_lib
+# ------------------------------------------------------------------------------
+_cen_svc_message() {
+    [ -z "$CEN_SVC_SYSLOG" ] && isservice -n        # init syslog only
+    if [ "$CEN_SVC_SYSLOG" = 0 ] ; then             # output to stderr only
+        $CEN_SVC_HOOK_MESSAGE "$@" ; return         # use _centauri_bash_lib
+    fi
+
+    # we handle output in this module ...
+    local _scal _sfmt _serr _sind _srea _mlog
+    local _spri _snam="${CEN_EMBED:-$CEN_NAME}:" _verb="$CEN_VERB"
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   _sind="$CEN_AUTOIND" ;;
+      -b)   shift ;;                                # ignored here
+      -c)   _scal=1 ;;
+      -d)   shift ;;                                # ignored here
+      -e)   _verb=1 ; _spri='error'
+            _serr=$" ***ERROR***" ;;
+      -f)   _verb=1 ; _spri='crit'
+            _serr=$" ***FATAL ERROR***" ;;
+      -i)   _sind=1 ;;
+      -l)   _verb=1 ;;
+      -m)   ;;                                      # implicit
+      -n)   ;;                                      # ignored here
+      -p)   _sfmt=1 ;;
+      -r)   [ -n "$CEN_EMBED" ] && _srea=1 ;;
+      -t)   _spri='debug' ;;                        # special for trace()
+      -w)   _spri='crit'  ; _serr=$" ***WARNING***" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ "$_verb" -gt 0 ] || return "$CEN_EXIT"        # global -q option
+    CEN_AUTOIND=1
+
+    if [ -n "$_scal" ] ; then                       # option '-c'
+        _cen_shortfmt _scal - "$1" ; _serr+="$_scal" ; shift
+        [ "$1" = '--' ] && shift                    # backward compatibility
+    fi
+    if [ -n "$_sfmt" ] ; then                       # build output string
+        _sfmt="$1" ; shift
+        printf -v _sfmt "$_sfmt" "$@"
+    else
+        _sfmt="$*"
+    fi
+
+    # can send "info" messages to stderr in some cases ...
+    _mlog="$CEN_SVC_SYSLOG"
+    if [ "$CEN_OPT_SYSLOG" = 2 -a -n "$JOURNAL_STREAM" ] ; then
+        [ -z "$_spri" ] && _mlog=3                  # can use stderr
+    fi
+
+    # 0: stderr only - 1: stderr and syslog - 2: syslog only
+    if [ "$_mlog" != 2 ] ; then                     # output to stderr
+        if [ "$_mlog" = 3 ] ; then                  # via stderr to journal ...
+            _snam= ; _mlog=0                        #    not prefix, no logger
+        elif [ -n "$_sind" ] ; then
+            _snam="${_snam//?/ }"
+        elif [ -n "$_srea" ] ; then
+            _snam="$CEN_EMBED[$CEN_NAME]:"
+        fi
+        local sifs="$IFS"
+        IFS=$'\n' ; set -f ; set -- $_sfmt ; set +f ; IFS="$sifs"
+        while [ "$#" != 0 ] ; do
+            if [ -z "$_snam" -a "${1::1}" != '-' ] ; then
+                echo "$1"
+            else
+                echo "$_snam$_serr $1"
+            fi
+            shift ; _snam="${_snam//?/ }" ; _serr=
+        done 1>&2
+    fi
+
+    if [ "$_mlog" != 0 ] ; then
+        [ -n "$_scal" ] && _sfmt="${_scal:1} $_sfmt"
+        _cen_svc_logger "daemon.${_spri:-info}" "$_sfmt"
+    fi
+    return "$CEN_EXIT"
+}
+
+# ------------------------------------------------------------------------------
+# hook for actions()
+# ------------------------------------------------------------------------------
+_cen_svc_action() {
+    if [ "$CEN_IS_SERVICE" = 0 ] ; then                 # not a service
+        $CEN_SVC_HOOK_ACTIONS "$@" ; return 1
+    fi
+    [ -n "$CEN_SVC_RUNNING" ] && return 1               # do not recurse
+
+    case "$CEN_ACTION" in
+        '')         isservice                           # init as service
+                    _cen_svc_user "$@" ; return ;;      # fwd to user code
+
+        # The following actions are only run if we are a service ...
+
+        set*)       CEN_ACTION="setup" ; shift
+                    local scmd
+                    case "$1" in
+                    sta*|"")    scmd='status' ;;
+                    ins*)       scmd='install' ; context -r ;;
+                    uni*)       scmd='uninstall' ; context -r ;;
+                    *)          fatal -p $"Invalid '%s' argument: %s" "$CEN_ACTION" "$1"
+                    esac
+                    shift ; CEN_ACTARR=("$scmd" "$@")
+                    set -- "$CEN_ACTION" "$scmd" "$@"
+                    _cen_svc_user "$@" && return        # fwd to user code
+                    embed -m '_centauri_bash_ins' ; _cen_svc_trace _cen_ins_service "$scmd"
+                    CEN_ARGS=0 ; return
+                    ;;
+
+
+        # This is used by _cen_svc_forking to handle starting a child
+
+        start-daemon)
+                    CEN_OPT_DAEMON=2                    # flag as child
+                    CEN_SVC_RUNNING='start'
+                    shift ; set -- 'start' "$@"
+                    ;;
+
+        # The following are standard service commands ...
+
+        stop|start|restart)
+                    if [ "$CEN_SVC_TYPE" = 'once' -a "$CEN_ACTION" != 'start' ] ; then
+                        _cen_svc_user "$@" ; return     # fwd to user code
+                    fi
+                    isservice -r                        # check root
+                    if [ -n "$CEN_SVC_INHIBIT" ] ; then
+                        local zopt="$CEN_OPT_FORCE" zmsg='force'
+                        if [ -z "$CEN_FEATURE_F" ] ; then
+                            zopt="$CEN_OPT_ZOMBIE" ; zmsg='zombie'
+                        fi
+                        if [ -z "$zopt" -a -z "$CEN_OPT_ZOMBIE" ] ; then
+                            if [ "$CEN_SVC_SCOPE" = 'system' ] ; then
+                                message "$CEN_SVC_INHIBIT: $CEN_ACTION (use --$zmsg to override)"
+                                CEN_ARGS=0 ; return     # ignore missing action()
+                            fi
+                        fi
+                    fi
+                    CEN_SVC_RUNNING="$CEN_ACTION"
+                    ;;
+        sta*)
+                    CEN_ACTION='status'
+                    _cen_svc_state 'status'
+                    _cen_svc_user "$@" && return        # fwd to user code
+                    if [ -z "$CEN_SVC_RUNNING" ] ; then
+                        error -s 5
+                        message -a $"Status:" $"not running"
+                    else
+                        message -a $"Status:" "${CEN_SVC_RUNNING:3}"
+                    fi
+                    CEN_ARGS=0 ; return                 # ignore missing action()
+                    ;;
+        *)
+                    [ -z "$CEN_SVC_NOROOT" ] &&
+                        isservice -r                    # check root
+                    _cen_svc_user "$@" ; return         # fwd to user code
+    esac
+
+    # --- implementation of start/stop/restart ---
+
+    if [ -n "$CEN_OPT_TOOL" ] ; then
+        invoke -e $"Invalid with option '--tool'" ; return
+    elif [ "${#CEN_ACTARR[@]}" != 0 ] ; then
+        invoke -e $"Cannot have arguments" ; return
+    fi
+    _cen_svc_fancy begin
+    CEN_SVC_STARTSTOP=1
+
+    if [ "$CEN_SVC_RUNNING" = 'stop' -o "$CEN_SVC_RUNNING" = 'restart' ] ; then
+        local _styp="$CEN_SVC_TYPE"                     # needed for daemon restart
+        CEN_ACTION='stop'
+        _cen_svc_state 'stop' || return                 # check/update state
+        _cen_svc_user "$@"                              # fwd to user code
+        [ "$CEN_SVC_RUNNING" = 'restart' ] && CEN_SVC_TYPE="$_styp"
+    fi
+
+    if [ "$CEN_SVC_RUNNING" = 'start' -o "$CEN_SVC_RUNNING" = 'restart' ] ; then
+        CEN_ACTION='start'
+        _cen_svc_state 'start' || return                # check/update state
+        _cen_svc_forking                                # fork simple service
+        if ! _cen_svc_user "$@" ; then                  # fwd to user code
+            if [ "$CEN_SVC_TYPE" != 'oneshot' ] ; then  # catch signal, call run()
+                CEN_SVC_RUNNING='running'
+                context -t _cen_svc_sigterm             # set trap handler
+                isfunction -c run                       # call run() if existing
+            fi
+        fi
+    fi
+
+    _cen_svc_fancy end ; CEN_SVC_RUNNING=               # service now inactive
+    CEN_ARGS=0                                          # ignore missing action()
+}
+
+# ------------------------------------------------------------------------------
+# hook quit
+# ------------------------------------------------------------------------------
+_cen_svc_quithook() {
+    [ -n "$CEN_SVC_STARTSTOP" -a -n "$CEN_SVC_TYPE" ] &&
+        _cen_svc_state 'quit'                           # opt. delete pid file
+    $CEN_SVC_HOOK_QUIT "$@" ; return                    # chaining
+}
+
+# ------------------------------------------------------------------------------
+# hook termination signals, set state, call actionStop
+# ------------------------------------------------------------------------------
+_cen_svc_sigterm() {
+    context -t .                                        # clear trap handler
+    CEN_SVC_RUNNING='stop'                              # flag stop state
+    _cen_svc_state 'kill'                               # need no pid file
+    if isfunction actionStop ; then
+        message $"Got a 'stop' signal"":" $"running actionStop"
+        invoke stop - - - SIGTERM
+    else
+        message $"Got a 'stop' signal"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# PID file state manager: start|stop|status|quit|error|kill
+# ------------------------------------------------------------------------------
+_cen_svc_state() {
+    local _fpid _frun
+
+    # error handler (called by recusion)
+    if [ "$1" = 'error' ] ; then
+        [ -n "$CEN_OPT_FORCE" -o -n "$CEN_OPT_ZOMBIE" ] && return
+        error -s 4 ; CEN_SVC_TYPE=
+        [ -n "$CEN_FEATURE_F" ] && _frun='--force' || _frun='--zombie'
+        if [ "$2" = 'start' ] ; then
+            [ "$3" = 1 ] && _fpid=$"service" || _fpid=$"daemon"
+            quit -p -n $"Not starting, already running as a %s\nUse '%s' to override or delete '%s'" \
+                "$_fpid" "$_frun" "$CEN_PIDFILE"
+        else
+            quit -a -p $"Found no PID file, not stopping, use '%s' to override" "$_frun"
+        fi
+    fi
+
+    # handle other commands
+    case "$CEN_SVC_TYPE" in
+    forking)
+        [ "$1" != 'start' ] && _fpid=$$ ;;
+    once)
+        _fpid=$$ ;;
+    oneshot)
+        if [ "$1" = 'start' ] ; then
+            pidfile -w $$ -- "$CEN_NAME" ; return
+        elif [ "$1" = 'quit' ] ; then           # pid=0 flags 'dead' state
+            pidfile -w 0 -- "$CEN_NAME" ; return
+        fi ;;
+    daemon|simple)
+        if [ "$CEN_OPT_DAEMON" = 1 ] && [ "$1" = 'start' ] ; then
+            _fpid='-'                           # check but no create
+        elif [ "$CEN_OPT_DAEMON" = 2 ] ; then
+            [ "$1" = 'start' ] && return        # see start-stop-daemon
+            _fpid=$$
+        else
+            _fpid=$$
+        fi
+        ;;
+    *)
+        [ "$1" = 'quit' ] && return
+        _cen_abort - "$CEN_SVC_TYPE"
+    esac
+
+    [ -z "$_fpid" ] && return
+    [ "$1" != 'status' ] &&
+        dryrun -s "$1, terminating" && exit 0       # HACK stop on dryrun
+    [ "$CEN_OPT_DAEMON" = 0 ] || _frun='-r'
+
+    # remove pid file if type is 'once' or after error
+    if [ "$1" = 'quit' ] ; then
+        [ "$CEN_SVC_TYPE" != 'once' ] && error -t && return
+        pidfile $_frun -d -- "$CEN_NAME" ; return
+    fi
+
+    local _fact _file="${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}"
+    if pidfile -c -- "$_file" ; then
+        _fact=1                                     # we are a service
+    elif pidfile -c -r -- "$_file" ; then
+        _fact=2                                     # runs as daemon
+    fi
+
+    if [ "$1" = 'start' ] ; then                    # --- check start conflict
+        [ -n "$_fact" ] && _cen_svc_state error "$1" "$_fact"
+        [ "$_fpid" != '-' ] && pidfile $_frun -w $_fpid -- "$CEN_NAME"
+
+    elif [ "$1" = 'kill' ] ; then                   # --- kill and remove pid file
+        if [ "$_fact" = 2 ] ; then
+            pidfile $_frun -d -k - -- "$CEN_NAME"   # kills daemon
+        else
+            pidfile $_frun -d -- "$CEN_NAME"        # remove pid file olny
+        fi
+        CEN_SVC_TYPE=
+
+    elif [ "$1" = 'status' ] ; then                 # --- status only
+        [ "$_fact" = 1 ] && CEN_SVC_RUNNING="1: "$"running as service"
+        [ "$_fact" = 2 ] && CEN_SVC_RUNNING="2: "$"running as daemon"
+
+    else                                            # --- check stop conflict
+        if [ -z "$_fact" ] ; then                   # no pid file
+            _cen_svc_state error "$1" ; return 0
+        elif [ -z "$_frun" ] ; then                 # service, want .pid
+            [ "$_fact" = 1 ] || quit -p \
+                $"Service '%s' is running as daemon, cannot stop" "$CEN_NAME"
+        else                                        # daemon, want .run
+            [ "$_fact" = 1 ] && quit -p \
+                $"Daemon '%s' is running as service, cannot stop" "$CEN_NAME"
+        fi
+        pidfile $_frun -d -k - -- "$CEN_NAME"
+        CEN_SVC_TYPE=
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# helper: run with optional trace
+# ------------------------------------------------------------------------------
+_cen_svc_trace() {
+    if [ -n "$CEN_OPT_TRACE" ] ; then
+        CEN_NOTRACE= ; set -x ; $* ; set +x ; CEN_NOTRACE=:
+    else
+        $*
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# call user code via actions hook, return true if handled by user
+# ------------------------------------------------------------------------------
+_cen_svc_user() {
+    isfunction $CEN_SVC_HOOK_ACTIONS || return 1
+    $CEN_SVC_HOOK_ACTIONS "$@"
+    [ -n "$CEN_ARGS" ]                                  # return status
+}
+
+# ------------------------------------------------------------------------------
+# log helper: begin|progress|end <arg>...
+# ------------------------------------------------------------------------------
+_cen_svc_fancy() {
+    local xing="${CEN_ACTION^}" ; xing="${xing%-*}ing"
+    if [ "$CEN_IS_SERVICE" != 2 ] ; then
+        case "$1" in
+            pro*)   ;;
+            beg*)   message "${xing/Stop/Stopp} $CEN_SVC_SHORT" ;;
+            end)    ;;
+        esac
+    else
+        case "$1" in
+            pro*)   log_progress_msg "$2" ;;
+            beg*)   log_daemon_msg "${xing/Stop/Stopp} $CEN_SVC_SHORT" "$CEN_NAME" ;;
+            end)    [ "$CEN_EXIT" = "0" ] && log_end_msg 0
+                    [ "$CEN_EXIT" = "0" ] || log_end_msg 2
+                    ;;
+        esac
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# options() hook: <option> <argument>
+# ------------------------------------------------------------------------------
+_cen_svc_option() {
+    case "$1" in
+
+    "")
+        isservice -n ;;                         # service: hook actions
+
+    # pass option info to usage module
+    --help)
+        if [ "$2" = "verb" ] ; then             # input completion...
+            isservice -n && echo "start stop restart status setup"
+            return
+        fi
+        [ "$2" = "opts" ] || return             # only completion and _cen_usage
+
+        if isservice -n ; then                  # will run as service ...
+            CEN_USE_ADDVERB="start stop restart status setup"
+            _cen_use_option "-a" "--daemon  [012]" \
+                            $"run this tool daemonized (0:no 1:yes 2:auto)"
+        fi
+        _cen_use_option '-l' '--syslog  [012]' \
+                        $"control output to syslog (0:no 1:also 2:only)"
+        _cen_use_option '-t' '--tool' \
+                        $"run as a tool, no root check, no pidfile"
+        ;;
+
+    # options added by this module
+    -a|--dae*)
+        isservice -n &&                         # for services only...
+            optarg "daemon" -           -t ;;
+    -l|--sys*)
+        optarg 'syslog'     -           -t ;;
+    -t|--too|--tool)
+        optarg 'tool'       -              ;;
+
+    esac
+    $CEN_SVC_HOOK_OPTIONS "$@"
+}
+
+# ------------------------------------------------------------------------------
+# handles forking for CEN_SVC_TYPE=simple|daemon, exits after fork
+# ------------------------------------------------------------------------------
+_cen_svc_forking() {
+    [ "$CEN_OPT_DAEMON" = 1 ] || return
+    [ "$CEN_SVC_TYPE" = "simple" -o "$CEN_SVC_TYPE" = "daemon" ] || return
+
+    local file="${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}"
+    [ "${file::1}" = "/" ] || sysrun -f -p -a file -- readlink -f -s -- "$file"
+    $CEN_TRACE -a $"Starting as a daemon:" "$file"
+    [ "$EUID" = 0 ] || PATH+=":$CEN_PATHS/sbin:$CEN_PATHS/usr/sbin"
+
+    pidfile -n -r                               # get file path
+    sysrun -f -p -- start-stop-daemon --start --background --oknodo \
+        --make-pidfile --pidfile="$CEN_PIDFILE" \
+        --exec "$file" -- "${CEN_CMDOPTS[@]}" start-daemon
+    [ -e "$CEN_PIDFILE" ] &&
+        sysrun -q -- chmod 700 "$CEN_PIDFILE"   # to be sure
+    exit 0                                      # don't call quit() here
+}
+
+# ------------------------------------------------------------------------------
+# helper for _cen_usage() to show service options
+# ------------------------------------------------------------------------------
+_cen_svc_usage() {
+    isservice -n || return 0
+    usageset \
+        -s "start                "$"start service" \
+        -s "stop                 "$"stop service" \
+        -s "restart              "$"same as: stop -- start"
+    [ "$CEN_SVC_TYPE" = "daemon" ] || usageset \
+        -s "setup    <scmd>      "$"use with 'install', 'uninstall', 'status'"
+    usageset \
+        -s "status               "$"show status information"
+}
+
+# ------------------------------------------------------------------------------
+# Startup - service init: [-A|-i|-n]
+# ------------------------------------------------------------------------------
+
+[ -n "${CEN_MODULES[_centauri_bash_bat]}" ] &&
+    fatal $"module conflict:" '_centauri_bash_svc/bat'
+[ -n "${CEN_MODULES[_centauri_bash_con]}" ] &&
+    fatal $"module conflict:" '_centauri_bash_svc/con'
+[ -n "${CEN_MODULES[_centauri_bash_win]}" ] &&
+    fatal $"module conflict:" '_centauri_bash_svc/win'
+
+# Library option -v (make service)
+if [ -n "$CEN_FEATURE_V" ] ; then
+    CEN_SVC_AUTO_INIT=1
+    [ -z "$CEN_SVC_TYPE" ] && CEN_SVC_TYPE='auto'
+fi
+
+# switch temp file creation to /var/tmp, see tempfile()
+XDG_RUNTIME_DIR=
+
+# no initialization at all - init needs call to isservice()
+[ "$1" = "-n" ] && return 0
+
+# enable/force automatic call to isservice()
+[ "$1" = "-i" ] && CEN_SVC_AUTO_INIT=1
+
+# register option hook - adds at least --syslog
+if [ "$1" != '-A' -o -n "$CEN_SVC_TYPE" ] ; then
+    context -h CEN_HOOK_OPTIONS CEN_SVC_HOOK_OPTIONS '_cen_svc_option'
+    context -h CEN_HOOK_MESSAGE CEN_SVC_HOOK_MESSAGE '_cen_svc_message'
+    context -h CEN_HOOK_QUIT    CEN_SVC_HOOK_QUIT    '_cen_svc_quithook'
+fi
+
+# the svc  module uses sysrun, remove etc
+embed -c "_centauri_bash_ext"
+:
+
+# end

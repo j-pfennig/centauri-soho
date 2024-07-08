@@ -1,0 +1,8 @@
+status=off
+target=/usr/sbin/synaptic
+
+divert() {
+    # read GDK_DPI_SCALE
+    [ -r /etc/bash.local ] && . /etc/bash.local
+    exec /usr/sbin/synaptic.distrib "$@"
+}

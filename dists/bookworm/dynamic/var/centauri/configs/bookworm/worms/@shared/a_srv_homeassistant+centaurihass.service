@@ -1,0 +1,25 @@
+# centaurihass.service - Run HomeAssistant
+[Unit]
+Description=Home Assistant Server
+After=multiuser.target
+Wants=network-online.target
+
+StartLimitBurst=10
+StartLimitIntervalSec=1000
+
+ConditionPathExists=/srv/homeassistant/centaurihass.enabled
+
+[Service]
+User=homeassistant
+TimeoutSec=60
+IgnoreSIGPIPE=no
+KillMode=process
+GuessMainPID=no
+RemainAfterExit=no
+ExecStart=/srv/homeassistant/bin/hass
+
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

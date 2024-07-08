@@ -1,0 +1,84 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+# _custom_module_usr = Example of a usr custom module
+#
+# Call:    . _custom_module_usr [-z]
+#
+#          [[embed()]] should be used to load the module before calling [[main()]]
+#
+# Options: -z  set CEN_OPT_ZERO on module load
+#
+# Example: Place this code behind the [[_centauri_bash_lib]] load:
+#.         resolve -s CUS_MY_PATH -p -x "_custom_module_usr"
+#.         embed -q "$CUS_MY_PATH" || quit -e "Missing library:" '_custom_module_usr'
+#
+# Help:    centaurihelp --use <module-path>
+#
+# Copyright Dr. J. Pfennig (c) 2021
+# ------------------------------------------------------------------------------
+
+CEN_MODULES['_custom_module_usr']='0.01:1'
+
+declare CUS_MY_PATH             # used to find out-of-tree module
+
+CUS_OPTION_Z=                   # option -z on module load
+
+CUS_HOOK_OPTIONS=               # hook for option processing
+
+# ------------------------------------------------------------------------------
+# custom_zero - example routime
+#
+# Call:     custom_zero [-s]
+#
+# Options:  -s  no messages
+# ------------------------------------------------------------------------------
+custom_zero() {
+    :
+}
+
+# ------------------------------------------------------------------------------
+# options() hook: <option> <argument>
+# ------------------------------------------------------------------------------
+_custom_options() {
+    case "$1" in
+
+    # end of option processing
+    "")
+        ;;
+
+    # pass option info to usage module
+    --help)
+        [ "$2" = 'opts' ] && _custom_add_opts ;;
+
+    # options added by this module
+    -Z|--zer|--zero)
+        optarg 'zero'     -   -f  ;;        # flag
+
+    esac
+    $CUS_HOOK_OPTIONS "$@"
+}
+
+# ------------------------------------------------------------------------------
+# Help info for cmd-line options defined by this module
+# ------------------------------------------------------------------------------
+_custom_add_opts() {
+    usageopt 'Z' 'zero'     ''       $"demo option from custom module"
+}
+
+# ------------------------------------------------------------------------------
+# Startup (at module load time)
+# ------------------------------------------------------------------------------
+
+while [ "${1::1}" = '-' ] ; do              # module options ...
+    case "$1" in
+    --)   shift ; break ;;
+    -z)   CUS_OPTION_Z=1 ;;
+    esac ; shift
+done
+
+CUS_HOOK_OPTIONS="$CEN_HOOK_OPTIONS"
+CEN_HOOK_OPTIONS=_custom_options
+
+:                                           # return true to indicate success
+
+# end

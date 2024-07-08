@@ -1,0 +1,300 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_xtr = centauri-bash-lib: Self-extractor for standalone scripts
+#
+# Call:    . _centauri_bash_xtr [-d] [-n] [-q] [--] [<path>]
+#
+#+         [[embed()]] should be used to load the module before calling [[main()]].
+#          The module has no public functions, extraction starts when the module is
+#          loaded.
+#
+# Options: -d  enable debug output
+#          -n  do not self-extract
+#          -q  quiet mode, no errors/warnings
+#
+#+A self-extraction script is a completely normal script that embeds this module.
+# The script code should end whith something like "main "$@" ; quit" so that bash
+# will never try to read input behind this line. So any type of data can follow.
+#+The data section used here starts with a marker line. The decoder re-reads the
+# script file and skips all lines in the input until it reaches the marker line:
+#
+#,      **!!!DATA!!!**
+#
+# The marker is followed by any sequence of:
+#
+#,      # create folder (comment lines are ignored)
+#,      **d** path
+#,      # make symlink
+#,      **l** target link
+#,      # create a file followed by quoted data lines up to an empty line
+#,      **f** <path> [<mode>]
+#,      **'**<data>**'** ...
+#
+# Self-extraction stops a the end of file or after a stop marker line:
+#
+#,      **!!!STOP!!!**
+#
+#+Sometimes it might be possible or neccessary to encapsulate data in an (unused)
+# here document:
+#
+#.      # start a here document to hide data from bash interpretation:
+#.      : <<!!!END!!!
+#.      !!!DATA!!!
+#.      # ...
+#.      # terminate self-extract data:
+#.      !!!STOP!!!
+#.      # end of here document:
+#.      !!!END!!!
+#
+#+Runtime:  The embedded data is extracted at runtime into a cache folder. When
+#           the cache data is current, the extraction step is skipped. Use
+#           [[centauribuilder]] to encode/attach or decode/list packed runtime
+#           data, and [[uglify]] to build self-extracting standalone scripts.
+#
+#+          The self-extraction process itself is simple. The [[uglify]] tool, when
+#           invoked with option --extract, adds an **embed°-m°_centauri_bash_xtr**
+#           statement prior to calling [[main()]]. Only if the extracted runtime
+#           contains an LC_MESSAGE folder for the current locale, the script has
+#           to be reloaded to make translations work. This is done by sourcing
+#           the script (CEN_XTR_RUNTIME is set as a flag to avoid recursion).
+#
+#+The data format is ASCII mixed with hex values for non-ASCII bytes. A '.'
+# character is used to represent a '\x' sequence (and the '.' is encoded as
+# hex). A few more substitutions are made so that any data line can be passed
+# to **printf** as format string. The format is fast and easy to decode and is
+# great for ASCII data. But binary data can take up to three times the origninal
+# size.
+#
+# Copyright Dr. J. Pfennig (c) 2022
+# ------------------------------------------------------------------------------
+
+CEN_MODULES['_centauri_bash_xtr']='0.01:1'
+
+# CEN_XTR_RUNTIME                   # set to runtime dir
+
+CEN_XTR_TRACE1=${CEN_XTR_TRACE1:=:} # can be set to _cen_message
+CEN_XTR_TRACE2=${CEN_XTR_TRACE2:=:}
+CEN_XTR_ERROR=${CEN_XTR_ERROR:='warning'}
+
+# ------------------------------------------------------------------------------
+# Standalone + Making standalone scripts that use centauri-bash-lib modules
+#
+#+General:  Standalone scripts allow to be used without installing the library.
+#
+#           Three flavours are supported:
+#
+#,          - package       simple self contained script, no localization
+#,          - portable      self-extracting, allows localization and extra files
+#,          - archive       tar file, needs un-tar into a runtime folder
+#
+#+          Scripts are written and tested as usual and later converted into
+#           a standalone flavour. The high level tool to do this work is
+#           [[centauribuilder]] which runs all neccessary low level tools.
+#
+#+          The **package** and **portable** flavours use [[uglify]] to create
+#           packaged scripts whereas **archive** uses the unmodified script.
+#
+#+Package:  Packaging is acomplished be slightly modifying the script startup and
+#           by adding uglified module sources behind the script. This works fine
+#           in most cases, although the script size grows. The script itself is
+#           not uglified to allow analysis and modifications.
+#
+#+          Dynamic module loading does not really work in standalone mode, but
+#           is simulated. All used modules must be included in the packed file.
+#           For most modules this works automatically by analysing the library
+#           options of [[_centauri_bash_lib]] and by searching for "embed°-m" or
+#           "embed°-c" statements ("embed -r -m" is ignored).
+#
+#+          Some modules may need to be added manually. The [[_centauri_bash_usr]]
+#           debug support module can helpfull as it lists the loaded modules at
+#           exit.
+#
+#           > **$CEN_ROOT/library/uglify** --output=my-script.package my-script
+#           > **my-script.package** --help
+#
+#+          The generated output defines "CEN_PACKAGE=1" to allow script code
+#           to detect standalone mode.
+#
+#+          The tool autodetects module dependencies via **_centauri_bash_lib**
+#           and "embed°-m". Others must be added explicitly at the command line
+#           or by using code like this:
+#
+#.          embed -c _centauri_bash_xml         # do not load, add as dependency
+#
+#+Portable: The **portable** flavour uses a simplistic self-extract format that
+#           allows extraction without any external commands, see [[_centauri_bash_xtr]].
+#           The [[centauribuilder]] program can be used to create and analyze
+#           self-extract data.
+#
+#           > **centauribuilder** add apps my-script -- build
+#           > apps/**my-script.portable** --help
+#
+#+          The **portable** flavour is the [[centauribuilder]] default project
+#           type. In addition to the example command line you will have to create
+#           any tanslations (the [[l10n-tool]] is run as needed) and to add any
+#           extra files.
+#
+#+          In the uglified script file a data section follows the script code. This
+#           is possible because bash only interprets text as needed, so it will not
+#           attempt to interpret the data. The data itself is not binary, it is still
+#           possible to edit the script code.
+#
+#+          When invoked with --extractor the [[uglify]] command arranges that
+#           [[_centauri_bash_xtr]] is loaded after script start. On the first
+#           run a folder in the user's cache is created and is populated with
+#           extracted data. Also on the 1st run and if the script is localized,
+#           the script will reload. All further invokations use the cached data.
+#
+#+          The variable CEN_XTR_RUNTIME contains the path of the cached runtime
+#           folder, which should be the same as CEN_ROOT.
+#
+#+Archive:  Here the user must un-tar the archive which just unpacks a runtime
+#           folder that contains the script and the related data files.
+#
+#           > tar -taf my-script.runtime.tgz
+#           > **my-script-runtime/my-script** --help
+#
+#           The [[centauribuilder]] program can be used to create the tar archive.
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# handle reload for l10n after initial extract, called from main() via hook
+# ------------------------------------------------------------------------------
+_cen_xtr_reload() {
+    $CEN_XTR_TRACE1 "Extract" $"reloading l10n"
+    . "$0" "$@"
+    _cen_abort 'missing quit'
+}
+
+# ------------------------------------------------------------------------------
+# extractor binary decoder: -no args-
+# ------------------------------------------------------------------------------
+_cen_xtr_decode() {
+    local _line
+    while IFS= read -r _line ; do
+        [ -z "$_line" ] && break
+        _line="${_line:1:${#_line}-2}"
+        printf -- "${_line//./\\x}"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# extractor text copy: -no args-
+# ------------------------------------------------------------------------------
+_cen_xtr_txtcpy() {
+    local _line
+    while IFS= read -r _line ; do
+        [ "$_line" = '!!!EOF!!!' ] && break
+        printf '%s\n' "$_line"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# extractor function call: a|s <func> [<info>]
+# ------------------------------------------------------------------------------
+_cen_xtr_function() {
+    isfunction -f -- "$2"
+    local _line _larr=()
+    while IFS= read -r _line ; do
+        [ "$_line" = '!!!EOF!!!' ] && break
+        _larr+=("$_line")
+    done
+    if [ "$1" = 'a' ] ; then
+        $2 $3 -- "${_larr[@]}" ; return
+    else
+        splitjoin -d $'\n' -j _line -i _larr
+        $2 $3 -- "$_line" ; return
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Runtime folder extractor: [<path>]
+# ------------------------------------------------------------------------------
+_cen_xtr_extract() {
+    CEN_NAME="${CEN_NAME%.*}"
+    [ -n "$CEN_XTR_RUNTIME" ] && return 0   # do nothing on reload
+
+    local _xdir="${1:--}"
+    if [ "$_xdir" = '-' ] ; then
+        folder -f -m -s _xdir -u cache -- "${CEN_NAME}-runtime"
+    else
+        folder -f -m -s _xdir -- "$_xdir"
+    fi
+    CEN_XTR_RUNTIME="$_xdir"
+    if [ "$_xdir/.timestamp" -nt "$0" ] ; then
+        $CEN_XTR_TRACE1 "Extract:" $"cache is valid:" "$_xdir"
+    else
+        # remove existing and create new
+        remove -q -d -- "$_xdir"
+        folder -f -m -- "$_xdir"
+
+        $CEN_XTR_TRACE1 "Extract:" $"process data section..."
+        local _kind _arg1 _arg2 _path
+
+        # skip data until marker
+        while read _kind _arg1 ; do
+            [ "$_kind" = '!!!DATA!!!' ] && break
+        done
+        if [ "$_kind" != '!!!DATA!!!' ] ; then
+            $CEN_XTR_ERROR "Extract:" $"found no data section" ; return 1
+        fi
+
+        # process info lines
+        while read _kind _arg1 _arg2 ; do
+            case "$_kind" in
+            '')         continue ;;
+            \#*)        continue ;;
+            !!!DATA!!!) continue ;;
+            !!!STOP!!!) break ;;
+            c)          isfunction -c -f -- "$_arg1" $_arg2 && continue ;;
+            a|s)        _cen_xtr_function "$_kind" "$_arg1" "$_arg2" && continue ;;
+            esac
+
+            eval _arg1="$_arg1" ; eval _arg2="$_arg2"   # remove quoting
+            _path="$_xdir/$_arg1"
+
+            case "$_kind" in
+            d)  $CEN_XTR_TRACE2 -a "FOLDER:" "$_arg1" ; folder -m -- "$_path" ;;
+            l)  $CEN_XTR_TRACE2 -a "LINK  :" "$_arg1" "$_arg2"
+                symlink -d -n -- "$_arg1" "$_arg2" ;;
+            f)  folder -f -- "${_path%/*}"
+                $CEN_XTR_TRACE2 -a "FILE  :" "$_arg1" ; _cen_xtr_decode >"$_path" ;;
+            t)  folder -f -- "${_path%/*}"
+                $CEN_XTR_TRACE2 -a "TEXT  :" "$_arg1" ; _cen_xtr_txtcpy >"$_path" ;;
+            *)  fatal "Extract:" $"Corrupted data:" "$_kind" "$_arg1" "$_arg2"
+            esac
+        done
+        create "$_xdir/.timestamp"
+        $CEN_XTR_TRACE1 "Extract:" $"completed" "($_xdir)"
+    fi
+
+    # must reload script for localization (only if languages is supported)
+    [ "$LANG:-C" = 'C' ] && return 0        # no l10n, no reload
+    _xdir+="/locale"
+    [ -d "$_xdir/${LANG%_*}" -o -d "$_xdir/${LANG%.*}" ] || return 0
+
+    # cannot reload here, modules are sourced causing stdin redirection
+    CEN_HOOK_MAIN='_cen_xtr_reload'         # hook main() to handle reload
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Startup (at module load time)
+# ------------------------------------------------------------------------------
+
+while [ "${1::1}" = '-' ] ; do              # module options ...
+    case "$1" in
+    --)   shift ; break ;;
+    -A)   return 0 ;;                       # autoload
+    -d)   CEN_XTR_TRACE1='_cen_message' ;;
+    -n)   return 0 ;;
+    -p)   ;;
+    -q)   CEN_XTR_ERROR=':' ;;              # no warning
+    esac ; shift
+done
+
+_cen_xtr_extract "$1" <"$0"                 # run extractor for current script
+
+:                                           # return true to indicate success
+
+# end

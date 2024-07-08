@@ -1,0 +1,10 @@
+# jpf@centauri - file gets sourced at logout
+
+# terminate pulse daemon - by systemd since buster
+#[ -x /usr/bin/pulseaudio ] &&
+#    pkill -U "$USER" -x pulseaudio
+
+# release encfs mounts - this does not work with sddm
+type centaurisession >/dev/null && centauriencfs cleanup "$USER"
+
+# end

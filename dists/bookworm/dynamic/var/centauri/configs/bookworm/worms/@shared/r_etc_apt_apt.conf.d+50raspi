@@ -1,0 +1,7 @@
+# never use pdiffs. Current implementation is very slow on low-powered devices
+Acquire::PDiffs "1";
+
+# download up to 5 pdiffs:
+Acquire::PDiffs::FileLimit "5";
+#Acquire::PDiffs::FileLimit "1";
+Acquire::http::proxy "http://10.21.2.10:3128";

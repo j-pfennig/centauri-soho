@@ -1,0 +1,139 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2022; BSD License"
+CEN_TITLE=$"Template for an example centauri-bash-lib installer/updater"
+
+MINIMAL="${MINIMAL:-false}" ####################################################
+if $MINIMAL ; then #############################################################
+else ###########################################################################
+# ------------------------------------------------------------------------------
+# setup + This is just an example of a library installer/updater
+#
+# Install: You may clone the centauri-bash-lib git repository:
+#
+#               $ cd <base>
+#               $ git clone https://github.com/j-pfennig/centauri-bash-lib.git
+#               $ cd centauri-bash-lib
+#               $ vi setup                  # set the REPO variable -or- pass
+#               $                           # an <info> string to setup
+#
+#       Otherwise, if you install from a tar file,  use it like:
+#
+#               $ tar -xaf centauri-bash-lib_N.NN.tgz
+#               $ centauri-bash-lib_N.NN/setup
+#               $ rm -r centauri-bash-lib_N.NN
+#
+#       Or for a shared installation via sudo (use fakeroot on termux):
+#
+#               $ tar -xaf centauri-bash-lib_N.NN.tgz
+#               $ sudo centauri-bash-lib_N.NN/setup
+#               $ rm -r centauri-bash-lib_N.NN
+#
+#       The default paths can be overridden by passing install info as argument.
+#       The info argument is a string of up to 4 colon separated fields:
+#
+#               <base>:<tools>:<link>:<repo>
+#
+#               <base>      # the base folder           (/var/centauri)
+#               <tools>     # a folder to symlink tools (/usr/local/bin)
+#               <links>     # symlink for tools folder  (/opt/centauritools)
+#               <repo>      # an optional repository
+#
+# Uninstall: Simply run any centauri-bash-lib tool with '--info uninstall':
+#
+#               $ centauricreate --info uninstall 
+# ------------------------------------------------------------------------------
+
+fi #############################################################################
+
+# if installing from a repository folder (not copying, make symlinks) ...
+REPO= 
+# REPO="/somewhere/my-repository"
+
+# Installation defaults for shared and private install - can be edited
+
+if [ "$EUID" = 0 ] ; then                               # shared (root)
+    INFO="/var/centauri:/usr/local/bin:/opt/centauritools:$REPO"
+else                                                    # private
+    INFO="$HOME/.centauri::$HOME/centauritools:$REPO" 
+fi
+
+# ------------------------------------------------------------------------------
+# Run installation (no configuration parameters in this part)
+# ------------------------------------------------------------------------------
+
+# do not use predefined centauri-bash-lib root, get destination path
+CEN_ROOT= 
+INFO="${1:-$INFO}"                                      # cmd line override
+DEST="${INFO%%:*}"                                      # destination path
+
+# get folder of this script
+ROOT="$BASH_SOURCE"
+[ "${ROOT::1}" = '/' ] || ROOT="$PWD/$ROOT"
+ROOT="${ROOT%/*}"
+ROOT="${ROOT%/.}"
+
+# do we have an existing installation?
+if [ -d "$DEST/library" ] ; then
+    SELF=update
+    echo "$SELF: updating existing installation..."
+else
+    SELF=setup
+    echo "$SELF: installing from scratch ..."
+fi 1>&2
+
+# change folder to installation source
+cd "$ROOT" || exit $?
+# path to find centauricreate and to load the bootstrap proxy
+PORG="$ROOT/tools:$PATH"
+# path to find CEN_LIBRARY for uglify optimization
+PDES="$DEST/tools:$PATH"
+
+# setup/update installation destination
+PATH="$PORG" centauricreate --embed="$SELF:a" --info setup . "$INFO" || exit $?
+
+# run library installer (creates real poxy and bash completion)
+echo 1>&2
+PATH="$PORG" centauricreate --embed="$SELF" --info install "$INFO" || exit $?
+
+# run autoload to check for bash loadables
+PATH="$PDES" "$DEST/library/autoload" --builtin --embed="$SELF:a" -
+
+# create *.p files to optimize loading speed
+PATH="$PDES" "$DEST/library/uglify" --embed="$SELF:a" -U -D
+
+# replace shebang
+echo 1>&2
+PATH="$PORG" centauricreate --embed="$SELF" --shell=- "$DEST/tools" --yes
+
+# ------------------------------------------------------------------------------
+# Optional: create an example library config file
+# ------------------------------------------------------------------------------
+
+echo 1>&2
+PATH="$PDES" "$DEST/tools/centauricreate" --embed="$SELF" --template=config -
+
+# ------------------------------------------------------------------------------
+# Optional: generate HTML documentation
+# ------------------------------------------------------------------------------
+
+echo 1>&2
+PATH="$PDES" "$DEST/tools/centaurihelp" --embed="$SELF" --generate=all --delete
+if [ ! -s "$DEST/html/index.html" ] ; then
+    PATH="$PDES" "$DEST/tools/centaurihelp" --embed="$SELF" --generate=dummy --yes
+elif [ "$DEST/library/_centauri_bash_lib" -nt "$DEST/html/index.html" ] ; then
+    echo "$SELF: Your Html documentation is outdated, please rebuild" 1>&2
+fi
+
+# ------------------------------------------------------------------------------
+# installation completed
+# ------------------------------------------------------------------------------
+if [ -z "$REPO" ] ; then
+    echo
+    echo "$SELF: You may now remove: $ROOT"
+else
+    echo
+    echo "$SELF: Completed."
+fi 1>&2
+
+# done

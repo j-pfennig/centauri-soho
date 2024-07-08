@@ -1,0 +1,45 @@
+# minmal system services ...
+
++ /lib/systemd/system/getty.target
++ /lib/systemd/system/plymouth-quit.service
++ /lib/systemd/system/plymouth-quit-wait.service
++ /lib/systemd/system/systemd-logind.service
++ /lib/systemd/system/systemd-update-utmp-runlevel.service
++ /lib/systemd/system/systemd-user-sessions.service
+
+# we have no network in runlevel2, don't start
+
+- centauriswitch.service
+- wpa_supplicant.service
+
+# don't start here ...
+
+- centaurimounter.service
+- centauriswap.service
+
+# tools started via 'centauriswitch' for the master server only
+
+- dnsmasq.service
+- samba-ad-dc.service
+- cyrus-imapd.service
+- exim4.service
+- ntpsec.service
+- openvpn.service
+
+# never start these automatically ...
+
+- fetchmail.service
+- lightdm-xdmcp.service
+- nmbd.service
+- nfs-client.service
+- nfs-server.service
+- rpcbind.service
+- saned.service
+- smartd.service
+- smartmontools.service
+- sshd.service
+- smbd.service
+- rsnyc.service
+- vsftpd.service
+
+# end

@@ -1,0 +1,13 @@
+# Use the value of "*" to globally disable an ACPI action, an empty string to
+# enable it globally or a space separated list of hosts names to be disabled:
+
+POWERBUTTON_IGNORE=""
+
+# Use the value of "*" to globally disable USB wakeup, an empty string to keep
+# the current state or a space separated list of hosts names to be disabled:
+
+DISABLE_USBWAKEUP=""
+
+# stop autofs yes|no|auto (default auto)
+STOP_AUTOFS=no
+

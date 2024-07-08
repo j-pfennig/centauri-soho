@@ -1,0 +1,7 @@
+status=on
+target=/usr/bin/kmail
+
+divert() {
+    unset http_proxy
+    exec /usr/bin/kmail.distrib
+}

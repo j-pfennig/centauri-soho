@@ -1,0 +1,8 @@
+[Unit]
+#ConditionKernelCommandLine=!autologin
+
+[Service]
+EnvironmentFile=-/etc/sddm.locale
+ExecStartPre=
+ExecStart=
+ExecStart=/var/centauri/tools/centauristartx -S auto -M-

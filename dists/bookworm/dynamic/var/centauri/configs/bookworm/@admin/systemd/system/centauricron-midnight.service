@@ -1,0 +1,7 @@
+[Unit]
+Description=Run centauricron at midnight
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/centauricron --append midnight
+

@@ -1,0 +1,422 @@
+# ------------------------------------------------------------------------------
+# centauriconfig - repositiory configuration 
+# ------------------------------------------------------------------------------
+#
+# filter rule syntax ...
+#
+# condition [else] [not] [true|false] [any] [<filter>]...
+#    "else"                                 # previous condition not matched
+#    "not"                                  # invert result
+#    "any"                                  # force a_ prefix
+#    "true"                                 # set result true
+#    "false"                                # set result false
+#
+# condition [...] [distro|family] <name>...
+#    -none-    filter by distro, use family prefix
+#    "distro"  filter by distro, use distro prefix
+#    "family"  filter by family, use family prefix
+#
+# condition [...] [cget|cput]               # filter cron get/put
+#
+# condition [...] [client|server]           # filter client/server
+#
+# condition [...] [@<host>|<rex>]           # filter host/expression
+#
+# ------------------------------------------------------------------------------
+# action 'cron' files
+# ------------------------------------------------------------------------------
+
+condition cput distro debian raspbian
+
+    private /etc                passwd shadow group
+    shared  /etc                shadow.shared
+    shared  /usr/lib/sysusers.d centauri.conf
+    shared  /var/lib/extrausers passwd shadow group
+
+condition cget any
+
+    private /etc                fstab -MANIFEST.html
+
+condition cput family debian
+
+    shared  /etc/default        centauriconfig centaurinetcfg centauriusers
+    private /etc/default        centaurisysinit
+
+# ------------------------------------------------------------------------------
+# centauri things
+# ------------------------------------------------------------------------------
+
+condition dist debian           /var/centauri/configs
+
+    shared  /etc/default        centauripower
+
+condition family debian         /var/centauri/configs
+
+    shared  /etc/default        centauri-bash-lib centauribackup centauricopy 
+
+    private /etc/default        centauricron centaurirunlevel \
+                                centauriswitch centaurisecrets centauristartx \
+                                -centaurikiosk centaurimounter -daily_shutdown
+    remove  /etc                rc.local
+
+    shared  /etc                bash.bashrc bash.centauri profile
+    private /etc                bash.local
+    shared  /etc/skel           .bash_aliases .bash_logout .bashrc .profile
+
+    linkto  /var/centauri/secrets   -passwd.client /etc/exim4/passwd.client
+
+# ------------------------------------------------------------------------------
+# base system
+# ------------------------------------------------------------------------------
+
+# The following packages are part of every centauri base system and we use
+# simple configuration for them:
+#
+#   acpid avahi openbsd-inetd rync ssh
+
+condition
+    private /boot/grub          grub.cfg
+
+    shared  /etc                adduser.conf aliases \
+                                host.conf mail.rc nsswitch.conf \
+                                sudoers services sysctl.conf DIR_COLORS
+
+    shared  /etc                -fuse.conf -updatedb.conf 
+    shared  /etc/sudoers.d      centauri
+
+    # script checks for configured .local domain - but cause 10s up/down delay
+    remove  /etc/network/if-up.d            avahi-daemon
+    remove  /etc/network/if-post-down.d     avahi-daemon
+
+    shared  /etc/polkit-1/localauthority/10-vendor.d \
+                                org.gnome.gparted.pkla \
+                                com.ubuntu.pkexec.synaptic.pkla \
+                                org.freedesktop.ModemManager.pkla \
+                                org.freedesktop.NetworkManager.pkla \
+                                org.freedesktop.color-manager.pkla
+    remove  /etc/polkit-1/localauthority/10-vendor.d \
+                                com.ubuntu.pkexec.gparted.pkla
+
+    shared  /etc/ppp            ip-down.local ip-up.local
+
+    shared  /etc/ssh            ssh_config sshd_config sshd_remote ssh_known_hosts
+    shared  /etc/ssh/ssh_config.d   50-centauri.conf
+    private /etc/ssh            ssh_host_ecdsa_key ssh_host_ecdsa_key.pub \
+                                ssh_host_ed25519_key ssh_host_ed25519_key.pub \
+                                ssh_host_rsa_key ssh_host_rsa_key.pub
+    shared  /etc/ssh/ssh_config.d   -10-centauri.conf
+    shared  /etc/init.d         ssh
+
+    shared  /etc/ssl            openssl.cnf
+    shared  /etc/ssl/certs      ${DAT_NET_DOMAIN^}_CA.pem
+    private /etc/ssl/certs      ssl-cert-snakeoil.pem
+    private /etc/ssl/private    ssl-cert-snakeoil.key
+
+    linkto  /etc/ssl/certs      ssl-cert-snakeoil.pem /etc/ssl/certs/servercrt.pem
+    linkto  /etc/ssl/private    ssl-cert-snakeoil.key /etc/ssl/private/servercrt.key
+
+    shared  /etc/sssd           sssd.conf
+
+    private /etc/systemd        journald.conf logind.conf -timesyncd.conf
+
+    private /etc/tmpfiles.d     centauri.conf
+
+    shared  /etc/udev/rules.d   01-centauriroute.rules 99-centauriroute.rules 33-ax88179eth.rules
+
+    shared  /usr/share/color-schemes BreezeCentauri.colors
+
+    shared  /etc/xdg            user-dirs.defaults
+    shared  /etc/xdg/autostart  centauri.desktop
+
+    # see /etc/xdg/centauri-disabled
+    remove  /etc/xdg/autostart  geoclue-demo-agent.desktop hplip-systray.desktop lxqt-qlipper-autostart.desktop at-spi-dbus-bus.desktop solaar.desktop
+
+    shared  /etc/X11            Xmodmap -Xwrapper.config
+    shared  /etc/X11/Xreset.d   50centauri
+    shared  /etc/X11/Xsession.d 60centauri
+    shared  /etc/X11/xinit      xinitrc
+
+    shared  /usr/share/xsessions       centauri.desktop
+
+    remove  /usr/share/X11/xorg.conf.d 50-synaptics.conf
+    shared  /usr/share/X11/xorg.conf.d 70-synaptics.conf
+
+    private /etc/X11/xorg.conf.d 20-tearfree.conf  30-screensetup.conf
+    shared  /etc/NetworkManager NetworkManager.conf
+
+condition family debian
+    shared  /etc/default        -avahi-daemon -wsdd networking
+    private /etc/default        console-setup
+
+    shared  /etc/apt            apt.conf.client apt.conf.local
+
+    private /etc/mok            MOK.der MOK.pem MOK.priv
+
+condition dist debian raspbian
+    shared  /etc/apt                sources.list
+    private /etc/apt/apt.conf.d     20auto-upgrades 50unattended-upgrades 
+    shared  /etc/apt/preferences.d  centauri 
+
+    private /etc/initramfs-tools    initramfs.conf modules
+    shared  /etc                    kernel-img.conf reportbug.conf
+
+    shared  /etc/initramfs/post-update.d centauriefilinux systemd-boot
+
+    private /etc/modprobe.d         centauri.conf
+
+    shared  /var/lib/deborphan      keep
+
+condition dist raspbian
+    shared  /boot/firmware          config-default.txt config-minimal.txt
+    private /boot/firmware          config.txt cmdline.txt
+    private /etc/apt/apt.conf.d     50raspi
+    private /etc/default            raspberrypi-kernel 
+
+condition dist debian               /boot/grub
+    shared   /etc/kernel/postinst.d zz-update-grub
+    shared   /etc/kernel/postrm.d   zz-update-grub
+
+condition dist debian               /boot/efi
+    shared   /etc/kernel/postinst.d zz-systemd-boot
+    shared   /etc/kernel/postrm.d   zz-systemd-boot
+
+condition server
+    private  $CEN_ROOT/machines     rsyncd.conf
+    private  /etc                   exports
+
+# ------------------------------------------------------------------------------
+# pam
+# ------------------------------------------------------------------------------
+
+condition
+    shared  /etc/security       -group.template -pam_encfs.conf
+    shared  /etc/pam.d          su sudo -sshd -sddm -lightdm
+
+condition                       /usr/share/pam-configs/libpam-mount
+    shared  /etc/security       pam_mount.conf.xml.client pam_mount.conf.xml.local
+
+# ------------------------------------------------------------------------------
+# mail - cyrus etc...
+# ------------------------------------------------------------------------------
+
+            ### sasl ###
+condition family debian         /usr/sbin/saslauthd
+    shared  /etc/default        saslauthd
+
+            ### cyrus ###
+condition family debian         /usr/sbin/cyrmaster
+    shared  /etc/default        cyrus-imapd
+condition                       /usr/sbin/cyrmaster
+    shared  /etc                cyrus.conf imapd.conf
+
+# ------------------------------------------------------------------------------
+# packages
+# ------------------------------------------------------------------------------
+
+            ### <misc packages> ###
+condition
+    shared  /etc                -wvdial.conf
+    shared  /etc/vim            vimrc
+    private /etc/ImageMagick-6  policy.xml
+
+condition family debian
+    shared  /etc/default        -bluetooth -hostapd -openvpn
+    private /etc/default        -virtualbox
+
+            ### exim4 ###
+condition family debian         /usr/sbin/acpid
+    private /etc/default        acpid
+
+            ### anacron ###
+condition                       /usr/sbin/anacron
+    shared  /etc                anacrontab crontab
+condition family debian         /usr/sbin/anacron
+    shared  /etc/default        anacron
+
+            ### cachefilefsd ###
+condition                       /sbin/cachefilesd
+    shared  /etc                cachefilesd.conf
+condition family debian         /sbin/cachefilesd
+    shared  /etc/default        cachefilesd
+
+            ### cups ###
+condition                       /usr/sbin/cupsd
+    #shared  /etc/cups           lpoptions client.conf cupsd.conf -printers_local -printers_${DAT_NET_HOST}
+    private /etc/cups           lpoptions client.conf cupsd.conf printers.conf
+    shared  /etc/modules-load.d cups-filters.conf 
+    linkto  /etc/ssl/certs      ssl-cert-snakeoil.pem /etc/cups/ssl/servercrt.pem
+    linkto  /etc/ssl/private    ssl-cert-snakeoil.key /etc/cups/ssl/servercrt.key
+
+            ### dnsmasq ###
+condition                       /usr/sbin/dnsmasq
+    shared  /etc                dnsmasq.conf
+    shared  /etc/default        dnsmasq
+condition                       /etc/dnsmasq.d.local
+    shared  /etc/dnsmasq.d.local ${DAT_NET_DOMAIN}_custom
+
+condition                       /usr/sbin/inetd
+    private /etc                inetd.conf
+
+            ### exim4 ###
+condition                      /usr/sbin/exim4
+    private  /etc/exim4        exim4.conf.template update-exim4.conf.conf
+    shared   /etc/init.d       exim4
+condition family debian        /usr/sbin/exim4
+    private  /etc/default      exim4
+
+            ### gmediarenderer ###
+condition dist raspbian 
+    remove  /etc/init.d        gmediarender
+    remove  /etc/default       gmediarender
+
+condition else                 /usr/bin/gmediarender
+    shared  /etc/init.d        gmediarender
+    private /etc/default       gmediarender
+
+            ### kerberos and nfs (no keytabs here!) ###
+condition
+    shared  /etc               -krb5.conf
+    shared  /usr/lib/systemd/scripts/ \
+                               -nfs-utils_env.sh
+condition family debian
+    shared  /etc/default       -nfs-common
+    remove  /etc/default       nfs-kernel-server
+
+            ### hostapd ###
+condition                      /usr/sbin/hostapd
+    shared  /etc/hostapd       ${DAT_NET_DOMAIN}.conf sirius.conf
+
+            ### lightdm (vnc only) ###
+condition
+    shared  /etc/lightdm       lightdm-xdmcp.conf
+#   linkto  /run               lightdm-data /var/lib/lightdm/data 
+
+            ### lighttpd ###
+condition                      /usr/sbin/lighttpd
+    shared  /etc/lighttpd      lighttpd.conf 
+    #linkto  /etc/ssl/certs     ${DAT_NET_DOMAIN^}_CA.pem    /etc/lighttpd/cacert.pem
+    #linkto  /etc/ssl/certs     ssl-cert-snakeoil.pem        /etc/lighttpd/server.pem
+    #linkto  /etc/ssl/private   ssl-cert-snakeoil.key        /etc/lighttpd/server.key
+
+            ### minidlna ###
+condition                      /usr/sbin/minidlnad
+    shared  /etc/init.d        minidlna
+    private /etc               minidlna.conf
+condition debian               /usr/sbin/minidlnad
+    private /etc/default       minidlna
+
+            ### namazu ###
+condition                      /etc/namazu
+    shared  /etc/namazu        namazurc mknmzrc 
+
+            ### NetworManager ###
+
+condition                      /usr/sbin/NetworkManager
+    shared  /etc/NetworkManager/system-connections OpenVPN-Centauri.nmconnection 
+
+            ### openvpn ###
+condition                      /etc/openvpn
+    shared  /etc/openvpn/client/$DAT_NET_DOMAIN client.conf
+    shared  /etc/openvpn/server/$DAT_NET_DOMAIN server.conf updown
+    shared  /etc/openvpn       README
+
+            ### pulseaudio ###
+condition                      /usr/bin/pulseaudio
+    shared  /etc/pulse         client.conf cookie
+    private /etc/pulse         default.pa
+    private /etc               asound.conf
+    # start/stop via Xsession.d and Xreset.d
+    remove  /etc/xdg/autostart pulseaudio.desktop 
+
+condition                      /usr/sbin/rsyslogd
+    shared  /etc               rsyslog.conf.client rsyslog.conf.local
+
+            ### samba ###
+condition                      /usr/sbin/smbd
+    shared  /etc/samba         smbpasswd smbusers smb.conf.local smbpass.conf
+    private /etc/samba         services.conf
+    remove  /etc/samba         dhcp.conf
+
+condition client               /usr/sbin/smbd
+    shared  /etc/samba         smb.conf.client 
+
+condition server               /usr/sbin/smbd
+    shared  /etc/samba         nmbd.conf 
+    private /etc/samba         smb.conf.master smb.conf.slave  
+
+            ### sane ###
+condition                      /usr/sbin/saned
+    private /etc/sane.d        dll.conf net.conf saned.conf
+
+            ### smartmon ###
+condition                      /usr/sbin/smartctl
+    private /etc               smartd.conf
+condition debian               /usr/sbin/smartctl
+    private /etc/default       smartmontools
+
+            ### squid ###
+condition                      /usr/sbin/squid
+    shared  /etc/squid         squid.conf squidGuard.conf
+
+            ### sddm ###
+condition                      /etc/sddm.conf
+    private /etc               sddm.locale
+
+            ### updatedb (mlocate)  ###
+condition                       /usr/bin/updatedb
+
+            ### ###
+condition                      # virtualbox
+
+            ### vsftpd ###
+condition                      /usr/sbin/vsftpd
+    shared  /etc               vsftpd.conf
+
+            ### weewx ###
+condition                       /usr/bin/weewxd
+    shared  /etc/init.d         weewx
+
+            ### sysv services ###
+condition                       /etc/init.d
+    linkto  $CEN_TOOLS/utilities    brouter-svc /etc/init.d/brouter-svc
+    linkto  $CEN_TOOLS/utilities    vpn-route-svc /etc/init.d/vpn-route-svc
+
+# ------------------------------------------------------------------------------
+# run updates
+# ------------------------------------------------------------------------------
+
+condition
+
+update      /etc/default/centauriconfig         $CEN_TOOLS/_centauri_bash_lib \
+            "Rebuild library proxy ..."         centauricreate --yes --info install
+
+update      /etc/default/centauriusers          /var/lib/centauri/centauriusers \
+            "Updating accounts     ..."         centauriusers -f -q -y update
+update      /etc/shadow.shared                  /var/lib/centauri/centauriusers \
+            "Updating accounts     ..."         centauriusers -f -q -y update
+
+update      /etc/default/centaurinetcfg         /etc/hosts \
+            "Configuring network   ..."         centaurinetcfg setup
+
+update      /etc/default/centauripower          /etc/acpi/README_CENTAURI \
+            "Configuring acpi events ..."       centauripower setup
+
+#update      /etc/fstab                          /var/lib/centauri/centauridata \
+#            "Updating '/data' folder..."        centauridata -q -y links -- init
+
+update      /etc/sudoers existing - chmod 440 /etc/sudoers
+
+update      /etc/exim4/update-exim4.conf.conf   /var/lib/exim4/config.autogenerated \
+            "Configuring exim4 ..."             /usr/sbin/update-exim4.conf
+
+update      /etc/ssl/certs/ssl-cert-snakeoil.pem /etc/ssl/certs/ca-certificates.crt \
+            "Update ca-certificates.crt ..."    /usr/sbin/update-ca-certificates
+
+update     /etc/systemd/system/apt-daily.service missing \
+           "Udate services apt-daily ..." \
+           /bin/bash -c "centauricreate --info install --yes" 
+
+update      /etc/network/if-up.d/resolved       existing \
+            "Remove 'resolved' hooks ..."       rm /etc/network/if-*/resolved
+
+# --- end ---

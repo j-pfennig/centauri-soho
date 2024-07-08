@@ -1,0 +1,1119 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_xml = centauri-bash-lib: Support for generating XML/HTML
+#
+# Call:     . _centauri_bash_xml
+#
+# This module contains functions to create XML/HTML documents. HTML is used
+# in it's XML variant, so when the documentations says XML, this usually also
+# applies to HTML.
+#
+# Some functions can load data from a file see **-r <handle>**.  Such a
+# handle can be obtained from [[redirect()]] (module [[_centauri_bash_ext]]).
+#
+# Variables:CEN_XML_FORMAT  XML formatting: 0=none, 1=indent, 2=no comments
+#           CEN_XML_INDENT  string of spaces used  for indentation
+#           CEN_XML_BUFFER  output buffer, see [[xml_flush()]]
+#           CEN_XML_OUTPUT  default output file handle, see [[xml_document()]]
+#
+# Template: The **centauriCgiforms** template demonstrates the use of this module.
+#
+# Copyright Dr. J. Pfennig (c) 2016-2024
+# ------------------------------------------------------------------------------
+
+CEN_MODULES['_centauri_bash_xml']='0.22:2'
+
+CEN_XML_BUFFER=
+CEN_XML_ERROR=          # error flag
+CEN_XML_HTML=           # HTML version
+CEN_XML_INDENT=
+CEN_XML_DOCNODE=        # root node -- or '-'  -- or empty
+CEN_XML_FORMAT=1        # 0=none, 1=indent, 2=no comments
+CEN_XML_NEWLINE=$'\n'
+CEN_XML_OUTPUT=         # default output file handle
+CEN_XML_ARGS=()         # for callbacks
+CEN_XML_ATTR=()         # for callbacks
+
+embed -c _centauri_bash_iom         # reference declaration
+
+# ------------------------------------------------------------------------------
+# xml_anchor - create a hyperlink
+#
+# Call:     (1) xml_anchor [-a <satr>] [-v <dest>] [-n] -m <mark> [--] <cont>...
+#           (2) xml_anchor [-a <satr>] [-v <dest>] [-n] -u <href> [--]  <cont>...
+#           (3) xml_anchor [-a <satr>] [-v <dest>] [-n] -j <func> [-u <href>] [--]  <cont>...
+#           (4) xml_anchor [-a <satr>] [-v <dest>] [-n] -b <mark>
+#
+#+          Form (1) jumps to a bookmark (on the current page), (2) references a
+#           page and form (3) invokes a javascript function. If form (3) is used
+#           without -u then <func> must contain an argument. Form (4) sets a bookmark.
+#
+#           If <href> is empty or - the output is empty.
+#
+# Options:  -a  attribute string
+#           -b  create bookmark
+#           -c  class (class attribute)
+#           -s  css string (style attribute)
+#           -j  call javascript function (prefix 'javascript:')
+#           -l  literal, no xml escape
+#           -m  jump to a marker (prefix '#')
+#           -n  append newline
+#           -u  destination URL
+#           -v  output to <dest> variable
+#
+# Arguments:<cont>...   text content of anchor element
+#           <func>      javascript function to be called
+#           <href>      the link destination
+#           <mark>      a bookmark name
+#
+#.Examples: xml_anchor -b 'hello'               # set bookmark
+#.          xml_anchor -m 'hello' -- "Go to hello"
+#
+#.          xml_anchor -n -u "index.html" -- "Show Content Table"
+#
+#.          xml_anchor -n -j "whow(42)" "Get answer"
+#.          xml_anchor -n -j "navigate" -u "dest.html" -- "Show Result"
+# ------------------------------------------------------------------------------
+xml_anchor() {
+    local _sref _satr _scls _scss _smrk _href _jscr _onew _otxt='-t' _optv
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _satr=" $1" ;;
+      -b)   shift ; _smrk="${1#\#}" ;;
+      -c)   shift ; _scls=" class='$1'" ;;
+      -j)   shift ; _jscr="$1" ;;
+      -l)   _otxt= ;;
+      -m)   shift ; _href="#${1#\#}" ;;
+      -n)   _onew='-n' ;;
+      -s)   shift ; _scss=" style='$1'" ;;
+      -v)   shift ; _optv="-v $1" ;;
+      -u)   shift ; _href="${1:--}" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    if [ "$_href" = '-' ] ; then                    # empty output
+       [ -n "$_optv" ] && printf $_optv ''
+       return 0
+    elif [ -n "$_jscr" ] ; then                     # invoke javascript
+        if [ -n "$_href" ] ; then
+            _sref=" href='javascript:$_jscr(\"$_href\")'"
+        else
+            _sref=" href='javascript:$_jscr'"
+        fi
+    elif [ -z "$_smrk" ] ; then                     # not a bookmark ...
+        _sref=" href='$_href'"
+    fi
+    _satr+="$_scls$_scss$_sref"
+
+    if [ -n "$_smrk" ] ; then
+        xml_element "span#$_smrk" $_optv -a "${_satr:1}" $_onew
+    elif [ $# = 0 ] ; then
+        xml_element "a" $_optv -a "${_satr:1}" $_onew
+    else
+        xml_element "a" $_optv -a "${_satr:1}" $_onew $_otxt -- "$*"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# xml_comment - Generate a comment
+#
+# Call:     xml_comment [-n] [-i|-l] [--] <text>...
+#           xml_comment [-n] [-i|-l] [--] <array>
+#           xml_comment [-n] [-i|-l] -r <fhan>
+#
+# Options:  -i  indented mult-line, implies -l
+#           -l  multi-line comment (each argument in a line)
+#           -n  force new line at end of output string
+#           -r  read text from file handle <fhan>
+#
+# Arguments:<text>    any text
+#           <array>   array of texts
+#           <fhan>    a file handle or '-' for stdin
+#
+#.Example:  xml_comment -l -n -- "line1" "--2--" "line3"  # multi-line comment
+#
+# The function writes starting and closing comment tags, all occurences
+# of -- are replaced by **=**. No other substitutions are made.
+# ------------------------------------------------------------------------------
+xml_comment() {
+    local _optn _optl _opti _optr _text _newl=$'\n'
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -i)   _opti=1 ; _optl="-d \n" ;;
+      -l)   _optl="-d \n" ;;
+      -n)   _optn=1 ;;
+      -r)   shift ; _optr="$1" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    if [ "$CEN_XML_FORMAT" != "2" ] ; then
+        if [ -z "$_optr" ] ; then
+            splitjoin -j _text $_optl -- "$@"
+        elif [ "$_optr" = '-' ] ; then
+            splitjoin -j _text $_optl -i -
+        else
+            splitjoin -j _text $_optl -i - <&$_optr
+        fi
+        [ -n "$_opti" ] && _text="${_text//$_newl/$_newl$CEN_XML_INDENT     }"
+        CEN_XML_BUFFER+="<!-- ${_text//--/=} -->"
+    fi
+    [ -n "$_optn" ] && xml_flush -n
+}
+
+# ------------------------------------------------------------------------------
+# xml_document - Create an XML or HTML document
+#
+# Call:     # create an xml document ...
+#           xml_document [-b|-e] [-a <text>] [-d <func>] [-f <func>] [-i 0|1|2] [-n]
+#                        [-o <outp>] [-r <text>] [-y] [-w <cont>] <attr>...
+#
+#           #create a HTML document ...
+#           xml_document [-b|-e] [-a text] [-d func] [-f func] [-i 0|1|2] [-n]
+#                        [-c file] [-h func] [-m func] [-s file] [-t text] [-w <cont>] <attr>...
+#
+# Options:  -a author meta data
+#           -b start document
+#           -d declaration function (default xml/doctype)
+#           -e end document
+#           -f inner content function (use - to read from stdin)
+#           -i indenting, **0**: off **1**: on  (see CEN_XML_FORMAT)
+#           -w write after start document and before processing -f
+#           -n fragment (no header)
+#           -o output file or handle (default is **/dev/stdout**)
+#
+# Options:  (XML only)
+#           -r xml root node
+#           -y xml stand alone
+#
+# Options:  (HTML only)
+#           **-4** version 4 html
+#           **-5** version 5 html
+#           -c css style file
+#           -h header function
+#           -m metadata function
+#           -s java-script file
+#           -t title (text will be escaped)
+#
+# Arguments:<attr>  body/document attribute
+#           <cont>  document content, written literally
+#           <file>  a file (for CSS or java-script)
+#           <func>  a callback function
+#           <outp>  a file handle (if numeric) or an output file
+#           <text>  a text string
+#
+#.Examples: xml_document -r root -d "xml_comment DTD" -f myfrag "attr='green'"
+#
+#.          xml_document -h -f "xml_comment Empty HTML" "lang='en'" "dir='ltr'"
+#
+#.          xml_document -b -s "script.js" -t "An HTML Example"
+#.          xml_comment "Content..."
+#.          xml_document -e
+#
+#           simple xml passing content via variable
+#.          data="<data>xml content<more>is here</more></data>"
+#.          xml_document -i 1 -r 'root' -w "$data" -y -- "version='1.0'"
+#
+#           simple xml with content from a here document
+#.          xml_document -f - -r 'root' -y -i 1 -- "version='2.0'" <<!EOF
+#.          <data>
+#.            xml content<more>is here</more>
+#.          </data>
+#.          !EOF
+# ------------------------------------------------------------------------------
+# -g -j -k -p -q -r -u -v -w -x -z
+xml_document() {
+    # parse options
+    local _meta _doct _func _idnt _scrp _titl _flgh _flgx _hver _cont
+    local _opta _optb=1 _optc _opte=1 _opth _optn _optr _opty="no"
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -4)   _hver=4            ; _flgh=1 ;;     # use html 4
+      -5)   _hver=5            ; _flgh=1 ;;     # use html 5
+      -a)   shift ; _opta="$1" ;;               # author <text>
+      -b)   _opte= ;;                           # begin document
+      -c)   shift ; _optc="$1" ; _flgh=1 ;;     # css file <file>
+      -d)   shift ; _doct="$1" ;;               # declaration <func>
+      -e)   _optb= ;;                           # end document
+      -f)   shift ; _func="$1" ;;               # content <func>
+      -h)   shift ; _opth="$1" ; _flgh=1 ;;     # header <func>
+      -i)   shift ; _idnt="$1" ;;               # indent 0|1|2
+      -m)   shift ; _meta="$1" ; _flgh=1 ;;     # metadata <func>
+      -n)   _optn=1 ;;                          # fragment
+      -o)   shift ; _oout="$1" ;;
+      -r)   shift ; _optr="$1" ; _flgx=1 ;;     # xml root <node>
+      -s)   shift ; _scrp="$1" ; _flgh=1 ;;     # script <file>
+      -t)   shift ; _titl="$1" ; _flgh=1 ;;     # title <text>
+      -w)   shift ; _cont="$1" ;;               # doc content
+      -y)   _opty="yes"        ; _flgx=1 ;;     # xml standalone
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # initialize output
+    if [ -n "$_optb" ] ; then
+        CEN_XML_ERROR=
+        if [ "${_oout:--}" = '-' -o "$_oout" = '/dev/stdout' ] ; then
+            CEN_XML_OUTPUT=1
+        elif [ "$_oout" = '+' ] ; then
+            CEN_XML_OUTPUT='+'
+        elif [ -z "${_oout//[0-9]/}" ] ; then
+            CEN_XML_OUTPUT="$_oout"
+        else
+            embed -m _centauri_bash_ext
+            redirect -s -v CEN_XML_OUTPUT -x "$_oout" || return 1
+        fi
+    fi
+
+    # Generate xml or html
+    if [ -n "$_flgx" ] ; then
+        [ "$_flgh" ] && _cen_abort $"Conflicting options" 'xml_document'
+        [ -n "$_optb" ] && CEN_XML_DOCNODE="$_optr"
+        [ -n "$_optn" ] && CEN_XML_DOCNODE='-'
+        CEN_XML_HTML=
+    elif [ -n "$_optb" ] ; then
+        CEN_XML_DOCNODE='+'
+        [ -n "$_optn" ] && CEN_XML_DOCNODE='-'
+        if [ "$_hver" = 5 ] ; then
+            CEN_XML_HTML=5
+            [ -z "$_doct" ] && _doct="xml_text -l -n \"<!DOCTYPE html>\""
+            [ -z "$_meta" ] && _meta="xml_element meta -n -a \"charset='UTF-8'\""
+        else
+            CEN_XML_HTML=4
+            [ -z "$_doct" ] && _doct="xml_text -l -n \"<!DOCTYPE HTML PUBLIC '-//W3C//DTD HTML 4.01 Transitional//EN' 'http://www.w3.org/TR/html4/loose.dtd'>\""
+            [ -z "$_meta" ] && _meta="xml_element meta -n -a \"http-equiv='Content-Type' content='text/html; charset=UTF-8'\""
+        fi
+        [ -n "$_opta" ] && _meta+=" ; xml_element meta -n -a \"name='author' content='$_opta'\""
+    fi
+
+    # begin, header
+    if [ -n "$_optb" ] ; then
+        CEN_XML_BUFFER=
+        CEN_XML_INDENT=
+        CEN_XML_FORMAT="${_idnt:-0}"
+
+        # fragment
+        if [ "$CEN_XML_DOCNODE" = '-' ] ; then
+            [ -n "$_opta" ] && xml_comment -n -- "$_opta"
+            xml_script "$_doct"
+            xml_script "$_opth"
+            [ -n "$_optc" ] && xml_element link   -n -a "rel='stylesheet' type='text/css' href='$_optc'"
+            [ -n "$_scrp" ] && xml_element script -n -a "type='text/javascript' src='$_scrp'"
+
+        # html document
+        elif [ "$CEN_XML_DOCNODE" = '+' ] ; then
+            xml_script "$_doct"
+            xml_element "html" -b -a
+            xml_element "head" -b -i
+            xml_script "$_meta"
+            [ -n "$_titl" ] && xml_element title  -n -t -- "$_titl"
+            xml_script "$_opth"
+            [ -n "$_optc" ] && xml_element link   -n -a "rel='stylesheet' type='text/css' href='$_optc'"
+            [ -n "$_scrp" ] && xml_element script -n -a "type='text/javascript' src='$_scrp'"
+            xml_element "head" -e -u
+            xml_element "body" -b -i -a "$*"
+
+        # xml document
+        else
+            xml_text -l -n "<?xml version='1.0' encoding='UTF-8' standalone='$_opty'?>"
+            [ -n "$_opta" ] && xml_comment -n -- "$_opta"
+            xml_script "$_doct"
+            [ -n "$CEN_XML_DOCNODE" ] && xml_element "$CEN_XML_DOCNODE" -b -i -a "$*"
+        fi
+    fi
+
+    # document content
+    [ -n "$_cont" ] && xml_text -l -- "$_cont"
+    xml_script "$_func"
+
+    # closing tag(s)
+    if [ -n "$_opte" ] ; then
+        if [ "$CEN_XML_DOCNODE" = '+' ] ; then
+            xml_element "body" -e -u
+            xml_element "html" -e
+        elif [ "${CEN_XML_DOCNODE:--}" != '-' ] ; then
+            xml_element "$CEN_XML_DOCNODE" -e -u
+        fi
+        xml_flush -n
+        [ -n "${CEN_XML_OUTPUT/[+12]/}" ] && redirect -s -v CEN_XML_OUTPUT
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# xml_element - create an element node
+#
+# Call:     xml_element <tag>[#<id>] [-b|-e] [-n] [-t] [-i|-u] [-x] [-v <dest>]
+#                       [-a <satr>] [-c <scls>] [-s <scss>] [--] <cont>...
+#           xml_element <tag>[#<id>] [-b|-e] [-n] [-i] [-v <dest>] -f <func>
+#                       [-a <satr>] [-c <scls>] [-s <scss>] [--] <data>...
+#
+# Arguments:<tag>  the tag. *** before options ***
+#           <id>   for <tag>#<id> an "id" attribute is added (HTML mode only)
+#           <cont> element content, multiple args repeat the element
+#           <data> data passed to the callback function
+#           <func> content callback function
+#
+# Options:  -a  attribute string
+#           -b  start element
+#           -c  class (class attribute)
+#           -e  end element
+#           -f  callback for inner content
+#           -i  indent (implies -n)
+#           -n  newline after element
+#           -s  css string (style attribute)
+#           -t  convert args using entities for apostroph, less and greater
+#           -u  unindent
+#           -v  output to <dest> variable
+#           -x  generate explicit end element (implied for HTML documents unless <br>)
+#
+#.Examples: # a simple repeated element
+#.          xml_element "numbers" -n "zero / null" "one" "two" "three"
+#
+#.          # using a content callback
+#.          ___colors() {
+#.              xml_element red -n
+#.              xml_element green -n "what a nice color!"
+#.              xml_element blue -n
+#.          }
+#.          xml_element "colors" -n -f ___colors
+#
+#.          # nesting elements explicitly
+#.          xml_element "animals" -b -n -i
+#.              xml_element "dog" "his name is Bello"
+#.              xml_element "cat" -n
+#.          xml_element "animals" -e -u
+# ------------------------------------------------------------------------------
+xml_element() {
+    # 1st arg must be a tag name
+    local _etag="$1" _ebeg ; shift
+    [ "${_etag::1}" = '-' ] && _cen_abort $"Missing tag"
+
+    # parse options
+    local _satr _scls _scss _func _nrep=1
+    local _optt _optb=1 _opte=1 _opti _optn _optu _optv _optx _optz _buff
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _satr=" $1" ;;
+      -b)   _opte= ;;
+      -c)   shift ; _scls=" class='$1'" ;;
+      -e)   _optb= ;;
+      -f)   shift ; _func="$1" ;;
+      -i)   [ "$CEN_XML_FORMAT" = 1 ] && _opti=1 ;;
+      -n)   _optn=1 ;;
+      -s)   shift ; _scss=" style='$1'" ;;
+      -t)   _optt=1 ;;
+      -u)   [ "$CEN_XML_FORMAT" = 1 ] && _optu=1 ;;
+      -v)   shift ; _optv="$1" ; _buff="$CEN_XML_BUFFER" ; CEN_XML_BUFFER= ;;
+      -x)   _optx=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    _satr+="$_scls$_scss"
+    [ "$_satr" = ' ' ] && _satr=
+
+    # disable -n -i -u for variable output
+    if [ -n "$_optv" ] ; then
+        _opti= ; _optn= ; _optu=
+    fi
+
+    # css style id for html
+    if [ -n "$CEN_XML_HTML" ] ; then
+        case "$_etag" in
+        *#*) _satr=" id='${_etag#*\#}'$_satr" ; _etag="${_etag%%\#*}" ;;
+        *.*) _satr=" class='${_etag#*.}'$_satr" ; _etag="${_etag%%.*}" ;;
+        esac
+    fi
+
+    # imply -x for HTML if not a <br> tag ...
+    if [ -z "$_optx" ] ; then
+        [ "${_etag,,}" = 'br' -o "${_etag,,}" = 'hr' ] || _optx="$CEN_XML_HTML"
+    fi
+
+    # unindent, new line
+    if [ -n "$_optu" ] ; then
+        CEN_XML_INDENT="${CEN_XML_INDENT:2}" ; xml_flush -n
+    fi
+
+    # generate element(s)
+    while [ -n "$_etag" ] ; do
+        if [ -n "$_func" ] ; then
+            [ -n "$_optb" ] && CEN_XML_BUFFER+="<$_etag$_satr>"
+            if [ -n "$_opti" ] ; then
+                CEN_XML_INDENT+='  ' ; xml_flush -n ; _opti=
+                xml_script "$_func" "$1"
+                CEN_XML_INDENT="${CEN_XML_INDENT:2}" ; xml_flush -n
+            else
+                xml_script "$_func" "$1"
+            fi
+            [ -n "$_opte" ] && CEN_XML_BUFFER+="</$_etag>"
+        elif [ "$_optb$_opte" = '11' ] ; then
+            if [ -z "$1" -a -z "$_optx" ] ; then
+                CEN_XML_BUFFER+="<$_etag$_satr/>"
+            elif [ -z "$_optt" ] ; then
+                CEN_XML_BUFFER+="<$_etag$_satr>$1</$_etag>"
+            else
+                _optz="${1//&/\&amp;}"
+                _optz="${_optz//</\&lt;}"
+                _optz="${_optz//>/\&gt;}"
+                CEN_XML_BUFFER+="<$_etag$_satr>$_optz</$_etag>"
+            fi
+        elif [ -n "$_opte" ] ; then
+            CEN_XML_BUFFER+="</$_etag>"
+        else
+            CEN_XML_BUFFER+="<$_etag$_satr>"
+        fi
+
+        [ -n "$_optn" ] && xml_flush -n
+        shift ; [ $# = 0 ] && _etag=
+    done
+
+    # indent, save to variable
+    if [ -n "$_opti" ] ; then
+        CEN_XML_INDENT+='  ' ; [ -n "$_optn" ] && CEN_XML_BUFFER+='  '
+    fi
+    [ -z "$_optv" ] && return
+    local -n _rvar="$_optv" ; _rvar="$CEN_XML_BUFFER" ; CEN_XML_BUFFER="$_buff"
+}
+
+# ------------------------------------------------------------------------------
+# xml_flush - Send buffered XML data to a variable, file or stdout
+#
+# Call:     (1) xml_flush [-n] [-h <fhan>]
+#           (2) xml_flush [-n] -v <name>
+#           (3) xml_flush -r [-h <fhan>]
+#
+#+          Form 1 and 2 output or save data from CEN_XML_BUFFER and then
+#           reinitialize the buffer. In form 1 the -h option overrides
+#           temporarily the current file handle. Form 3 resets all data and
+#           optionally sets the current file handle.
+#
+# Options:  -h  write to <fhan> (default is CEN_XML_OUTPUT, see [[xml_document()]])
+#           -n  force new line at end of output string
+#           -r  reset module to initial values
+#           -v  save data to <name>, do no output
+#
+# Arguments:<fhan>  a file handle or + for memory or - for stdout
+#           <name>  name of a variable to receive xml data
+#
+# Examples: add new-line and flush to current output destination
+#.          xml_flush -n
+#
+#           reset state and alter output destination
+#.          xml_flush ; xml_flush -r -h +
+#
+#           get some complex xml into a variable:
+#.          xml_flush ; xml_flush -h +
+#.          xml_table -d "|" "1|Mercury|war" "2|Venus|love" "3|Earth|desaster"
+#.          xml_flush -v vnam ;
+# ------------------------------------------------------------------------------
+xml_flush() {
+    local _optn _ores _osav _over _ohan="${CEN_XML_OUTPUT:-1}"
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -h)   shift ; _ohan="${1:--}" ; [ "$_ohan" = '-' ] && _ohan="$CEN_STDOUT" ;;
+      -n)   _optn=1 ;;
+      -r)   _ores=1 ;;
+      -v)   shift ; _osav="$1" ;;
+      -4)   _over=4 ;;
+      -5)   _over=5 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    # reset state
+    if [ -n "$_ores" ] ; then
+        CEN_XML_BUFFER=
+        CEN_XML_ERROR=
+        CEN_XML_HTML=
+        CEN_XML_INDENT=
+        CEN_XML_DOCNODE=
+        CEN_XML_FORMAT=1
+        CEN_XML_NEWLINE=$'\n'
+        CEN_XML_OUTPUT=
+        CEN_XML_ARGS=() ; CEN_XML_ATTR=()
+    fi
+
+    if [ -n "$CEN_XML_ERROR" ] ; then           # ignore after write error
+        CEN_XML_BUFFER= ; return 1
+    fi
+    [ -n "$_over" ] && CEN_XML_HTML="$_over"
+    [ -z "$CEN_XML_OUTPUT" ] && CEN_XML_OUTPUT="$_ohan"
+
+    # there should be no indentation
+    [ -z "$CEN_XML_BUFFER" ] && return 0
+
+    # right trim
+    local _blen="${#CEN_XML_BUFFER}"
+    while [ "$_blen" -gt 0 ] ; do
+        [ "${CEN_XML_BUFFER:_blen-1:1}" = ' ' ] || break
+        ((_blen -= 1))
+    done
+
+    # append newline if last output char was not a newline
+    if [ -n "$_optn" -a "$_blen" -gt 0 ] ; then
+        if [ "${CEN_XML_BUFFER:_blen-1:1}" != "$CEN_XML_NEWLINE" ] ; then
+            CEN_XML_BUFFER+="$CEN_XML_NEWLINE" ; ((_blen += 1))
+        fi
+    fi
+
+    # output to variable
+    if [ -n "$_osav" ] ; then
+        local -n _oref="$_osav"
+        _oref="${CEN_XML_BUFFER::_blen}"
+
+    # output trimmed
+    elif [ "$_blen" -gt 0 ] ; then
+        if [ "$_ohan" = '+' ] ; then            # keep in buffer
+            CEN_XML_BUFFER="${CEN_XML_BUFFER::_blen}"
+            [ "$CEN_XML_FORMAT" = 1 ] && CEN_XML_BUFFER+="$CEN_XML_INDENT"
+            return 0
+        elif [ "$_ohan" = 1 ] ; then            # send to stdout
+            printf '%s' "${CEN_XML_BUFFER::_blen}" 2>/dev/null
+        else
+            printf '%s' "${CEN_XML_BUFFER::_blen}" >&$_ohan
+        fi
+        if [ $? != 0 ] ; then
+            CEN_XML_ERROR=1 ; $CEN_TRACE -c " error" "write failed" ; return 1
+        fi
+    fi
+
+    if [ "$CEN_XML_FORMAT" = 1 ] ; then
+        CEN_XML_BUFFER="$CEN_XML_INDENT"
+    else
+        CEN_XML_BUFFER=
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# xml_input - generate label and input elements
+#
+# Call:     xml_input <type>#<id> [-a <satr>] [-c <scls>] [-s <scss>] [-l] [-n]
+#                                 [-v <dest>] [--] <text>
+#           xml_input "submit" ...
+#
+# Arguments:<type> Kind of input element or "label". *** before options ***
+#           <id>   "id" and "name" attributes are added if not specified via -a
+#
+# Options:  -a  attribute string
+#           -c  class (class attribute)
+#           -s  css string (style attribute)
+#           -l  literal <text>, do no xml escape
+#           -n  append newline
+#           -v  output to <dest> variable
+#
+#.Examples: xml_input label#fname    -- "First name:"
+#.          xml_input text#fname     -- "John"
+#.          xml_input label#lname    -- "Last name:"
+#.          xml_input text#lname     -- "Doe"
+#.          xml_input checkbox#adult -a "checked=''"
+#.          xml_input label#adult    -- "My age is above 18"
+#.          xml_input submit         -- "Submit"   # <name> not mandatory
+# ------------------------------------------------------------------------------
+xml_input() {
+    # 1st arg must be a <type>#<name>
+    local _type="${1:--}" _name="${1#*\#}" ; shift
+    if [ "$_type" != "submit" ] ; then
+        [ "${_type::1}" = '-' ] && _cen_abort $"Missing type" "xml_input"
+        [ "$_type" = "$_name" ] && _cen_abort $"Missing name" "xml_input $_type"
+        _type="${_type%%\#*}"
+    fi
+
+    local _satr _scls _scss _onew _olit _optv
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _satr=" $1" ;;
+      -c)   shift ; _scls=" class='$1'" ;;
+      -l)   _olit=1 ;;
+      -n)   _onew='-n' ;;
+      -s)   shift ; _scss=" style='$1'" ;;
+      -v)   shift ; _optv="-v $1" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    local _text="$1" ; [ -z "$_olit" ] && xml_text -v _text -- "$1"
+
+    [ "${_satr/ name=/}" = "$_satr" ] && _satr=" name='$_name'$_satr"
+    _satr+="$_scls$_scss"
+    if [ "$_type" = "label" ] ; then
+        [ "${_satr/ for=/}" = "$_satr" ] && _satr=" for='$_name'$_satr"
+        xml_element label $_optv -a "${_satr:1}" $_onew -- "$_text"
+    else
+        [ -n "$_text" ] && _satr=" value='$_text'$_satr"
+        [ "${_satr/ id=/}" = "$_satr" ] && _satr=" id='$_name'$_satr"
+        xml_element input $_optv -a "type='$_type'$_satr" $_onew
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# xml_list - build a simple list
+#
+# Call:     xml_list <tag>[#<id>] [-a <satr>] [-c <scls>] [-s <scss>] [-n] [-l]
+#                                 [-g <gelt>] [-d <deli>] <data>...
+#
+# Options:  -a  attribute string
+#           -c  class (class attribute)
+#           -d  delimiter to split <item> data
+#           -l  literal <item>..., do no xml escape
+#           -n  append newline
+#           -s  css string (style attribute)
+#
+# Arguments:<tag>   kind of parent element *** before options ***
+#           <id>    "id" and "name" attributes are added if not specified via -a
+#           <deli>  delimiter character(s) in printf notation
+#           <data>  data, split into fields using <deli>
+#           <gelt>  item element if <tag> is not "dl" "ol" or "ul"
+#
+# HTML lists are built for <tag> "dl" "ol" or "ul". In this case <gelt> is
+# ignored. With <tag> "dl" two <data> fields per list entry are used.
+#
+# For all non HTML list <tag>s <gelt> must be specified to define the inner
+# element type.
+#
+# Attributes apply only to the parent element. To pass attributes to the
+# inner elements or to get more control use the [[xml_sequence()]] function.
+#
+#.Example:  xml_list ul -n -- "Moscow" "London" "Berlin" "Paris"
+#.          xml_list dl -n -d '=' -- "1=one" "2=two" 3 three
+#.          xml_list tr -g td -- "Text number 1" "Text number 2"
+# ------------------------------------------------------------------------------
+xml_list() {
+    # 1st arg must be a list type
+    local _selt="${1:--}" ; shift
+    [ "${_selt::1}" = '-' ] && _cen_abort $"Missing type" 'xml_list'
+
+    local _sdel _satr _satr _scls _stxt='-t' _onew _item _sliav _gelt
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _satr=" $1" ;;
+      -c)   shift ; _scls=" class='$1'" ;;
+      -d)   shift ; _sdel="$1" ;;
+      -g)   shift ; _gelt="$1" ;;
+      -l)   _stxt= ;;
+      -n)   _onew='-n' ;;
+      -s)   shift ; _scss=" style='$1'" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    if [ -n "$_sdel" ] ; then
+        splitjoin -s _slia -d "$_sdel" -- "$@"
+    else
+        _slia=("$@")
+    fi
+
+    _satr+="$_scls$_scss"
+    xml_element "$_selt" -b -a "${_satr:1}" -i
+    case "${_selt%%#*}" in
+        dl)
+            for ((_item=0 ; _item < ${#_slia[@]} ; _item+=2)) ; do
+                xml_element "dt" $_stxt -- "${_slia[_item]}"
+                xml_element "dd" $_stxt $_onew -- "${_slia[_item+1]}"
+            done ;;
+        ol|ul)
+            xml_element "li" $_stxt $_onew -- "${_slia[@]}" ;;
+        *)
+            [ -n "$_gelt" ] || _cen_abort "Missing -g option"
+            xml_element "$_gelt" $_stxt $_onew -- "${_slia[@]}" ;;
+    esac
+    xml_element "$_selt" -e -u $_onew
+}
+
+# ------------------------------------------------------------------------------
+# xml_script - call function or add xml text
+#
+# Call:     (1) xml_script <script>         # use eval, call function
+#           (2) xml_script <func> <args>    # call function
+#           (3) xml_script + <args>         # add xml from args
+#           (4) xml_script -                # add xml from stdin
+#
+#           This function is used to add xml code to the output buffer. It is
+#           used internally be the xml module to run callbacks and is optimized
+#           for speed.
+#
+#.Examples: # use eval to expand a scriptlet
+#.          xml_script "xml_element 'p' -n -- 'Hello World!'"
+#
+#.          # call a function
+#.          xml_script xml_element 'p' -n -- 'Hellow World!'
+#
+#.          # add literal data from stdin
+#.          xml_script - <<!EOF
+#.              <tick>
+#.              <tack>
+#.          !EOF
+#
+#.          # add literal data from arguments
+#.          xml_script + '<tick>' '<tack>'
+# ------------------------------------------------------------------------------
+xml_script() {
+    case "$1" in
+    '') return 0
+        ;;
+    -)  local _text _line
+        while read -r _line ; do
+            _text+="$_line$CEN_XML_NEWLINE$CEN_XML_INDENT"
+        done
+        CEN_XML_BUFFER+="$_text" ; return 0
+        ;;
+    +)  local _text
+        while [ $# -gt 1 ] ; do
+            _text+="$2$CEN_XML_NEWLINE$CEN_XML_INDENT" ; shift
+        done
+        CEN_XML_BUFFER+="$_text" ; return 0
+        ;;
+    *)  if [ $# = 1 ] ; then
+            set -f
+            eval set -- $1 2>/dev/null || _cen_abort ? "$1"
+            set +f
+        fi
+        PATH= type -t -- "$1" >/dev/null || _cen_abort $"Not a function:" "$1"
+        "${@}" ; return                         # return status
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# xml_sequence - generate a sequence of elements
+#
+# Call:     xml_sequence <tag>[#<id>] [-a <satr>] [-c <scls>] [-s <scss>]
+#                        [-e <elem>] [-f <func>] [-l|-n] [-t <note>] [--] <data>...
+#
+# Arguments:<tag>  the tag. *** before options ***
+#           <id>   for <tag>#<id> an "id" attribute is added (HTML mode only)
+#           <data> element content
+#           <elem> element callbak function:  <note> <elt> <data>
+#           <item> item callback function:    <note> <counter> <data>
+#           <note>  all callback functions receive this as 1st argument
+#
+# Options:  -a  attribute string (overridden by CEN_XML_ATTR)
+#           -c  element class (class attribute)
+#           -d  delimiter to split <data>
+#           -e  element callback function
+#           -f  item callback function
+#           -l  literal, no xml escape
+#           -n  append newline
+#           -s  element css string (style attribute)
+#           -t  arbitrary data passed to all callback functions
+#
+#.Examples: # a simple sequence
+#.          xml_sequence 'span' -d '|' -n -- "earth|wind|fire"
+#
+#.          # using in item callback
+#.          ___item() {         # args: <note> <counter> <data>
+#.              local argi=$(($2 + 3)) ; CEN_XML_ARGS="${!argi}"
+#.              case "$2" in
+#.                  0)   CEN_XML_ATTR="style='text-align:left;'" ;;
+#.                  1)   ;;
+#.                  2)   CEN_XML_ATTR="style='text-align:right;'" ;;
+#.                  *)   return 1
+#.              esac ; return 0
+#.          }
+#.          xml_sequence td -c "center" -f ___item -n -- left center right
+#
+#.          # using an element callback
+#.          ___elem() {         # args: <note> <elem> <data>...
+#.              local args elem="$2" ; shift 2
+#.              xml_element "$elem" -a "$CEN_XML_ATTR" -b -i -n
+#.              while [ -n "$1" ] ; do
+#.                  splitjoin -s args -d '=' "$1" ; shift
+#.                  xml_element dt    -- "$args"
+#.                  xml_element dd -n -- "${args[1]}" ;
+#.              done
+#.              xml_element "$elem" -e -u -n
+#.          }
+#.          xml_sequence dl -d '|' -e ___elem -n -- "water=flows|wind=blows" "fire=burns"
+# ------------------------------------------------------------------------------
+xml_sequence() {
+    # 1st arg must be a tag name
+    local _etag="$1" ; shift
+    [ "${_etag::1}" = '-' ] && _cen_abort $"Missing tag"
+
+    local _sdel _satr _scls _scss _stxt='-t' _onew _optt _felt _func
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _satr=" $1" ;;
+      -c)   shift ; _scls=" class='$1'" ;;
+      -d)   shift ; _sdel="$1" ;;
+      -e)   shift ; _felt="$1" ;;
+      -f)   shift ; _func="$1" ;;
+      -l)   _stxt= ;;
+      -n)   _onew='-n' ;;
+      -s)   shift ; _scss=" style='$1'" ;;
+      -t)   shift ; _optt="$1" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    local _squa _sxxx _item _nrow=0
+    _satr+="$_scls$_scss" ; _satr="${_satr:1}"
+
+    if [ -n "$_sdel" ] ; then
+        splitjoin -s _squa -d "$_sdel" -- "$@"
+    else
+        _squa=("$@")
+    fi
+
+    if [ -n "$_func" ] ; then
+        CEN_XML_ARGS=() ; CEN_XML_ATTR=()
+        while $_func "$_optt" "$_nrow" "${_squa[@]}" ; do
+            [ -n "$CEN_XML_ATTR" ] && _sxxx="${CEN_XML_ATTR[*]}" || _sxxx="$_satr"
+            if [ -n "$_felt" ] ; then
+                $_felt "$_optt" "$_etag" "${CEN_XML_ARGS[@]}"
+            else
+                xml_element $_etag -a "$_sxxx" $_onew $_stxt -- "${CEN_XML_ARGS[@]}"
+            fi
+            ((_nrow++)) ; CEN_XML_ARGS=() ; CEN_XML_ATTR=()
+        done
+    else
+        if [ -n "$_felt" ] ; then
+            CEN_XML_ATTR=("$_satr")
+            $_felt "$_optt" "$_etag" "${_squa[@]}"
+            [ -n "$_onew" ] && xml_flush -n
+            CEN_XML_ATTR=()
+        else
+            xml_element $_etag -a "$_satr" $_onew $_stxt -- "${_squa[@]}"
+        fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# xml_table - build a table
+#
+# Call:     xml_table [-h <fhdr>] [-b <body>|-r <frow>] [-f <foot>]
+#                     [-t <note>] [-a <satr>] [-d <deli>] <data>...
+#
+# Options:  -a  attribute string
+#           -b  body function
+#           -c  table class (class attribute)
+#           -d  delimiter to split <data> (default is "\t\n")
+#           -f  footer function
+#           -h  header function
+#           -l  literal, no xml escape
+#           -n  append newline after td elements
+#           -r  row function [fills CEN_XML_ARGS array]
+#           -s  table css string (style attribute)
+#           -t  arbitrary data passed to all callback functions
+#           -x  function called after "<table>" can be used to add tags like
+#               "<caption>" or "<colgroup>" or to generate any other content
+#
+# Arguments:<fhdr>  callback for xml_element thead
+#           <body>  callback for xml_element tbody
+#           <foot>  callback for xml_element tfoot
+#           <frow>  row function, called in loop until it returns false
+#           <note>  all callback functions receive this as 1st argument
+#           <deli>  delimiter character(s) in printf notation
+#           <data>  row data, split into cols using <deli>
+#
+#.Examples: # simple table with 3 rows
+#.          xml_table -d "|" "1|Mercury|war" "2|Venus|love" "3|Earth|desaster"
+#
+#.          # table with rows callback (args are: <note> <row-number>)
+#.          ___rows() {
+#.              case "$2" in
+#.                  0)  CEN_XML_ARGS=("$1") ;;
+#.                  1)  CEN_XML_ARGS=(1 "2") ;;
+#.                  2)  CEN_XML_ARGS=("3" "4") ;;
+#.                 *)  return 1    # return false to stop
+#.              esac ; return 0
+#.          }
+#.          xml_table -r ___rows -t "A Matrix" -x ___extra
+#
+#.          # table usig extra callback (arg is: <note>)
+#.          ___xtra() {
+#.              xml_element caption -n -t -- "$1"
+#.              xml_element colgroup -i -n -b
+#.                 xml_element col -s "text-align: right; width: 10%;"
+#.                 xml_element col -s "background-color: yellow;"
+#.              xml_element colgroup -u -n -e
+#.          }
+#.          xml_table -t "Directions" -x ___xtra -d "|" \
+#.                    "N|north" "E|east" "S|south" "W|west"
+# ------------------------------------------------------------------------------
+xml_table() {
+    local _sdel="\t\n" _satr _scls _scss _stxt='-t' _onew _optt _narg _natr _nrow=0
+    local _fxtr _fhdr _fbdy _ffoo _frow="false"
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _satr=" $1" ;;
+      -b)   shift ; _fbdy="-f $1" ;;
+      -c)   shift ; _scls=" class='$1'" ;;
+      -d)   shift ; _sdel="$1" ;;
+      -f)   shift ; _ffoo="$1" ;;
+      -h)   shift ; _fhdr="$1" ;;
+      -l)   _stxt= ;;
+      -n)   _onew='-n' ;;
+      -r)   shift ; _frow="$1" ;;
+      -s)   shift ; _scss=" style='$1'" ;;
+      -t)   shift ; _optt="$1" ;;
+      -x)   shift ; _fxtr="$1" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    _satr+="$_scls$_scss"
+    xml_element "table" -b -a "${_satr:1}" -i
+        [ -n "$_fxtr" ] && $_fxtr "$_optt"
+        [ -n "$_fhdr" ] && xml_element "thead" -f "$_fhdr" "$_optt"
+        [ -n "$_fhdr$_ffoo$_fbdy" ] && xml_element "tbody" -b -i $_fbdy "$_optt"
+        if [ "$#" -gt 0 ] ; then
+            for _nrow in "$@" ; do
+                xml_element "tr" -b
+                    splitjoin -s CEN_XML_ARGS -d "$_sdel" "$_nrow"
+                    xml_element "td" $_stxt $_onew -- "${CEN_XML_ARGS[@]}"
+                xml_element "tr" -e -n
+            done
+            CEN_XML_ARGS=()
+        else
+            CEN_XML_ARGS=() ; CEN_XML_ATTR=()
+            while $_frow "$_optt" "$_nrow" ; do
+                _nrow=$((_nrow + 1))
+                _narg="${#CEN_XML_ARGS[@]}"
+                _natr="${#CEN_XML_ATTR[@]}"
+                [ "$_natr" -gt "$_narg" ] && _narg="$_nart"
+                [ "$_narg" = 0 ] && continue            # no data or attributes
+                xml_element "tr" -b ${_onew:+-i}
+                    if [ "$_natr" != 0 ] ; then         # generate attributes ...
+                        for ((_natr=0 ; _natr < _narg ; _natr++)) ; do
+                            xml_element "td" $_stxt $_onew \
+                                -a "${CEN_XML_ATTR[_natr]}" -- "${CEN_XML_ARGS[_natr]}"
+                        done
+                    else                                # no attributes ...
+                        xml_element "td" $_stxt $_onew -- "${CEN_XML_ARGS[@]}"
+                    fi
+                xml_element "tr" -e -n ${_onew:+-u}
+                CEN_XML_ARGS=() ; CEN_XML_ATTR=()
+            done
+        fi
+        [ -n "$_fhdr$_ffoo$_fbdy" ] && xml_element "tbody" -n -e -u
+        [ -n "$_ffoo" ] && xml_element "tfoot" -f "$_ffoo" "$_optt"
+    xml_element "table" -e -u -n
+}
+
+# ------------------------------------------------------------------------------
+# xml_text - Text writer with minimal XML-escape encoding
+#
+# Call:     xml_text [-a <satr>] [-l] [-b|-p]         [-s] [-v <dest>] <text>...
+#           xml_text [-a <satr>] [-l] [-b|-p]         [-s] [-v <dest>] -r <fhan>
+#           xml_text [-a <satr>] [-l] [-c|-x] [-n|-o] [-s] [-v <dest>] <text>...
+#           xml_text [-a <satr>] [-l] [-c|-x] [-n|-o] [-s] [-v <dest>] -r <fhan>
+#
+# Options:  -a  attribute string for generated elements
+#           -b  add ''<br/>'' for each argument
+#           -c  enclose in <code> element, no indent
+#           -l  literal <text>, do no xml escape
+#           -n  append new-line + indent to each argument
+#           -o  append new-line only to each argument
+#           -p  use ''<p>''...''</p>'' for each argument
+#           -r  read args from file handle <fhan>
+#           -s  trim spaces (for <text> arguments and -r data)
+#           -v  output to <dest> variable
+#           -x  enclose in ''<pre>'' element, no indent
+#
+# Arguments:<satr>    attribute string
+#           <text>    any text
+#           <array>   array of texts
+#           <fhan>    a file handle or '-' for stdin
+#
+#.Examples: xml_text -n -- "This <is> simple text"
+#.          xml_text -n -l "This <is>xml data</is> and text"
+#
+#.          xml_text -n -l -r - <<!EOF
+#.            <label for="lname">Last name:</label><br>
+#.            <input type="text" id="lname" name="lname" value="Doe">
+#.          !EOF
+#
+#.          # preformatted text
+#.          local lines=('line #1' 'line #2' 'line #3')
+#.          xml_text -c -n -- "${lines[@]}"
+#
+#.          xml_element 'pre' -b
+#.          xml_text -o -- 'line #1'
+#.          xml_text -o -- 'line #2'
+#.          xml_element 'pre' -e -n
+# ------------------------------------------------------------------------------
+_cen_xml_text() {
+    if [ -n "$_opts" ] ; then
+        _curr="${_curr%"${_curr##*[![:space:]]}"}"
+        _curr="${_curr#"${_curr%%[![:space:]]*}"}"
+    fi
+    if [ -z "$_optl" ] ; then
+        _curr="${_curr//&/\&amp;}"
+        _curr="${_curr//</\&lt;}"
+        _curr="${_curr//>/\&gt;}"
+        _curr="${_curr//\'/\&apos;}"
+        _curr="${_curr//\"/\&quot;}"
+    fi
+    _line+="$_tpre$_curr$_tsuf"
+}
+
+xml_text() {
+    local _satr _optl _optr _opts _optv _mode=0 _tage
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _satr=" $1" ;;
+      -b)   _mode=1 ;;
+      -c)   _tage='code' ;;
+      -l)   _optl=1 ;;
+      -n)   _mode=4 ;;
+      -o)   _mode=3 ;;
+      -p)   _mode=2 ;;
+      -r)   shift ; _optr="$1" ;;
+      -s)   _opts=1 ;;
+      -v)   shift ; _optv="$1" ;;
+      -x)   _tage='pre' ;;
+      *)    _cen_abort - "$1"
+     esac ; shift
+    done
+    [ $# = 0 -a -z "$_opt_optxr" ] && return 0               # nothing to do
+
+    local _line _curr _tpre _tsuf
+    [ -n "$_tage" ] && _line+="<$_tage$_satr>"
+
+    case "$_mode" in
+    1)      _tsuf="<br/>$CEN_XML_NEWLINE$CEN_XML_INDENT" ;;
+    2)      _tpre="<p$_satr>" ; _tsuf="</p>$CEN_XML_NEWLINE$CEN_XML_INDENT" ;;
+    3)      _tsuf="$CEN_XML_NEWLINE" ;;
+    4)      _tsuf="$CEN_XML_NEWLINE$CEN_XML_INDENT" ;;
+    esac
+
+    if [ -n "$_optr" ] ; then
+        local _sifs="$IFS" ; IFS="$CEN_XML_NEWLINE"
+        [ "$_optr" = '-' ] && _optr=0
+        while read -r _curr ; do _cen_xml_text ; done <&$_optr
+        IFS="$_sifs"
+    else
+        for _curr in "$@" ; do _cen_xml_text ; done
+    fi
+
+    if [ -n "$_tage" ] ; then                           # </code> or </pre>
+        _line+="</$_tage>"
+        [ "$_mode" -gt 3 ] && _line+="$_tsuf"
+    fi
+
+    if [ -n "$_optv" ] ; then
+        local -n _rvar="$_optv"
+        _rvar="$_line"
+    else
+        CEN_XML_BUFFER+="$_line"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Startup
+# ------------------------------------------------------------------------------
+
+:
+
+# end

@@ -1,0 +1,703 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2023; BSD License"
+CEN_TITLE=$"Tool to enable/disable Sys-V and systemd system services"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -t -y "$0" "0.12:2" || exit 2
+
+# Data
+DAT_CONTEXT='any'
+DAT_SCRIPT="/etc/default/$CEN_NAME"
+DAT_SAVING=
+DAT_USE_SYSTEMD=
+DAT_HEADER=             # array, see makeHeader
+DAT_COL_WIDTH=          # column width
+DAT_LEVELS_RUN=
+DAT_LEVELS_ALL='2 3 4 5'
+DAT_NO_RELOAD=          # see 'script' action, disable 'daemon-reload'
+
+# data for extra options
+CEN_OPT_ALL=            # see --all
+CEN_OPT_FANCY=          # see --fancy
+CEN_OPT_LEGACY=         # see --legacy
+CEN_OPT_SAVE=           # script name, see --save
+
+# ------------------------------------------------------------------------------
+# helper to check context: -no args-
+# ------------------------------------------------------------------------------
+checkContext() {
+    case "$DAT_CONTEXT" in
+    client)     nethost -c "$HOSTNAME" && return 0 ;;
+    server)     nethost -s "$HOSTNAME" && return 0 ;;
+    *)          return 0
+    esac
+    trace -a -c "ignored [$DAT_CONTEXT]" -- "$CEN_ACTION ${CEN_ACTARR[*]}"
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# helper to check inetd entry: <service>
+# ------------------------------------------------------------------------------
+checkInetd() {
+    local line
+    # search by protocol name
+    txtgrep -i - -s line -y < '/etc/inetd.conf' "$1[[:space:]]*" || return 1
+    [ -n "$line" ] && return 0
+    # search by path
+    txtgrep -i - -s line -y < '/etc/inetd.conf' "*/$1[[:space:]]*" || return 1
+    [ -n "$line" ]                          # return status
+}
+
+# ------------------------------------------------------------------------------
+# helper to check runlevels: <levels>
+# ------------------------------------------------------------------------------
+checkLevels() {
+    local cdir irun ilvl
+    irun=0
+    DAT_LEVELS_RUN=
+    [ "$1" = '-' ] && set -- "${DAT_LEVELS_ALL// /}"
+    while [ "${1:$irun:1}" ] ; do
+        ilvl="${1:$irun:1}"
+        irun=$((irun + 1))
+        cdir="/etc/rc${ilvl}.d"
+        [ -d "$cdir" ] || return 1
+        DAT_LEVELS_RUN+=" $ilvl"
+    done
+    DAT_LEVELS_RUN="${DAT_LEVELS_RUN:1}"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# helper to find services: <array>
+# ------------------------------------------------------------------------------
+findServices() {
+    local indx=0 item levl
+    walk -r /etc/rc?.d
+    while [ -n "${CEN_WALK_FILES[indx]}" ] ; do
+        levl="${CEN_WALK_FILES[indx]}"
+        item="${levl##*/rc}"
+        [ "$levl" = "$item" ] && continue           # invalid data
+        CEN_WALK_FILES[indx++]="${item::1} ${item:4:1} ${item:7}"
+    done
+    txtsort -a "$1" -i CEN_WALK_FILES
+    unset CEN_WALK_FILES
+}
+
+# ------------------------------------------------------------------------------
+# helper to find symlinks in ...wants folders: <array>
+# ------------------------------------------------------------------------------
+findWants() {
+    local levl want list entr=()
+    for levl in 2 3 4 5 ; do
+        while runsysddir -d -i ; do
+            case "$levl" in
+                5)  matchpath -l -a list -- "$CEN_RUNSYSDDIR"/runlevel$levl*.wants/* \
+                                            "$CEN_RUNSYSDDIR"/graphical.target.wants/* ;;
+                4)  matchpath -l -a list -- "$CEN_RUNSYSDDIR"/runlevel$levl*.wants/* \
+                                            "$CEN_RUNSYSDDIR"/multi-user.target.wants/* ;;
+                *)  matchpath -l -a list -- "$CEN_RUNSYSDDIR"/runlevel$levl*.wants/*
+            esac
+            for want in "${list[@]}" ; do
+                want="${want##*/}"
+                filter -i -- "${want%.*}" || continue
+                entr+=("$levl W $want")
+                [ "$levl" = 4 ] && entr+=("5 W $want")  # implied by systemd
+            done
+        done
+    done
+    extsort -a "$1" -i entr -u
+}
+
+# ------------------------------------------------------------------------------
+# helper to create a table: <col>...
+# ------------------------------------------------------------------------------
+makeHeader() {
+    local coll leng over temp
+    over=$((3 * ($# - 1)))
+    leng="${CEN_COLS:-80}" ; [ "$leng" -lt 80 ] && leng=80
+    leng=$(((leng - over) / $#))
+    DAT_COL_WIDTH="$leng"
+    DAT_HEADER=()
+    for coll in "$@" ; do
+        printf -v temp "%-${leng}.${leng}s | " "$coll"
+        DAT_HEADER[0]+="$temp"
+        printf -v temp "%${leng}s + " ''
+        DAT_HEADER[1]+="$temp"
+    done
+    DAT_HEADER[0]="${DAT_HEADER[0]% | }"
+    DAT_HEADER[1]="${DAT_HEADER[1]% + }"
+    DAT_HEADER[1]="${DAT_HEADER[1]// /-}"
+    DAT_HEADER[2]="${DAT_HEADER[1]//-/}"
+    DAT_HEADER[2]="${DAT_HEADER[2]//+/ * |}"
+    DAT_HEADER[2]="${DAT_HEADER[2]:1} *"
+    DAT_HEADER[3]="${DAT_HEADER[1]//+/^}"
+
+    if [ "$CEN_CONSOLE" = 1 ] ; then
+        DAT_HEADER[0]="${DAT_HEADER[0]//|/│}"
+        DAT_HEADER[1]="${DAT_HEADER[1]//-/─}"
+        DAT_HEADER[1]="${DAT_HEADER[1]//+/┼}"
+        DAT_HEADER[2]="${DAT_HEADER[2]//|/│}"
+        DAT_HEADER[3]="${DAT_HEADER[3]//-/─}"
+        DAT_HEADER[3]="${DAT_HEADER[3]//^/┴}"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# helper to create script: -no args-
+# ------------------------------------------------------------------------------
+saveScript() {
+    [ -z "$CEN_OPT_SAVE" ] && return 1
+    if [ -z "$DAT_SAVING" ] ; then
+        message "Saving actions to: $CEN_OPT_SAVE"
+        DAT_SAVING=1
+        echo "[any]" > "$CEN_OPT_SAVE"
+    fi
+    echo "$CEN_ACTION $*" >> "$CEN_OPT_SAVE"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# remove/restore depending on inetd: <service>...
+# ------------------------------------------------------------------------------
+actionInetd() {
+    checkContext || return
+    if [ ! -r '/etc/inetd.conf' ] ; then
+        invoke -w $"Configuration not found" ; return 1
+    fi
+    local serv
+    for serv in "$@" ; do
+        if checkInetd "$serv" ; then
+            workRemove "$serv"
+        else
+            trace -a -c "inetd no entry" -- "$serv"
+            workRestore - - - "$serv"
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# show start/stop entries: -no args-
+# ------------------------------------------------------------------------------
+actionList() {
+    local mode line lsrv serv deco empt last lgnd=$"Legend: "
+    case "$CEN_ACTION" in
+    start)  findServices lsrv ; mode='S' ;;
+    stop)   findServices lsrv ; mode='K' ;;
+    *)      if [ -z "$CEN_OPT_ALL" ] ; then
+                optarg - - -x 'systemd'
+                optarg - - -x 'plymouth'
+            fi
+            findWants    lsrv ; mode='W'
+    esac
+
+    CEN_MODULES['_centauri_bash_svc']=          # HACK might cause trouble
+    console ${CEN_OPT_FANCY:+-m 1 -c 0}         # init console variables
+
+    # --- fill columns ---
+
+    if [ "$mode" = 'W' ] ; then                 # wants ...
+        makeHeader 2 3 4 5
+        DAT_HEADER[0]="${DAT_HEADER[0]/4         /multi-user}"
+        DAT_HEADER[0]="${DAT_HEADER[0]/5        /graphical}"
+        decorate -a lgnd -d ital  'service '
+        decorate -a lgnd -d bold  'target '
+        decorate -a lgnd -d under 'timer' ; lgnd+=' '
+        decorate -a lgnd -d mark  'other'
+    else                                        # start/stop ...
+        if [ -n "$CEN_OPT_ALL" ] ; then
+            makeHeader S 0 1 2 3 4 5 6
+        else
+            makeHeader S 2 3 4 5
+        fi
+        decorate -a lgnd -d bold  'SysV '
+        decorate -a lgnd -d ital  'systemd '
+        decorate -a lgnd -d mark  'masked'
+    fi
+    echo "${DAT_HEADER[0]}"
+    echo "${DAT_HEADER[1]}"
+    decorate -s empt -f "$DAT_COL_WIDTH"
+
+    local -a aS a0 a1 a2 a3 a4 a5 a6
+    local nS=0 n0=0 n1=0 n2=0 n3=0 n4=0 n5=0 n6=0
+
+    for line in "${lsrv[@]}" ; do
+        set -- $line ; [ $# = 3 ] || continue   # split into 3 fields
+        [ "$2" = "$mode" ] || continue
+        serv="$3" ; deco='-'
+        if [ "$mode" = 'W' ] ; then
+            [ "$serv" = "$last" ] && continue
+            last="$serv"
+            case "$serv" in
+            *.service)  deco='ital'  ; serv="${serv%.*}" ;;
+            *.target)   deco='bold'  ; serv="${serv%.*}" ;;
+            *.timer)    deco='under' ; serv="${serv%.*}" ;;
+            *)          deco='mark' ;;
+            esac
+
+        elif [ "/etc/systemd/system/$serv.service" -ef /dev/null -o \
+               "/lib/systemd/system/$serv.service" -ef /dev/null ] ; then
+            [ -n "$CEN_OPT_LEGACY" ] && continue
+            deco='mark'
+        elif [ -e "/etc/systemd/system/$serv.service" -o \
+               -e "/lib/systemd/system/$serv.service" ] ; then
+            [ -n "$CEN_OPT_LEGACY" ] && continue
+            deco='ital'
+        else
+            deco='bold'
+        fi
+
+        decorate -s serv -d "$deco" -f "$DAT_COL_WIDTH" "$serv"
+        case "${1/*rc/}" in
+        S)      aS[$nS]="$serv" ; nS=$((nS + 1)) ;;
+        0)      a0[$n0]="$serv" ; n0=$((n0 + 1)) ;;
+        1)      a1[$n1]="$serv" ; n1=$((n1 + 1)) ;;
+        2)      a2[$n2]="$serv" ; n2=$((n2 + 1)) ;;
+        3)      a3[$n3]="$serv" ; n3=$((n3 + 1)) ;;
+        4)      a4[$n4]="$serv" ; n4=$((n4 + 1)) ;;
+        5)      a5[$n5]="$serv" ; n5=$((n5 + 1)) ;;
+        6)      a6[$n6]="$serv" ; n6=$((n6 + 1)) ;;
+        esac
+    done
+
+    local nmax=$nS nrun=0
+    [ $n2 -gt $nmax ] && nmax=$n2
+    [ $n3 -gt $nmax ] && nmax=$n3
+    [ $n4 -gt $nmax ] && nmax=$n4
+    [ $n5 -gt $nmax ] && nmax=$n5
+
+    # --- output wants table ---
+
+    if [ "$mode" = 'W' ] ; then
+        while [ $nrun -lt $nmax ] ; do
+            line="${DAT_HEADER[2]}"
+            line="${line/\*/${a2[$nrun]:-$empt}}"
+            line="${line/\*/${a3[$nrun]:-$empt}}"
+            line="${line/\*/${a4[$nrun]:-$empt}}"
+            line="${line/\*/${a5[$nrun]:-$empt}}"
+            echo -e "$line"
+            ((nrun += 1))
+        done
+    else
+
+    # --- output service table ---
+
+        if [ -n "$CEN_OPT_ALL" ] ; then
+            [ $n0 -gt $nmax ] && nmax=$n0
+            [ $n1 -gt $nmax ] && nmax=$n1
+            [ $n6 -gt $nmax ] && nmax=$n6
+        fi
+        while [ $nrun -lt $nmax ] ; do
+            line="${DAT_HEADER[2]}"
+            line="${line/\*/${aS[$nrun]:-$empt}}"
+            if [ -n "$CEN_OPT_ALL" ] ; then
+                line="${line/\*/${a0[$nrun]:-$empt}}"
+                line="${line/\*/${a1[$nrun]:-$empt}}"
+                line="${line/\*/${a2[$nrun]:-$empt}}"
+                line="${line/\*/${a3[$nrun]:-$empt}}"
+                line="${line/\*/${a4[$nrun]:-$empt}}"
+                line="${line/\*/${a5[$nrun]:-$empt}}"
+                line="${line/\*/${a6[$nrun]:-$empt}}"
+            else
+                line="${line/\*/${a2[$nrun]:-$empt}}"
+                line="${line/\*/${a3[$nrun]:-$empt}}"
+                line="${line/\*/${a4[$nrun]:-$empt}}"
+                line="${line/\*/${a5[$nrun]:-$empt}}"
+            fi
+            echo -e "$line"
+            ((nrun += 1))
+        done
+    fi
+
+    echo "${DAT_HEADER[3]}"
+    echo -e "$lgnd"
+}
+
+# ------------------------------------------------------------------------------
+# change start order of a service: <priority> <service>...
+# ------------------------------------------------------------------------------
+actionOrder() {
+    checkContext || return
+
+    local order
+    case "$1" in
+        [1-9])      order="0$1" ;;
+        0[1-9])     order="$1"  ;;
+        [1-9][0-9]) order="$1"  ;;
+        *)          fatal "Invalid start order: $1" ;;
+    esac
+
+    saveScript "$*" && return
+    shift
+
+    while [ -n "$1" ] ; do
+        local item cdir
+        for ilvl in 0 1 2 3 4 5 6 ; do
+            cdir="/etc/rc${ilvl}.d"
+            for item in $cdir/S??$1 ; do
+                [ -e "$item" ] || continue
+                [ "$item" = "$cdir/S$order$1" ] && continue
+                if [ -n "$CEN_OPT_DRYRUN" ] ; then
+                    message "[dryrun] New start order: '$order' for $item"
+                else
+                    move -q -s -- "$item" "$cdir/S$order$1"
+                    message "New start order: '$order' for $item"
+                fi
+            done
+        done
+        shift
+    done
+}
+
+# ------------------------------------------------------------------------------
+# load actions from script: <script>
+# ------------------------------------------------------------------------------
+actionScript() {
+    local scmd args file="${1:-$DAT_SCRIPT}" inst
+    [ -r "$file" ] || fatal "Cannot read: $file"
+
+    if [ -z "$CEN_EMBED" -a "$CEN_ACTION" = 'uninst' ] ; then
+        quit "Uninstall needs --embed"
+    fi
+
+    # CEN_ACTION gets overridden
+    [ "$CEN_ACTION" = 'install' -o "$CEN_ACTION" = 'uninst' ] && inst="$CEN_ACTION"
+
+    # clean-up obsolete data ...
+    remove -d /etc/rc?.d/DELETED
+
+    CEN_OPT_SAVE= ; DAT_NO_RELOAD=1
+    while read scmd args ; do
+        # currently we do nothing on uninstall
+        [ "$inst" = 'uninst' ] && break
+
+        case "$scmd" in
+        ''|\#)              continue ;;
+        \[any\])            DAT_CONTEXT='any' ;;
+        \[server\])         DAT_CONTEXT='server' ;;
+        \[workstation\])    DAT_CONTEXT='workstation' ;;
+        *)                  filter -i "$args" || continue
+        esac
+
+        if [ "$CEN_ACTION" = 'cat' ] ; then
+            case "$scmd" in
+            \[*)    ;;
+            *)  printf -v scmd "    %-10s %s" "$scmd" "$args"
+            esac
+            checkContext && decorate -s scmd -d 'bold' -- "$scmd"
+            echo -e "$scmd"
+            continue
+        fi
+
+        case "$scmd" in
+        \[*)    ;;
+        dis*)   invoke "disable" actionWork  2 + $args ;;
+        ena*)   invoke "enable"  actionWork  2 + $args ;;
+        ine*)   invoke "inetd"   actionWork  1 + $args ;;
+        ord*)   invoke "order"   actionWork  2 + $args ;;
+        rem*)   invoke "remove"  actionWork  1 + $args ;;
+        res*)   invoke "restore" actionWork  1 + $args ;;
+        scr*)   invoke "script"  actionWork  0 1 $args ;;
+        *)      error $"Unknown script command:" "$scmd"
+        esac
+    done <"$file"
+    DAT_NO_RELOAD=
+    [ "$DAT_USE_SYSTEMD" = 1 ] && system -e -p systemctl daemon-reload
+
+    # currently we do nothing on uninstall
+    if [ "$inst" ] ; then
+        scmd="$CEN_YESNO"
+        CEN_YESNO='y' ; sysinfo "$inst" ; CEN_YESNO="$scmd"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# check if we have sysv links: [-n] <name>
+# ------------------------------------------------------------------------------
+sysvLinks() {
+    if [ $# = 1 ] ; then
+        matchpath -o -e /etc/rc[2345].d/S??$serv
+        return                                  # return status
+    fi
+
+    if [ "$1" = '-n' ] ; then                   # want no match
+        local serv="$2" ; shift ; shift
+        while [ -n "$1" ] ; do
+            [ -h /etc/rc$1.d/S??$serv ] && return 1
+            shift
+        done
+        return 0
+    else                                        # want matching all
+        local serv="$1" ; shift
+        while [ -n "$1" ] ; do
+            [ -h /etc/rc$1.d/S??$serv ] || return 1
+            shift
+        done
+        return 0
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# call action worker: <action> <arg>...
+# ------------------------------------------------------------------------------
+actionWork() {
+    if [ -z "$DAT_USE_SYSTEMD" ] ; then
+        if [ /sbin/init -ef /lib/systemd/systemd ] ; then
+            DAT_USE_SYSTEMD=1
+        else
+            DAT_USE_SYSTEMD=0
+            warning $"Not using systemd"
+        fi
+        system -c -f update-rc.d
+    fi
+
+    checkContext || return
+    saveScript "$*" && return
+
+    local wrkr
+    if [ "$CEN_ACTION" = 'enable' -o "$CEN_ACTION" = 'disable' ] ; then
+        checkLevels "$1" || fatal $"Invalid run-level selection:" "$1"
+        shift
+    fi
+
+    while [ -n "$1" ] ; do
+        wrkr="worker${CEN_ACTION^}"
+        if [ -x "/etc/init.d/$1" ] ; then
+            isfunction -f -c "$wrkr" "$1"
+        elif runservice -s test "$1" ; then
+            isfunction -f -c "$wrkr" "$1"
+        elif runservice -s masked "$1" ; then
+            isfunction -f -c "$wrkr" "$1"
+        fi
+        shift
+    done
+
+    # this will run systemd's generators to update wants
+    [ "$DAT_USE_SYSTEMD" = 1 -a -z "$DAT_NO_RELOAD" ] && system -e -p systemctl daemon-reload
+}
+
+# remove sysv links: <what> <level>...
+sysvDisable() {
+    local levl link what="$1" ; shift
+    for levl in "$@" ; do
+        set -- /etc/rc$levl.d/S??$what
+        [ -h "$1" ] || continue
+        link="K${1##*/S}"
+        rename -- "$1" "/etc/rc$levl.d/$link"
+    done
+}
+
+workerDisable() {
+    if [ -x "/etc/init.d/$1" ] ; then
+        if sysvLinks -n "$1" $DAT_LEVELS_RUN ; then
+            trace -a -c $"was disabled" "$1 (${DAT_LEVELS_RUN// /})"
+        else
+            message -a -c "disabled" "$1 (${DAT_LEVELS_RUN// /})"
+           # system -e -p update-rc.d -f "$1" disable $DAT_LEVELS_RUN
+            sysvDisable "$1" $DAT_LEVELS_RUN
+        fi
+    fi
+}
+
+workerEnable() {
+    if [ -x "/etc/init.d/$1" ] ; then
+        if sysvLinks "$1" $DAT_LEVELS_RUN ; then
+            trace -a -c $"was enabled" "$1 (${DAT_LEVELS_RUN// /})"
+        else
+            message -a -c "enabled" "$1 (${DAT_LEVELS_RUN// /})"
+            system -e -p update-rc.d -f "$1" enable $DAT_LEVELS_RUN
+        fi
+    fi
+}
+
+workerInetd() {
+    if [ ! -r '/etc/inetd.conf' ] ; then
+        invoke -w $"Configuration not found" ; return
+    fi
+    if checkInetd "$1" ; then
+        workerRemove "$1"
+    else
+        trace -a -c $"inetd no entry" -- "$1"
+        workerRestore "$1"
+    fi
+}
+
+workerMask() {
+    if [ "$DAT_USE_SYSTEMD" = 1 ] ; then
+        if runservice -s masked "$1" ; then
+            trace -a -c $"was masked" "$1"
+        else
+            message -a -c $"masked" -- "$1"
+            system -e -p -- systemctl mask "$1"
+        fi
+    fi
+}
+
+workerRemove() {
+    if [ "$DAT_USE_SYSTEMD" = 1 ] ; then
+        if runservice -s masked "$1" ; then         # always unmask
+            message -a -c "unmasked" -- "$1"
+            system -e -p -- systemctl unmask "$1"
+        fi
+        if system -r -q -- systemctl --quiet is-enabled "$1" ; then
+            system -e -p -- systemctl disable "$1"
+            message -a -c "disabled" "$1"
+        else
+            trace -a -c $"was disabled" "$1"
+        fi
+    fi
+
+    if [ -x "/etc/init.d/$1" ] ; then
+        if ! sysvLinks "$1" ; then
+            trace -a -c $"was removed" "$1"
+        else
+            message -a -c "removed" "$1"
+            #system -e -p update-rc.d "$1" remove
+            sysvDisable "$1" 2 3 4 5
+        fi
+    fi
+}
+
+workerRestore() {
+    if [ "$DAT_USE_SYSTEMD" = 1 ] ; then
+        if runservice -s masked "$1" ; then         # always unmask
+            message -a -c "unmasked" "$1"
+            system -e -p -- systemctl unmask "$1"
+        fi
+    fi
+
+    if [ -x "/etc/init.d/$1" ] ; then
+        message -a -c "restored" "$1"
+        system -e -p update-rc.d "$1" defaults
+    elif [ "$DAT_USE_SYSTEMD" = 1 ] ; then
+        local cens="$CEN_ROOT/systemd/system/$1.service"
+        if [ -e "$cens" ] ; then
+            message -a -c "reenabled" "$1"
+            system -e -p -- systemctl enable "$cens"
+        elif runservice -s systemd ; then
+            message -a -c "reenabled" "$1"
+            system -e -p -- systemctl reenable "$1"
+        fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    -A|--all)
+        optarg 'all'        -      ;;       # a flag
+    -F|--fan*)
+        optarg 'fancy'      -      ;;       # a flag
+    -L|--leg*)
+        optarg 'legacy'     -      ;;       # a flag
+    -S|--sav*)
+        optarg 'save'       -   -t ;;       # any text
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+    "") [ "$CEN_OPT_SAVE" = "-" ] && CEN_OPT_SAVE="$DAT_SCRIPT"
+        ;;
+    start|stop|wan*)
+        invoke    -         actionList   0   ;;
+
+    dis*)
+        invoke -r "disable" actionWork   2 + ;;
+    ena*)
+        invoke -r "enable"  actionWork   2 + ;;
+    ine*)
+        invoke -r "inetd"   actionWork   1 + ;;
+    mas|mask)
+        invoke -r "mask"    actionWork   1 + ;;
+    ord*)
+        invoke -r "order"   -            2 + ;;
+    rem*)
+        invoke -r "remove"  actionWork   1 + ;;
+    res*)
+        invoke -r "restore" actionWork   1 + ;;
+
+    cat*)
+        invoke    "cat"     actionScript 0 1 ;;
+    ins*)
+        invoke -r "install" actionScript 0 1 ;;
+    scr*)
+        invoke -r "script"  -            0 1 ;;
+    ins*|uni*)
+        invoke -r "uninst"  actionScript 0 1 ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -A --all             show all runlevels
+       -F --fancy           force ansi escapes and unicode output
+       -L --legacy          show only services that have no systemd unit file
+       -S --save    <file>  create a change script, do no modifications
+
+       The --include and --exclude options filter on service/unit name for all
+       listings and for action 'script'.
+
+actions:
+       ••• listings •••
+       start                show start entries
+       stop                 show stop entries
+       wants                show systemd wanted-by links
+       ••• configuration •••
+       disable <levels> <service>...
+                            [*] disable service entries (SysV only)
+       enable  <levels> <service>...
+                            [*] enable service entries (SysV only)
+       inetd   <service>... remove/restore depending on '/etc/inetd' config
+       mask    <service>... mask services (systemd only)
+       order   <priority> <service>...
+                            [*] change service start order (SysV only)
+       remove  <service>... disabled services in all runlevel
+       restore <service>... [**] restore services to default
+       ••• other •••
+       cat     [<file>]     cat change script
+       install              run change script followed by library service install
+       script  [<file>]     run change script
+
+       [*]  These commands have no effect for systemd services. Consider using
+            'remove' followed by 'enable' for services that are only started
+            under SysV.
+       [**] Restores SysV services to defaults and unmasks/reenables systemd
+            services.
+
+arguments:
+       <levels>             any runlevels from "[S2345]", for example: **345**. Use
+                            the - character as a shorthand notation for **2345**
+       <service>            a service name
+       <priority>           priority from **0** .. **99**
+       <file>               a file path (default: $DAT_SCRIPT)
+
+A change script can use section tags for conditional exexution of commands
+depending on the configuration in '/etc/default/centaurinetcfg':
+
+       [any]              unconditionally execute
+       [server]           host must be configured as a server
+       [workstation]      host must be configured but not as a server
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

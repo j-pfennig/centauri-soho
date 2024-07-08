@@ -1,0 +1,20 @@
+[Unit]
+Description=Firewall and Masquerade Service
+
+Before=networking.service multi-user.target
+After=local-fs.target centauriswitch.service centauriroute.service
+
+# must not be running as a daemon ...
+ConditionPathExists=!/run/centauri/centaurifilter.run
+
+# do not run with centauriswitch configurations
+ConditionKernelCommandLine=!centauriswitch
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/var/centauri/tools/centaurifilter --daemon=0 start
+ExecStop=/var/centauri/tools/centaurifilter --daemon=0 stop
+
+[Install]
+WantedBy=networking.service

@@ -1,0 +1,461 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL=$"Dr. Jürgen Pfennig (c) 2020-2024; BSD License"
+CEN_TITLE=$"Network mode and GUI selection menu"
+
+PATH+=":${0%/*}" . _centauri_bash_lib  -a -d -t - '0.10:2' 1 || exit 2
+
+# global data
+
+CEN_OPT_HASS=                   # see --hass
+CEN_OPT_KIOSK=                  # see --kiosk
+
+DAT_LOGIN='centaurilogin'
+DAT_TRAP=                       # see trap_handler
+
+# invoke 'menu' action if called via .autologin symlink (see centaurisession)
+if [ "$CEN_NAME" = '.autologin' ] ; then
+    CEN_NAME='centauristartup'
+    # bash --noprofile --norc ; exit
+    if [ $# = 0 ] ; then
+        [ "$USER" = 'kiosk' ] && CEN_OPT_KIOSK=1
+        set -- menu
+    fi
+fi
+
+# Kernel cmd line: centauriswitch=router centaurilogin=local
+#
+#       centaurilogin=local         -> menu
+#       centaurilogin=local         -> centauristartx -S startx -U local
+#       centaurilogin=kiosk         -> centauristartx -S startx -U kiosk
+#       centaurilogin=homeassistant -> (noop, do not run agetty)
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+
+# show menu: <default> <timeout> <current> <result>
+show_menu() {
+    local opts=() entr=() temp coun=0 lins=7 dtag dflt="$1" curr="$3"
+    ((lins += ${#DAT_RUN_MODES[@]}))
+
+    # add item to options array: <tag> <current> <text>
+    ___item() {
+        local itxt="$3"
+        [ "$curr" = "$2" ] && itxt+=$" [current]"
+        [ "$dflt" = "$2" ] && dtag="$1."
+        entr+=("$1." "$itxt")
+    }
+
+    entr+=($"Please select an option..." "$lins" 0 "$lins")
+    for temp in "${DAT_RUN_MODES[@]}" ; do
+        ___item $((++coun)) "${temp%%:*}" "${temp#*:}"
+    done
+
+    [ -n "$dtag" ] && opts+=( --default-item "$dtag" )
+    [ -n "$2" ] && opts+=( --timeout "$2" )
+    opts+=( --menu )
+    if system -r -s dtag -p -z dialog "${opts[@]}" "${entr[@]}" ; then
+        temp="${DAT_RUN_MODES[${dtag%.}-1]%%:*}"
+    elif [ $? = 255 ] ; then
+        temp="$dflt"
+    else
+        temp=
+    fi
+    printf -v "$4" "%s" "$temp"
+    system -q -r -z dialog --clear
+    [ -n "$temp" ]                          # return status
+}
+
+# select display mode: <vnam> <dflt> <curr> <tout>
+show_display() {
+    ___disp() {
+        [ "$1" = 0  -a "$CEN_OPT_KIOSK" = 1 ] && return
+        local temp ; shift
+        printf -v temp "%s:%-12s- %s" "$1" "${1^}" "$2"
+        DAT_RUN_MODES+=("$temp")
+    }
+    DAT_RUN_MODES=()
+    ___disp 0 'desktop'     $"show single-user Desktop"
+    ___disp 1 'kiosk' $"enter Kiosk mode"
+    ___disp 0 'workstation' $"enter Multi-User mode"
+    ___disp 0 'maintenance' $"enter Maintenance mode"
+    ___disp 0 'network'     $"change Network setup"
+    show_menu "$2" "$4" "$3" "$1"
+}
+
+# select network mode: <vnam> <dflt> <curr> <tout>
+show_network() {
+    local defl="$2" auto
+    [ -z "$defl" ] && auto=1
+    ___conf() {
+        if [ "$1" != 'disabled' ] ; then
+            [ -e "/etc/network/interfaces.$1" ] || return
+        fi
+        local temp
+        printf -v temp "%s:%-9s- %s" "$1" "${1^}" "$2"
+        DAT_RUN_MODES+=("$temp")
+        [ -n "$auto" ] && defl="$1"
+    }
+    DAT_RUN_MODES=()
+    ___conf 'disabled' $"no initializations"
+    ___conf 'static'   $"static network config"
+    ___conf 'simple'   $"single interface"
+    ___conf 'smart'    $"multiple interfaces"
+    ___conf 'switch'   $"brigde all interfaces"
+    ___conf 'router'   $"udev dial-up, NAT"
+    ___conf 'repeater' $"wlan extender, NAT"
+    ___conf 'extender' $"wlan extender, arp-proxy"
+    show_menu "$defl" "$4" "$3" "$1"
+}
+
+show_guiwarn() {
+    system -q -r pgrep -x Xorg || return 0
+    show_shutdown $"Stop your graphical sessions?"
+}
+
+show_shutdown() {
+    local mesg="$1" leng=4 opts=('--yesno')
+    if [ "${mesg:--}" = '-' ] ; then
+        mesg=$"Run system shutdown?" ; leng=16
+        opts=('--extra-button' '--extra-label' $"reboot" '--yesno')
+    fi
+    system -r -p -z dialog "${opts[@]}" "$mesg" 5 $((leng + ${#mesg}))
+    local stat=$?
+    system -q -r -z dialog --clear
+    [ -z "$1" ] || return $stat
+    case "$stat" in
+    0)  do_root 'shutdown' ;;
+    3)  do_root 'reboot' ;;
+    esac
+    return 0
+}
+
+trap_handler() {
+    DAT_TRAP=1
+}
+
+# switch console to vt7 if Xorg is running
+do_guichk() {
+    system -q -r pgrep -x Xorg || return 1
+    embed -v -u - -z $xopt  "$CEN_NAME" -- vterm
+    return 0
+}
+
+# kill Xorg and some clients
+do_guikill() {
+    system -q pkill -x xinit
+    system -q pkill -x pulseaudio
+    system -q pkill plasma
+    timer -w 1
+}
+
+# call script action as root: <verb> [<arg>...]
+do_root() {
+    local xopt logf="$TMPDIR/$CEN_NAME.log"
+
+    if [ "$1" = 0 ] ; then
+        shift
+    elif [ "$1" = 1 ] ; then
+        show_guiwarn || return 1
+        shift
+    fi
+
+    case "$1" in
+    reb*)   xopt='-x'
+            system -r -p -z dialog --infobox $"Reboot in progress..." 3 60 ;;
+    shu*)   xopt='-x'
+            system -r -p -z dialog --infobox $"Shutdown in progress..." 3 60 ;;
+    swi*)   system -r -p -z dialog --infobox $"Setting network mode: ""$2" 3 60 ;;
+    esac
+
+    embed -v -u - -z $xopt  "$CEN_NAME" -- "$@" 2>"$logf" 1>&2 && return 0
+    system -r -p -z dialog --yesno $"Something went wrong. Show error output?" 5 60 || return 1
+    system -r -p -z dialog --textbox "$logf" "${LINES:-24}" "${COLUMNS:-80}"
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# Enter desktop/kisk mode: [<user>]
+# ------------------------------------------------------------------------------
+actionDesktop() {
+    # if we are in graphical mode ...
+    system -e systemctl stop display-manager
+    system -e systemctl stop graphical.target
+    do_guikill
+
+    # must not use isolate here
+    system -e systemctl start multi-user.target || quit -s 2
+
+    # start x-server
+    if [ "$CEN_ACTION" = 'kiosk' ] ; then
+        embed -v -u - -x -- centauristartx -B -S startx -C 7 -U "${1:-kiosk}"
+    else
+        embed -v -u - -x -- centauristartx -B -S startx -C 7 -U "${1:-local}"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Install/uninstall: -no args-
+# ------------------------------------------------------------------------------
+actionInstall() {
+    if [ "$CEN_ACTION" = 'install' ] ; then
+        if [ ! "$CEN_TOOLS/$CEN_NAME" -ef ~local/'.autologin' ] && [ -d ~local ] ; then
+            symlink -n -- "$CEN_TOOLS/$CEN_NAME" ~local/'.autologin'
+     #       system -e -p -- systemctl enable  "$CEN_ROOT/systemd/system/centauriautologin@local.service"
+        fi
+        if [ ! "$CEN_TOOLS/$CEN_NAME" -ef ~kiosk/'.autologin' ] && [ -d ~kiosk ] ; then
+            symlink -n -- "$CEN_TOOLS/$CEN_NAME" ~kiosk/'.autologin'
+     #       system -e -p -- systemctl enable  "$CEN_ROOT/systemd/system/centauriautologin@kiosk.service"
+        fi
+        [ -d ~homeassistant ] &&
+                         symlink -n -- "$CEN_TOOLS/$CEN_NAME" ~homeassistant/'.autologin'
+    else
+        remove ~local/'.autologin' ~kiosk/'.autologin' ~homeassistant/'.autologin'
+    #    system -q -- systemctl disable  "$CEN_ROOT/systemd/system/centauriautologin@local.service"
+    #    system -q -- systemctl disable  "$CEN_ROOT/systemd/system/centauriautologin@kiosk.service"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Enter maintenance mode
+# ------------------------------------------------------------------------------
+actionMaintenance() {
+    do_guikill
+    embed -v centauriswitch enter disabled
+    system -e systemctl start centauri-public.target
+    system -e systemctl isolate runlevel2 || quit -s 2
+    echo
+    echo
+    echo $"Enter 'root' password to login, logout to return to menu..."
+    echo
+    system -e -x -- login root
+}
+
+# ------------------------------------------------------------------------------
+# Show menu
+# ------------------------------------------------------------------------------
+actionMenu() {
+    if [ -n "$CEN_OPT_HASS" ] ; then
+        system -u - -e -- systemctl --no-block start centaurihass
+        quit "centaurilogin=homeassistant was executed"
+    fi
+    local mnet mgui cnet cgui tout sesn temp
+
+    system -c -f dialog                 # cannot run without it
+    trap trap_handler 1 2 3             # not 15 (SIGTERM) !!
+    do_root vterm 0                     # run setups
+
+    # wait up to 15s for centauriswitch
+    for temp in 1 2 2 3 3 3 - ; do
+        [ "$CEN_OPT_KIOSK" = 1 ] && break
+        runservice status 'centauriswitch'
+        case $? in
+        0)  break ;;                # running
+        4)                          # not started, ignore in runlevel2 ...
+            runservice status 'runlevel2' && break ;;
+        *)  temp='-'
+        esac
+        if [ "$temp" = '-' ] ; then
+            show_shutdown $"Service 'centauriswitch' not running. Continue anyhow?"
+            [ $? = 0 ] || do_root shutdown ; break
+        fi
+        [ "$temp" = 1 ] && message "waiting for service 'centauriswitch' ..."
+        timer -w "$temp"
+    done
+
+    # handle pending issue
+    embed centaurisysinit issue test -
+
+    [ "$CEN_OPT_KIOSK" = 0 ] && cgui='desktop'
+    [ "$CEN_OPT_KIOSK" = 1 ] && cgui='kiosk'
+    [ -n "$cgui" ] && tout=5
+
+    while : ; do
+        DAT_TRAP=
+
+        # select network mode
+
+        if [ "$cgui" != 'kiosk' ] ; then
+            nettemp 'centauriswitch' && . "$_nettemp"
+            cnet="${DAT_SWITCH_CONF:-$DAT_SWITCH_MODE}"
+            if ! show_network mnet "${cnet%disable*}" "$cnet" "$tout" ; then
+                tout=
+                show_shutdown ; continue
+            fi
+            if [ "$cnet" != "$mnet" ] ; then
+                cnet="$mnet"
+                [ "$mnet" = 'extender' ] && mnet='switch:extender'
+                [ "$mnet" = 'repeater' ] && mnet='router:repeater'
+                [ "$mnet" = 'disabled' ] || do_root switch "$mnet"
+            fi
+        fi
+
+        # select gui mode
+
+        while : ; do
+            [ -n "$DAT_TRAP" ] && break     # back to network dialog
+            [ "$CEN_OPT_KIOSK" = 1 ] && tout=5
+            if ! show_display mgui "${cgui:-desktop}" "$cgui" $tout ; then
+                tout=
+                show_shutdown ; continue
+            fi
+            tout=
+
+            case "$mgui" in
+                desk*|kiosk|work*)
+                        [ "$cgui" = "$mgui" ] && do_guichk && continue
+                        do_root $sesn "$mgui" || continue
+                        sesn=1 ; cgui="$mgui" ;;
+                main*)  do_root $sesn maintenance || continue
+                        sesn= ; cgui="$mgui" ;;
+                *)      break ;;
+            esac
+        done
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Switch network mode: <mode>
+# ------------------------------------------------------------------------------
+actionShutdown() {
+    do_guikill
+    system -e -- systemctl isolate runlevel2.target
+    local verb='poweroff'
+    [ "$CEN_ACTION" = 'reboot' ] && verb='reboot'
+    system -e -- systemctl --no-wall "$verb"
+    quit
+}
+
+# ------------------------------------------------------------------------------
+# Switch network mode: <mode>
+# ------------------------------------------------------------------------------
+actionSwitch() {
+    # (re)enable ipv6
+    nettemp 'centauriswitch' && . "$_nettemp"
+    [ "$DAT_SWITCH_MODE" != 'router' ] && netoption 'ipv6' && nettool -6 on
+    # change mode
+    embed -v centauriswitch --syslog=1 enter "$1" || quit -s 2
+}
+
+# ------------------------------------------------------------------------------
+# Switch virtual terminal: [<tnum>]
+# ------------------------------------------------------------------------------
+actionVterm() {
+    case "$1" in
+    ''|[1-9]|1[0-9])
+        system -e -- chvt "${1:-7}" ; return
+        ;;
+    0)
+        system -e -p -- 'setupcon'
+        system -e -p -- 'timedatectl' set-ntp true ; return
+        ;;
+    esac
+    invoke -e "invalid argument:" "$1"
+}
+
+# ------------------------------------------------------------------------------
+# Enter workstation mode
+# ------------------------------------------------------------------------------
+actionWorkstation() {
+    do_guikill
+    system -e systemctl start graphical.target || quit -s 2
+}
+
+# ------------------------------------------------------------------------------
+# implement option parsing: <option> <argument>
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    '')     if [ -z "$CEN_OPT_KIOSK" ] ; then   # use kernel command line
+                local wrds word
+                read -r -a wrds </proc/cmdline
+                listsearch -c -m word -u -i wrds -- 'centaurilogin'
+                case "$word" in
+                *=local)    CEN_OPT_KIOSK=0 ;;
+                *=kiosk)    CEN_OPT_KIOSK=1 ;;
+                *=home*)    CEN_OPT_HASS=1 ;;
+                esac
+            fi ;;
+
+    -H|--has*)
+        optarg 'hass'       - -f ;;     # flag
+    -K|--kio*)
+        optarg 'kiosk'      - -o ;;     # ternary
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    men|menu)
+        invoke 'menu'           -           0   ;;
+
+    des*)
+        invoke -r 'desktop'     -           0 1 ;;
+    kio*)
+        invoke -r 'kiosk'    actionDesktop  0 1 ;;
+    mai*)
+        invoke -r 'maintenance' -           0   ;;
+    wor*)
+        invoke -r 'workstation' -           0   ;;
+
+    reb*)
+        invoke -r 'reboot'   actionShutdown 0   ;;
+    reb*|shu*)
+        invoke -r 'shutdown'    -           0   ;;
+    swi*)
+        invoke -r 'switch'      -           1   ;;
+    vte*)
+        invoke -r 'vterm'       -           0 1 ;;
+
+    ins*)
+        invoke -r 'install'     -           0   ;;
+    uni*)
+        invoke -r 'uninstall' actionInstall 0   ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+       -o - \
+       -o '-K --kiosk   <valu>  '$"force kiosk mode (0=off  1=on  2=auto)" \
+
+    usageset \
+       -a 'menu                 '$"show network mode and gui selection menu; implied" \
+       -a '                     '$"when '$CEN_NAME' is started as '.autologin'"\
+       -a '' \
+       -a '••• '$"actions that need root rights"' •••' \
+       -a '' \
+       -a 'desktop              '$"start single-user gui session" \
+       -a 'install              '$"enable autologin, link .autologin for kiosk/local" \
+       -a 'kiosk                '$"start kiosk-mode gui" \
+       -a 'maintenance          '$"switch to maintenance mode" \
+       -a 'reboot               '$"reboot the system" \
+       -a 'shutdown             '$"poweroff the system" \
+       -a 'switch       <mode>  '$"run 'centauriswitch' to change network mode" \
+       -a 'uninstall            '$"disable autologin, remove .autologin symlinks" \
+       -a 'vterm      [<tnum>]  '$"activate virtual console" \
+
+       usageset \
+       -l $"Remarks" \
+       -t $"This tool provides a 2-level boot menu (network mode and gui mode) when started" \
+       -t $"with action \"menu\" or if symlinked to \"~local/.autologin\", see action \"install\"." \
+       -t $"This can be combined with autologin, see service \"centauriautologin\" and kernel" \
+       -t $"boot parameters like \"... centauriswitch=router centaurilogin=local ...\"." \
+
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

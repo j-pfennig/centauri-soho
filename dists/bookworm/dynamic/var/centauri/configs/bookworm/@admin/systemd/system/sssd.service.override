@@ -1,0 +1,6 @@
+[Unit]
+ConditionPathExists=/etc/krb5.keytab
+
+# do not run in runlevel2
+ConditionKernelCommandLine=!centauriswitch=router:repeater
+ConditionKernelCommandLine=!centauriswitch=switch:extender

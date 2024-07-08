@@ -1,0 +1,10 @@
+# comment out SHUTDOWN_TIME to disable automatic shutdown.
+
+# time argument for shutdown:
+#SHUTDOWN_TIME="+10"
+
+# no autoshutdown after HH:MM (leave empty to disable)
+SHUTDOWN_DAYTIME="06:30"
+
+# message argument for shutdown:
+SHUTDOWN_MESSAGE="Automatic shutdown via centauricron. Use 'sudo shutdown -c' to cancel."

@@ -1,0 +1,1947 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Dr. Jürgen Pfennig (c) 2020-2024 ; all rights reserved"
+CEN_TITLE="Automounter tool and service for local and network filesystems"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -v - '0.14:2' || exit 2
+
+CEN_SVC_AFTER='networking.service network-online.target remote-fs.target'
+CEN_SVC_WANTS='avahi-daemon.service'    # service dependency
+CEN_SVC_WANTED_BY='runlevel3.target multi-user.target'
+CEN_SVC_AFTER+="$CEN_SVC_WANTS"
+
+# things that can be in config file
+
+declare -A DAT_HOSTS DAT_DNSMAP
+declare -A DAT_MOUNT_NFS DAT_MOUNT_SAMBA
+declare -A DAT_DEVICES DAT_VOLUMES DAT_SYMLINKS
+declare -A DAT_SPINDOWN; DAT_SPINDOWN['/dev/sd?']=900
+
+DAT_FILTER=                             # host filter reg-expression
+
+DAT_PING_TIME=900                       # host ping interval
+DAT_PING_SHORT=10                       # shorter interval after avahi event
+DAT_SLEEP_TIME=3                        # main loop poll time
+DAT_IDLE_TIMEOUT=600                    # systemd idle umount time
+DAT_UNMOUNT_TIME=                       # forced unmount time
+
+DAT_FOLDER_TREE='/network'              # network tree
+DAT_FOLDER_EXPORT=                      # export folder
+DAT_FOLDER_IMPORT=                      # import folder
+DAT_FOLDER_LOCAL='/mnt'                 # local mounts
+
+DAT_FOLDER_HOME='home'                  # home folder (no /)
+DAT_FOLDER_SAMBA=                       # samba home folders
+
+# external programs
+
+DAT_AVAHI_BROWSE='avahi-browse -v -k -p -a'     # avahi browser
+DAT_AVAHI_LIST='avahi-browse -v -k -p -a -t'    # avahi list (oneshot)
+
+DAT_DISCO_BROWSE=                       # ws-discovery
+
+DAT_ALIAS=                              # change host name
+
+# get samba servers
+    # smb1 got disabled: DAT_SAMBA_TREE"smbtree --option=\"client min protocol=NT1\" -S -N"
+DAT_SAMBA_TREE='true'
+DAT_SAMBA_SHOW='smbclient -g -N -L'     # get samba shares
+DAT_NFS_SHOW='showmount --exports'      # get nfs exports
+DAT_MOUNTER='systemd-mount'             # automounter
+
+# things that should not be in config file
+
+declare -A DAT_FLGMAP                   # Volume HAS_VOLUMES flags
+declare -A DAT_OPTMAP                   # set from do_options
+declare -A DAT_IOSTAT                   # used by do_spindown
+
+# optional information obtained from centauriname
+
+DAT_MASTER=                             # [0] server nick name
+                                        # [1] primary server
+                                        # [2] secondary server
+                                        # [3] current server (master)
+# other data
+
+DAT_FSTAB_LIST=                         # mountpoints in /etc/fstab
+DAT_POLL_LIST=()                        # background poll process pids
+DAT_POLL_BATCH=8                        # limit background poll processes
+DAT_POLL_DELAY=2                        # extra poll delay for batch
+DAT_TEMP_FILE=                          # temp file (prefix)
+DAT_HOST_CNT=                           # active hosts
+DAT_REMOVE_LIST=                        # delay folder removal
+DAT_OPTIONS=                            # set from do_options
+DAT_HAVE_CONFIG=                        # set by do_config
+DAT_SLEEP_SPINDOWN=600                  # spindown check interval (0 to disable)
+DAT_DEBUG=:                             # debug output on/off
+
+DAT_STATE=
+
+# ------------------------------------------------------------------------------
+# Read config and check if required programs are installed
+# ------------------------------------------------------------------------------
+do_tools() {
+    [ "$DAT_HAVE_CONFIG" = '2' ] && return
+    do_config
+    DAT_HAVE_CONFIG=2
+    do_spindown check
+
+    # check required tools
+    local item list=(pkill ping systemctl umount "$DAT_MOUNTER")
+    for item in "$DAT_AVAHI_BROWSE" "$DAT_AVAHI_LIST" "$DAT_NFS_SHOW" \
+                "$DAT_SAMBA_SHOW" "$DAT_SAMBA_TREE" ; do
+        [ "${item:-true}" = 'true' ] && continue
+        list+=("${item%% *}")
+    done
+    do_timeout check && list+=('touch')
+    system -c -f "${list[@]}"
+
+    # create temporary folder
+    folder -s DAT_TEMP_FILE -b 'transient' -m -f "$CEN_NAME"
+}
+
+# ------------------------------------------------------------------------------
+# implements disk spindown: [check|<wait>]
+# ------------------------------------------------------------------------------
+do_spindown() {
+    local item fuse tmax arg1="$1" mesg="$DAT_DEBUG"
+    [ "$CEN_ACTION" = 'spindown' ] && mesg='message'
+
+    ___spindown() {
+        local dlst=() dsta=() driv idev ista wxxx
+        for driv in "$@" ; do
+            [ -b "$driv" ] || continue
+            idev="${driv##*/}"
+            [ -r "/sys/block/$idev/queue/rotational" ] || continue
+            [ "$(</sys/block/$idev/queue/rotational)" = '0' ] && continue
+            dlst+=("$idev")
+            dsta+=("$idev $(</sys/block/$idev/stat)")
+        done
+
+        # any drive in list? Wait to measure activity
+        if [ -z "$dlst" ] ; then
+            $mesg -a "Drive(s) to spin down: -none-" ; return
+        fi
+        $mesg -a "Drive(s) to spin down: ${dlst[@]}"
+
+        # special wait loop to check for service stop
+        wxxx="${arg1:-20}" ; dlst=()
+        while [ "$wxxx" -gt 0 ] ; do                        # interruptible sleep...
+            [ "$CEN_SVC_RUNNING" = 'stopped' ] && return    # service terminated
+            sleep "$DAT_SLEEP_TIME" ; ((wxxx-=DAT_SLEEP_TIME))
+        done
+
+        # check for activity, spin down
+        for driv in "${dsta[@]}" ; do
+            idev="${driv%% *}" ; ista="$(</sys/block/$idev/stat)"
+            if [ "$driv" != "$idev $ista" ] ; then
+                DAT_IOSTAT["$idev"]=
+                $mesg -a -- "- Drive is active    : $idev" ; continue
+            fi
+            if [ "${DAT_IOSTAT["$idev"]}" = "$ista" ] ; then
+                DAT_IOSTAT["$idev"]=
+                $mesg -a -- "- Drive not active   : $idev" ; continue
+            fi
+            system -n -r -e -p -s wxxx -- hdparm -C "/dev/$idev"
+            if [ "${wxxx##* }" = "standby" ] ; then
+                $mesg -a -- "- Drive not spinning : $idev" ; continue
+            fi
+            sysrun -q -- hdparm -y "/dev/$idev" && dlst+=("$idev")
+            DAT_IOSTAT["$idev"]="$(</sys/block/$idev/stat)"
+        done
+        [ -n "$dlst" ] && message -a "Sent spindown command:" "${dlst[*]}"
+    }
+
+    for item in "${!DAT_SPINDOWN[@]}" ; do
+        tmax="${DAT_SPINDOWN["$item"]:-0}"
+        [ "$tmax" -gt 0 ] || continue
+        fuse=1
+        if [ "$arg1" = 'check' ] ; then
+            system -r -c hdparm && break
+            error "Spindown function disabled, 'hdparm' is not installed"
+            fuse= ; break
+        fi
+        ___spindown $item
+    done
+    [ -z "$fuse" ] && DAT_SLEEP_SPINDOWN=0          # not configured, disable
+}
+
+# ------------------------------------------------------------------------------
+# implements idle unmount: check|<idle>|umount|unmount [<path>]
+# ------------------------------------------------------------------------------
+# Mount to be handled by this code are (un)registered from do_systemd(). The
+# implementation uses temporary 'flag' files and filesystem timestamps.
+# ------------------------------------------------------------------------------
+do_timeout() {
+    local fflg fref fmnt
+
+    if [ "$1" = 'check' ] ; then
+        [ "${DAT_UNMOUNT_TIME:-0}" -gt 0 ] && return 0
+        $DAT_DEBUG "Unmount is disabled"
+        DAT_UNMOUNT_TIME= ; return 1
+
+    # --- (un)register flag file ---
+
+    elif [ "$1" = 'mount' -o  "$1" = 'unmount' ] ; then
+        [ -n "$DAT_UNMOUNT_TIME" ] || return
+        fflg="${2##*/}"
+        [ -n "$3" ] && fflg="${HOSTNAME}_$fflg"
+        fflg="$DAT_TEMP_FILE/$fflg.timeout"
+        if [ "$1" = 'mount' ] ; then
+            fref="$2"
+            create -t -v fref "$fflg"
+        else
+            remove -q "$fflg"
+        fi
+
+    # --- handle unmount ---
+
+    else
+        # update reference timestamp
+        [ -n "$DAT_UNMOUNT_TIME" ] || return
+        fref="$DAT_TEMP_FILE/_.timeout"
+        if ! system -n -e -p -r -- touch --date="-$DAT_UNMOUNT_TIME sec" "$fref"  ; then
+            error "Timestamp creation failed, unmount disabled"
+            DAT_UNMOUNT_TIME=0 ; return
+        fi
+
+        # loop over all timeout flags, update Timestamps
+        local -A tmap
+        for fflg in "$DAT_TEMP_FILE"/*.timeout ; do
+            [ "$fflg" = "$fref" -o "$fflg" -nt "$fref" ] && continue
+            if ! system -n -e -p -r -- touch "$fflg" ; then
+                error "Timestamp update failed, removed unmount:" "$fflg"
+                remove -q "$fflg"
+            elif read -r fmnt < "$fflg" ; then          # unmount candidate
+                tmap["$fmnt"]="${fflg##*/}"
+            else
+                error "Timestamp check failed, removed unmount:" "$fflg"
+                remove -q "$fflg"
+            fi
+        done
+        [ "${#tmap[@]}" -le 0 ] && return 0             # no candidate found
+
+        # check unmount candidates against kernel mount table
+        local umnt=() styp sdmy
+        while read -r sdmy fflg styp sdmy ; do
+            [ "$styp" = 'autofs' ] && continue          # ignore these!
+            printf -v fflg "${fflg//%/$'\n'}"           # handle escapes, protect %
+            fflg="${fflg//$'\n'/%}"                     # restore %
+            [ -n "${tmap["$fflg"]}" ] || continue       # not a candidate
+            umnt+=("$fflg")
+            $DAT_DEBUG -a -c "Unmount" -- "${tmap["$fflg"]%.*}"
+        done < '/proc/mounts'
+
+        # finally run umount
+        [ "${#umnt[@]}" -le 0 ] && return 0             # no unmount found
+        message -a -p "%-13s: %s" "Unmount count" "${#umnt[@]}"
+        sysrun -q umount -- "${umnt[@]}"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Execute a command string after eval: <opts>... -- <cmd>...
+# ------------------------------------------------------------------------------
+# This is used to execute configurated commands. Eval is needed to handle quotes
+# in command strings. The <opts> args are passed to 'system -n' together with an
+# array that contains the eval result.
+# ------------------------------------------------------------------------------
+do_command() {
+    local item linp=()
+    while [ $# -gt 0 -a "$item" != '--' ] ; do          # copy until '--'
+        item="$1" ; shift
+        linp+=("$item")
+    done
+    eval "linp+=($*)"                                   # handle quoting
+    system -n "${linp[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# read or write config file: -no args-
+# ------------------------------------------------------------------------------
+do_config() {
+    [ -n "$DAT_HAVE_CONFIG" ] && return
+    DAT_HAVE_CONFIG=1
+
+    # create import/export folders
+    folder "$CEN_ROOT/persistent" || CEN_FOLDER="/var/lib/$CEN_NAME"
+    resolve -c -f "$CEN_FOLDER"                         # systemd uses absolute paths
+    DAT_FOLDER_IMPORT="$CEN_RESOLVE/import" ; attributes -d -k -m 775 "$DAT_FOLDER_IMPORT"
+    DAT_FOLDER_EXPORT="$CEN_RESOLVE/export" ; attributes -d -k -m 775 "$DAT_FOLDER_EXPORT"
+
+    # Get the tree folder from centauri-bash-lib (if installed)
+    if [ -z "$CEN_PACKAGE" ] ; then
+        shortpath 'network' ; [ -n "$CEN_SHORTPATH" ] && DAT_FOLDER_TREE="$CEN_SHORTPATH"
+        unset CEN_SHORTPATH
+    fi
+
+    ___replace() {
+        [ "$CEN_ACTION" = "config" ] && message "# $2"
+        local -n cmap="$1"
+        local item vali fldr base name mark=$'\a'
+        for item in "${!cmap[@]}" ; do
+            vali="${cmap["$item"]}"
+            if [ "$1" = 'DAT_HOSTS' ] ; then
+                [ "$vali" != 'f' -a "$vali" != 'i' ] &&
+                    error "DAT_HOSTS[$item] can only be 'i' or 'f' (got '$vali')"
+            elif [ "$1" = 'DAT_DNSMAP' ] ; then
+                :
+            elif [ "$vali" != "${vali/\%/}" ] ; then
+                fldr="${item##*/}" ; name="${item#*_}"
+                base="${item%/*}" ; base="${base#/}"
+                vali="${vali//%%/$mark}"                # protect %%
+                vali="${vali//%k/$item}"
+                vali="${vali//%b/$base}"
+                vali="${vali//%f/$fldr}"
+                vali="${vali//%l/${fldr,,}}"
+                vali="${vali//%n/$name}"
+                vali="${vali//$mark/%%}"                # restore %%
+                cmap["$item"]="$vali"
+            fi
+            [ "$CEN_ACTION" = "config" ] && message -a "$1[$item]=\"$vali\""
+        done
+        [ "$CEN_ACTION" = "config" ] && message -a " "
+    }
+
+    # get fstab mountpoints
+    DAT_FSTAB_LIST=()
+    if [ -r "/etc/fstab" ] ; then
+        local mdev mmnt mxxx
+        while read mdev mmnt mxxx ; do
+            [ -z "$mdev" -o "${mdev::1}" = "#" ] && continue
+            [ "${mmnt::1}" = '/' -a "${mmnt::5}" != "/dev/" ] && DAT_FSTAB_LIST+=("$mmnt")
+        done < "/etc/fstab"
+    fi
+
+    # read config file
+    local cdir
+    if ! folder -s cdir -b 'default' ; then
+        warning "No configuration folder:" "$cdir" ; return
+    fi
+
+    if [ -e "$cdir/$CEN_NAME" ] ; then
+        $DAT_DEBUG -a -c "Config file" -- "$cdir/$CEN_NAME  [existing]"
+        . "$cdir/$CEN_NAME"
+
+        # variable replacement
+        ___replace DAT_HOSTS        "Ignored/forced hosts"
+        ___replace DAT_DNSMAP       "DNS mappings for NetBIOS names"
+
+        ___replace DAT_DEVICES      "Devices"
+        ___replace DAT_VOLUMES      "Volumes"
+        ___replace DAT_SYMLINKS     "Symlinks"
+        ___replace DAT_MOUNT_NFS    "NFS network mounts"
+        ___replace DAT_MOUNT_SAMBA  "SAMBA network mounts"
+
+        ___replace DAT_SPINDOWN     "Rotational disk idle spindown"
+
+        # disable samba or NFS
+        if [ "${DAT_AVAHI_BROWSE:-false}" = 'false' -o "${DAT_AVAHI_LIST:-false}" = 'false' ] ; then
+            DAT_AVAHI_BROWSE=true ; DAT_AVAHI_LIST=true
+        fi
+        if [ "${DAT_SAMBA_SHOW:-false}" = 'false' -o "${DAT_SAMBA_TREE:-false}" = 'false' ] ; then
+            DAT_SAMBA_SHOW=true ; DAT_SAMBA_TREE=true
+        fi
+        [ "${DAT_NFS_SHOW:-false}" = 'false' ] && DAT_NFS_SHOW=true
+        return
+    fi
+
+    message -a -c "Config file" -- "$cdir/$CEN_NAME  [creating]"
+    create -c -- "$cdir/$CEN_NAME" 660 <<!EOF
+# configuration file for $CEN_NAME
+
+###################################
+### Variables and Substitutions ###
+###################################
+
+# The configurable (BASH) variables all start with prefix 'DAT_', other variables
+# should not be set. Not all shell defined variables are valid inside a services.
+# Known to be safe:
+
+# \${HOSTNAME}      the host's name
+
+# Substitutions can be used for <values> of  maps (things like xxxx[<key>]=<value>)
+#   %k     the complete map-key
+#   %f     folder (leading path elements trimmed)
+#   %l     lowercase folder
+#   %b     folder base (last path element trimmed, leading '/' removed)
+#   %n     name (leading '*_' sequence trimmed)
+#   %%     a single % character
+
+# This file gets sourced and must follow BASH syntax rules. It is possible to put
+# BASH code inside, for example to reimplement external tools via their DAT_xxx
+# variables.
+
+###########################################
+### Naming of hosts, shares and exports ###
+###########################################
+
+# Host names are either NetBIOS or DNS both case insensitive. Traditionally
+# linux host names had to be lowercase a..z or -. This tool internally uses upper
+# case for NetBIOS names (must contain at least one letter) or lower case for
+# DNS names. NetBIOS implies a SAMBA shared (although NetBIOS is only a naming
+# convention, not the protocol in use). Otherwise DNS implies NFS. This is hard
+# coded and cannot be changed.
+
+# Valid share Names (SAMBA): \\\\<host>\\{<prefix>}<name>
+#                            //<host>/{<prefix>}<name>
+# Valid exports Names (NFS): <host>:/{<prefix>}<name>
+
+# <host> can be of any case and gets converted to upper/lower case as needed.
+# The backslash characters are converted to slashes. <prefix> can be a lower
+# case host name followed by a separator (default: _). If the prefix does not
+# matches the (remote) host name, the prefix is generated. Prefixed names are
+# used internally, in the network neighborhood view and for auto generated
+# symlinks the prefix is stripped. Under NFS <name> cannot contain spaces.
+
+###############
+### Folders ###
+###############
+
+# Folder to contain a dynamic network tree (empty to disable). Each active host
+# creates a subfolder. From the subfolders links point to a DAT_FOLDER_IMPORT
+# subfolder where the actual mounts are made. The DAT_FOLDER_IMPORT subfolder
+# is also symlinked to '.mount'.
+
+#DAT_FOLDER_TREE="$DAT_FOLDER_TREE"
+
+# Folder for local mounts (empty to disable). Automatically populated with symlinks
+# to mounted local volumes (if not mounted here).
+
+#DAT_FOLDER_LOCAL="$DAT_FOLDER_LOCAL"
+
+# Folder for network exports (empty to disable). This folder is used to populate
+# the local host's folder in the network tree. Also the .mount link points to this
+# location. Symlinks to exports are automatically created for local volumes that
+# use the EXPORT option.
+
+#DAT_FOLDER_EXPORT="$DAT_FOLDER_EXPORT"
+
+# Folder for network imports (empty to disable). This folders will contain a subfolder
+# for each active host found in the network. Imported volumes will by mounted in these
+# subfolders.
+
+#DAT_FOLDER_IMPORT="$DAT_FOLDER_IMPORT"
+
+# Special handling for network home export (emtpy to disable). The master's home
+# export will be symlinked to DAT_FOLDER_TREE instead of the server folder. If
+# DAT_FOLDER_SAMBA is defined, that folder will be symlinked to DAT_FOLDER_HOME.
+
+#DAT_FOLDER_HOME="$DAT_FOLDER_HOME"
+
+# Samba user home folder mount (empty to disable). This folder overrides the
+# location used by DAT_FOLDER_HOME. If should not be set if home folders are
+# exported via NFS. With SAMBA the path could be: "$DAT_FOLDER_TREE/.samba".
+
+#DAT_FOLDER_SAMBA=
+
+########################
+### Domain Server(s) ###
+########################
+
+# This data is optional and is mainly used to create symlinks for a server nick name
+# and for a special handling of server-exported home folders.  If a tool 'centaurinames'
+# is found, it will override this data:
+
+# DAT_MASTER[0]="my-server"           # server nick name
+# DAT_MASTER[1]="my-server-1"         # [1] primary server
+# DAT_MASTER[2]="my-server-2"         # [2] secondary server (if any)
+# DAT_MASTER[3]="my-server-1"         # [3] currently active server (master)
+
+####################
+### Local mounts ###
+####################
+
+# The following mount definitions allow pseudo-mount-options that are used internally
+# and are not passed to the mount programm (local mounts only):
+#
+# HAS_VOLUMES (devices only)    search this device for volumes.
+# MOUNT_BASE="<path">           overrides DAT_FOLDER_IMPORT
+# MOUNT_NAME="<name>"           mount device or volume as <name>.
+# MOUNT_POINT="<path>"          mount at <path> instead of the default mount point,
+#                               a symlink from default to <path> will be made.
+# IS_STATIC                     do a static mount (no automount).
+# NO_DEFAULTS                   don't add default mount options (see DAT_OPT_DEFAULT).
+# NO_FSCK                       don't run fsck on local mounts.
+# NO_IDLE                       don't use DAT_IDLE_TIMEOUT.
+# NO_UNMOUNT                    don't unmount when $CEN_NAME service stops.
+# EXPORT                        this volumes is symlinked to DAT_FOLDER_EXPORT
+
+# Default options for local mounts (not used for NFS/SAMBA):
+
+#DAT_OPT_DEFAULT="rw,nofail,noatime,defaults"
+
+# Devices are typically disk partitions and get mounted first. The device definitions
+# can be prefixed with label= uuid= partuid= and so on. If no prefix is given label=
+# is used. A check is made against /dev/disk/by-<prefix>/<key>.  If no device is found,
+# the entry is ignored.
+
+#DAT_DEVICES["\${HOSTNAME}_vol0"]="NO_FSCK,HAS_VOLUMES,type=btrfs,subvol=/"
+#DAT_DEVICES["\${HOSTNAME}_vol1"]="NO_FSCK,HAS_VOLUMES,type=btrfs,subvol=/"
+#DAT_DEVICES["\${HOSTNAME}_mirror"]="type=btrfs,subvol=/"
+
+#DAT_DEVICES["\${HOSTNAME}_boot"]=""
+#DAT_DEVICES["\${HOSTNAME}_backup"]=""
+#DAT_DEVICES["\${HOSTNAME}_vfat"]="MOUNT_NAME=scratch,type=vfat"
+#DAT_DEVICES["\${HOSTNAME}_windows"]="NO_DEFAULTS,type=ntfs-3g,gid=wheel,umask=007,nls=utf8"
+
+# Volumes (which might be btrfs subvolumes) are mounted after devices. Relative paths are
+# searched in devices with pseudo-mount-option 'HAS_VOLUMES" and are ignored if not found.
+
+#DAT_VOLUMES["Volumes/Archive"]="EXPORT,NO_FSCK,MOUNT_POINT=/archive,type=btrfs,subvol=%k"
+#DAT_VOLUMES["Volumes/Backup"]="NO_FSCK,MOUNT_NAME=/backup,type=btrfs,subvol=%k"
+#DAT_VOLUMES["Volumes/Export"]="EXPORT,NO_FSCK,NO_UNMOUNT,IS_STATIC,MOUNT_POINT=/export,type=btrfs,subvol=%k"
+#DAT_VOLUMES["Volumes/Shared"]="EXPORT,NO_FSCK,NO_UNMOUNT,IS_STATIC,MOUNT_POINT=/shared,type=btrfs,subvol=%k"
+
+################
+### Symlinks ###
+################
+
+# $CEN_NAME can create and remove arbitrary symlinks. Either a absolute path names are
+# used or paths are relative to DAT_FOLDER_LOCAL. Links are only created if the link
+# location does not yet exists and if the target exists. If no link name is given, the
+# last element of the target is used. Symlinks are removed at termination if the link
+# is prefixed with a minus sign.
+
+# create/remove symlink '/mydata' to '\$DAT_FOLDER_LOCAL/mydata'
+#DAT_SYMLINKS["/mydata"]="-"
+
+# create/remove symlink '\$DAT_FOLDER_LOCAL/mydata' to '/mydata'
+#DAT_SYMLINKS["mydata"]="-/mydata"
+
+# create symlink '/boot/efi' to '\$DAT_FOLDER_LOCAL/boot/efi'
+#DAT_SYMLINKS["/boot/efi"]="%b/%f"
+#DAT_SYMLINKS["/boot/grub"]="%b/%f"
+
+# create symlink '/root/Backup' to '\$DAT_FOLDER_LOCAL/backup/Backup'
+#DAT_SYMLINKS["/root/Backup"]="backup/Backup"
+
+######################
+### Network mounts ###
+######################
+
+# Autodetected hosts can be ignored and hosts can forced event if not autodetected:
+
+#DAT_HOSTS[XX-312.12]="i"           # never use this host
+#DAT_HOSTS[TV-X512-a]="i"
+#DAT_HOSTS[server1]="f"             # force (always check) this server
+
+# It is also possible to ignore hosts by a regular expression (not shell globbing!):
+
+#DAT_FILTER="(^LG-)|(SAMSUNG)"
+
+# Netbios hostnames can be mapped to DNS names if they are not resolved to ip. The
+# mapped DNS names are used internally to ping the host. Remember: DNS names are
+# always upper-case, but here case is ignored. The matches use regular expressions
+# (not shell globbing) and the longest match is used:
+
+#DAT_DNSMAP["^ALPHA|^PETER"]="-"    # no mapping
+#DAT_DNSMAP[FRITZ-NAS]=router0      # use DNS 'router0'
+#DAT_DNSMAP["^BETA"]="@"            # try addresses from nmlookup
+#DAT_DNSMAP[DELTA0]="#-0 #-1"       # try DNS 'delta0-0' 1st then 'delta0-1'
+DAT_DNSMAP[".*"]="#-0 #-1 # @"      # try DNS before nmlookup
+
+# NFS an SAMBA mounts might need credentials and other export/share dependent options.
+# Multiple option set can be specified and are found when matching a host name. This
+# uses bash globbing (not regular expressions!). If multiple matches occur, the ones
+# with the longest glob expressions are used. Unlike for local mounts, there are no
+# pseudo-mount-options:
+
+    # nfs4 needs 'proto=tcp' unless started with a ipv4 address. This is a difference
+    # to the old SUN automounter which resolves to hostname to an ipv4 address ...
+
+#DAT_MOUNT_NFS["*"]="vers=4,proto=tcp,sloppy,noatime,soft,intr,fsc,timeo=100,retry=0"
+
+#DAT_MOUNT_SAMBA["*"]="vers=1.0,iocharset=utf8"
+#DAT_MOUNT_SAMBA["alpha*"]="vers=1.0,domain=centauri,credentials=/.secrets/samba_trusted,iocharset=utf8"
+
+######################
+### External Tools ###
+######################
+
+# tools used to browse/list avahi
+#DAT_AVAHI_BROWSE="$DAT_AVAHI_BROWSE"
+#DAT_AVAHI_LIST="$DAT_AVAHI_LIST"
+
+# tools used to list samba servers/shares
+#DAT_SAMBA_SHOW="$DAT_SAMBA_SHOW"
+# smb1 got disabled, so currently smbtree is not supported any more
+#DAT_SAMBA_TREE="$DAT_SAMBA_TREE"
+
+# tool used to list nfs exports
+#DAT_NFS_SHOW="$DAT_NFS_SHOW"
+
+# program to (auto-)mount network shares. Options (see DAT_MOUNT_xxx) will be
+# added using "--options". For unmounting the tool is called with "--unmount"
+#DAT_MOUNTER="$DAT_MOUNTER"
+
+##############
+### Timers ###
+##############
+
+# Time for host checks not triggered by avahi [seconds]
+#DAT_PING_TIME=$DAT_PING_TIME
+
+# Shorten check time after an avahi event [seconds] (empty to disable)
+#DAT_PING_SHORT=$DAT_PING_SHORT
+
+# Time before an automount exipires [seconds] (empty to disable)
+#DAT_IDLE_TIMEOUT=$DAT_IDLE_TIMEOUT
+
+# Force unmount if DAT_IDLE_TIMEOUT does not work [seconds] (empty to disable)
+# Use only for older versions of systemd (before 2021 or Debian bullseye)!
+#DAT_UNMOUNT_TIME=900
+
+# Spindown rotational disk if idle for given time [seconds] (empty to disable)
+# Multiple entries are allowed, key uses bash globbing (not regular expression!)
+#DAT_SPINDOWN["/dev/sd?"]=900
+
+# End
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# get unit name from path: <vnam> <path> [<suffix>]
+# ------------------------------------------------------------------------------
+do_escape() {
+    local -n _vesc="$1" ; _vesc=
+    local _pesc="$2" _eesc
+    _eesc="${_pesc//\//-}"
+    if [ -n "${_pesc//[a-zA-Z0-9_\/]/}" ] ; then
+        $DAT_DEBUG -a -c "Run unmount" "systemd-escape --path '$_pesc'"
+        sysrun -a _eesc -e -p -- systemd-escape --path "$_pesc" || return 1
+    fi
+    _vesc="${_eesc#-}"
+    [ -n "$3" ] && _vesc+=".$3"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# option parser, sets DAT_OPTIONS (string for mount) and DAT_OPTMAP (internal)
+# ------------------------------------------------------------------------------
+# Extracts pseudo-options (that are not to be passed to the mount commamd).
+# The '/etc/fstab option' 'fstype' is equal to 'FS_TYPE' (not passed to mount).
+# If no 'FS_TYPE' (or 'fstype' was found we set 'FS_TYPE' to 'type' (if any).
+# ------------------------------------------------------------------------------
+do_options() {
+    DAT_OPTIONS= ; DAT_OPTMAP=()                        # reset
+    [ -n "$1" ] || return                               # reset only
+
+    local olst oopt
+    splitjoin -s olst -d ',' -- "$1"
+    for oopt in "${olst[@]}" ; do                       # loop over options
+        case "$oopt" in
+        HAS_VOLUMES|IS_STATIC|NO_DEFAULTS|NO_IDLE|NO_UNMOUNT|NO_FSCK|EXPORT|LOCALHOST)
+            DAT_OPTMAP["$oopt"]=1 ;;
+        MOUNT_NAME=*|MOUNT_POINT=*|MOUNT_BASE=*)
+            DAT_OPTMAP["${oopt%%=*}"]="${oopt#*=}" ;;
+        FS_TYPE=*|fstype=*)
+            DAT_OPTMAP["FS_TYPE"]="${oopt#*=}" ;;
+        *)
+            DAT_OPTIONS+=",$oopt"
+        esac
+    done
+
+    [ -z "${DAT_OPTMAP["FS_TYPE"]}" -a -n "${DAT_OPTMAP["type"]}" ] &&
+        DAT_OPTMAP["FS_TYPE"]="${DAT_OPTMAP["type"]}"
+    DAT_OPTIONS="${DAT_OPTIONS:1}"
+}
+
+# ------------------------------------------------------------------------------
+# helper for systemd-mount: [-e|-q] ... mount|unmount [<what>] <where>
+# ------------------------------------------------------------------------------
+# This code handles all mount/unmount calls to systemd. Arguments are generated
+# from DAT_OPTIONS and DAT_OPTMAP - see do_options().
+#
+# Older versions of systemd do not implement '--timeout-idle-sec'. As a work-
+# around do_timeout() can help. For all mount/unmount call that have this option
+# a call to do_timeout is made with mount/unmount as verb.
+# ------------------------------------------------------------------------------
+do_systemd() {
+    local _opts='-n'
+    while [ "${1::1}" = '-' ] ; do
+        _opts+=" $1" ; shift
+    done
+    local _mlis=('--collect') _ftyp="${1#*:}" _verb="${1%%:*}" _want=-1 _cmnt
+    [ "$1" = "$_verb" ] && _ftyp= ; shift
+
+    if [ "$_verb" = 'mount' ] ; then
+        [ -n "${DAT_OPTMAP["IS_STATIC"]}" ] && _cmnt=1
+        [ -n "${DAT_OPTMAP["NO_UNMOUNT"]}" ] && _cmnt=1
+#### TODO always check?
+_cmnt=1
+        _mlis+=('--no-ask-password')
+        if [ -z "${DAT_OPTMAP['IS_STATIC']}" ] ; then
+            _mlis+=('--automount=yes')
+            if [ -n "$DAT_IDLE_TIMEOUT" -a -z "${DAT_OPTMAP['NO_IDLE']}" ] ; then
+                do_timeout 'mount' "$2" "${DAT_OPTMAP['LOCALHOST']}"
+                _mlis+=("--timeout-idle-sec=$DAT_IDLE_TIMEOUT")
+            fi
+        fi
+        [ -n "$DAT_OPTIONS" ] && _mlis+=("--options=$DAT_OPTIONS")
+        [ -n "${DAT_OPTMAP['NO_FSCK']}" ] && _mlis+=('--fsck=no')
+        [ -z "$_ftyp" ] && _ftyp="${DAT_OPTMAP['FS_TYPE']}"
+        [ "${_ftyp:-auto}" = 'auto' ] || _mlis+=("--type=$_ftyp")
+        _want=2                                 # wants 2 arguments
+
+    elif [ "$_verb" = 'check' ] ; then
+        [ -n "${DAT_OPTMAP["IS_STATIC"]}" ] && return 1
+        [ -n "${DAT_OPTMAP["NO_UNMOUNT"]}" ] && return 1
+        return 0
+
+    elif [ "$_verb" = 'unmount' ] ; then
+         [ -n "$DAT_IDLE_TIMEOUT" -a -z "${DAT_OPTMAP['NO_IDLE']}" ] &&
+                do_timeout 'unmount' "$1" "${DAT_OPTMAP['LOCALHOST']}"
+        _mlis+=('--umount' '--no-block')
+        _want=1                                 # wants 1 argument
+    fi
+
+    # check expected argument count
+    [ $# = "$_want" ] || fatal -t "verb: $_verb  args: $#"
+
+    # IS_STATIC or NO_UNMOUNT are optimized using a test at mount time
+    if [ -n "$_cmnt" ] ; then
+        # is-active or is-enabled won't work here, but cat works
+        sysrun -q -- systemctl 'cat' "$2" && return 0
+    fi
+
+    # execute the request (cannot unmount here, might hang on network down)
+    if [ "$_verb" != 'unmount' ] ; then
+        $DAT_DEBUG -a -c "Run $_verb" -- "${_mlis[*]} $*"
+        if sysrun $_opts -- $DAT_MOUNTER '--quiet' "${_mlis[@]}" "$@" ; then
+            message -a -c "${_verb^}ed" -- "${2:-$1}" ; return 0
+        fi
+
+    # all mounts are automounts, so stopping .automount will also stop .mount
+    # we cannot try to access the mount folder without blocking if the host
+    # is offline.
+    else
+        $DAT_DEBUG -a -c "Run unmount" -- "$*"
+        do_escape _cmnt "$1" 'automount' || return 1
+        sysrun -q -- systemctl --no-block stop "$_cmnt"
+
+        system -n -s _cmnt -q -- systemctl 'is-active' "$_cmnt"
+        if [ "$_cmnt" = 'active' ] ; then
+            message -a -c "unmount failed" -- "$1"
+            return 1
+        fi
+        message -a -c "Unmounted" -- "$1"
+
+        remove -q -- "$1" && return 0
+        sleep 0.2                               # retry after small delay...
+        remove -q -- "$1" && return 0
+        message -a -c "rmdir failed" -- "$1"
+        return 1
+    fi
+
+    [ "${_opts/-q/}" = "$_opts" ] || return 1   # -q no error reporting
+    do_escape _cmnt "${2:-$1}" 'mount' || return 1
+    system -n -s _cmnt -q -- systemctl 'is-active' "$_cmnt"
+    message -a -c "${_verb^} error" "${2:-$1} ($_cmnt)"
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# manage local mounts: -m|-u
+# ------------------------------------------------------------------------------
+do_local() {
+    [ -n "$DAT_FOLDER_LOCAL" ] || return
+    local marg="$1" item path name
+
+    # helper to mount or unmount local volumes: <path>
+    ___mlocal() {
+        local mpnt mnam
+
+        # get mountpoint, base and name
+        mpnt="${DAT_OPTMAP["MOUNT_POINT"]}"
+        mnam="${DAT_OPTMAP["MOUNT_NAME"]}"
+        if [ -n "$mpnt" ] ; then
+            [ -n "$mnam" -o -n "${DAT_OPTMAP["MOUNT_BASE"]}" ] &&
+                warning "Option MOUNT_POINT shadows MOUNT_BASE/MOUNT_NAME:" "$mpnt"
+        else
+            if [ -z "$mnam" ] ; then
+                mnam="${1##*_}"
+                if [ -z "$mnam" ] ; then
+                    error "Cannot get mount name:" "$1" ; return
+                fi
+            fi
+            mpnt="${DAT_OPTMAP["MOUNT_BASE"]:-$DAT_FOLDER_LOCAL}/$mnam"
+        fi
+
+        # ignore mountpoints that are in fstab
+        if listsearch -c -i DAT_FSTAB_LIST -- "$mpnt" ; then
+            [ "$marg" = "-m" ] &&
+                message -a -p "%-13s: %s (is in /etc/fstab)" "Not mounting" "$mpnt"
+            return
+        fi
+
+        # load volume flags HAS_VOLUMES for subvolume detection
+        if [ -z "${DAT_FLGMAP['*']}" ] ; then
+            # check mountpoint and get HAS_VOLUMES flag
+            if [ -n "${DAT_FLGMAP["$mpnt"]}" ] ; then
+                error "Mountpoint already used:" "$mpnt" ; return
+            fi
+            [ -n "${DAT_OPTMAP["HAS_VOLUMES"]}" ] && DAT_FLGMAP["$mpnt"]="$1" || DAT_FLGMAP["$mpnt"]='-'
+        fi
+
+        # mounting ...
+        if [ "$marg" = "-m" ] ; then
+            [ -n "${DAT_OPTMAP["NO_DEFAULTS"]}" ] || DAT_OPTIONS+="${DAT_OPTIONS:+,}$DAT_OPT_DEFAULT"
+            [ -h "$mpnt" ] && remove -- "$mpnt"                 # must remove symlink
+            do_systemd -e -p 'mount' "$1" "$mpnt"
+            if [ -d "$mpnt" ] ; then
+                mnam="${mpnt##*/}"
+                [ -n "${DAT_OPTMAP["EXPORT"]}" ] && symlink -r -- "$mpnt" "$DAT_FOLDER_EXPORT/$mnam"
+                [ -e "$DAT_FOLDER_LOCAL/$mnam" ] || symlink -r -- "$mpnt" "$DAT_FOLDER_LOCAL/$mnam"
+            fi
+
+        # unmounting ...
+        else
+            do_systemd 'check' || return                        # don't unmount flags
+            if do_systemd -q 'unmount' "$mpnt" ; then           # non-blocking umount
+                DAT_REMOVE_LIST+=("$mpnt")                      # queue for removal
+                mnam="${mpnt##*/}"
+                [ -h "$DAT_FOLDER_LOCAL/$mnam" ] && remove -- "$DAT_FOLDER_LOCAL/$mnam"
+            fi
+        fi
+    }
+
+    # --------------------------------------------------------------------------
+    # main part: devices, volumes, links
+    # --------------------------------------------------------------------------
+
+    # helper to mount/unmount device volumes
+    ___mvolus() {
+        for item in "${!DAT_DEVICES[@]}" ; do
+            DAT_OPTIONS="${DAT_DEVICES["$item"]}"
+            name="$item"
+            case "$item" in
+            /dev/*)
+                path="$item" ; name= ;;
+            label=*)
+                path="/dev/disk/by-${item%%=*}/${item#*=}" ;;
+            *=*)
+                path="/dev/disk/by-${item%%=*}/${item#*=}" ; name= ;;
+            ${HOSTNAME}_boot)
+                matchpath -s path -e -o -- "/dev/disk/by-label/$item" \
+                                           "/dev/disk/by-label/"*_boot ;;
+            *)
+                path="/dev/disk/by-label/$item"
+            esac
+            [ -b "$path" ] || continue
+            name="${item##*_}" ; [ "$name" = "$item" ] && name=
+            do_options "LOCALHOST,$DAT_OPTIONS"             # opt parsing and (u)mount
+            ___mlocal "$path"
+        done
+        do_options                                          # reset
+        DAT_FLGMAP['*']=1                                   # volume flags now loaded
+    }
+
+    # mount device volumes first. This allows to find subvolumes via fs
+    [ "$marg" = "-m" ] && ___mvolus
+
+    # mount (sub)volumes for flagged devices
+    local subv subi
+    for item in "${!DAT_VOLUMES[@]}" ; do
+
+        if [ "${item::1}" = '/' ] ; then
+            subv="${item%/*}"
+            if [ ! -d "$subv" ] ; then
+                $DAT_DEBUG -a -c "Missing base folder" -- "$item"
+                continue
+            fi
+            findmount "$subv" || findmount "${subv%/*}"
+            path="$CEN_MOUNT_DEV"
+            if [ -z "$path" ] ; then
+                message -c "Mountpoint not found" -- "$item"
+                continue
+            fi
+            message -c "Explicit volume" -- "$path ($item)"
+        else
+            subv= ; subi=
+            for subi in "${!DAT_FLGMAP[@]}" ; do            # loop over flagged devices
+                [ "${DAT_FLGMAP["$subi"]}" = '-' ] && continue  # no subvolumes: skip
+                [ -e "$subi/$item" ] || continue            # not found: skip
+                path="${DAT_FLGMAP["$subi"]}"
+                subv="$subi/$item" ; break
+            done
+            if [ -z "$subv" ] ; then
+                $DAT_DEBUG -a -c "Volume not found" -- "$item"
+                continue
+            fi
+        fi
+
+        DAT_OPTIONS="${DAT_VOLUMES["$item"]}"
+        do_options "LOCALHOST,$DAT_OPTIONS"                 # opt parsing
+        [ -z "${DAT_OPTMAP["MOUNT_POINT"]}" -a -z "${DAT_OPTMAP["MOUNT_NAME"]}" ] &&
+            DAT_OPTMAP["MOUNT_NAME"]="${item##*/}"
+        ___mlocal "$path"                                   # (u)mount
+    done
+    do_options                                              # reset
+
+    # unmount device volumes last. This allows to find subvolumes via fs
+    if [ "$marg" != "-m" ] ; then
+        ___mvolus
+    fi
+
+    # make/remove symlinks
+    if [ "$marg" = '-m' ] ; then
+        for item in "${!DAT_SYMLINKS[@]}" ; do
+            path="${DAT_SYMLINKS["$item"]}"
+            [ "${item::1}" = '/' ] || item="$DAT_FOLDER_LOCAL/$item"
+            [ -h "$item" ] && continue                      # have symlink
+            [ -e "$item" ] && continue                      # existing item
+            [ "${path::1}" = '-' ] && path="${path:1}"
+            [ -z "$path" ] && path="${item##*/}"
+            if [ "${path::1}" = '/' ] ; then
+                [ -e "$path" ] || continue                  # no target base
+            else
+                [ -e "$DAT_FOLDER_LOCAL/${path%%/*}" ] || continue
+                path="$DAT_FOLDER_LOCAL/$path"
+            fi
+
+            message -a -c "Symlink" -- "$item  ->  $path"
+            # make symlink without any check to avoid automount
+            sysrun -b -m "symlink failed '%s %s'%s" ln -s -- "$path" "$item"
+        done
+    else
+        for item in "${!DAT_SYMLINKS[@]}" ; do
+            path="${DAT_SYMLINKS["$item"]}"
+            [ "${path::1}" = '-' ] || continue
+            [ "${item::1}" = '/' ] || item="$DAT_FOLDER_LOCAL/$item"
+            [ -h "$item" ] && remove -- "$item"
+        done
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# manage machine entries: <host> <scnt> <share>...          [background process]
+# ------------------------------------------------------------------------------
+# This code uses systemd mount and automount units. This units can be active,
+# inactive or failed. We try to avoid the failed state by using the --collect
+# mount option. An unmount operation may fail if the mount is in use (busy) or
+# if the network is down. This can lead to left-overs after stopping the service.
+# We try to check for this situation and try to avoid deleting the mount point
+# to allow recovery.
+#
+# The <scnt> value indicates what to does with a host folder:
+#       <0      host not in network, delete folder
+#        0      no shares/exports, hide folder (. prefix)
+#       >0      create/unhide folder
+# ------------------------------------------------------------------------------
+do_tree() {
+    local host="${1,,}" scnt="${2:-0}" fnfs item fldr fdot
+    [ "$host" = "$1" ] && fnfs=1 ; shift 2              # lower case -> nfs
+
+    # --------------------------------------------------------------------------
+    # cleanup (called on start and stop)
+    # --------------------------------------------------------------------------
+    if [ -z "$host" ] ; then
+        # delete state files
+        if [ -n "$DAT_FOLDER_TREE" ] ; then
+            for fldr in "$DAT_FOLDER_TREE"/* "$DAT_FOLDER_TREE"/.* ; do
+                                                        # exclude these...
+                [ "$fldr" = "$DAT_FOLDER_TREE/."  ] && continue
+                [ "$fldr" = "$DAT_FOLDER_TREE/.." ] && continue
+                [ "$fldr" = "$DAT_FOLDER_SAMBA" ] && continue
+                if [ -h "$fldr" ] ; then                # remove link if not .desktop
+                    [ "${fldr%.desktop}" = "$fldr" ] && remove "$fldr"
+                elif [ -d "$fldr" ] ; then              # remove folder
+                    for item in "$fldr"/* "$fldr"/.* ; do
+                        [ -h "$item" ] && remove -- "$item"
+                    done
+                    remove "$fldr"
+                fi
+            done
+        fi
+
+        # loop over all mount points
+        if [ -n "$DAT_FOLDER_IMPORT" ] ; then
+            # explicitly collect failed units to avoid automounts that cause hangs
+            sysrun -q -- systemctl reset-failed
+
+            for fldr in "$DAT_FOLDER_IMPORT"/*_* ; do
+                [ "$fldr" = "$DAT_FOLDER_IMPORT/*_*" ] && break
+
+                # always try to unmount, ignore errors
+                do_systemd -q 'unmount' "$fldr"         # non-blocking unmount
+                DAT_REMOVE_LIST+=("$fldr")              # queue for delete
+            done
+        fi
+
+        # symlink the samba home folder
+        if [ -n "$DAT_FOLDER_TREE" -a -n "$DAT_FOLDER_SAMBA" -a -n "$DAT_FOLDER_HOME" ] ; then
+            symlink "$DAT_FOLDER_SAMBA" "$DAT_FOLDER_TREE/$DAT_FOLDER_HOME"
+        fi
+        return
+    fi
+
+    # --------------------------------------------------------------------------
+    # (un)register host
+    # --------------------------------------------------------------------------
+    local snam smnt opts oper link ftyp nick
+
+    # get the host folder in tree
+    if [ -n "$DAT_FOLDER_TREE" ] ; then
+
+        # link server to nick name
+        if [ "$host" = "${DAT_MASTER[1]}" -o "$host" = "${DAT_MASTER[2]}" ] ; then
+            if [ -n "$DAT_MASTER" -a "$scnt" -gt 0 ] ; then
+                nick="$DAT_FOLDER_TREE/$DAT_MASTER"
+                folder -c -f "$DAT_FOLDER_TREE"
+                symlink -i -x -- "$host" "$nick"
+            fi
+        fi
+
+        # special handling for local host
+        if [ "$host" = "$HOSTNAME" ] ; then
+            folder -m -c -f "$DAT_FOLDER_TREE/$host"
+            symlink -- "$DAT_FOLDER_EXPORT" ".mount"
+            local alnk aabs irun=0
+            for item in "$DAT_FOLDER_EXPORT"/* ; do         # find exports
+                [ -h "$item" ] || continue
+                [ "$item" -ef "${item##*/}" ] && continue
+                alnk+=("$item")
+            done
+            if [ -n "$alnk" ] ; then                        # link exports
+                resolve -a aabs -- "${alnk[@]}"             # get destinations
+                for item in "${aabs[@]}" ; do
+                    symlink -- "$item" "${alnk[$irun]##*/}" ; ((irun++))
+                done
+            fi
+            return
+        fi
+
+        # networked hosts
+        fldr="$DAT_FOLDER_TREE/.$host" ; fdot="$fldr"
+        [ -d "$fldr" ] || fldr="$DAT_FOLDER_TREE/$host"
+
+        if [ "$scnt" -lt 0 ] ; then                     # host deleted
+            [ -d "$fldr" ] || return
+        else                                            # must have folder
+            folder -f -m -c -- "$fldr"
+            symlink -- "$DAT_FOLDER_IMPORT" ".mount"
+            if [ "$scnt" -gt 0 -a "$fldr" = "$fdot" ] ; then
+                fldr="$DAT_FOLDER_TREE/$host"
+                rename -- "$fdot" "$fldr"
+                folder -f -m -c -- "$fldr"
+            fi
+        fi
+    fi
+
+    # get the mount options
+    smnt=0
+    if [ -n "$fnfs" ] ; then
+        ftyp='nfs'                                      # default: nfs
+        for item in "${!DAT_MOUNT_NFS[@]}" ; do
+            [ "${#item}" -lt $smnt ] && continue
+            [[ "$host" == $item ]] || continue
+            smnt="${#item}"
+            opts="${DAT_MOUNT_NFS["$item"]}"
+        done
+    else
+        ftyp='cifs'                                     # default: cifs
+        for item in "${!DAT_MOUNT_SAMBA[@]}" ; do
+            [ "${#item}" -lt $smnt ] && continue
+            [[ "$host" == $item ]] || continue
+            smnt="${#item}"
+            opts="${DAT_MOUNT_SAMBA["$item"]}"
+        done
+    fi
+    do_options "$opts"
+
+    # get mount/unmount info
+    for item in "$@" ; do
+        case "$item" in
+            +*) oper='+' ;;
+            -*) oper='-' ;;
+            *)  continue
+        esac
+        smnt="${item:1}"
+        case "$smnt" in
+            //*/${host}_*)  snam="${smnt##*/}" ;;
+            //*/*)          snam="${host}_${smnt##*/}" ;;
+            *:/${host}_*)   snam="${smnt#*:/}" ;;
+            *:/*)           snam="${host}_${smnt#*:/}" ;;
+            *)              message -a "Invalid name:" "$smnt" ; continue
+        esac
+
+        # get per-share symlink path, the links serv as flags for mounts
+        if [ -n "$fldr" ] ; then
+            if [ "$host" = "${DAT_MASTER[3]}" ] &&  # home import from server...
+               [ -z "$DAT_FOLDER_SAMBA" -a "${snam#*_}" = "$DAT_FOLDER_HOME" ] ; then
+                link="$DAT_FOLDER_TREE/$DAT_FOLDER_HOME"
+            else
+                link="$fldr/${snam#*_}"
+            fi
+        else                                        # no tree, dummy link as flag
+            link="$DAT_TEMP_FILE/$snam.dummy"
+        fi
+        [ -z "$DAT_FOLDER_IMPORT" ] && fatal "Internal error - no mount folder"
+
+        if [ "$oper" = '+' ] ; then                 # mount
+            [ -h "$link" ] && continue              # existing mount link
+
+            [ -z "$fnfs" ] && smnt="${smnt//\//\\}"
+            do_systemd -e -p "mount:$ftyp" "$smnt" "$DAT_FOLDER_IMPORT/$snam"
+            symlink -i "$DAT_FOLDER_IMPORT/$snam" "$link"
+            $DAT_DEBUG -a -c "Linked" -- "$link"
+
+        elif [ -h "$link" ] ; then                  # unmount
+            do_systemd 'check' || continue
+            remove -- "$link"
+            if do_systemd -q 'unmount' "$DAT_FOLDER_IMPORT/$snam" ; then
+                remove -- "$DAT_FOLDER_IMPORT/$smnt"
+                $DAT_DEBUG -a -c "Unlinked" -- "$link"
+            fi
+        fi
+    done
+    do_options                                      # reset
+
+    if [ -n "$fldr" ] ; then                        # using a tree: hide/show host
+        if [ "$scnt" -lt 0 ] ; then
+            message -a -c "Deleted entry" -- "$fldr"
+            remove -- "$fldr/.mount"
+            remove -- "$fldr" || scnt=0
+        fi
+        if [ "$scnt" = 0 ] ; then
+            [ "$fldr" = "$fdot" ] || rename -- "$fldr" "$fdot"
+        fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# build a list of shares with update flags                  [background process]
+# ------------------------------------------------------------------------------
+do_update() {
+    local -A _mitm
+    local _lupd=() _what _item _scnt=0
+
+    local -n _lold="$2"                             # previous shares ...
+    for _item in "${_lold[@]}" ; do
+        _mitm["$_item"]='-'                         # flag as removed
+    done
+
+    if [ -n "$3" ] ; then                           # current shares...
+        local -n _lnew="$3"
+        for _item in "${_lnew[@]}" ; do
+            if [ -z "${_mitm["$_item"]}" ] ; then
+                _mitm["$_item"]='+'                 # flag as added
+            else
+                _mitm["$_item"]='='                 # flag no change
+            fi
+        done
+    fi
+
+    for _item in "${!_mitm[@]}" ; do
+        case "${_mitm["$_item"]}" in
+        +)  _lupd+=("+$_item") ; _what="Add" ; ((_scnt++)) ;;
+        -)  _lupd+=("-$_item") ; _what="Remove" ;;
+        *)  _lupd+=("=$_item") ; ((_scnt++)) ; continue
+        esac
+        $DAT_DEBUG -a -c "$_what" -- "$_item"
+    done
+
+    [ -z "$3" ] && _scnt=-1                         # host deleted
+    do_tree "$1" "$_scnt" "${_lupd[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# get a list of samba/nfs shares: <array> <host>            [background process]
+# ------------------------------------------------------------------------------
+do_shares() {
+    local -n _vshr="$1" ; _vshr=()
+    local ares afld item host="$2"
+
+    # The host name of NFS is always lower-case, export names cannot have spaces
+
+    if [ "${host,,}" = "$host" ] ; then                 # lowercase is nfs ...
+        do_command -a ares -q -- "$DAT_NFS_SHOW" "$host" # get exports
+        for item in "${ares[@]}" ; do
+            [ "${item::1}" = "/" ] || continue          # ignore if no an export
+            _vshr+=("$host:${item%% *}")                # use only 1st word
+        done
+        return
+    fi
+
+    # Samba host names are upper case only, share names can have spaces (but no |)
+    do_command -a ares -q -- "$DAT_SAMBA_SHOW" "$host"  # get shares
+    for item in "${ares[@]}" ; do
+        splitjoin -s afld -d '|' -- "$item"             # split into fields
+        [ "$afld" = "Disk" ] || continue
+        case "${afld[1]}" in
+            print\$)    continue ;;
+            *\$)        continue ;;
+            netlogon)   continue ;;
+            sysvol)     continue ;;
+            *)          _vshr+=("//$host/${afld[1]}")
+        esac
+    done
+}
+
+# ------------------------------------------------------------------------------
+# check and update host state: <host> <check>               [background process]
+# ------------------------------------------------------------------------------
+# This function is called from do_poll after forking. It should return true if
+# the host can be reached and false if not. In the later case the function will
+# no be called again before DAT_PING_TIME or before avahi registers the host.
+#
+# When the host state in DAT_HOSTS is 'f' (forced) the return code is ignored.
+#
+# The function should manage it's own per host state (added/present/removed).
+# ------------------------------------------------------------------------------
+do_host() {
+    local host="$1" fchk="$2" ffil="$DAT_TEMP_FILE/$host.host"
+    local sold snew spng apng hlow="${host,,}"
+#message "do_host $*"
+    ___hostchk() {
+        [ "$hlow" = "${HOSTNAME,,}" ] && return 0   # don't check localhost
+        if [ "$host" = "$hlow" ] ; then             # nfs host
+            sysrun -q -r -- ping -c1 -W1 -q "$hlow"
+            return                                  # return status
+        fi
+
+        # netbios to ip translations
+        spng="${DAT_DNSMAP["$host"]}"               # direct match?
+        if [ -z "$spng" ] &&                        # search longest match
+            listsearch -x -m spng -- "$host" "${!DAT_DNSMAP[@]}" ; then
+            spng="${DAT_DNSMAP["$spng"]}"
+        fi
+
+        # found no translation
+        if [ "${spng:--}" = '-' ] ; then
+            sysrun -q -r -- ping -c1 -W1 -q "$hlow"
+            return                                  # return status
+        fi
+
+        # try to ping translation results
+        splitjoin -s apng -d " \t" -- "$spng"       # list of candidates
+        for spng in "${apng[@]}" "-" ; do
+            [ "$spng" = '-' ] && break
+### TODO different process, this does not work ...
+            [ "$CEN_SVC_RUNNING" = 'running' ] || break # service terminated
+            spng="${spng/\#/$hlow}"
+            if [ "$spng" = '@' ] ; then
+                system -n -q -r -s spng -- nmblookup -- "$host" || continue
+                spng="${spng%% *}"
+            fi
+            sysrun -q -r -- ping -c1 -W1 -q "$spng" && return 0
+        done
+        return 1
+    }
+
+    # if not on same host send a ping
+    if [ "$fchk" != 0 ] && ___hostchk ; then
+        # get current status (if any)
+        if [ -f "$ffil" ] ; then
+            [ -z "$fchk" ] && return 0              # host ok and no check req.
+            IFS=$'\n' read -d $'\z' -a sold <"$ffil"
+        else
+            message -c "Host added" -- "$host"
+        fi
+        do_shares snew "$host"                      # get list of shares
+
+        create -r -t -v snew -- "$ffil"             # save in state file
+        do_update "$host" sold snew
+        return 0
+    fi
+
+    # host not reachable, remove state file
+    if [ -e "$ffil" ] ; then
+        IFS=$'\n' read -d $'\z' -a sold <"$ffil"
+        remove "$ffil"
+        message -c "Host removed" -- "$host"
+        do_update "$host" sold
+    fi
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# polling a host in background: [<host> [<fchk>]]
+# ------------------------------------------------------------------------------
+# This function forks DAT_POLL_BATCH calls to do_host as background processes.
+# If DAT_POLL_BATCH is reached, it waits for all do_host processes to complete
+# and adds an extra delay of DAT_POLL_DELAY seconds.
+#
+# It the status of a host is not 'f' (forced) a non-zero exit code of do_host
+# will remove the host from DAT_HOSTS.
+#
+# A call without argument should be used to wait for all do_host to complete.
+# ------------------------------------------------------------------------------
+do_poll() {
+    local host="$1" fchk="$2" stat
+
+    # limit number of polls, wait for polls to complete
+    local item hcur nbak="${#DAT_POLL_LIST[@]}"
+    if [ -z "$host" -o "$nbak" -gt $DAT_POLL_BATCH ] ; then
+        [ "$nbak" -gt $DAT_POLL_BATCH ] &&                  # add extra delay
+            [ -n "$DAT_POLL_DELAY" ] && sleep "$DAT_POLL_DELAY"
+
+        # fetch the poll results
+        for item in "${DAT_POLL_LIST[@]}" ; do
+            wait ${item%% *} ; stat=$?                      # wait for completion
+            hcur="${item#* }"
+            [ "$stat" = 0 ] && ((DAT_HOST_CNT++))
+            [ "${DAT_HOSTS["$hcur"]}" = 'f' ] && continue   # don't modify status
+            if [ "$stat" = 0 ] ; then
+                DAT_HOSTS["$hcur"]='a'                      # is active
+            else
+                unset DAT_HOSTS["$hcur"]                    # removed
+            fi
+        done
+        DAT_POLL_LIST=()
+        [ -z "$host" ] && return                            # return for flush
+    fi
+
+    # update host status in a background process
+    do_host "$host" "$fchk" & DAT_POLL_LIST+=("$! $host")
+}
+
+# ------------------------------------------------------------------------------
+# find samba hosts via smbtree: <list>
+# ------------------------------------------------------------------------------
+do_samba() {
+    local -n _lsmb="$1" ; _lsmb=()                          # clear result
+    local host asmb item list
+    [ "$DAT_SAMBA_TREE" = 'true' ] && return                # disabled
+
+    do_command -a list -d '\n' -q -- "$DAT_SAMBA_TREE"      # get smbtree output
+    for item in "${list[@]}" ; do                           # loop over output
+        splitjoin -s asmb -d ' ' -- "$item"
+        host="${asmb##*\\\\}"                               # strip \\ prefix
+        [ "$host" = "$asmb" ] && continue                   # not a host line
+        host="${host^^}"                                    # smb name is uppercase
+
+        [ "${DAT_HOSTS["$host"]}" = 'i' ] && continue       # ignore this host
+        [ -n "$DAT_FILTER" ] &&                             # reg-exp filter...
+            [[ "$host" =~ $DAT_FILTER ]] && continue
+
+        _lsmb+=("$host")                                    # add to result
+    done
+}
+
+# ------------------------------------------------------------------------------
+# use avahi to create a host list                           [background process]
+# ------------------------------------------------------------------------------
+# avahi browsing runs as a child process. The process gets explicitly killed
+# from the main process when the daemon/service is stopped.
+# ------------------------------------------------------------------------------
+do_avahi() {
+    local host lava aava stat updt
+
+    # get line-by-line output from avahi browse utility
+    while read -r lava ; do                                 # needs raw read
+        splitjoin -s aava -d ';' -- "$lava"
+
+        # filter samba (upper-case host name) and nfs (lower-case host name)
+        if [ "${aava[4]}" = '_smb._tcp' ] ; then
+            host="${aava[3]^^}"                             # upper-case host name
+            [ "$DAT_ALIAS" = - ] ||                         # mangle host name...
+                eval host="\${host$DAT_ALIAS}"
+        elif [ "${aava[4]}" = '_nfs._tcp' ] ; then
+            host="${aava[3],,}"                             # lower-case host name
+            host="${host##*\\032}"                          # last word only
+        else
+            continue
+        fi
+
+        stat="${DAT_HOSTS["$host"]}"
+        [ "$stat" = 'i' ] && continue                       # ignore this host
+        [ -n "$DAT_FILTER" ] &&                             # reg-exp filter...
+            [[ "$host" =~ $DAT_FILTER ]] && continue
+
+        updt=
+        if [ "$aava" = '+' ] ; then                         # added to avahi cache
+            if [ "${stat:-f}" = 'f' ] ; then                #    for '' and 'f' ...
+                DAT_HOSTS["$host"]='a' ; updt=1
+            fi
+        elif [ "$aava" = '-' ] ; then                       # removed from avahi cache
+            if [ -n "$stat" ] ; then
+                unset DAT_HOSTS["$host"] ; updt=1
+            fi
+        fi
+        [ -n "$updt" ] || continue                          # test for update
+        $DAT_DEBUG -a -c "avahi $aava" "$host '$stat'"
+
+        # create a list of active hosts
+        aava=()
+        for host in "${!DAT_HOSTS[@]}" ; do
+            [ "${DAT_HOSTS["$host"]}" = 'a' ] && aava+=("$host")
+        done
+
+        # send to main process
+        sysloop -m -- 'AVAHI' "${aava[@]}" || break
+    done
+}
+
+# ------------------------------------------------------------------------------
+# use ws-discovery to create a host list                    [background process]
+# ------------------------------------------------------------------------------
+do_disco() {
+    loacal disa ldis
+
+    # get line-by-line output from ws-discovery utility
+    while read -r ldis ; do                                 # needs raw read
+
+        # send to main process
+        sysloop -m -- 'DISCOVER' "${disa[@]}" || break
+    done
+}
+
+# ------------------------------------------------------------------------------
+# start/stop avahi/ws-discovery for network mounting: start|stop
+# ------------------------------------------------------------------------------
+do_import() {
+    [ -z "$DAT_FOLDER_IMPORT" ] && return                   # no network mounts
+
+    if [ "$1" = 'start' ] ; then
+        [ -n "$RUN_AVAHI_RPID" -o -n "$RUN_DISCO_RPID" ] && return 1
+        local pida
+
+        # run avahi browser in background
+        if [ "${DAT_AVAHI_BROWSE:-true}" != 'true' ] ; then
+            $DAT_AVAHI_BROWSE 2>/dev/null | do_avahi &      # no quotes!
+            sysrun -a pida -e -m "Failed to start: $DAT_AVAHI_BROWSE" -- \
+                pgrep -P $$ -f "${DAT_AVAHI_BROWSE## -*}"
+            RUN_AVAHI_RPID="$pida"
+        fi
+        # run ws-discover
+        if [ "${DAT_DISCO_BROWSE:-true}" != 'true' ] ; then
+            $DAT_DISCO_BROWSE 2>/dev/null | do_disco &      # no quotes!
+            sysrun -a pida -e -m "Failed to start: $DAT_DISCO_BROWSE" -- \
+                pgrep -P $$ -f "${DAT_DISCO_BROWSE## -*}"
+            RUN_DISCO_RPID="$pida"
+        fi
+        $DAT_DEBUG -c "() $1" -- "$RUN_AVAHI_RPID - $RUN_DISCO_RPID"
+
+    else
+        $DAT_DEBUG -c "() $1" -- "$RUN_AVAHI_RPID - $RUN_DISCO_RPID"
+        [ -n "$RUN_AVAHI_RPID" ] &&                         # stop avahi reader
+            kill $RUN_AVAHI_RPID &>/dev/null
+        [ -n "$RUN_DISCO_RPID" ] &&                         # stop discovery reader
+            kill $RUN_DISCO_RPID &>/dev/null
+        RUN_AVAHI_RPID= ; RUN_DISCO_RPID=
+    fi
+
+}
+
+# ------------------------------------------------------------------------------
+# action run - worker routine of a simple service: -no args-
+# ------------------------------------------------------------------------------
+
+RUN_TIMER_NRUN=                     # host check interval
+RUN_TIMER_NUNM=                     # forced unmount int.
+RUN_TIMER_NSPN=                     # spindown interval
+RUN_TIMER_FULL=                     # flags full host check
+
+RUN_HOSTS_AVAHI=()                  # hosts seen by avahi
+RUN_HOSTS_DISCO=()                  # hosts seen by ws-discover
+
+RUN_AVAHI_RPID=                     # PID of avahi reader process
+RUN_DISCO_RPID=                     # PID of ws-discover reader process
+
+run() {
+    # load configuration file
+    do_tools
+
+    RUN_TIMER_NRUN="${DAT_PING_SHORT:-0}"                   # host check interval
+    RUN_TIMER_NUNM="${DAT_UNMOUNT_TIME:-0}"                 # forced unmount int.
+    RUN_TIMER_NSPN="${DAT_SLEEP_SPINDOWN:-0}"               # spindown interval
+
+    # local mount and tree folders
+    if [ -n "$DAT_FOLDER_LOCAL" ] ; then
+        attributes -d -k -m 775 "$DAT_FOLDER_LOCAL"
+        message -a -c "Local mounts" -- "$DAT_FOLDER_LOCAL"
+    fi
+
+    if [ -n "$DAT_FOLDER_IMPORT" ] ; then
+        message -a -c "Import folder" -- "$DAT_FOLDER_IMPORT"
+    else                                                    # disable network mounts
+        DAT_FOLDER_TREE= ; DAT_AVAHI_BROWSE=true
+    fi
+    [ -n "$DAT_FOLDER_EXPORT" ] &&
+        message -a -c "Export folder" -- "$DAT_FOLDER_EXPORT"
+
+    if [ -n "$DAT_FOLDER_TREE" ] ; then
+        attributes -d -k -m 775 "$DAT_FOLDER_TREE"
+        message -a -c "Tree folder" -- "$DAT_FOLDER_TREE"
+    fi
+
+    if [ -n "$DAT_FOLDER_SAMBA" ] ; then
+        attributes -d -k -m 775 "$DAT_FOLDER_SAMBA"
+        message -a -c "Samba Homes" -- "$DAT_FOLDER_SAMBA"
+    fi
+    error -q                                                # quit after error(s)
+
+    # temporary folder and state files
+    folder -c -f "$DAT_TEMP_FILE"
+    $DAT_DEBUG -a -c "Status folder" -- "$DAT_TEMP_FILE"
+    remove "$DAT_TEMP_FILE"/*.{avahi,pipe,dummy,host,timeout}    # remove old state files
+
+    DAT_REMOVE_LIST=()
+    do_tree                                                 # cleanup tree folder
+    splitjoin -x remove -i DAT_REMOVE_LIST                  # queued removes
+
+    # Add our domain server as 'forced' host, ignore server nick name.
+    # This code depends on an optional external tool: centauriname
+    [ -x "$CEN_TOOLS/centauriname" ] &&
+        embed -r -a DAT_MASTER -- centauriname --nick --serv --active
+    [ "${DAT_MASTER[3]:--}" = '-' ] && DAT_MASTER[3]="${DAT_MASTER[1]}"
+    [ "$HOSTNAME" = "${DAT_MASTER[3]}" ] && DAT_FOLDER_SAMBA="/$DAT_FOLDER_HOME"
+    if [ -n "$DAT_MASTER" -a -z "${DAT_HOSTS["${DAT_MASTER^^}"]}" ] ; then
+        DAT_HOSTS["${DAT_MASTER^^}"]='i'
+        DAT_HOSTS["${DAT_MASTER,,}"]='i'
+        message -a -c "Server alias" -- "$DAT_MASTER (${DAT_MASTER[1]})"
+    fi
+    if [ -n "${DAT_MASTER[1]}" -a -z "${DAT_HOSTS["${DAT_MASTER[1]^^}"]}" ] ; then
+        DAT_HOSTS["${DAT_MASTER[1]^^}"]='f'
+        DAT_HOSTS["${DAT_MASTER[1],,}"]='f'
+        message -a -c "Domain server" -- "${DAT_MASTER[1]}${DAT_MASTER[2]:+, }${DAT_MASTER[2]}"
+    fi
+
+    # do local mounts, add to network tree
+    DAT_HOSTS["${HOSTNAME^^}"]='i'                          # ignore local host
+    DAT_HOSTS["${HOSTNAME,,}"]='i'
+    do_local -m ; do_tree "$HOSTNAME"
+
+    # --------------------------------------------------------------------------
+    # Event loop, start helper processes
+    # --------------------------------------------------------------------------
+
+    message "Initialized, entering event loop..."
+    local pipe="$DAT_TEMP_FILE/sysloop.pipe"                # get pipe path
+    sysloop -r -f -p "$pipe"                                # create event loop pipe
+    do_import 'start'                                       # needs sysloop pipe
+
+    # run event loop until service terminates
+    sysloop -r -f -c run_event -t "$DAT_SLEEP_TIME"
+    message "Event loop stopped, terminating...."
+
+    # --------------------------------------------------------------------------
+    # terminate helper processes and cleanup temporary files
+    # --------------------------------------------------------------------------
+
+    do_import 'stop'
+    remove "$DAT_TEMP_FILE"/*.{pipe,dummy,host,timeout}     # remove state files
+
+    DAT_REMOVE_LIST=()                                      # list of mountpoints
+    do_tree                                                 # cleanup tree folder
+if [ "$DAT_STATE" != 'quit' ] ; then
+    do_local -u                                             # local unmount
+fi
+    if [ -n "$DAT_REMOVE_LIST" ] ; then                     # queued removes...
+        sleep 1                                             # wait for unmounts
+       # system -e -p -- sync "${DAT_REMOVE_LIST[@]}"        # io wait
+        local item ldel=()
+        splitjoin -x 'remove -q' -i DAT_REMOVE_LIST         # 1st try, ignore errs
+        for item in "${DAT_REMOVE_LIST[@]}" ; do
+            [ -e "$item" ] && ldel+=("$item")               # was busy
+        done
+        if [ -n "$ldel" ] ; then
+            message -a -c "Retry remove" -- "${#ldel[@]} item(s)"
+            sleep 1 ; splitjoin -x 'remove' -i ldel         # retry after delay
+        fi
+    fi
+    message "Terminated"
+    error -c
+}
+
+# ------------------------------------------------------------------------------
+# Event dispatcher for sysloop: <ppid> <evnt> <arg>...
+# ------------------------------------------------------------------------------
+run_event() {
+    [ "$CEN_SVC_RUNNING" = 'running' ] || return 1          # stop on termination
+    shift                                                   # ignore pid
+
+    case "$1" in
+    TICK)       run_timer || return 2
+                ;;
+    AVAHI)      [ "$DAT_STATE" = 'local' ] && return 0
+                shift ; run_hosts -a "$@" || return 2
+                ;;
+    DISCOVER)   [ "$DAT_STATE" = 'local' ] && return 0
+                shift ; run_hosts -d "$@" || return 2
+                ;;
+    RESCAN)     message "EVENT $1" ; return 1
+                ;;
+    CONNECT)    message "network connected" ; DAT_STATE=
+                do_import 'start' ; run_hosts
+                ;;
+    DISCONNECT) message "network disconected" ; DAT_STATE='local'
+                RUN_HOSTS_AVAHI=() ; RUN_HOSTS_DISCO=()
+                run_hosts ; do_import 'stop' ######## ; do_tree
+                ;;
+    QUIT)       message "EVENT $1" ; DAT_STATE='quit' ; return 1
+                ;;
+    *)          message -c "Unknown event" -- "$1"
+    esac
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Handle avahi/ws-discovery events: [-a|-d <host>...]
+# ------------------------------------------------------------------------------
+run_hosts() {
+    [ -z "$RUN_AVAHI_RPID" -a -z "$RUN_DISCO_RPID" ] &&     # no network mounts
+        return 0
+    local updt host hlow stat fnfs lsmb
+
+### TODO forced host active: 'f' -> 'F'
+###      handle 'f' on call and others after delay
+
+    # update lists af hosts seen by avahi or ws-discovery
+    if [ "$1" = '-a' ] ; then
+        shift ; RUN_HOSTS_AVAHI=("$@")
+    elif [ "$1" = '-d' ] ; then
+        shift ; RUN_HOSTS_DISCO=("$@")
+    fi
+    [ -n "$1" ] &&                                      # shorten ping interval
+        [ $RUN_TIMER_NRUN -gt $DAT_PING_SHORT ] && RUN_TIMER_NRUN="$DAT_PING_SHORT"
+
+    # updates step1: flags previously active hosts as deleted
+    for host in "${!DAT_HOSTS[@]}" ; do
+        [ "${DAT_HOSTS["$host"]}" = 'a' -o \
+          "${DAT_HOSTS["$host"]}" = 'n' ] && DAT_HOSTS["$host"]='r'
+    done
+
+    # updates step2: flag hosts found active (by avahi or ws-discover)
+    for host in "${RUN_HOSTS_AVAHI[@]}"  "${RUN_HOSTS_DISCO[@]}" ; do
+        if [ -z "${DAT_HOSTS["$host"]}" ] ; then        # new host
+            DAT_HOSTS["$host"]='n'
+        elif [ "${DAT_HOSTS["$host"]}" = 'r' ] ; then   # active host
+            DAT_HOSTS["$host"]='a'
+        fi
+    done
+
+    # updates step3: flag hosts found active (by samba)
+if [ -z "$DAT_STATE" ] ; then
+    do_samba lsmb
+    for host in "${lsmb[@]}" ; do
+        if [ -z "${DAT_HOSTS["$host"]}" ] ; then        # new host
+            DAT_HOSTS["$host"]='n'
+        elif [ "${DAT_HOSTS["$host"]}" = 'r' ] ; then   # active host
+            DAT_HOSTS["$host"]='a'
+        fi
+    done
+fi
+
+    # update step4: poll all active or forced hosts
+    DAT_HOST_CNT=0
+    for fnfs in 1 0 ; do
+        for host in "${!DAT_HOSTS[@]}" ; do
+            stat="${DAT_HOSTS["$host"]}"
+            [ "$stat" = 'i' ] && continue               # ignore host
+            hlow="${host,,}"                            # lower case name
+            if [ "$fnfs" = '1' ] ; then                 # nfs hosts only
+                [ "$hlow" = "$host" ] || continue
+            else                                        # samba hosts only
+                [ "$hlow" = "$host" ] && continue
+                if [ -n "${DAT_HOSTS["$hlow"]}" ] ; then
+                    $DAT_DEBUG -c "nfs over samba" -- "$host"
+                    continue
+                fi
+            fi
+
+            if [ -n "$DAT_STATE" ] ; then               # unmount shares
+                do_poll "$host" 0
+            elif [ -n "$RUN_TIMER_FULL" ] ; then        # check all hosts
+                do_poll "$host" 1
+            elif [ "$stat" = 'n' ] ; then               # add host now
+                do_poll "$host" 1
+            elif [ "$stat" = 'r' ] ; then               # lazy removal
+                do_poll "$host"
+            elif [ "$stat" = 'f' ] ; then               # fixed host
+                listsearch -c -- "$host" "$@" &&
+                    do_poll "$host" 1
+           fi
+        done
+    done
+    do_poll                                         # wait for polls to complete
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Handle TIMER event: -no args-
+# ------------------------------------------------------------------------------
+run_timer() {
+    ((RUN_TIMER_NRUN -= DAT_SLEEP_TIME))                # hosts update timer
+
+    if [ "${DAT_UNMOUNT_TIME:-0}" -gt 0 ] ; then        # unmount check ...
+        ((RUN_TIMER_NUNM -= DAT_SLEEP_TIME))
+        if [ $RUN_TIMER_NUNM -le 0 ] ; then
+            RUN_TIMER_NUNM="$DAT_UNMOUNT_TIME" ; do_timeout
+        fi
+    fi
+
+    if [ "${DAT_SLEEP_SPINDOWN:-0}" -gt 0 ] ; then      # spindown check ...
+        ((RUN_TIMER_NSPN -= DAT_SLEEP_TIME))
+        if [ $RUN_TIMER_NSPN -le 0 ] ; then
+            RUN_TIMER_NSPN="$DAT_SLEEP_SPINDOWN" ; do_spindown
+        fi
+    fi
+
+    [ -z "$RUN_AVAHI_RPID" -a -z "$RUN_DISCO_RPID" ] && # no network mounts
+         return 0
+
+    if [ $RUN_TIMER_NRUN -le 0 ] ; then                 # trigger full check ...
+        RUN_TIMER_FULL=1 ; RUN_TIMER_NRUN="${DAT_PING_TIME:-30}"
+    else
+        RUN_TIMER_FULL=
+    fi
+
+    [ -n "$RUN_AVAHI_RPID" ] &&                         # avahi running? check pid
+        if ! kill -n 0 "$RUN_AVAHI_RPID" &>/dev/null ; then
+            error "Provider not available:" "avahi" ; RUN_AVAHI_RPID=
+        fi
+    [ -n "$RUN_DISCO_RPID" ] &&                         # discovery running? check pid
+        if ! kill -n 0 "$RUN_DISCO_RPID" &>/dev/null ; then
+            error "Provider not available:" "ws-discovery" ; RUN_DISCO_RPID=
+        fi
+
+    [ -z "$RUN_TIMER_FULL" ] && return 0
+    $DAT_DEBUG -c "Active hosts" -- "$DAT_HOST_CNT"
+    run_hosts
+}
+
+# ------------------------------------------------------------------------------
+# action config: -no args-
+# ------------------------------------------------------------------------------
+actionConfig() {
+    ___showvar() {
+        message "# $1" ; shift
+        local item
+        for item in "$@" ; do
+            local -n vitm="$item"
+            message -a "$item=\"$vitm\""
+        done
+        message -a ' '
+    }
+
+    do_config
+    ___showvar "Timers"  DAT_PING_TIME DAT_PING_SHORT DAT_IDLE_TIMEOUT \
+                         DAT_UNMOUNT_TIME DAT_SLEEP_SPINDOWN
+    ___showvar "Folders" DAT_FOLDER_TREE DAT_FOLDER_EXPORT DAT_FOLDER_IMPORT \
+                         DAT_FOLDER_LOCAL DAT_FOLDER_HOME DAT_FOLDER_SAMBA
+    ___showvar "External programs" DAT_AVAHI_BROWSE DAT_AVAHI_LIST \
+                         DAT_SAMBA_TREE DAT_SAMBA_SHOW DAT_NFS_SHOW DAT_MOUNTER
+    message "# Mountpoints from /etc/fstab (not a config variable)"
+    message -a "DAT_FSTAB_LIST=\"${DAT_FSTAB_LIST[*]}\""
+}
+
+# ------------------------------------------------------------------------------
+# action list: <host>
+# ------------------------------------------------------------------------------
+actionList() {
+    do_tools ; error -q
+    local host="${1,,}"
+    local spng="${DAT_DNSMAP["${host^^}"]}"
+
+    if ! sysrun -q -r -- ping -c1 -W1 -q "${spng:-$host}" ; then
+        error "Host cannot be reached:" "$host"
+        return
+    fi
+
+    local sres lres
+    do_shares lres "$host"                                  # NFS shares
+    splitjoin -x "message -a" -i lres
+    CEN_AUTOIND=
+    do_shares lres "${host^^}"                              # samba shares
+    splitjoin -x "message -a" -i lres
+}
+
+# ------------------------------------------------------------------------------
+# action network: rescan|connect|disconnect
+# ------------------------------------------------------------------------------
+actionNetwork() {
+    local narg pipe entr glob item coun=11 plur='s' nmnt
+    if ! listsearch -u -m narg -- "$1" 'rescan' 'connect' 'disconnect' 'quit' 'busy'; then
+        error "invalid argument:" "network $1" ; return
+    fi
+
+    # busy: show network mounts or wait until all are unmounted (--quiet)
+    if [ "$narg" = 'busy' ] ; then
+        do_config
+        [ "${DAT_FOLDER_IMPORT:--}" = '-' ] && quit "No imports, done."
+        do_escape glob "$DAT_FOLDER_IMPORT" ; glob+="-*_*"
+        while sysrun -a entr -- systemctl list-units --type mount --legend=false "$glob" ; do
+            nmnt="${#entr[@]}"
+            if [ "$nmnt" = 0 ] ; then
+                message -l "No export mounts, done." ; return 0
+            elif [ "$nmnt" = 1 ] ; then
+                plur=
+            fi
+            if [ "$CEN_VERB" -ge 1 ] ; then                 # print mounts ...
+                trimjoin -s item -d $'\n' -- "${entr[@]%%/*}"
+                message -n -- "$item" ; return 0
+            fi
+                                                            # option -q does wait
+            ((coun--)) || quit -s 2 -l -p "%s export mount%s, quit." "$nmnt" "$plur"
+            message -l -a -p "%s export mount%s, wait %s" "$nmnt" "$plur" "$coun"
+            sleep 0.75
+        done
+        quit -s 1
+    fi
+
+    # create temporary folder, get pipe path, send message
+    folder -s DAT_TEMP_FILE -b 'transient' "$CEN_NAME" &&
+        pipe="$DAT_TEMP_FILE/sysloop.pipe"
+    if [ -e "$pipe" ] ; then
+        $DAT_DEBUG -c "network" -- "$narg"
+        sysloop -e -m -p "$pipe" -- "${narg^^}"
+    else
+        warning "network $narg (no pipe)"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# action servers - list servers: -no args-
+# ------------------------------------------------------------------------------
+actionServers() {
+    do_tools ; error -q
+    local aava asmb item list host
+    local -A hmap
+
+    # samba registers type "_smb._tcp" for a host via avahi. NFS does not register
+    # anything by itself. So "_nfs._tcp" must be added via avahi config. The last
+    # word of the description string must be the host name ...
+
+    do_command -a list -d '\n' -e -p -- "$DAT_AVAHI_LIST"   # get list
+    for item in "${list[@]}" ; do                           # loop over lines
+        splitjoin -s aava -d ';' -- "$item"                 # split into fields
+        [ "${aava[4]}" = '_smb._tcp' -o "${aava[4]}" = '_nfs._tcp' ] || continue
+        host="${aava[3],,}"                                 # lower-case host name
+        [ "$DAT_ALIAS" = - ] ||                             # mangle host name...
+            eval host="\${host$DAT_ALIAS}"
+        host="${host##*\\032}"                              # last word only
+        [ "${hmap["$host"]}" != '_nfs._tcp' ] &&            # don't override nfs
+            hmap["$host"]="${aava[4]}"
+    done
+
+    # classic netbios browsing is used to find samba servers that are not shown
+    # via avahi. A nmbd daemon must run. This still works with windows 10 ...
+
+    do_command -a list -d '\n' -e -p -- "$DAT_SAMBA_TREE"   # get list
+    for item in "${list[@]}" ; do                           # loop over lines
+        splitjoin -s asmb -d ' ' -- "$item"                 # split into fields
+        host="${asmb##*\\\\}"                               # remove '\\'
+        [ "$host" = "$asmb" ] && continue                   # ignore if no prefix
+        [ -n "${hmap["${host,,}"]}" ] && continue
+        host="${host^^}"                                    # uppercase flags smb
+        hmap["$host"]="samba"
+    done
+
+    for host in "${!hmap[@]}" ; do                          # loop over servers
+        [ "${DAT_HOSTS["$host"]}" = 'i' ] && item="  [ignored]" || item=
+        message -a -p "%-12s  %-12s%s" "$host" "${hmap[$host]}" "$item"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# spindown disk: [<wait>]
+# ------------------------------------------------------------------------------
+actionSpindown() {
+    do_tools ; error -q
+    if [ "${DAT_SLEEP_SPINDOWN:-0}" -le 0 -o "${#DAT_SPINDOWN[@]}" = 0 ] ; then
+        message "Spindown is disabled by configuration" ; return
+    fi
+    [ "${DAT_SLEEP_SPINDOWN:-0}" -gt 0 ] || return
+    do_spindown "$1"
+}
+
+# ------------------------------------------------------------------------------
+# idle unmount: [<idle>]
+# ------------------------------------------------------------------------------
+actionUnmount() {
+    [ -n "${1//[0-9]/}" ] && invoke -e "Argument must be numeric"
+    do_tools ; error -q
+    [ -z "$DAT_UNMOUNT_TIME" ] && return
+    local tout="$DAT_UNMOUNT_TIME"
+    DAT_UNMOUNT_TIME="${1:-0}"
+    do_timeout
+    DAT_UNMOUNT_TIME="$tout"
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <verb> <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$1" in
+        '')     [ "$CEN_VERB" -gt 1 ] && DAT_DEBUG='trace' ;;
+
+        lis|list)
+                invoke "list"     -  1   ;;
+        con*)
+                invoke "config"   -  0   ;;
+        net*)
+                invoke "network"  -  1   ;;
+        ser*)
+                invoke "servers"  -  0   ;;
+        spi*)
+                invoke "spindown" -  0 1 ;;
+        unm*|umo*)
+                invoke "unmount" -   0 1 ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# usage info
+# ------------------------------------------------------------------------------
+usage() {
+    local cdir ; folder -s cdir -b 'default' || "<unknown>"
+    local str_void="${CEN_NAME//?/ }"
+
+    usageset \
+        -a "config               show effective configuration" \
+        -a "list     <host>      list shares/exports of a host" \
+        -a "servers              list detected servers" \
+        -a "spindown [<wait>]    run drive spindown for rotational drives" \
+        -a "unmount  [<idle>]    run unmount for drive/volume with idle-timeout" \
+
+    usageset -l $"arguments" \
+        -t "<host>       a host name (DNS)" \
+        -t "<wait>       delay in [s]" \
+        -t "<idle>       minimum drive/volume idle time in [s]" \
+
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+    This tool configures systemd for (auto)mounting filesystems. It can also
+    manage a tree of network mounts (network neighborhood) and manage symlinks
+    to mounts.
+
+    Network filesystems can be NFS and/or SAMBA. Hosts are autodetected via
+    avahi-browse (optional) or smbtree (optional). Exports/shares are found
+    by showmount or smbclient.
+
+    $CEN_NAME is a typically run as a service but can be started as a
+    daemon for testing purposes. See examples below.
+
+$CEN_USE_OPTIONS
+
+$CEN_USE_ACTIONS
+
+examples:
+       $CEN_NAME config               # initialize or show configuration
+       $CEN_NAME spindown 5           # test spindown with 5s I/O wait
+       $CEN_NAME unmount              # do idle unmount now
+       $CEN_NAME unmount 600          # unmount drives idle > 600s
+       $str_void                      # test-run (stop using ^C) ...
+       $CEN_NAME --daemon=0 --syslog=0 start
+       $CEN_NAME start                # run as a daemon
+
+       $CEN_NAME setup install        # install as a service
+       systemctl start $CEN_NAME      # start as service
+
+The tool is highly configurable and uses the following configuration file:
+'$cdir/$CEN_NAME'. A template will be created on 1st call:
+'$CEN_NAME config'. The template contains further documentation.
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

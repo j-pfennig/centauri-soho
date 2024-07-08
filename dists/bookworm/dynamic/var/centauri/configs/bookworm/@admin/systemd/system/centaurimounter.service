@@ -1,0 +1,16 @@
+[Unit]
+Description=Avahi-based mounter for network filesystems
+After=networking.service network-online.target remote-fs.target avahi-daemon.service
+Wants=avahi-daemon.service
+ConditionPathExists=!/run/centauri/centaurimounter.run
+
+[Service]
+Type=simple
+PIDFile=/run/centauri/centaurimounter.pid
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/centaurimounter --daemon=0 start
+
+[Install]
+WantedBy=runlevel3.target multi-user.target
+
+# end

@@ -1,0 +1,311 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2022; BSD License"
+CEN_TITLE=$"Resolve/symlink path shortcuts to real filesystem paths"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -t '-' '0.33:2' 1 || exit 2
+
+# Options
+CEN_OPT_ABSTRACT=       # path abstraction
+CEN_OPT_ERROR=:         # missing dir action
+CEN_OPT_DELETED=        # find [dD]eleted
+CEN_OPT_LIST=           # list known short names
+CEN_OPT_LOGICAL=        # logical name
+CEN_OPT_NAME=()         # link names
+CEN_OPT_PHYSICAL=       # physical name
+CEN_OPT_STYLE=          # output style
+CEN_OPT_SYMLINK=        # create symlink
+CEN_OPT_TABLE=          # tabular output
+CEN_OPT_UNIQUE=         # remove dups
+CEN_OPT_VERB=           # input completion for verbs
+CEN_OPT_WORK=           # working folder
+
+# Data
+
+DAT_CONFIG=()           # configuration data
+DAT_PATH_SHORT=
+DAT_PATH_LONG=
+DAT_PATH_INFO=
+DAT_PRETTY_MODE=        # error handling
+DAT_ARG_COUNT=-1        # index for --name
+
+declare -A DAT_UNIQUE   # for --unique
+
+# ------------------------------------------------------------------------------
+# Walk down to find trash
+# ------------------------------------------------------------------------------
+get_deleted() {
+    local _curr
+    for _curr in "Deleted" "deleted" ".Deleted" ".deleted" ; do
+        [ -h "$_curr" ] && continue
+        [ -d "$_curr" ] || continue
+        DAT_PATH_LONG="$PWD/$_curr" ; return
+    done
+    if [ "$PWD" -ef "/" ] || system -n -r -- mountpoint --quiet -- "$PWD" ; then
+        $CEN_OPT_ERROR $"No trash folder found:" "$DAT_PATH_LONG"
+        DAT_PATH_LONG= ; return
+    fi
+    cd .. ; get_deleted
+}
+
+# ------------------------------------------------------------------------------
+# Expand shortcut: <name>
+# ------------------------------------------------------------------------------
+get_shortcut() {
+    if [ -z "$1" ] ; then
+        error $"Shortcut name is empty" ; return 1
+    fi
+    DAT_PATH_SHORT="$1" ; DAT_PATH_LONG= ; DAT_PATH_INFO=
+
+    # not a short name?
+    if [ -n "${1//[a-z0-9]}" ] ; then
+        if [ "${1::1}" = "/" -o "${1::2}" = "./" -o "${1::2}" = "./" ] ; then
+            prettypath $DAT_PRETTY_MODE -s DAT_PATH_LONG -- "$1" ; return
+        fi
+        local _pref="${1%%/*}"
+        if [ -n "${_pref//[a-z0-9]}" ] ; then
+            prettypath $DAT_PRETTY_MODE -s DAT_PATH_LONG -- "$1" ; return
+        fi
+        local _suff="/${1#*/}"
+        get_shortcut "$_pref" || return
+        DAT_PATH_SHORT+="$_suff"
+        [ -z "$DAT_PATH_LONG" ] && return 0
+        DAT_PATH_LONG+="$_suff"
+        prettypath $DAT_PRETTY_MODE -s DAT_PATH_LONG -- "$DAT_PATH_LONG" ; return 0
+    fi
+
+    # resolve short name
+
+    local pdat
+    shortpath -a pdat -r -m "$1" || return 1
+    case "${#pdat[@]}" in
+    0)  error $"Cannot resolve shortcut name:" "$1" ; return 2 ;;
+    1)  DAT_PATH_SHORT="${pdat%%:*}"
+        DAT_PATH_INFO="${pdat#*:*:}" ;;
+    *)  error $"Ambiguous shortcut name:" "$1" ; return 3
+    esac
+
+    shortpath -a DAT_PATH_LONG -n ignore -- "$DAT_PATH_SHORT" || return 1
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# print itme line: <left> [<marker> <right>]
+# ------------------------------------------------------------------------------
+print_item() {
+    local _ldef
+    [ "$((CEN_OPT_STYLE & 1))" != 0 ] && _ldef="-"
+    local _slef="${1:-$_ldef}" _srig="${3:-$_ldef}"
+
+    if [ -n "$2" ] ; then
+        if [ "$((CEN_OPT_STYLE & 2))" != 0 ] ; then
+            _slef="${_slef//\\/\\\\}"; _slef="\"${_slef//\"/\\\"}\""
+            _srig="${_srig//\\/\\\\}"; _srig="\"${_srig//\"/\\\"}\""
+        fi
+        printf '%-16s %s %s\n' "$_slef" "$2" "$_srig"
+    else
+        if [ "$((CEN_OPT_STYLE & 2))" != 0 ] ; then
+            _slef="${_slef//\\/\\\\}"; _slef="\"${_slef//\"/\\\"}\""
+        fi
+        echo "$_slef"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# process item: <item>
+# ------------------------------------------------------------------------------
+proc_item() {
+    ((DAT_ARG_COUNT += 1))
+    get_shortcut "$1" || return
+    if [ -z "$DAT_PATH_LONG" ] ; then
+        [ "$CEN_VERB" -le 1 -a -n "$CEN_OPT_LIST" ] && return
+        $CEN_OPT_ERROR $"Found no folder for shortcut:" "$DAT_PATH_SHORT"
+    fi
+
+    if [ -n "$CEN_OPT_DELETED"  ] ; then
+        system -c -f mountpoint
+        local _curr="$PWD" ; folder -f -c -r -- "$DAT_PATH_LONG"
+        get_deleted
+        folder -f -c -r -- "$_curr"
+    fi
+
+    if [ -n "$CEN_OPT_SYMLINK"  ] ; then
+        [ -z "$DAT_PATH_LONG" ] && return
+        local _link="${DAT_PATH_LONG##*/}"
+        [ "${CEN_OPT_NAME[$DAT_ARG_COUNT]:--}" != "-" ] &&
+            _link="${CEN_OPT_NAME[$DAT_ARG_COUNT]}"
+        symlink ${DAT_PRETTY_MODE//-[enq]/} -- "$DAT_PATH_LONG" "$_link"
+        return
+    fi
+
+    local _sepa=" => "
+    if [ -n "$CEN_OPT_UNIQUE" ] ; then
+        if [ -n "${DAT_UNIQUE["${DAT_PATH_LONG:-:empty:}"]}" ] ; then
+            [ -z "$CEN_OPT_TABLE" ] && return
+            _sepa=" == "
+        else
+            DAT_UNIQUE["${DAT_PATH_LONG:-:empty:}"]=1
+        fi
+    fi
+
+    if [ -z "$CEN_OPT_TABLE" -a -z "$CEN_OPT_LIST" ] ; then
+        print_item "$DAT_PATH_LONG"
+    elif [ -n "$CEN_OPT_TABLE" ] ; then
+        print_item "$DAT_PATH_SHORT" "$_sepa" "$DAT_PATH_LONG"
+    else
+        print_item "$DAT_PATH_SHORT" "-   " "$DAT_PATH_INFO"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# The one and only action
+# ------------------------------------------------------------------------------
+run() {
+    # load shortcut table
+    shortpath -a DAT_CONFIG -r -m "" || return
+
+    if [ -n "$CEN_OPT_WORK" ] ; then
+        local _serr="$DAT_PRETTY_MODE" ; DAT_PRETTY_MODE="-e -f"
+        get_shortcut "$CEN_OPT_WORK"
+        [ -z "$DAT_PATH_LONG" ] &&
+            fatal $"Found no folder for shortcut:" "$DAT_PATH_SHORT"
+        folder -f -c -- "$DAT_PATH_LONG"
+        DAT_PRETTY_MODE="$_serr"
+        trace -a $"Working folder set to:" "$PWD"
+    fi
+
+    [ -n "$CEN_OPT_DELETED" -a "$#" = 0 ] && set -- .
+
+    local _item
+    if [ -n "$CEN_OPT_VERB" ] ; then            # input completion
+        for _item in "${DAT_CONFIG[@]}" ; do
+            echo "${_item%%:*}"
+        done
+    elif [ "$#" = 0 ] ; then                    # no args (--list)
+        for _item in "${DAT_CONFIG[@]}" ; do
+            proc_item "${_item%%:*}"
+        done
+    else                                        # arg loop...
+        for _item in "$@" ; do
+            proc_item "$_item"
+        done
+    fi || true
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> <argument>
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    -A|--abs*)
+        optarg "abstract"   -    ;;
+    -D|--del*)
+        CEN_RUN_MIN_ARGS=0
+        optarg "deleted"    -    ;;
+    -E|--err*)
+        optarg "error"      CEN_OPT_ERROR - "error" ;;
+    -F|--fat*)
+        optarg "fatal"      CEN_OPT_ERROR - "fatal" ;;
+    -I|--lis|--list)
+        CEN_RUN_MIN_ARGS=0
+        optarg "list"       -    ;;
+    -K|--sym*)
+        optarg "symlink"    -    ;;
+    -L|--log*)
+        optarg "logical"    -    ;;
+    -N|--nam*)
+        optarg "name"      [] -t ;;
+    -P|--phy*)
+        optarg "physical"   -    ;;
+    -S|--sty*)
+        optarg "style"      - -n ;;         # numeric
+    -T|--tab*)
+        optarg "table"      -    ;;
+    -U|--uni*)
+        optarg "unique"     -    ;;
+    -W|--wor*)
+        optarg "work"       - -t ;;         # text
+
+    --help)                                 # input completion
+        CEN_OPT_VERB=1
+        [ "$2" = "verb" ] && run ;;
+
+    "")                                     # end of option parsing
+        # implied options
+        [ -n "$CEN_OPT_UNIQUE" -a -z "$CEN_OPT_PHYSICAL$CEN_OPT_ABSTRACT$CEN_OPT_DELETED" ] &&
+            CEN_OPT_LOGICAL="1"
+        [ "${#CEN_OPT_NAME[@]}" = 0 ] || CEN_OPT_SYMLINK=1
+        [ -n "$CEN_OPT_DELETED" ] && CEN_OPT_PHYSICAL=1
+
+        # exclusive options
+        optarg "$CEN_OPT_ABSTRACT$CEN_OPT_LOGICAL$CEN_OPT_PHYSICAL" - -m \
+               "--abstract --logical --physical|--deleted"
+        optarg "${CEN_OPT_LIST:-$CEN_OPT_TABLE}$CEN_OPT_SYMLINK" - -m \
+               "--list|--table --symlink"
+        optarg "$CEN_OPT_DELETED$CEN_OPT_LIST" - -m \
+               "--list --deleted"
+
+        # prettypath options
+        [ -n "$CEN_OPT_PHYSICAL" ] && DAT_PRETTY_MODE="-p"
+        [ -n "$CEN_OPT_LOGICAL"  ] && DAT_PRETTY_MODE="-c"
+        [ -n "$CEN_OPT_ABSTRACT" ] && DAT_PRETTY_MODE="-c -n"
+        case "$CEN_OPT_ERROR" in
+            error)  DAT_PRETTY_MODE+=" -e" ;;
+            fatal)  DAT_PRETTY_MODE+=" -e -f" ;;
+            *)      DAT_PRETTY_MODE+=" -e -q" ;;
+        esac
+        ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset -u "$CEN_NAME <option>... [<name> | <name>/path | <path>]..." \
+             -u "$CEN_NAME --deleted [--table] [<name> | <name>/path | <path>]..." \
+             -u "$CEN_NAME --list [--table] [--verbose]" \
+             -u - -u "$CEN_TITLE."
+
+    usageset -o - \
+             -o "-A --abstract        "$"make an abstract (network) path" \
+             -o "-D --deleted         "$"return trash folder(s)" \
+             -o "-E --error           "$"unavaillable paths are errors" \
+             -o "-F --fatal           "$"unavaillable paths are fatal" \
+             -o "-I --list            "$"list known shortcut names" \
+             -o "-K --symlink         "$"create symlink from cwd to folder" \
+             -o "-L --logical         "$"returned paths should be logical names" \
+             -o "-N --name    <link>  "$"link name, can be repeated" \
+             -o "-P --physical        "$"returned paths should be physical" \
+             -o "-S --style   <mask>  "$"modifies path output formatting" \
+             -o "-T --tabular         "$"generate tabular output" \
+             -o "-U --unique          "$"remove duplicated folders" \
+             -o "-W --work    <work>  "$"set working folder"
+
+    usageset -l $"arguments" \
+             -t "<name>       "$"shortcut name, to get a list run:"" $CEN_NAME --list" \
+             -t "<path>       "$"any path (must contain a '/' or follow '<name>')" \
+             -t "<link>       "$"link name, overrides short name if present" \
+             -t "<mask>       "$"bit mask, 1 := print - if missing, 2 := quoted" \
+             -t "<work>       "$"working folder, can be a short name"
+
+    usageset -l $"remark" \
+             -t $"The shortcut definitions are loaded from \"centauri-bash-lib\" which is" \
+             -t $"searched at \"~/.config\" \"~\" \"\$CEN_ROOT/default\" or \"/etc/default\"."
+
+    usageset -l $"examples" \
+             -t "$CEN_NAME --list --tabular --verbose        # "$"list all names/paths" \
+             -t "$CEN_NAME temp                              # "$"current user's TMPDIR" \
+             -t "$CEN_NAME --logical automount/alpha4_work   # "$"get a logical path" \
+             -t "$CEN_NAME --work=/tmp --symlink disk data   # "$"make symlinks ..." \
+             -t "$CEN_NAME --work=/tmp disk --name=d1 data --name=d2"
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

@@ -1,0 +1,1503 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2015-2024; BSD License"
+CEN_TITLE="Network Configuration Switching"
+
+### BEGIN INIT INFO
+# Provides:          centauriswitch
+# Required-Start:    $local_fs
+# Required-Stop:
+# X-Start-Before:    NetworkManager centauriroute centaurisecrets
+# Default-Start:     4 5
+# Default-Stop:
+# Short-Description: Network configuration switching
+### END INIT INFO
+
+# The double nature of centauriswitch|router|secrets:
+
+# These scipts are installed as (oneshot) services but are also run as tools.
+# Example: centaurisecrets (as service) runs centauriswitch (as a tool).
+# centauriroute is only used as a service in non-trivial cases, which mostly
+# start a wlan-service, configure a bridge/proxy or open a dialup connection.
+
+# When do centauriswitch|router|secrets get started?
+
+# centauriswitch:   runlevel2:  via centaurisysinit for some appliances
+#                   other >2 :  without 'centauriswitch=disabled' kernel parameter
+#
+# centauriroute:    level >=3:  ignored for 'centauriswitch=static'
+#                               ignored for 'centauriswitch=simple'
+#                               ignored for 'centauriswitch=smart'
+#                               but it runs for all other (non-trivial) configs
+#
+# centaurisecrets:  level >=3:  without 'centauriswitch=disabled' kernel parameter
+
+# Interface callbacks: removed for 'trivial' cases like static, simple, smart
+# without special configuration (server or appliances).
+
+# ------------------------------------------------------------------------------
+# The centauri networking setup consists of a group of cooperating scripts that
+# are run as a service, as a tool or both. Wether a script runs as a service is
+# controlled by kernel parameter 'centauriswitch=<mode>'. The order of service
+# starts is important, otherwise the boot process may hang (circular dependencies
+# around 'network.target' via ifup:
+#
+#   centauriswitch          sitches configuration files, starts services
+#   centauriroute           manage network devices and configuration
+#   centaurisecrets         network location awareness and loading secrets
+#   centauriroute-udev      helper for 'dialing' devices
+#   centaurifilter          the firewall and related things
+#
+# centauriswitch=<mode>  ...switch   ...route   ...secrets ...udev    ...filter
+# ------------------------------------------------------------------------------
+# disabled                  yes         -          -          -          -
+# static|simple|smart       yes         -          yes        -          -
+# switch|router|appliances  yes         yes        yes        [yes]      -
+# -not present-             -         -          -          -          yes
+# ------------------------------------------------------------------------------
+#
+# For 'centauriswitch=router' the following sequence may run (simplified):
+#
+#   [service]   centauriswitch      initialize early in boot process
+#      [tool]   centauriroute       read config, write centauriswitch file
+#      [tool]   centaurisecrets     reset secrets
+#      [tool]   centaurifilter      put firewall into 'wild' state
+#   [service]   centauriroute       bring up interfaces/bridge start dialer
+#      [tool]   ifup <dev>          calls centauriswitch via ifup hooks
+#      [tool]   centauriswitch      via hook, set ipv6 addr
+#   [service]   networking          runs 'ifup -a', NetworkManager
+#      [tool]   centauriswitch      via hook, set ipv6 addr
+#    [target]   networking          network ready, other service may start now
+#   [service]   centaurisecrets     check network location, run centauriswitch
+#      [tool]   centauriswitch      switch configs, start network targets
+#      [tool]   centaurifilter      put firewall into 'home' state
+#   [service]   centauri...-udev    dialup, may again run centauriswitch/filter
+#
+# ------------------------------------------------------------------------------
+# centauriswitch is invoked from the following callers:
+#
+# (1) systemd (or SysV) starts it as a service at early boot time
+#
+#     - run "centauriroute init" to parse the configuration file
+#     - create/remove hook files for interfaces
+#     - switch configuration files to local
+#     - run "centaurifilter wild|home" to init the firewall
+#     - run "centaurisecrets" to check for a master server
+#
+# (2) ifup/ifdown events from NetworkManager etc.
+#
+#     - this may run centaurisecrets
+#
+# (3) centaurisecrets to switch configuration after server poll:
+#
+#     (3.1) centauriswitch called via ifup/ifdown hook
+#     (3.2) centaurisecrets called by centauriswitch: ... polling server
+#     (3.2) centauriswitch called by centaurisecrets: ... switching
+#
+# IMPORTANT: centauriswitch does not run centaurisecrets before centaurisecrets
+# did run the 1st time as a service. This is implemented using centaurisecrets
+# status file and by checking the centaurisecrets.pid file. The reason is that
+# centauriswitch may want to start some network serivces (like nfs or samba)
+# which cannot be done before 'network.target' is reached. So centaurisecrets
+# as a service MUST NOT RUN BEFORE 'network.target'.
+# ------------------------------------------------------------------------------
+# The centauri usage of dnsmasq
+#
+# centaurinetcfg manages /etc/resolv.conf and /etc/dnsmasq.d . The resolvconf
+# package is incompatible and must be removed/disabled.
+#
+#   (1) centaurinetcfg creates a static /etc/resolv.conf
+#   (2) NetworkManager/dhclient write /etc/resolv.conf
+#   (3) centaurinetcfg sets /etc/dnsmasq.d/centauri_dnsserv
+#       from /etc/resolv.conf and runs dnsmasq
+#   (4) like mode (2) with dnsmasq running with a custom configuration file
+#
+# Dnsmasq is used in one of 4 ways:
+#
+#   (1) no dnsmasq running
+#   (2) dnsmasq on server
+#   (3) dnsmasq on all interfaces
+#   (4) dnsmasq on bridge only
+#
+# The actual state depends on the centauriswitch=xxxx mode:
+#
+#   disabled        -not started-
+#   static          started for master server
+#   simple/smart    -not started-
+#   switch          -not started-
+#   router          run dnsmasq globally, private resolv.conf from dhcp
+#   router:repeater run dnsmasg only on the inner network (the brigde)
+# ------------------------------------------------------------------------------
+
+# Import the bash library, set name and version
+PATH+=":/usr/local/bin:${0%/*}" . _centauri_bash_lib -a -d -f -v -y - '0.41:2' || exit 2
+
+CEN_SVC_NOROOT=1        # allow non-root user actions
+
+# don't run as a service after 'enter' was used
+inhibit "Inhibited due to 'enter' command"
+
+DAT_DIR_RUN="$CEN_ROOT/transient"
+
+# Extra option data
+CEN_OPT_OUTPUT=     # see --output, '-' for stdout or an existing folder
+CEN_OPT_NOHOOK=     # see --nohook
+
+# Data (@ replaced by server name, + replaced by effective config)
+DAT_SUFF_LOCAL="+ local client"
+DAT_SUFF_GUEST="+ @ guest local"
+DAT_SUFF_CLIENT="+ @ client local"
+DAT_SUFF_MASTER="@ master client local"
+DAT_SUFF_SLAVE="@ slave master client local"
+
+DAT_DOSERVICE_CNT=      # counter for do_service
+
+DAT_SERV_COUNT=         # flag for do_trigger
+                        # shared with centauriroute
+DAT_DEFAULT_FILE="$CEN_ROOT/default/centauriswitch"
+
+DAT_WLAN_COUNTRY=       # see do_country
+
+# Things read from status file only, see centauriroute
+# DAT_SWITCH_MODE=
+# DAT_SWITCH_CONF=
+# DAT_SWITCH_...
+
+# set umask to give all created files 0644 protection
+umask 022
+#context -v 2      ##### DEBUG
+
+# ------------------------------------------------------------------------------
+# run 'iw reg set ...'
+# ------------------------------------------------------------------------------
+do_country() {
+    [ "${DAT_WLAN_COUNTRY:--}" = '-' ] && return
+    sysrun -e -p -- iw reg set "$DAT_WLAN_COUNTRY"
+}
+
+# ------------------------------------------------------------------------------
+# Create a dhcp callback script: <entr> <exit>
+# ------------------------------------------------------------------------------
+do_dhcp() {
+    # we are incompatible with resolvconf
+    do_remove "${1%/*}/resolvconf" "${2%/*}/resolvconf" "$2"
+
+    # dhclient uses /bin/sh to source this file
+    netfile "$1" 755 <<!EOF
+# dhcp exit-hook for $CEN_NAME - autogenerated, do not modify!
+# $CEN_LEGAL
+
+# late binding (bound), bind at dhcp start (reboot)
+if [ "\$reason" = "BOUND" -o "\$reason" = "REBOOT" ] ; then
+    [ -x "$CEN_TOOLS/$CEN_NAME" ] &&
+        $CEN_TOOLS/$CEN_NAME --syslog=2 up \${interface:--} dhcp-bound &
+
+# gave up to get a lease
+elif [ "\$reason" = "FAIL" ] ; then
+    [ -x "$CEN_TOOLS/$CEN_NAME" ] &&
+        $CEN_TOOLS/$CEN_NAME --syslog=2 up \${interface:--} dhcp-fail &
+
+# ignore
+    :
+fi
+
+# done
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Create an interface up/down callback script: <path> up|down
+# ------------------------------------------------------------------------------
+do_ifupdown() {
+    local base="${1%/*}"
+    do_remove "$base/avahi-autoipd" "$base/ifmetric" "$base/resolved"
+
+    # NetworkManager down (via dbus) is handled via do_predown
+    netfile "$1" 755 <<!EOF
+#!$BASH
+# If$2 script for $CEN_NAME - autogenerated, do not modify!
+# $CEN_LEGAL
+
+# We only handle 'inet' (ipv6 stuff is generated from ipv4). NetworkManager
+# sometimes only generates an 'inet6' event but no 'inet' event - set ipv6
+# to 'ignored' for interfaces mangaged by centauri plus NetworkManager ...
+[ "\$ADDRFAM" = 'inet' ] || exit 0
+
+# only use NM and/or dhcp-client, ignore events from if$2
+[ "\$METHOD" = 'dhcp' ] && exit 0
+
+# ignore loopback
+[ "\$IFACE" = 'lo' ] && exit 0
+
+# quit if $CEN_NAME is not installed
+[ -x "$CEN_TOOLS/$CEN_NAME" ] || exit 0
+
+# source the $CEN_NAME script
+. "$CEN_TOOLS/$CEN_NAME" --syslog=2 $2 "\$IFACE" "\$METHOD"
+
+# done
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Create an wvdial up/down callback script: <path> up|down
+# ------------------------------------------------------------------------------
+do_pppupdown() {
+    netfile "$1" 755 <<!EOF
+#!$BASH
+# If$2 script for $CEN_NAME - autogenerated, do not modify!
+# $CEN_LEGAL
+
+# centauriswitch mode bridge/router only ...
+[ -f "$CEN_ROOT/transient/centauriroute-mode-bridge" -o \\
+  -f "$CEN_ROOT/transient/centauriroute-mode-router" ] || exit 0
+
+# quit if $CEN_NAME is not installed
+[ -x "$CEN_TOOLS/$CEN_NAME" ] || exit 0
+
+# source the $CEN_NAME script
+. "$CEN_TOOLS/$CEN_NAME" --syslog=2 $2 "\$1" 'pppd'
+
+# done
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# run centaurinetcfg after config change: -no args-
+# ------------------------------------------------------------------------------
+do_netcfg() {
+    [ "$CEN_ROOT/default/centaurinetcfg" -nt "$CEN_ROOT/persistent/centaurinetcfg" ] || return
+    message "Running network setup"
+    embed centaurinetcfg setup
+}
+
+# ------------------------------------------------------------------------------
+# create or delete override files: [-i]
+# ------------------------------------------------------------------------------
+do_override() {
+    local item file data list
+
+    # init: remove all but those flagged by empty data
+    if [ "$1" = '-i' ] ; then
+        matchpath -a list -e -- "$CEN_ROOT/persistent"/*-override
+        for item in "${list[@]}" ; do
+            file="${item##*/}" ; file="${item%-override}"
+            # search override list, simple file name prevents from deletion
+            listsearch -i DAT_SWITCH_OVERRIDE -- "$file" && continue
+            remove -- "$item"
+         done
+    fi
+
+    for item in "${DAT_SWITCH_OVERRIDE[@]}" ; do
+        file="${item%% *}" ; data="${item#* }" ; [ "$item" = "$data" ] && data=
+        file="$CEN_ROOT/persistent/$file-override"
+        case "$data" in
+        '') ;;
+        -)  remove -- "$file" ;;
+        *)  create -t -v data -- "$file"
+        esac
+    done
+}
+
+# ------------------------------------------------------------------------------
+# NetworkManager pre-down hook
+# ------------------------------------------------------------------------------
+do_predown() {
+    # NetworkManager down (no cable) is handled via do_ifupdown
+    netfile "$1" 755 <<!EOF
+#!$BASH
+# NM pre-down script for $CEN_NAME - autogenerated, do not modify!
+# $CEN_LEGAL
+
+IFACE="\$1"
+[ "\$2" = 'pre-down' ] || exit 0
+
+# ignore loopback
+[ "\$IFACE" = 'lo' ] && exit 0
+
+# quit if centauriswitch is not installed
+[ -x "$CEN_TOOLS/$CEN_NAME" ] || exit 0
+
+# source the centauriswitch script
+. "$CEN_TOOLS/$CEN_NAME" --syslog=2 down "\$IFACE" 'nm-dispatcher'
+
+# done
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Remove incompatible callbacks: <file>...
+# ------------------------------------------------------------------------------
+do_remove() {
+    while [ $# -gt 0 ] ; do
+        if [ -e "$1" ] ; then
+            warning -a "removing incompatible hook:" "$1"
+            remove -s -- "$1"
+        fi
+        shift
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Call centaurisecrets: [<action> [[<host>]|- [<iface>]]]
+#
+# Return:  0=ok, state changed   1=ok, no state change   2=failure
+# ------------------------------------------------------------------------------
+do_secrets() {
+trace "do_secrets CEN_OPT_NOHOOK=$CEN_OPT_NOHOOK: $*"
+    local actn="${1:-client}"
+    local iopt ; [ -n "$2" ] && iopt="--interface $2"
+    local curr=' - '
+
+    # load current status
+    if nettemp 'centaurisecrets' ; then
+        if [ "$actn" != 'init' ] ; then
+            . "$_nettemp"
+            curr="$CEN_SECRETS_HOST - $CEN_SECRETS_WHAT"
+        fi
+    fi
+
+    # Option --nohook, called from centaurisecrets
+    if [ -n "$CEN_OPT_NOHOOK" ] ; then
+        # role cannot be set here
+        netserver -w - "$CEN_SECRETS_WHAT" "$CEN_SECRETS_HOST"
+        return 0
+    fi
+
+    # call centaurisecrets and get status
+    embed -v centaurisecrets --nohook $iopt $actn
+    if ! [ -e "$_nettemp" ] ; then
+        error "No status file after centaurisecrets: $actn"
+        return 2
+    fi
+
+    # update network status (preliminary, see 'do_update')
+    . "$_nettemp"
+    netserver -w - "$CEN_SECRETS_WHAT" "$CEN_SECRETS_HOST"
+    [ "$curr" != "$CEN_SECRETS_HOST - $CEN_SECRETS_WHAT" ]      # return status
+}
+
+# ------------------------------------------------------------------------------
+# Check if I am master or slave of <host>: <host>
+#
+# Returns false if computer is not a server. A server can only be in mode
+# master or slave.
+#
+# For the master the generic server ip is added to interface 'eth0'
+# ------------------------------------------------------------------------------
+do_server() {
+    [ -z "$1" ] && set -- "$HOSTNAME"               # local mode?
+
+    # Am I a server?
+    if   [ "$HOSTNAME" = "${CEN_NET_SERVERS[0]}" ] ; then
+        CEN_NET_ROLE="PRIMARY"
+    elif [ "$HOSTNAME" = "${CEN_NET_SERVERS[1]}" ] ; then
+        CEN_NET_ROLE="SECONDARY"
+    else
+        trace -a "Not master/slave - I am not a server"
+        return 1
+    fi
+
+    # cannot become server
+    if [ "$DAT_SWITCH_MODE" = 'simple' -o "$DAT_SWITCH_MODE" = 'smart' ] ; then
+        warning "Cannot run as master in '$DAT_SWITCH_MODE' interface mode"
+        CEN_NET_ROLE=
+        return 1
+    fi
+
+    # Am I a master or slave?
+    local hnam="${1%%.*}"
+    local hdom ; [ "$hnam" = "$1" ] || hdom="${1#*.}"
+    [ "$hnam" = "localhost" ] && hnam="$HOSTNAME"
+
+    # name must match to be a master
+    if [ "$hnam" != "$HOSTNAME" ] ; then
+        message -a "I am slave of '$hnam'"
+        CEN_NET_MODE="SLAVE"
+
+    # cannot be a master if the domain does not match
+    elif [ -n "$hdom" -a "$hdom" != "$CEN_NET_DOMAIN" ] ; then
+        trace -a "Not master of '$hnam.$hdom' - domain mismatch"
+        CEN_NET_MODE="SLAVE"
+
+    # yes, this is a master
+    else
+        message -a "I am master of '$hnam' - role=$CEN_NET_ROLE"
+        CEN_NET_MODE="MASTER"
+        # attach generic server address
+        nethost "$CEN_NET_SERVER_GEN"
+        if [ "${_nethost_ip:--}" != '-' ] ; then
+            nettemp && . $_nettemp
+            embed -v centauriroute -t addr add "$CEN_NET_SERVER_GEN"
+        fi
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Create an interface up/down and dhcp callback scripts: [-r|-d|-x]
+# ------------------------------------------------------------------------------
+do_setup() {
+    local ifup="/etc/network/if-up.d/$CEN_NAME"
+    local ifdn="/etc/network/if-post-down.d/$CEN_NAME"
+    local dent="/etc/dhcp/dhclient-enter-hooks.d/$CEN_NAME"
+    local dexi="/etc/dhcp/dhclient-exit-hooks.d/$CEN_NAME"
+    local down="/etc/NetworkManager/dispatcher.d/pre-down.d"
+    [ -d "$down" ] && down+="/$CEN_NAME" || down=
+    local pppu='/etc/ppp/if-up.local'
+    local pppd='/etc/ppp/if-down.local'
+
+    # remove callbacks
+    if [ "$1" = "-r" -o "$1" = "-x" ] ; then
+        trace "Removing interface up/down and dhcp callbacks"
+        remove "$ifup" "$ifdn" "$dent" "$down" "$pppd" "$pppu"
+        [ "$1" = "-r" ] && return
+    elif [ "$1" != '-d' -a -e "$dent" ] ; then
+        trace "Removing dhcp callback script"
+        remove "$dent"
+    fi
+
+    # create dhcp callback
+    if [ "$1" = '-d' -o "$1" = '-x' ] ; then
+        [ "$dent" -nt "$0" ] && return                  # script is current
+        trace "Create dhcp callback script"
+        do_dhcp "$dent" "$dexi"
+        [ "$1" = '-x' ] && do_ifupdown "$ifup" 'up'
+        return
+    fi
+
+    # generate pppd callbacks only of ppp is in interface list
+    if [ -d '/etc/ppp' ] && [[ " $DAT_SWITCH_IFACES" == *\ ppp* ]] ; then
+        if [ "$DAT_DEFAULT_FILE" -nt "$pppu" -o "$0" -nt "$pppu" ] ; then
+            message -a "Updating wvdial up/down callbacks"
+            do_pppupdown "$pppu" 'up'
+            do_pppupdown "$pppd" 'down'
+        fi
+    fi
+
+    # check if callbacks are current
+    if [ -n "$CEN_OPT_FORCE" ] ; then
+        :
+    elif ! [ "$DAT_DEFAULT_FILE" -nt "$ifup" -o "$0" -nt "$ifup" ] ; then
+        if [ -e "$ifdn" ] && [ -z "$down" -o -e "$down" ] ; then
+            trace "Interface up/down callbacks are current"
+            return
+        fi
+    fi
+
+    message "Updating interface up/down callbacks"
+    do_ifupdown "$ifup" 'up'
+    do_ifupdown "$ifdn" 'down'
+    [ -n "$down" ] && do_predown "$down"
+}
+
+# ------------------------------------------------------------------------------
+# switch files/folders by suffix: <server> <suffixes> <file>...
+# ------------------------------------------------------------------------------
+do_suffixes() {
+    local serv="$1" ; [ "$1" = 'local' ] && serv=
+    # translate @ symbol
+    local file suff="${2//@/$serv}"
+    local conf="${DAT_SWITCH_CONF:-$DAT_SWITCH_MODE}"
+    suff="${suff//+/$conf}"
+    shift ; shift
+    for file in "$@" ; do
+        netlink -n "$file" '.' $suff || continue    # get matching suffix
+        netlink -m "$file" '.' "$_netlink_suff"     # symlink, opt. moving target
+        do_trigger "$_netlink"                      # conditional service restart
+    done
+}
+
+# ------------------------------------------------------------------------------
+# start/stop master services: <command> [-|+|<wait>] [@|+|-]<service>...
+#
+# Arguments:    command     start|stop|restart
+#                           If a <service> name is prefixed with '@' this
+#                           service is restarted instead of started. A '+' will
+#                           only start but never stop. A '-' will only stop but
+#                           never start a service
+#               wait        [s] time to wait Before action
+#               service     plain service name (NOT a unit name)
+# ------------------------------------------------------------------------------
+do_service() {
+    local serv scur scmd="$1" snob ; shift
+    local wait=0
+    case "${1:--}" in
+    -)      shift ;;
+    +)      snob='-n' ; shift ;;        # non-blocking
+    =)      shift
+            if runservice status runlevel2 ; then
+                trace -a "Skipped in runlevel2:" "$*"
+                return
+            else
+                snob='-n'               # non-blocking
+
+            #if runservice status multi-user || runservice status runlevel3 ; then
+            #    snob='-n'               # non-blocking
+            #else
+            #    trace -a "Skipped in runlevel2:" "$*"
+            #    return
+            fi ;;
+    [0-9]*) wait="$1" ; shift ;;
+    esac
+    [ "${DAT_DOSERVICE_CNT:-0}" = 0 ] && wait=0
+    DAT_DOSERVICE_CNT=
+
+    # start stop services
+    for serv in "$@" ; do
+        [ -z "$serv" ] && continue
+        [ "$wait" != 0 ] && timer -w "$wait" ; wait=0
+        if [ "${serv:--}" = '-' ] ; then
+            trace -a -c "Service $scmd" "[wait 5s] $serv" ; timer -w 5
+            continue
+        fi
+
+        # handle @/+/- prefix
+        scur="$scmd"
+        if [ "${serv::1}" = '@' ] ; then
+            serv="${serv:1}"
+            [ "$scmd" = "start" ] && scur='restart'
+        elif [ "${serv::1}" = '+' ] ; then
+            serv="${serv:1}"
+            [ "$scmd" = "stop" ] && continue    # ignore on stop
+        elif [ "${serv::1}" = '-' ] ; then
+            serv="${serv:1}"
+            [ "$scmd" = "stop" ] || continue    # ignore all but stop
+            scur="stop"
+        fi
+
+        # restart a service only if already started
+        if [ "$scmd" = 'restart' ] ; then
+            runservice -s $snob status "$serv" || continue
+        fi
+
+        # service start/stop/restart
+        if runservice -v -s $snob "$scur" "$serv" ; then
+            ((DAT_DOSERVICE_CNT += 1))
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# switch files/folders: [<conf>|- [<suffixes> [--keep]]]
+# ------------------------------------------------------------------------------
+do_switch() {
+    local netm conf="${1:--}" suff="${2:-$DAT_SUFF_LOCAL}"
+    [ "$conf" = "localhost" ] && conf="$HOSTNAME"
+    [ "$conf" = '-' ] && conf="local"
+    message "Switch configurations to: $conf"
+
+    do_override                                 # create override files
+
+    local xdir xfil
+    local list=(${DAT_SWITCH_FILES[@]})         # globber, no quotes!
+    for xdir in ${DAT_SWITCH_DIRS[@]} ; do      # globber, no quotes!
+        for xfil in $xdir/*.cfg $xdir/*.conf $xdir/*.conf.xml $xdir/*.config ; do
+            [[ $xfil == */\*\.* ]] && continue
+            [[ $xfil == *~ ]] && continue
+            list+=("$xfil")
+        done
+    done
+    do_suffixes "${conf%%.*}" "$suff" "${list[@]}"
+
+    # more switches done here...
+    embed -v centaurinetcfg -- "$3" switch "$conf"
+
+    if pidfile -c 'centaurimounter' ; then
+        [ "$conf" = "local" ] && netm='disconnect' || netm='connect'
+        message "Notify centaurimounter:" "$netm"
+        embed centaurimounter network "$netm"
+    fi
+    embed centaurisession --quiet network
+
+    # to run a function in background we need to init tmpfile() for sysrun() ...
+    tmpfile -f -n
+
+    # don't start services initially
+    local irun=0 imax="${DAT_SERV_COUNT:-0}"
+    if [ "$CEN_ACTION" = "start" ] ; then
+        imax=0
+
+    # start/stop server services
+    elif [ "$CEN_NET_MODE" = "MASTER" ] ; then
+        do_service stop  - "${DAT_SWITCH_SLAVE[@]}"
+        do_service start + "${DAT_SWITCH_MASTER[@]}" & CEN_QUIT_WSUB=1
+    elif [ "$CEN_NET_MODE" = "SLAVE" ] ; then
+        do_service stop  - "${DAT_SWITCH_MASTER[@]}"
+        do_service start + "${DAT_SWITCH_SLAVE[@]}" & CEN_QUIT_WSUB=1
+
+    # this is not a server, start/stop client services
+    elif [ "$CEN_NET_MODE" = "CLIENT" ] ; then
+        do_service stop  - "${DAT_SWITCH_LOCAL[@]}" "${DAT_SWITCH_GUEST[@]}"
+        do_service start = "${DAT_SWITCH_CLIENT[@]}" & CEN_QUIT_WSUB=1
+    elif [ "$CEN_NET_MODE" = "GUEST" -a -n "$DAT_SWITCH_GUEST" ] ; then
+        do_service stop  - "${DAT_SWITCH_CLIENT[@]}" "${DAT_SWITCH_LOCAL[@]}"
+        do_service start = "${DAT_SWITCH_GUEST[@]}" & CEN_QUIT_WSUB=1
+    else
+        do_service stop  - "${DAT_SWITCH_CLIENT[@]}" "${DAT_SWITCH_GUEST[@]}"
+        do_service start + "${DAT_SWITCH_LOCAL[@]}" & CEN_QUIT_WSUB=1
+    fi
+
+    # restart services (not if service starts)
+    local serv svcs=()
+    while [ $irun -lt $imax ] ; do
+        if [ -z "${DAT_SWITCH_PATTERN[$irun]}" ] ; then
+            if [ "$serv" != "${DAT_SWITCH_SERVICE[$irun]}" ] ; then
+                serv="${DAT_SWITCH_SERVICE[$irun]}" ; svcs+=("$serv")
+            fi
+        fi
+        ((irun += 1))
+    done
+
+    [ -n "$serv" ] &&
+        if [ "$CEN_ACTION" = "up" -o "$CEN_ACTION" = "down" ] ; then
+            do_service restart + "${svcs[@]}" &
+        else
+            do_service restart + "${svcs[@]}"
+        fi
+
+    # let centaurimounter wait for unmount (errors ignored)
+    [ "$netm" = 'disconnect' ] && embed -n centaurimounter --quiet network busy
+
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Check service restart trigger: <path>
+# ------------------------------------------------------------------------------
+do_trigger() {
+    if [ -z "$DAT_SERV_COUNT" ] ; then
+        DAT_SERV_COUNT="${#DAT_SWITCH_SERVICE[@]}"
+        if [ "$DAT_SERV_COUNT" != "${#DAT_SWITCH_PATTERN[@]}" ] ; then
+            error "Service restart misconfigured"
+            DAT_SERV_COUNT=0
+            return 2
+        fi
+    fi
+    [ -n "$1" ] || return 1
+
+    local irun=0
+    while [ $irun -lt $DAT_SERV_COUNT ] ; do
+        if [ -n "${DAT_SWITCH_PATTERN[$irun]}" ] ; then
+            [[ "$1" == ${DAT_SWITCH_PATTERN[$irun]}* ]] && DAT_SWITCH_PATTERN[$irun]=
+        fi
+        ((irun += 1))
+    done
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Update services, firewall and switch files: [<server> [<mode> [<role>]]]
+# ------------------------------------------------------------------------------
+do_update() {
+    # get parameters
+    if [ "$1" = '-' ] ; then            # keep CEN_NET_xxx settings
+        :
+    elif [ "$1" = "local" ] ; then      #
+        CEN_NET_SERVER= ; CEN_NET_MASTER=
+        CEN_NET_MODE= ; CEN_NET_ROLE=
+    elif [ -n "$1" ] ; then             # take state from args
+        CEN_NET_SERVER="$1" ; CEN_NET_MASTER=
+        [ "$CEN_NET_SERVER" = "localhost" ] && CEN_NET_SERVER="$HOSTNAME.$CEN_NET_DOMAIN"
+        [ "$2" = "GUEST" ] || CEN_NET_MASTER="$CEN_NET_SERVER"
+        CEN_NET_MODE="$2" ; CEN_NET_ROLE=
+    else                                # (re-)read status file
+        netserver
+    fi
+
+    # am I a server?
+    do_server "${CEN_NET_MASTER:-$CEN_NET_SERVER}"
+
+    # get suffixes and firewall state
+    local keep suff csss serv="$CEN_NET_MASTER" fire='home'
+    case "$CEN_NET_MODE" in
+    MASTER)     suff="$DAT_SUFF_MASTER"
+                ;;
+    SLAVE)      suff="$DAT_SUFF_SLAVE"
+                ;;
+    CLIENT)     suff="$DAT_SUFF_CLIENT"
+                ;;
+    GUEST)      serv="$CEN_NET_SERVER"
+                suff="$DAT_SUFF_GUEST"
+                csss=1 ; keep='--keep'
+                ;;
+    *)          csss=1 ; fire='wild' ; CEN_NET_MODE='SINGLE'
+    esac
+
+    # update network status file
+    netserver -w "${3:-$CEN_NET_ROLE}" "$CEN_NET_MODE" "${CEN_NET_MASTER:-$CEN_NET_SERVER}"
+
+    # update firewall state
+    local curr
+    nettemp 'centaurifilter'
+    if   [ "${CEN_NET_FILE_FILT}_home" -ef "$_nettemp" ] ; then
+        curr='home'
+    elif [ "${CEN_NET_FILE_FILT}_wild" -ef "$_nettemp" ] ; then
+        curr='wild'
+    fi
+    if [ "$curr" = "$fire" ] ; then
+        trace -a "Firewall state not changed: $fire"
+    else
+        trace -a "Firewall state changing to: $fire"
+        embed -v centaurifilter "$fire"
+    fi
+
+    # clear sssd cache
+    if [ -n "$csss" ] && [ -d "/var/lib/sss/pubconf" ] ; then
+        trace -a "Clearing sssd cache"
+        remove -d "/var/lib/sss/pubconf/"*
+    fi
+
+    # run file switching and service (re)starts
+    do_switch "$serv" "$suff" $keep
+}
+
+# ------------------------------------------------------------------------------
+# Set wlan reg domain: [<code>]
+# ------------------------------------------------------------------------------
+actionCountry() {
+    [ "${1:--}" != '-' ] && DAT_WLAN_COUNTRY="$1"
+    [ -z "$DAT_WLAN_COUNTRY" ] && nettemp && . "$_nettemp"  # read config
+    if [ "${DAT_WLAN_COUNTRY:--}" = '-' ] ; then
+        message "Not setting wlan regulatory domain" ; return
+    else
+        message "Setting wlan regulatory domain:" "$DAT_WLAN_COUNTRY"
+        do_country
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# DHCP action, run dhclient in background: up|down <iface>
+# ------------------------------------------------------------------------------
+actionDhcp() {
+    local cpid ifce pref
+    netiface -k -s ifce -e "$2" || return 1
+    pref="$DAT_DIR_RUN/dhclient.$ifce"
+    pidfile -c -s cpid "dhclient.$ifce" || cpid=        # dhclient already running?
+
+    # check if ethernet if has carrier: <ifce>
+    ___carrier() {
+        [ "${1::1}" = 'e' ] || return 0                 # only check ethernet
+        nettool -d "$1" -i link set up || return 0      # cannot check
+        for tick in 0.2 0.2 0.3 0.3 0.5 1 1 2 2 3 3 '' ; do     # give it some time to settle
+            [ -z "$tick" ] && break
+            timer -w "$tick"
+            readline -e -i "/sys/class/net/$1/carrier" || return
+            [ "$CEN_READLINE" = 0 ] || return 0         # have carrier now
+        done
+        return 1
+    }
+
+    # run client helper: <mesg> '-u|-w|-x'|<start-opt>...
+    ___dhclient() {
+        local tick mesg="$1" opts=('-nw') ; shift
+        if [ "$1" = '-x' ] ; then
+            system -q dhclient -x -pf "$pref.pid" -lf "$pref.leases"
+            remove "$pref".*
+        else
+            remove "$pref.pid"
+            if ! ___carrier "$ifce" ; then              # ethX must have carrier
+                if [ "$1" = '-w' ] ; then
+                    warning -p "No cable connected to '%s', dhclient slowly tries again" "$ifce"
+                    opts+=('--decline-wait-time' 180)
+                else
+                    warning -p "No cable connected, you may have to re-run 'ifup %s' manually" "$ifce"
+                    opts+=('-1')
+                fi
+            fi
+
+            # create dhclient config and start dhclient
+            ___dhconfig "$pref.conf" || return
+            if ! system -p dhclient -4 -cf "$pref.conf" -pf "$pref.pid" \
+                                    -lf "$pref.leases" "${opts[@]}" "$ifce" ; then
+                message "$mesg: $ifce [error $?]" ; return
+            fi
+            # move dhclient to root cgroup to avoid that it gets killed early
+            [ -s "$pref.pid" ] && background -c "$pref.pid" '/'
+        fi
+        message "$mesg: $ifce"
+    }
+
+    # create a dhclient conf to pass a client-id to the server
+    ___dhconfig() {
+        [ -e "$1" ] && return 0
+        local hsti="$HOSTNAME" keyw line fhantext=()
+        case "$ifce" in
+        e*0)    hsti+='-0' ;;
+        w*0)    hsti+='-1' ;;
+        e*1)    hsti+='-2' ;;
+        w*1)    hsti+='-3' ;;
+        esac
+
+        redirect -v fhan -i '/etc/dhcp/dhclient.conf' || return 1
+        while read -u "$fhan" keyw line ; do
+            [ "${keyw:-#}" = '#' ] && continue
+            [ "$keyw" = 'send' ] && [ "${line::10}" = 'host-name ' ] && continue
+            text+=("$keyw $line")
+        done
+        text+=("send dhcp-client-identifier \"\\x00$hsti\";")
+        text+=("send host-name \"$HOSTNAME\";")
+        redirect -h "$fhan"                         # close input file
+        create -t -v text -h - -- "$1"              # return status
+    }
+
+    case "$1" in
+    up|wait)
+            if [ -n "$cpid" ] ; then
+                message "dhcp client already active:" "$2" "(PID $cpid)"
+                return
+            elif [ ! -e "/sys/class/net/$ifce" ] ; then
+                error -p "Interface '%s' not found, not starting dhclient" "$ifce"
+                return
+            fi
+
+            # for a wlan iface we might have to set a country code
+            nettemp && . "$_nettemp"                # read config
+            [ "${2::2}" = 'wl' ] && do_country
+
+            # dhcp up can be called very early at boot time via ifup/interfaces
+            do_setup -d                             # create callback script
+            if nettool -d "$ifce" exists ; then
+                ___dhclient "Started dhcp client" "-${1::1}"
+            else
+                error "No such interface:" "$ifce" ; return
+            fi
+            ;;
+    down)   [ -n "$cpid" ] &&
+                ___dhclient "Terminated dhcp client" -x
+            ;;
+    sta*)   if [ -n "$cpid" ] ; then
+                message "dhcp client active:" "$2" "(PID $cpid)"
+            else
+                message "dhcp client not active:" "$2"
+            fi ; return
+            ;;
+    *)      invoke -e "Invalid argument:" "$1" ; return ;;
+    esac
+    error -c                            # make ifup/ifdown happy
+}
+
+# ------------------------------------------------------------------------------
+# enter a switch state: <mode> <conf>
+# ------------------------------------------------------------------------------
+actionEnter() {
+    local mode="${1%%:*}" conf="${1#*:}" rrou rsec rfil oset
+    [ "$conf" = "$1" ] && conf="$2"
+    nettemp && . "$_nettemp"
+    case "$mode" in
+    dis*)   mode='disabled' ; rfil=1 ; oset='-r' ;;
+    sta*)   mode='static'   ; rsec=1 ; oset='-r' ; [ -n "$conf" ] && frou=1 ;;
+    sim*)   mode='simple'   ; rsec=1 ;;
+    sma*)   mode='smart'    ; rsec=1 ;;
+    swi*)   mode='switch'   ; rrou=1 ; rsec=1 ; oset='-x' ;;
+    rou*)   mode='router'   ; rrou=1 ; rsec=1 ; oset='-x' ;;
+    cur*)   printf "%s\n" "$DAT_SWITCH_MODE${$DAT_SWITCH_CONF:+:}$DAT_SWITCH_CONF"
+            return ;;
+    *)      invoke -e "'%s' is not a valid mode" "$mode" ; return
+    esac
+
+    # current mode?
+    if [ "$DAT_SWITCH_MODE:$DAT_SWITCH_CONF" = "$mode:$conf" ] ; then
+        message "Mode is current:" "$mode${conf:+:}$conf"
+        [ -z "$CEN_OPT_FORCE" ] && return
+    fi
+    do_override -i                              # init override files
+
+    # Stop services
+    local item fldr
+    folder -s fldr -g -b 'transient'
+    for item in 'centaurifilter' 'centaurisecrets' 'centauriroute' ; do
+        [ -e "$fldr/$item.pid" ] && do_service stop "$item"
+        [ -e "$fldr/$item.run" ] && embed -v "$item" stop
+    done
+    do_service stop 'networking' 'NetworkManager'
+    for item in 'eth0' 'eth1' 'wlan0' 'wlan1' ; do
+        nettool -d "$item" down
+    done
+    remove "$fldr/centauriswitch"
+    message -p "Entering mode '%s'" "$mode${conf:+:}$conf"
+
+    # Use centauriroute-udev@<mode> to asure networking.target is ready
+    do_service start "centauriroute-udev@$mode:$conf" || return
+    actionStart "$mode" "$conf"
+
+    [ "$mode" = 'disabled' ] || do_service start 'networking'
+    [ "$mode" = 'smart' ] && do_service start 'NetworkManager'
+    [ -n "$rrou" ] && embed -v 'centauriroute' start
+    [ -n "$rsec" ] && embed -v 'centaurisecrets' auto
+}
+
+# ------------------------------------------------------------------------------
+# monitor network interfaces: [<ifce>...]
+# ------------------------------------------------------------------------------
+actionMonitor() {
+    ___monlink() {
+        local flag="$1" ; shift
+        local ifce="${1%:}" addr carr
+        case "$2" in
+            inet)   addr="$3" ; shift 3 ;;
+            inet6)  addr="$3" ; shift 3 ;;
+            \<*NO-CARRIER*\>)
+                    carr='off' ; shift ;;
+            \<*\>)  carr='on'  ; shift ;;
+            *)      shift     ;;
+        esac
+        if [ -n "$addr" ] ; then
+            if [ "$flag" = '-' ] ; then
+                message    -p "Del: %-8s %s" "$ifce" "$addr"
+            else
+                message    -p "Adr: %-8s %s" "$ifce" "$addr"
+            fi
+        elif [ -n "$carr" ] ; then
+            message    -p "Car: %-8s %s" "$ifce" "$carr"
+        else
+            message -i -p "Lnk: %-8s %s" "$ifce" "$*"
+        fi
+        trace -i "              $*"
+    }
+    ___monitor() {
+        local wrds
+        while : ; do
+            read -a wrds -r || break
+            case "${wrds[0]}" in
+                Deleted)
+                        read -r more
+                        ___monlink - "${wrds[@]:2}" -- "$more" ;;
+                ?:|??:) read -r more
+                        ___monlink + "${wrds[@]:1}" -- "$more" ;;
+                *)      trace -i "Msg:" "${wrds[*]}"
+            esac
+        done
+        error "Read loop EOF"
+    }
+    syspipe -b 'ip' -c + -d ___monitor -t -- monitor link address
+}
+
+# ------------------------------------------------------------------------------
+# start/stop master services: <command> [<wait>|-|+] <service>...
+# ------------------------------------------------------------------------------
+actionService() {
+    nettemp && . "$_nettemp"
+    do_service "$@"
+}
+
+# ------------------------------------------------------------------------------
+# Service actions:
+#
+# Modes:    disabled    do not run centauri(filter,route,secrets) services
+#           static      (server) centaurisecrets is service, can have bridge
+#           simple      (client) no services
+#           smart       (client) no services, switch generic host address
+#           switch      centauriroute is service, has bridge
+#           router      centauriroute is service, has bridge, runs dnsmasq
+# ------------------------------------------------------------------------------
+actionStart() {
+    local run_route run_secrets run_setup mesg flib is_disabled
+    local filter_mode='wild'
+
+    if [ "$CEN_ACTION" = 'enter' ] ; then
+        nettemp  -c "$CEN_NAME-disable"     # inhibit start via dependency
+    fi #else
+        # parse centauriswitch kernel arg, create centauriswitch status file
+        embed -v centauriroute -t init "$@" || return
+   # fi
+    nettemp && . "$_nettemp"
+    do_override -i                          # init override files
+
+    # what mode?
+    case "$DAT_SWITCH_MODE" in
+    dis*)       run_setup='-r'              # no interface callbacks (no dhcp)
+                run_secrets='-r'            # do not runc secrets
+                is_disabled=1
+                mesg="No iface config switching in 'disable' mode"
+                [ -z "$*" ] && mesg+=" (kernel parameter)"
+                ;;
+
+    sta*)       run_setup='-r'              # no interface callbacks (no dhcp)
+                filter_mode='home'          # always in home state
+                mesg="centaurisecrets did run in 'static' mode, no iface config switching"
+                ;;
+
+    sim*|sma*)  mesg="Using interface up/down in '$DAT_SWITCH_MODE' mode"
+                ;;
+
+    swi*|rou*)  run_setup='-x'              # interface callbacks
+                run_route='-r'              # do not block or run centauriroute
+                mesg="centauriroute runnnig as service in '$DAT_SWITCH_MODE' mode"
+                ;;
+
+    *)          fatal "Invalid mode:" "${DAT_SWITCH_MODE:--not set-}" ;;
+    esac
+
+    do_setup $run_setup
+    [ "$CEN_ACTION" = 'init' ] && return    # stop here if called via 'init'
+
+    # running centauriroute as a service (see service file):
+    #   1. kernel param is centauriswitch=switch[:<conf>]
+    #   2. ...             centauriswitch=route[:<conf>]
+    #   3. with <conf>     centauriswitch=<mode>:<conf>
+
+    # --- full setup (service start) ---
+
+    # disable (or enable services via condition files, see inhibit()
+
+        # run_xxxx  -c          # block SysV
+        # run_xxxx  -r          # don't block SysV
+        # run_xxxx  <empty>     # block SysV and run now now
+
+    if [ -z "$CEN_SVC_SYSD" ] ; then
+        nettemp ${run_route:--c}   'centauriroute-disable'
+        nettemp ${run_secrets:--c} 'centaurisecrets-disable'
+        nettemp -c                 'centaurifilter-disable'
+    fi
+    [ -n "$mesg" ] && message "$mesg"
+    [ -n "$is_disabled" ] && return     # mode=disabled, do nothing
+
+    do_switch                           # initialize configs to local mode
+    do_secrets 'init'                   # always init secrets
+    nettemp -r 'centaurisecrets'        # delete old status
+
+    # run centaurifilter and additional services
+    embed -v centaurifilter "$filter_mode"
+    do_service start + "${DAT_SWITCH_ALWAYS[@]}"    # '+' means no-block
+}
+
+# ------------------------------------------------------------------------------
+# stop service action - remove service disablers
+# ------------------------------------------------------------------------------
+actionStop() {
+    nettemp -r
+    if [ -z "$CEN_SVC_SYSD" ] ; then
+        nettemp -r "centaurifilter-disable"
+        nettemp -r "centaurisecrets-disable"
+        nettemp -r "centauriroute-disable"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# status action
+# ------------------------------------------------------------------------------
+actionStatus() {
+    embed -v centauriroute -t status
+    embed -v centaurisecrets -t status
+    netserver
+
+    local inam='BIOS' ife0 ife1 ifw0 ifw1
+    netiface -s ife0 -k 'eth0'  ; netiface -s ife1 -k 'eth1'
+    netiface -s ifw0 -k 'wlan0' ; netiface -s ifw1 -k 'wlan1'
+    [ "$CEN_NET_IFNAMES" != 0 ] && inam='systemd'
+
+    create -c <<!EOF
+
+    Data from $CEN_NET_FILE_STAT:
+
+        CEN_NET_ROLE        $CEN_NET_ROLE
+        CEN_NET_MODE        $CEN_NET_MODE
+        CEN_NET_SERVER      $CEN_NET_SERVER
+        CEN_NET_MASTER      $CEN_NET_MASTER
+
+    Interface naming: $inam
+
+!EOF
+
+    [ "$inam" != 'BIOS' ] && create -c <<!EOF
+        eth0                ${ife0:-<unknown>}
+        eth1                ${ife1:-<unknown>}
+        wlan0               ${ifw0:-<unknown>}
+        wlan1               ${ifw1:-<unknown>}
+
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# switch action    [<master> [<role>]]
+# ------------------------------------------------------------------------------
+actionSwitch() {
+    nettemp && . "$_nettemp"
+
+    case "$CEN_ACTION" in
+    auto)       do_secrets 'auto' && do_update '-'
+                ;;
+    guest)      do_update "$1" "GUEST"
+                ;;
+    client)     do_update "$1" "CLIENT" "$2"
+                ;;
+    master)     do_update "$1" "MASTER" "$2"
+                ;;
+    local)      netserver
+                if [ "$CEN_NET_MODE" = 'SINGLE' ] ; then
+                    # this might be a call from centaurisecrets
+                    trace "Action 'local' ignored in SINGLE mode"
+                else
+                    do_secrets 'local' ; do_update 'local'
+                fi
+                ;;
+    *)          fatal "invalid switch mode: $CEN_ACTION'"
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# interface up/down callback action: <iface> <method>
+# ------------------------------------------------------------------------------
+actionUpDown() {
+    # NetworkManager does extra calls to iface hooks. Get rid of them...
+    if [ "$2" = 'NetworkManager' ] ; then
+        if [ "${DEVICE_IFACE::6}" = 'ttyUSB' ] ||
+           [ "${1::3}" = 'tun' -a -z "$VPN_IP_IFACE" ] ; then
+            message -a "Ignore NetworkManager extra event" ; return
+        fi
+
+    # report dhcp failure and ignore ...
+    elif [ "$2" = 'dhcp-fail' ] ; then          # ignore this (no cable?)
+        local cabl="OFF (no cable?)"
+        nettool -c -d "$1" -- isup && cabl="ON"
+        message -p "Interface: %-6s Reason: %-14s Carrier: %s" "$1" "$2" "$cabl"
+        return
+    fi
+
+    nettemp && . "$_nettemp"                    # config saved by centauriroute
+
+    # run only for configured interfaces
+    local item ifce="$1"
+    for item in $DAT_SWITCH_IFACES - ; do
+        [ "$ifce" = "$item" ] && break
+        [ "${ifce%[0-9]}+" = "$item" ] && break
+        [ "${ifce%[a-z][0-9][a-z][0-9]}+" = "$item" ] && break
+    done
+    if [ "$item" = '-' ] ; then
+        if [ -z "$DAT_SWITCH_IFACES" ] ; then
+            invoke -w "No configuration, see: centauriroute mode"
+        else
+            trace "Interface: not configured:" "$ifce"
+        fi
+        return
+    fi
+
+    netserver                                   # load network status
+
+    local curr="$CEN_NET_SERVER" info="$CEN_ACTION/$2"
+    message -p "Interface: %-6s Reason: %-14s Server: %s" "$ifce" "$info" "${curr:--none-}"
+    [ "$info" = 'up/manual' ] && return         # ignore manual (also our dhcp)
+    local inam ; netiface -i -s inam -- "$ifce" # get internal interface name
+
+    # interface dependent flags ...
+    local   host                                # host name by interface
+    local   fgen                                # set generic addr (and opt. gateway)
+    local   fnic                                # flag NIC hardware (eth, wlan)
+    local   fsmt                                # flag to run 'centauriroute smart'
+    local   ftun                                # tunX interfaces for vpn
+    local   fwpa                                # wlanX interfaces use wpa_supplicant
+    case "$inam" in
+        eth*)   host="$HOSTNAME-0" ; fnic=1 ;;
+        wlan*)  host="$HOSTNAME-1" ; fnic=1 ; fwpa=1 ;;
+        tun*)   ftun=1                          # special case: change routing
+    esac
+
+    local rbat=() addr fadr fmet fmnm  fscr
+
+    # in switch/router mode only "wlan dhcp-xxx" and "ppp up/down" are relevant
+    if [ "$DAT_SWITCH_MODE" = 'switch' -o "$DAT_SWITCH_MODE" = 'router' ] ; then
+        case "$info" in
+            # wvdial/pppd is not handled via centauriroute ...
+            up/pppd)
+                trace -a -c "dialup ready" "$ifce (parse resolv.conf)"
+                copy -f '/etc/ppp/resolv.conf' '/etc/resolv.conf'
+                embed -v centaurinetcfg resolv "$inam" + + + 8.8.8.8 ; return
+                ;;
+            down/pppd)
+                embed -v centaurinetcfg resolv default ; return
+                ;;
+            # processing up event only
+            down/*)
+                return ;;
+            *)
+                [ -n "$fnic" ] || return        # run for eth/wlan only
+                fmnm=1 ; fmet=1
+        esac
+
+    # smart mode runs 'centauriroute smart'
+    elif [ "$DAT_SWITCH_MODE" = 'smart' ] ; then
+        [ "$info" != 'down/nm-dispatcher' ] && fsmt="$fnic"
+
+    # mode 'simple' and 'static' need care
+    elif [ "$info" = 'up/dhcp-bound' ] ; then
+        [ -n "$fnic" ] || return                # run for eth/wlan only
+        fmnm=1 ; fmet=1 ; fgen=1
+    elif [ "$info" = 'up/static' ] ; then
+        [ -n "$fnic" ] || return                # run for eth/wlan only
+        fmnm=1 ; fmet=1 ; fgen=2 ; fscr=1
+    fi
+
+    # tun (VPN) does its own config, we only drop the smart IP addr ...
+    if [ -n "$ftun" ] ; then
+        message -a "open/close VPN tunnel:" "$CEN_ACTION" "$ifce"
+        # exec centauriroute, no return ...
+        embed -v -x centauriroute -t tunnel "$CEN_ACTION" "$ifce"
+    fi
+
+    # helper: check if we have an interface that is 'up': [<skip>]
+    ___interface() {
+        local stat curr cdir="$PWD"
+        folder -c -f '/sys/class/net'
+        for curr in ${DAT_SWITCH_IFACES//+/*} '' ; do
+            [ -z "$curr" ] && break             # nothing is up
+            [ "$curr" = "$1" ] && continue      # skip this interface
+            nettool -q -c -d "$curr" isup && break
+        done
+        folder -c -f -- "$cdir"
+        [ -n "$curr" ]                          # return status
+    }
+
+    # helper - load secrets: <host>|-|''
+    ___secrets() {
+        folder -b transient -g 'centaurisecrets'
+
+        if [ "$1" = '-' ] ; then
+            set -- auto
+        elif [ ! -e "$CEN_FOLDER" ] ; then
+            # start order: centauriswitch ... networking ... centaurisecrets
+            # the networking service brings ifaces up - don't try secrets now
+            message -a "No server check, centaurisecrets not initialized"
+            return
+        else
+            set -- client "$1"
+        fi
+        message "Checking for server: ${1:-(none)}"
+        local spid scnt=15
+        while ((scnt--)) ; do
+            pidfile -c -s spid 'centaurisecrets' || break
+            [ "$spid" = 0 ] && break            # not active any more
+            message -a "Waiting for centaurisecrets" ; timer -w 2
+        done
+
+        if ! do_secrets "$@" ; then
+            trace "Network state not changed"
+        # got server now?
+        elif [ -n "$CEN_NET_SERVER" ] ; then
+            curr="$CEN_NET_SERVER"
+            do_update '-'
+        else
+            trace "No server found"
+        fi
+    }
+
+    # --- add ipv6, smart switching, metrics ---
+
+    # interface up: set ipv6, if we have no server then check for one
+    if [ "$CEN_ACTION" = 'up' ] ; then
+        [ -n "$fwpa" ] && do_country                # wlan regulatory domain
+
+        if [ "$2" = 'NetworkManager' ] ; then
+            # nm sometimes does auto-create extra connections
+            if ! nettool -c -d "$ifce" isup ; then
+                message "Ignore if iface is not up:" "$ifce" ; return
+            fi
+            # for up/NetworkManager we must also set metrics
+            fmnm=1
+        fi
+
+        # add ipv6 ULA (only for wlan/ethernet)
+        if [ -n "$host" ] ; then
+             netoption 'ipv6' "$HOSTNAME" && nethost "$host" && fadr="$_nethost_ip"
+        fi
+        # check server (not for 'static' mode)
+        [ "$DAT_SWITCH_MODE" != 'static' -a -z "$curr" ] && fscr=1
+
+    # interface down: back to local if no interface is left up
+    else
+        # manual config: bring iface down
+        [ "$info" = 'down/manual' ] && nettool -d "$ifce" down
+
+        if [ "$CEN_NET_MODE" = 'SINGLE' ] ; then
+            trace -a -c "Interface down" "$ifce (ignored in SINGLE mode)"
+        elif ___interface "$ifce" ; then
+            trace -a -c "Interface down" "$ifce"
+            do_secrets 'local' "$ifce" && ___secrets "$curr"
+        else
+            trace -a -c "Interface down" "$ifce (last one)"
+            do_secrets 'local' ; do_update 'local'
+        fi
+    fi
+
+    # --- special interface actions ---
+
+    if [ -n "$fadr" ] ; then                            # set ipv6 address
+        # only add ipv6 for a known ipv4 address ...
+        if ! netgetip -4 -e -s "$fadr" "$ifce" ; then
+            message "Not setting ipv6 address for: $ifce ($fadr)"
+        elif netconv -u -- "$fadr" ; then
+            # only add if not yet set
+            if ! netgetip -6 -e -s "$_netconv" "$ifce" ; then
+                message "Setting ipv6 address for: $ifce ($_nethost_name)"
+                rbat+=(addr add "$_nethost_name" "$ifce" 6 --) ; fmet=1
+            else
+                message "Already have ipv6 address for:" "$ifce ($fadr)"
+                fmnm=                                   # ipv4 metric has been set
+            fi
+        fi
+    fi
+
+    if [ -n "$fsmt" ] ; then                            # smart interface switching
+        nethost "$HOSTNAME"
+        if [ "$CEN_ACTION" = 'up' ] ; then              # must have multiple ips ...
+            if [ "${#CEN_NET_ADDR_IPLIST[@]}" -lt 2 ] ; then
+                fsmt=
+                message "Smart interface switching:" "$ifce $CEN_ACTION (disabled)"
+            fi
+        fi
+        if [ -n "$fsmt" ] ; then                        # smart action ...
+            message "Smart interface switching:" "$ifce $CEN_ACTION ($_nethost_ip)"
+            rbat+=(smart "$CEN_ACTION" "$ifce" --)
+            [ "$CEN_ACTION" = 'up' ] && fmet=1
+        fi
+    fi
+
+    # set interface metrics
+    if [ -n "$fmnm" -a -n "$fmet" ] ; then
+        rbat+=(metric "$ifce" - - - 5 --)
+    elif [ -n "$fmnm" ] ; then
+        rbat+=(metric "$ifce" - - 4 5 --)
+    elif [ -n "$fmet" ] ; then
+        [ -n "$fadr" ] && rbat+=(metric "$ifce" - - 6 5 --)    # ipv6 only
+    fi
+
+    [ -n "$fgen" ] && rbat+=(addr add "$HOSTNAME" "$ifce" +)
+
+    if [ -n "$rbat" ] ; then                            # can exec centauriroute
+        trace -a -c "centauriroute" "${rbat[*]}"
+        embed -v centauriroute -t "${rbat[@]}"
+    fi
+
+    [ "$fgen" = 2 ] &&
+        embed -v centaurinetcfg gateway "$CEN_NET_ROUTER_DEF" "$ifce" -- resolv default
+
+    if [ -n "$fscr" ] ; then                            # check server
+        if nettool -c -d "$ifce" isup ; then
+            ___secrets -
+        else
+            trace -a "Interface not up, no server check:" "$ifce"
+        fi
+    fi
+    CEN_EXIT=0                                          # make ifup/ifdown happy
+}
+
+# ------------------------------------------------------------------------------
+# Option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    '')                                 # end of option parsing ...
+        trace "main ${CEN_CMDOPTS[@]} ${CEN_CMDARGS[@]}"
+        do_netcfg                       # make sure to have cached config
+        netconfig -f ;;                 # cannot run without config
+
+    -O|--out*)
+        optarg 'output'  - -t ;;        # any text
+
+    --noh*)
+        optarg 'nohook'  - ;;           # flag
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    # service commands (always needing root)
+    start)
+        invoke    -         -             0   ;;
+    stop)
+        invoke    -         -             0   ;;
+    status)
+        invoke    -         -             0   ;;
+
+    # callbacks
+    up|down)
+        invoke -r -         actionUpDown  1 2 ;;
+    dhc*)
+        invoke -r 'dhcp'    -             2   ;;
+
+    # state change
+    aut*)
+        invoke -r 'auto'    actionSwitch  0   ;;
+    loc*)
+        invoke -r 'local'   actionSwitch  0   ;;
+    gue*)
+        invoke -r 'guest'   actionSwitch  1   ;;
+    cli*)
+        invoke -r 'client'  actionSwitch  1 2 ;;
+    mas*)
+        invoke -r 'master'  actionSwitch  1 2 ;;
+
+    # other actions
+    cou*)
+        invoke -r 'country' -             0 1 ;;
+    ent*)
+        invoke -r 'enter'   -             1 2 ;;
+    ini*)
+        invoke -r 'init'    actionStart   0 2 ;;
+    mon*)
+        invoke    'monitor' -             0 + ;;
+    ser*)
+        invoke -r 'service' -             1 + ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -h "" \
+        -h "This service/tool uses the \"$CEN_NAME\" configuration file and the kernel" \
+        -h "command line parameter \"$CEN_NAME=<mode>\" to switch (symlink) the config" \
+        -h "files and folders of system services and to start or stop them. It is also a" \
+        -h "frontend for more specilized services:" \
+        -h "" \
+        -h "• centauriroute    -  interface and route configuration" \
+        -h "• centaurifilter   -  a simple firewall" \
+        -h "• centaurisecrets  -  find server, download secrets."
+    usageset \
+        -o - \
+        -o "-O --output <fldr>   modify output locations                 (default: /)"
+    usageset \
+        -s "start                perform a full initialization" \
+        -s "stop                 remove service inhibitors" \
+        -s "restart              same as: stop -- start" \
+        -s "status               show status information" \
+        -a 'country [<rdom>]'    "set wlan regulatory domain" \
+        -a "dhcp    up|down|status <ifce>" \
+        -a -                     "start/stop dhcp client" \
+        -a "enter   [<mode> [<conf>]]" \
+        -a -                     "enter a mode as if booted into" \
+        -a "init    [<mode> [<conf>]]" \
+        -a -                     "partial initialization for testing" \
+        -a "service start|stop|restart <service>..." \
+        -a -                     "start or stop services" \
+        -a - \
+        -a 'auto'                "check network status and update state" \
+        -a 'local'               "change to local state" \
+        -a - \
+        -a 'guest   <server>'    "force client state - no checks done!" \
+        -a 'client  <server> [<role>]' \
+        -a -                     "force client state - no checks done!" \
+        -a 'master  <server> [<role>]' \
+        -a -                     "force master state - no checks done!"
+    usageset \
+        -l "arguments" \
+        -t "<ifce>               a kernel interface name" \
+        -t "<mode> <conf>        network mode/configuration, see centauriroute" \
+        -t "<server>             any server name" \
+        -t "<role>               computer role (PRIMARY, SECONDARY, WORKSTATION)"
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

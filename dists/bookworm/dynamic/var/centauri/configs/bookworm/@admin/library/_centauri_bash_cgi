@@ -1,0 +1,666 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_cgi = centauri-bash-lib: CGI script support
+#
+# Call:     . _centauri_bash_cgi [-n]
+#
+# Options:  -n  no module init
+#
+# Copyright Dr. J. Pfennig (c) 2021-2022
+# ------------------------------------------------------------------------------
+
+CEN_MODULES["_centauri_bash_cgi"]="0.20:1"
+
+CEN_OPT_CGIBIN=             # see --cgibin
+
+# CEN_CGI_STARTPAGE=          # start page, overrides index.html
+
+CEN_CGI_ERRORS=()           # passed to _cen_cgi_error from quit hook
+CEN_CGI_ERRLOCK=            # used to avoid recursion
+
+
+# hooks
+#CEN_CGI_HOOK_MAIN=
+CEN_CGI_HOOK_MESSAGE=
+CEN_CGI_HOOK_OPTIONS=
+
+# ------------------------------------------------------------------------------
+# send an error page as cgi reply: <list>
+# ------------------------------------------------------------------------------
+_cen_cgi_error() {
+    sleep 0.3                           # avoid misuse of this feature
+    CEN_CGI_ERRLOCK=1
+    #local _base="${HTTP_REFERER%/*}"
+    #[ -z "$_base" ] && _base='..'
+    local _emsg _titl=$"Server could not handle request"
+
+### TODO decode query string?
+### TODO wrap long query string
+### TODO implement message -p
+
+    xml_flush -r
+    CEN_XML_OUTPUT='+'
+    xml_element 'h3' -n -t -- $"The client browser sent a CGI request that caused a server failure"
+    xml_element 'hr'
+    xml_element 'h3' -n     -- $"Query string and referer..."
+    xml_element 'div' -x -t -n -s 'margin: 4pt 0 4pt 12pt' -- "$QUERY_STRING"
+    xml_element 'div' -x -t -n -s 'margin: 4pt 0 4pt 12pt' -- "$HTTP_REFERER"
+    xml_element 'div' -x -- '&nbsp;' ; xml_element 'hr'
+    xml_element 'h3' -n -- $"List of messages and errors..."
+    for _emsg in "$@" ; do
+        if [ "${_emsg::3}" = '***' ] ; then
+            xml_element 'div' -x -s 'margin: 4pt 0 4pt 12pt ; color: maroon' -n -- "$_emsg"
+        else
+            xml_element 'div' -x -s 'margin: 4pt 0 4pt 12pt' -n -- "$_emsg"
+        fi
+    done
+    xml_element 'div' -x -- '&nbsp;' ; xml_element 'hr'
+    xml_element 'div' -x -- '&nbsp;'
+    local _wurl
+    [ "${CEN_CGI_STARTPAGE:--}" = '-' ] && _wurl='index' || _wurl="$CEN_CGI_STARTPAGE"
+    xml_anchor -n -u "../${_wurl%.html}.html" -- $"restart application"
+#    _cen_web_hlink "../$_wurl" $"restart application"
+    if [ "${HTTP_REFERER:--}" != '-' ] ; then
+        xml_text -l -- "&nbsp;&nbsp;&nbsp;"
+        xml_anchor -n -u "$HTTP_REFERER" -- $"retry last page"
+    fi
+    xml_flush -v _emsg
+
+    xml_document -5 -b -c "../layout.css" -o 1 -t $"Server error page"
+    xml_text -l -n -r 0 <<!EOF
+<article>
+<header><heading class='row'>
+<heading class='left'>$_titl</heading>
+</heading></header>
+<wrapper><component class="cent" style="margin: 1cm">
+$_emsg
+<div></div>
+</component></wrapper>
+<footer>$CEN_LEGAL</footer>
+</article>
+!EOF
+    xml_document -e
+    CEN_CGI_ERRLOCK=
+}
+
+# ------------------------------------------------------------------------------
+# Handler for CGI calls - sets action and arguments
+# ------------------------------------------------------------------------------
+_cen_cgi_handler() {
+#    $CEN_TRACE "HANDLER: $*"
+    local -A _vmap
+    local _skey _sval _args=() _line _page
+
+    [ -z "$HTTP_REFERER"   ] && error -- $"The 'HTTP_REFERER' variable must be set"
+    [ -z "$QUERY_STRING"   ] && error -- $"The 'QUERY_STRING' variable must be set"
+    [ -z "$CEN_WEB_WEBDIR" ] && error -- $"The 'CEN_WEB_WEBDIR' variable must be set"
+    [ -z "$CEN_WEB_WEBAPP" ] && error -- $"The 'CEN_WEB_WEBAPP' variable must be set"
+
+    for _line in "$@" ; do
+#    message "line='$_line' (${_line#*=})"
+        case "$_line" in
+        page=*) _page="${_line#*=}" ;;
+        *)      _args+=("$_line")
+        esac
+    done
+
+    # get calling page and build result page name
+    if [ -z "$_page" ] ; then
+        _page="${HTTP_REFERER%\?*}" ; _page="${_page##*/}"
+        [ "${_page#*.}" = 'cgi' ] && _page= || _page="${_page%%.*}"
+    fi
+
+    if [ "${_page:--}" != 'cgi' ] && error -t ; then
+     #   message _cen_cgi_perform "$_page" "${_args[@]}"
+        _cen_cgi_perform "$_page" "${_args[@]}" && return
+    fi
+    error -- $"Requested action is invalid:" "${_page:--unknown-}"
+    return
+}
+
+# ------------------------------------------------------------------------------
+# <rslt> <keys> <para>...
+# ------------------------------------------------------------------------------
+_cen_cgi_params() {
+    local -n _varr="$1" ; _varr=(); shift
+
+    # the keys are split into an array
+    local _sifs="$IFS" ; IFS=':' ; set -f
+    local _keys=($1 '-') ; set +f ; IFS="$_sifs" ; shift
+
+    # this is ugly but it is really fast enough ...
+    local _pcur _keyc _indx
+    for _pcur in "$@" ; do
+        _indx=0
+        for _keyc in "${_keys[@]}" ; do
+            [[ "$_pcur" =~ $_keyc=(.*) ]] && break
+            ((_indx += 1))
+        done
+        [ "$_keyc" = '-' ] || _varr[_indx]="${BASH_REMATCH[1]}"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Perform CGI action
+# ------------------------------------------------------------------------------
+_cen_cgi_perform() {
+    # single state:page pairs must be unique, for a page 1st match is ok
+    local _cgi_word
+    if [ "${#CEN_CGI_STATES[@]}" -gt 0 ] ; then
+        listsearch -c -i CEN_CGI_STATES -m _cgi_word -u -- "$1"
+        case "$?-$_cgi_word" in
+            1-*)    return ;;                   # not found
+            0-*:*)  invoke "${_cgi_word#*:}" - - - "${_cgi_word%:*}" ;;
+            ?-*:*)  return ;;                   # not unique
+            *)      invoke "$_cgi_word" - ;;    # ok, simple action name
+        esac
+    else
+        CEN_ACTION="$1" ; shift ; CEN_ACTARR=("$@")
+        actions "$CEN_ACTION" "$@"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# generate a cgi proxy: -no args-
+# ------------------------------------------------------------------------------
+_cen_cgi_proxy() {
+    prettypath -s _file -- "$0"
+    local _verb
+    [ "$CEN_VERB" -gt 1 ] && _verb='--verbose'
+    create -t -c "$CEN_WEB_CGIBIN/$CEN_NAME.cgi" 755 <<!EOF
+#!$BASH
+CEN_ROOT="$CEN_ROOT" ; CEN_IS_SOURCED=1 ; $(_cen_cgi_uglify "$_file")
+CEN_IS_SOURCED=
+
+# This is an auto-generated proxy to call the '$CEN_NAME' cgi application
+_opts=('--webdir' "$CEN_WEB_WEBDIR" $_verb)
+_qcmd='cgi'
+_line="\${QUERY_STRING//+/ }"
+_line="\${_line//&/\$'\a'}"
+printf -v _line "\${_line//%/\\x}"
+set -f ; IFS=\$'\a' ; set -- \$_line ; set +f ; IFS=\$' \t\n'
+while [ \$# -gt 0 ] ; do
+    case "\${1%%=*}" in
+    appid)  _opts+=('--webapp' "\${1#*=}") ;;
+    -*)     ;;
+    *)      _opts+=(\$_qcmd "\$1") ; _qcmd=
+    esac ; shift
+done
+
+# The appfile is sourced and does not run main. HTTP_REFERER must not be empty
+[ -z "\$HTTP_REFERER" ] && HTTP_REFERER='-'
+
+{   echo "QUERY   \$QUERY_STRING"
+    echo "REFERER \$HTTP_REFERER"
+    echo "main    \${_opts[@]} \$_qcmd"
+    echo "name    \$CEN_NAME"
+} >>/tmp/proxy.log
+
+# Now run main with arguments generated by this proxy
+if [ \$? = 0 ] ; then
+    main "\${_opts[@]}" \$_qcmd ; quit
+fi
+echo "<html><h3>Failed to run '$_file' (status \$?)</h3></html>" ; exit 1
+!EOF
+
+#_err() { echo "<html><h3>\$*</h3></html>" >&2 ; exit 1 ; }
+#
+#declare -A DAT_QUERY
+#[ -n "\$QUERY_STRING" ] || _err "missing QUERY_STRING"
+#line="\${QUERY_STRING//+/ }"
+#line="\${line//&/$'\a'}"
+#printf -v line "\${line//%/\\x}"
+#set -f ; IFS=$'\a' set -- \$line ; set +f
+#while [ \$# -gt 0 ] ; do
+#    skey="\${1%%=*}"
+#    sval="\${1#*=}"
+#    [ -n "\$skey" ] && DAT_QUERY["\$skey"]="\$sval"
+#done
+#
+#DAT_APPID="\${DAT_QUERY[AppID]}"
+#[ -n "\$DAT_APPID" ] || _err "missing AppID in query"
+#
+#DAT_PIPES="$prefix\$DAT_APPID"
+#pque="\${DAT_PIPES}.query"
+#prep="\${DAT_PIPES}.reply"
+#[ -w "\$pque" -a -r "\$prep" ] || _err "application failure"
+#exec 1 "\$pque"
+#exec 0 "\$prep"
+#echo -E "\${DAT_QUERY[@]@Q}"
+#exec -&>1
+#while IFS= read -r line ; do
+#    echo -E "\$line" || exit 2
+#done
+#exit 0
+
+}
+
+# ------------------------------------------------------------------------------
+# Hook to generate messages in cgi mode
+# ------------------------------------------------------------------------------
+_cen_cgi_message() {
+    if [ -n "$CEN_CGI_ERRLOCK" ] ; then                 # recursion, cannot handle
+        $CEN_CGI_HOOK_MESSAGE "$@" ; return
+    fi
+
+    local _sfmt _serr _smul
+    while [ "${1::1}" = '-' ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -e)   _serr=$"***ERROR*** " ;;
+        -f)   _serr=$"***FATAL ERROR*** " ;;
+        -m)   _smul=1 ;;
+        -p)   _sfmt=1 ;;
+        -t)   $CEN_CGI_HOOK_MESSAGE "$@" ; return 0 ;;
+        -w)   _serr=$"***WARNING*** " ;;
+        esac ; shift
+    done
+
+    if [ -z "$_smul$_sfmt" ] ; then             # simple case, no -p or -m
+        CEN_CGI_ERRORS+=("$_serr$*")
+    else                                        # build output string
+        if [ -n "$_sfmt" ] ; then
+            _sfmt="$1" ; shift
+            printf -v _sfmt -- "$_sfmt" "$@"
+        else
+            _sfmt="$*" ; _sfmt="${_sfmt// \\n /$'\n'}" ; _sfmt="${_sfmt//\\n/$'\n'}"
+        fi
+                                                # split lines and loop...
+        local _sifs="${IFS:-$' \t\n'}" ; IFS=$'\n'
+        set -f ; set -- $_sfmt ; set +f ; IFS="$_sifs"
+        while [ "$#" != 0 ] ; do
+            CEN_CGI_ERRORS+=("$_serr$1")
+            shift ; _serr="${_serr//?/ }"
+        done
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# helper to redirect browser: <dest> <file> <pars>...
+#
+# This routine gets called via _cen_web_redir, so that <dest> and <file> are
+# already preprocessed.
+#
+# The parameters are URL-encoded and append to the <dest> URL.
+#
+# called by webapp()
+# ------------------------------------------------------------------------------
+_cen_cgi_redir() {
+    local _dest="$1" _file="$2" _pars _page _pref
+    shift ; shift
+
+    if [[ "$_dest" =~ page=([0-9]*).html ]] ; then
+        _page="${BASH_REMATCH[1]}"
+        _cen_web_href "$_page" - - - - _page
+       # _file="$CEN_WEB_WEBDIR/$CEN_WEB_FOLDER$_file"
+        _dest="/cgi-bin/$CEN_NAME.cgi"
+        $CEN_TRACE "index: $_page $_file"
+    elif [[ "$_dest" =~ page=(.*).html ]] ; then
+        _page="${BASH_REMATCH[1]}"
+        _dest="/cgi-bin/$CEN_NAME.cgi"
+        $CEN_TRACE "page: ${BASH_REMATCH[1]}"
+    else
+        $CEN_TRACE "path: $_dest"
+    fi
+
+    # redir files are static, pass appid=- so dest page will generate an appid
+    _pref="appid=-"
+    [ -n "$_page" ] && _pref+="&page=$_page"
+
+    if [ $# -gt 0 ] ; then
+        _cen_cgi_urlenc _pars "$@"
+        _pref+="&$_pars"
+    fi
+
+    # for cgi 'appid=-' is used to let the start page create an appid
+    local _cen_web_head _meta="http-equiv='refresh' content='0; url=$_dest?$_pref'"
+    xml_element 'meta' -v _cen_web_head -n -a "$_meta"
+    xml_document -5 -t $"Redirection" -o "$_file" -h "+ $_cen_web_head"
+}
+
+# ------------------------------------------------------------------------------
+# send template form: <form> <page> <titl> <text> <pars> ...
+#
+#       <titl>  Form title (not used if -)
+#       <text>  Array or string to send (use stdin if -)
+#       <pars>  key=value pairs, embedded as <parameter> elements
+#
+#       The parameters are sent as multiple elements:
+#
+#       <parameter key='xxx' val='xxx' />
+#
+#   Known placeholders (no more than one per line):
+#
+#       !!!TITLE!!!
+#       !!!APPID!!!
+#       !!!PARAM!!!     # line
+#       !!!FORM!!!      # line
+#
+# ------------------------------------------------------------------------------
+_cen_cgi_send() {
+    error -t || return 1                    # do not interfere with error page
+
+    local _form="$1" _page="${2:--}" _titl="${3:--}" _text="$4"
+    local _cont _line _stat
+    shift ; shift ; shift ; shift
+    if [ -r "$_form" ] ; then
+        mapfile -t -u 0 _cont 2>/dev/null <"$_form" ; _stat=$?
+    fi
+    if [ "$_stat" != 0 ] ; then
+        _cen_cgi_error $"Cannot read from:"" $_form"
+        return 1
+    fi
+
+    for _line in "${_cont[@]}" ; do
+        if [[ "$_line" =~ (.*)!!!([A-Z]*)!!!(.*) ]] ; then
+            case "${BASH_REMATCH[2]}" in
+            APPID)  printf "%s\n" "${BASH_REMATCH[1]}$CEN_WEV_APPID${BASH_REMATCH[3]}"
+                    ;;
+            TITLE)  printf "%s\n" "${BASH_REMATCH[1]}$_titl${BASH_REMATCH[3]}"
+                    ;;
+            PARAM)  #[ -n "${BASH_REMATCH[3]}" ] && echo -E "${BASH_REMATCH[1]}"
+                    if [ "$_pars" != '-' ] ; then
+                        local -n _varg="$_pars"
+                        for _line in "$@" ; do
+                            xml_element 'parameter' -v _line -t -n -a "key='${_line%%=*}'" -- "${_line#*=}"
+                            printf "%s\n" "$_line"
+                        done
+                    fi
+                    #[ -n "${BASH_REMATCH[3]}" ] && echo -E "${BASH_REMATCH[3]}"
+                    ;;
+            PAGE)   printf "%s\n" "${BASH_REMATCH[1]}$_page${BASH_REMATCH[3]}"
+                    ;;
+            FORM|CENTER)
+                    printf "%s" "${BASH_REMATCH[1]}"
+                    [ -n "$_text" ] && splitjoin -i $_text
+                    printf "%s\n" "${BASH_REMATCH[3]}"
+                    ;;
+            *)      printf "%s\n" "$_line"
+            esac
+        else
+            printf "%s\n" "$_line"
+        fi
+    done
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+_cen_cgi_setup() {
+# usage: var appid = getParameterByName('appid')
+    mapfile -t -u 0 CEN_WEB_JSCRIPT <<!EOF
+function ${CEN_WEB_PREFIX}callarg(name, url = window.location.href) {
+    name = name.replace(/[\[\]]/g, '\\$&');
+    var regex = new RegExp('[?&]' + name + '(=([^&#]*)|&|#|$)'),
+        results = regex.exec(url);
+    if (!results) return null;
+    if (!results[2]) return '';
+    return decodeURIComponent(results[2].replace(/\+/g, ' '));
+}
+
+function ${CEN_WEB_PREFIX}onload(prev, next, info, page) {
+    ${CEN_WEB_PREFIX}appid=${CEN_WEB_PREFIX}callarg('appid');
+    // alert('appid=' + ${CEN_WEB_PREFIX}appid);
+    ${CEN_WEB_PREFIX}parameter();
+    if (!${CEN_WEB_PREFIX}appid) {
+        ${CEN_WEB_PREFIX}appid=0;
+        alert("Missing 'appid' in URL");
+    }
+    else {
+        ${CEN_WEB_PREFIX}addfield('appid', ${CEN_WEB_PREFIX}appid);
+    }
+    if (page) ${CEN_WEB_PREFIX}addfield('page', page);
+    return true;
+}
+
+function ${CEN_WEB_PREFIX}navigate(href) {
+    // alert(href + '?appid=' + ${CEN_WEB_PREFIX}appid);
+    window.location.assign(href + '?appid=' + ${CEN_WEB_PREFIX}appid);
+    return true;
+}
+
+function ${CEN_WEB_PREFIX}parameter() {
+    var list=document.getElementsByTagName("parameter");
+    var indx, key, val;
+    for (indx=0; indx < list.length; indx++) {
+        let key=list[indx].getAttribute('key');
+        let val=list[indx].getAttribute('value');
+    alert('parameter key=' + key + '  val=' + val);
+    }
+}
+
+function ${CEN_WEB_PREFIX}addfield(key, val) {
+    var list=document.getElementsByTagName("form");
+    if (!list) return true;
+    var indx, curr, inpu;
+    for (indx=0; indx < list.length; indx++) {
+        curr=list[indx].querySelector('[name=' + key + ']');
+        if (curr) {
+            curr.value=val; continue;
+        }
+        if (!inpu) {
+            inpu=document.createElement('input');
+            inpu.setAttribute('type', 'hidden');
+            inpu.setAttribute('name', key);
+            inpu.setAttribute('value', val);
+        }
+        list[indx].appendChild(inpu);
+    }
+    return true;
+}
+
+!EOF
+
+CEN_WEB_CSSDATA+=(
+    ""
+    "/* Added by _centauri_bash_cgi */"
+    ""
+    "parameter       { display: none; }"
+)
+return 0
+}
+
+# ------------------------------------------------------------------------------
+# tweak page params for _cen_web_pages: <file> <func> <lout> <name> <page> >titl>
+# ------------------------------------------------------------------------------
+_cen_cgi_tweak() {
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# uglify source code: <file>
+# ------------------------------------------------------------------------------
+_cen_cgi_uglify() {
+    local _line _temp
+
+### TODO trim to detect indented comments
+### TODO remove # only from 1st col
+### TODO bogo inline-comment removal ?
+### BUG must be aware of here documents
+
+    while IFS= read -r _line ; do
+        case "$_line" in
+        \#*)        _line= ;;
+        *\'*)       ;;
+        *\"*)       ;;
+        *\#*)       _temp="${_line// /}"
+                    [ "${_temp::1}" = '#' ] && _line= ;;
+        !!!DATA!!!) return ;;
+        esac
+        #[ "$_line" = '!!!DATA!!!' ] && return
+        #[ "${_line::1}" = '#' ] && _line='#'
+        printf '%s\n' "$_line"
+    done <"$1"
+}
+
+# ------------------------------------------------------------------------------
+# URL encode parameters: <vnam> <param>...
+# ------------------------------------------------------------------------------
+_cen_cgi_urlenc() {
+    local -n _vnam="$1" ; _vnam= ; shift
+    local _cset="$LC_TYPE" ; LC_CTYPE=C             # use binary characters
+    local _text _item _char _indx _leng _name
+    for _item in "$@" ; do
+        _text= ; _name="${_item%%=*}="
+        [ "$_name" = "$_item" ] && _name= || _item="${_item#*=}"
+        _leng="${#_item}" ; _indx=0
+        while [ "$_indx" -lt "$_leng" ] ; do
+            _char=${_item:_indx++:1}
+            case $_char in
+            [a-zA-Z0-9.~_-]) ;;
+            *)  printf -v _char '%%%02x' "'$_char"
+            esac
+            _text+=$_char
+        done
+        _text="$_name$_text"
+        [ -z "$_vnam" ] && _vnam="$_text" || _vnam+="+$_text"
+    done
+    LC_TYPE="$_cset"                                # back to unicode
+}
+
+# ------------------------------------------------------------------------------
+# cgiapp - Extending webapp() to handle CGI applications
+#
+# Call:     (1) cgiapp -i [-z]
+#           (2) cgiapp -g [-z] [--] <vnam> <name> [<pars>>...]
+#           (3) cgiapp -h [-z] [--] <args>...
+#           (4) cgiapp -r [-z] [--] <dest> <file> <pars>...
+#           (5) cgiapp -s [-z] [--] <form> <page> <titl> <text> <pars>...
+#           (6) cgiapp -u [-z] [--] <vnam> <pars>...
+#
+#+          This function provides cgi related things to extend [[webapp()]].
+#
+# Options:  -g   get a named parameter value
+#           -i   initialize CGI things
+#           -h   handle CGI request
+#           -r   redirect browser
+#           -s   send CGI reply
+#           -u   URL-encode parameters
+#
+#+Init:     Option -i adds CGI javascript and other things to the default setup.
+#           Usually this function is called from (autogenerated) [[run()]] after
+#           the webapp setup.
+#
+#+Handler:  CGI handler (should be called from action 'cgi'). The [[actions()]]
+#           function of a cgiapp must foreward 'cgi' actions to cgiapp°-h. The
+#           cgi-bin proxy uses action 'cgi' to process CGI requests. The handler
+#           again uses the 'page' parameter (or HTTP_REFERER) to invoke a page
+#           action.
+#
+#+Redirect: Redirect to a different page
+#
+#+Send:     Send reply
+# ------------------------------------------------------------------------------
+cgiapp() {
+#    $CEN_TRACE "CGIAPP: $*"
+    local _optg _opth _opti _optr _opts _optu _optz
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -g)   _optg=1 ;;
+      -h)   _opth=1 ;;
+      -i)   _opti=1 ;;
+      -r)   _optr=1 ;;
+      -s)   _opts=1 ;;
+      -u)   _optu=1 ;;
+      -z)   _optz=1 ;;
+       *)   _cen_abort - "$1"
+      esac ; shift
+    done
+
+    while : ; do
+        [ -n "$_optg" ] && { _cen_cgi_params "$@"       || break; }
+        [ -n "$_opth" ] && { _cen_cgi_handler "$@"      || break; }
+        [ -n "$_opti" ] && { _cen_cgi_setup             || break; }
+        [ -n "$_optr" ] && { _cen_web_redir "$@"        || break; } # _cen_web_redir !!!!
+        [ -n "$_opts" ] && { _cen_cgi_send "$@"         || break; }
+        [ -n "$_optu" ] && { _cen_cgi_urlenc "$@"       || break; }
+        break
+    done
+    error -t && return 0
+    [ -n "$_optz" ] || quit
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# hook for options()
+# ------------------------------------------------------------------------------
+_cen_cgi_options() {
+    $CEN_TRACE "OPTIONS: $*"
+#    echo "OPTIONS: $*" >>/tmp/proxy.log
+    $CEN_CGI_HOOK_OPTIONS "$@"
+    case "$1" in
+
+    # end of option processing
+
+    '')
+        CEN_WEB_CGIBIN="${CEN_OPT_CGIBIN:--}"
+        [ "$CEN_WEB_CGIBIN" = '-' ] || prettypath -e -f -s CEN_WEB_CGIBIN
+        CEN_WEB_WEBDIR="$CEN_OPT_WEBDIR"
+        [ "${CEN_WEB_WEBDIR:--}" = '-' ] || prettypath -f -s CEN_WEB_WEBDIR
+
+        if [ "${CEN_CMDARGS[0]}" = 'cgi' ] ; then  # excuting a cgi command
+            if [ -z "$CEN_CGI_HOOK_MESSAGE" ] ; then
+                CEN_CGI_HOOK_MESSAGE="$CEN_HOOK_MESSAGE"
+                CEN_HOOK_MESSAGE=_cen_cgi_message
+            fi
+         #   return
+        elif [ -z "$HTTP_REFERER" ] ; then          # init webapp stuff
+            isfunction -c -f 'run' "$CEN_CGI_STARTPAGE"
+            _cen_cgi_proxy                          # generate proxy
+[ -n "$CEN_OPT_CREATE" -a "${#CEN_CMDARGS[@]}" = 0 ] && quit
+#          CEN_DONE=2                              # no --help message
+        fi
+        ;;
+
+    # pass option info to usage module
+
+    --help)
+        [ "$2" = "opts" ] || return                 # ignore unless _cen_usage()
+
+        _cen_use_option ''  "--cgibin <path> " $"path of cgibin folder"
+        ;;
+
+    # options added by this module
+
+    --cgibin)   optarg 'cgibin' - -t ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# callback for quit()
+# ------------------------------------------------------------------------------
+_cen_cgi_quit() {
+    if [ -n "$CEN_CGI_HOOK_MESSAGE" ] ; then
+        error -t || _cen_cgi_error "${CEN_CGI_ERRORS[@]}"
+        CEN_CGI_ERRORS=()
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Startup: [-n]
+# ------------------------------------------------------------------------------
+
+[ "$1" = "-n" ] && return 0                         # do not init
+
+# set '$0' to full path, required by 'resolve -x'
+case "$BASH_ARGV0" in
+    /*)     ;;
+    ./*)    BASH_ARGV0="$PWD${0:1}" ;;
+    *)      BASH_ARGV0="$PWD/$0"
+esac
+
+# register hooks
+CEN_CGI_HOOK_OPTIONS="$CEN_HOOK_OPTIONS"
+CEN_HOOK_OPTIONS="_cen_cgi_options"
+
+# Capture error messages early for CGI calls ...
+if [ -n "$HTTP_REFERER" ] ; then
+    CEN_CGI_HOOK_MESSAGE="$CEN_HOOK_MESSAGE"
+    CEN_HOOK_MESSAGE=_cen_cgi_message
+fi
+
+:
+
+# end

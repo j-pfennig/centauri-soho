@@ -1,0 +1,353 @@
+#!/usr/bin/env bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2018-2022; BSD License"
+CEN_TITLE="Helper to manage script translations"
+
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m con "$0" "0.12:1" || exit 2
+
+# Options
+
+CEN_OPT_INPUT=()            # see --input
+CEN_OPT_OUTPUT=             # see --output
+
+# Data
+
+DAT_SCRIPT=                 # path of script to be processed, see find_script()
+
+# ------------------------------------------------------------------------------
+# find a script in a wellknown folder: <name>
+# ------------------------------------------------------------------------------
+find_script() {
+    DAT_SCRIPT=
+    local fldr
+    for fldr in "${CEN_OPT_INPUT[@]}" "$CEN_LIBRARY" "$CEN_TOOLS" \
+                "$CEN_TOOLS/templates" "$CEN_TOOLS/utilities" "$CEN_TOOLS/utilities"/* ; do
+        [ -d "$fldr" ] || continue
+        [ -e "$fldr/$1" ] || continue
+        DAT_SCRIPT="$fldr/$1" ; return 0
+    done
+    error "Script not found:" "$1" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+run_check() {
+    local mkey mval skip nemp=0 nstr=0 nfuz=0
+    while read mkey mval ; do
+        if [ "$mkey" = "msgid" -a "$mval" = "\"\"" ] ; then
+            skip=1
+        elif  [ "$mkey" = "msgstr" -a -n "$skip" ] ; then
+            skip=
+        elif  [ "$mkey" = "msgstr" ] ; then
+            [ "$mval" = "\"\"" ] && nemp=$((nemp + 1))
+            nstr=$((nstr + 1))
+        elif  [ "${mkey::1}" = "#" -a "${mval##* }" = "fuzzy" ] ; then
+            ((nfuz++))
+        fi
+    done < "$1"
+    if [ "$nemp" = 0 -a "$nfuz" = 0 ] ; then
+        message -a "$nstr" "message string(s) found"
+    else
+        message -a -p "%s message string(s) found - (%s empty, %s fuzzy)" \
+                      "$nstr" "$nemp" "$nfuz"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# check output file: [-s <var>] <name> [<xdir>]
+# ------------------------------------------------------------------------------
+find_output() {
+    local _vnam
+    if [ "$1" = "-s" ] ; then
+        shift ; _vnam="$1" ; shift
+    fi
+    local _xnam="${1##*/}"
+    [ -n "$2" ] && _xnam="$2/$_xnam"
+    if [ -n "$CEN_OPT_OUTPUT" ] ; then
+        [ -e "$_xnam" ] || _xnam="$CEN_OPT_OUTPUT/$_xnam"
+    fi
+    [ -n "$_vnam" ] && printf -v "$_vnam" "%s" "$_xnam"
+    [ -e "$_xnam" ]
+}
+
+# ------------------------------------------------------------------------------
+# create initial .po file: <name>
+# ------------------------------------------------------------------------------
+run_prepare() {
+    local name
+    if find_output -s name "$1.po" ; then
+        warning "Existing '$name' file, no action taken"
+        return 0
+    fi
+
+    local umsg=('msgid ""' 'msgstr "Content-Type: text/plain; charset=UTF-8"')
+    while : ; do
+        create -s -t -v umsg "${name}t"
+        if ! dryrun "bash --dump-po-strings $1 >> ${name}t" ; then
+            system -e -p -z -- bash --dump-po-strings "$1" >> "${name}t" || break
+        fi
+        if system -e -p -- msguniq --to-code=utf-8 --output-file "$name" "${name}t" ; then
+            if [ ! -s "$name" ] ; then
+                warning "No translations found:" "$name" ; remove -s "$name"
+            fi
+        fi
+        break
+    done
+    remove -s -- "${name}t"
+    error -t
+}
+
+# ------------------------------------------------------------------------------
+# refresh existing .po file: <name>
+# ------------------------------------------------------------------------------
+run_dump() {
+    local name
+    if ! find_output -s name "$1.po" ; then
+        error "Have no '$name' file, use 'prepare' action first"
+        return 1
+    fi
+
+    if [ "$1" -nt "$name" -o -n "$CEN_OPT_FORCE" ] ; then
+        message -a -d 1 -p "%-34s =>  %-34s" "${1#$CEN_ROOT/}" "${name##*/}"
+    else
+        trace -a -p "%-34s --  %-34s (%s)" "${1#$CEN_ROOT/}" "${name##*/}" "up-to-date"
+        return 0
+    fi
+
+    local umsg=('msgid ""' 'msgstr "Content-Type: text/plain; charset=UTF-8"')
+    while : ; do
+        create -s -t -v umsg "${name}t"
+        if ! dryrun "bash --dump-po-strings $1 >> ${name}t" ; then
+            system -e -p -t -z -- bash --dump-po-strings "$1" >> "${name}t"
+        fi
+        system -e -p -t -- msguniq --to-code=utf-8 --output-file "${name}u" "${name}t"
+        if [ -s "${name}u" ] ; then
+            system -e -p -t -- msgmerge --update "$name" "${name}u"
+        else
+            warning -i "File without translations:" "$name"
+        fi
+        system -e -p -t -- touch --no-create --reference "$1" "$name"
+        remove "${name}u" ; remove "${name}t"
+        error -t && run_check "$name"
+        break
+    done
+    error -t
+}
+
+# ------------------------------------------------------------------------------
+# build message catalogue: <name>
+# ------------------------------------------------------------------------------
+run_build() {
+    local name nbin
+    if ! find_output -s name "$1.po" ; then
+        error "Have no '$name' file, use 'prepare' action first"
+        return 1
+    fi
+    find_output -s nbin "$1.mo" 'LC_MESSAGES'
+
+    if [ "$name" -nt "$nbin" -o -n "$CEN_OPT_FORCE" ] ; then
+        message -a -d 1 -p "%-34s =>  %-34s" "$name" "LC_MESSAGES/${nbin##*/}"
+    else
+        trace -a -p "%-34s --  %-34s (%s)" "$name" "LC_MESSAGES/${nbin##*/}" "up-to-date"
+        return 0
+    fi
+
+    if ! dryrun "msgfmt -o $nbin $name" ; then
+        system -e -p -- msgfmt -o "$nbin" "$name" || return 1
+    fi
+    [ -z "$CEN_OPT_OUTPUT" ] && run_sync "$1" "${name%.*}"
+    error -t                                    # return status
+}
+
+# ------------------------------------------------------------------------------
+# Synchronize timestamps: <script> <name>
+# ------------------------------------------------------------------------------
+run_sync() {
+    local item list=("$1" "$2.po") self="LC_MESSAGES/$2.mo"
+    # current path is set to a language subfolder - find all mo files ...
+    for item in ../*/LC_MESSAGES/"$2".mo ; do
+        [ "$item" -ef "$self" ] && continue
+        [ -w "$item" ] && list+=("$item")
+    done
+    system -e -p -- touch  --no-create --reference "$self" "${list[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# Action verbs
+# ------------------------------------------------------------------------------
+actionCountry() {
+    if [ -z "$CEN_OPT_FORCE" ] ; then
+        [[ "$1" == [a-z][a-z] ]] ||
+            fatal "<country> should be a 2 letter name (use --force to override)"
+    fi
+    if [ -z "$CEN_OPT_OUTPUT" ] ; then
+        folder -m "$CEN_ROOT/locale/$1/LC_MESSAGES"
+        system -e -p ln -s "$CEN_ROOT/locale/$CEN_NAME" "$CEN_ROOT/locale/$1/$CEN_NAME"
+    else
+        local dest="${CEN_OPT_OUTPUT%/locale}"
+        folder -m "$CEN_OPT_OUTPUT/locale/$1/LC_MESSAGES"
+    fi
+}
+
+actionPrepare() {
+    find_script "${1%.*}" || return
+    run_prepare "$DAT_SCRIPT"
+}
+
+actionDump() {
+    find_script "${1%.*}" || return
+    run_dump "$DAT_SCRIPT"
+}
+
+actionBuild() {
+    find_script "${1%.*}" || return
+    run_build "$DAT_SCRIPT"
+}
+
+actionUpdate() {
+    local item
+    for item in *.po ; do
+        find_script "${item%.*}" || continue
+        run_dump "$DAT_SCRIPT" && run_build "$DAT_SCRIPT"
+    done
+}
+
+actionJoin() {
+    local item args=() name="$1"
+    for item in "$@" ; do
+        find_script "${item%.*}" || return
+        if ! find_output -s item "$DAT_SCRIPT.po" ; then
+            error "Have no '$item' file, use 'prepare' action first"
+            return 1
+        fi
+        args+=("$item")
+    done
+
+    folder -m -- "$CEN_OPT_OUTPUT/LC_MESSAGES" || return
+    tmpfile -f -s item '.po'
+    system -e -p -t -- msgcat -o "$item" -u "${args[@]}" || return
+    system -e -p -t -- msgfmt -o "$CEN_OPT_OUTPUT/LC_MESSAGES/$name.mo" "$item"
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    "")
+        system -c -e msgcat msgfmt msgmerge msguniq ||
+            error -i "Please install the GNU gettext-tools" ;;
+
+    cou*)
+        invoke "country" -          1 ;;                    # one arg
+
+    pre*)
+        invoke "prepare" -          1 ;;                    # one arg
+    dum|dump)
+        invoke "dump"    -          1 ;;                    # one arg
+    bui*)
+        invoke "build"   -          1 ;;                    # one arg
+    upd*)
+        invoke "update"  -          0 ;;                    # no args
+    joi|join)
+        invoke "join"    -        2 + ;;                    # 2 or more args
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> <argument>
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    -I|--inp*)
+        optarg "input"  []  -s  ;;      # get input folder(s)
+    -O|--out*)
+        optarg "output" -   -d  ;;      # get output folder
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -I --input   <fldr>  add path to list of source folders (repeatable)
+       -O --output  <fldr>  specify output path for generated files
+
+actions:
+       country <country>    initialize a country folder
+
+       prepare <name>       prepare an initial message file
+       dump    <name>       update an existing message file
+       build   <name>       update the locale file (after dump or prepare)
+       update               update existing message files, give status info
+
+       join    <name>...    join multiple message files into a single .mo file
+
+arguments:
+       <country>            2-letter country name like de, fr, ...
+       <dest>               destination file path
+       <fldr>               folder path
+       <name>               name of a tool or module script
+
+workflow:
+       All message table sources (*.po files) and the generated binaries (*.mo) are
+       contained in per-country folders. Use this command to create them:
+
+           $ \$CEN_ROOT/locale/$CEN_NAME country <country>
+
+       $CEN_NAME uses "bash --dump-po-strings" and the GNU gettext-tools to localize
+       scripts. The process of translating a script is initialized via:
+
+           $ cd \$CEN_ROOT/locale/<country>
+           $ ./$CEN_NAME prepare <name>
+           $ edit <name>.po
+           $ ./$CEN_NAME build <name>
+
+       After script source changes the procedure to update the translations is:
+
+           $ cd \$CEN_ROOT/locale/<country>
+           $ ./$CEN_NAME dump <name>
+           $ edit <name>.po
+           $ ./$CEN_NAME build <name>
+
+       A more convinient update method is to run "$CEN_NAME update" a 1st time, then
+       edit the translations and run "$CEN_NAME update" a 2nd time.
+
+timestamps:
+       Unless option --force is used, the tool only acts on updates. The **build** and
+       **update** actions set the timestamps of the scripts and their .po file to the
+       time of the resulting .mo file. If the .mo file for one language is updated,
+       the correnponding .mo file timestamps for other languages are also set.
+
+external:
+       To localize scripts that are not part of \$CEN_ROOT, option --input and
+       --output should be used. While --input adds folders to the script search list,
+       --output sets the destination locale folder; no timestamp updates are done:
+
+           $ cd \$CEN_ROOT/locale/<country>
+           $ ./$CEN_NAME country <country> --output=<fldr>
+           $ ./$CEN_NAME prep <name> --input=<fldr> --output=<fldr>/locale/<country>
+
+           $ cd \$CEN_ROOT/locale/<country>
+           $ ./$CEN_NAME dump <name> --input=<fldr> --output=<fldr>/locale/<country>
+           $ edit <fldr>/<name>.po
+           $ ./$CEN_NAME join <name>... --input=<fldr> --out=<fldr>/locale/<country>
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

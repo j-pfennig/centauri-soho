@@ -1,0 +1,217 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2005-2019; BSD License"
+CEN_TITLE="Tool to handle S.M.A.R.T disk check actions"
+
+# Import the bash library, set name and version
+PATH+="${0%/*}" . _centauri_bash_lib -a -d -s "$0" "0.20:1" || exit 2
+
+# ------------------------------------------------------------------------------
+# helper to stop the smartd deamon and to run selftest
+# ------------------------------------------------------------------------------
+checkSmart() {
+    system -c smartctl && return 0
+    local eopt ; [ -z "$CEN_OPT_SILENT" ] && eopt="-e"
+    quit $eopt "Smartmontools not installed"
+}
+
+stopSmartd() {
+    if runservice status smartd ; then
+        runservice -v smartd stop
+    elif runservice status smartmontools ; then
+        runservice -v smartmontools stop
+    fi
+    return 0
+}
+
+DAT_DISKS=
+diskFind() {
+    local item isok
+    DAT_DISKS=()
+    if [ $# = 0 ] ; then
+        system -e -p -r -a DAT_DISKS -- lsblk -o NAME -d -n || return
+        set -- "${DAT_DISKS[@]}" ; DAT_DISKS=()
+    fi
+
+    for item in "$@" ; do
+        item="${item##*/}" ; isok=1
+        case "$item" in
+            nvme[0-9]*)     item+="n1" ; item="${item::7}" ;;
+            [hs]d[a-z]*)    item="${item::3}" ;;
+            *)              isok=
+        esac
+        if [ ! -b "/dev/$item" ] ; then
+            error "No such device:" "/dev/$item"
+            continue
+        fi
+        [ -n "$isok" ] && DAT_DISKS+=("/dev/$item")
+    done
+}
+
+selfTest() {
+    mode="${1:-short}" ; shift
+    message "Sheduling '$mode' self-tests ..."
+
+    # now loop over all disks and shedule a self-test ...
+    diskFind "$@"
+    local disk
+    for disk in "${DAT_DISKS[@]}" ; do
+        if [ -f /etc/smartd.conf ] ; then
+            if ! grep -q -e "^\s*$disk" /etc/smartd.conf ; then
+                message -a "Not in /etc/smartd.conf, skipping self-test: $disk"
+                continue
+            fi
+        fi
+        sync # for any broken disk firmware
+        local dtyp=
+        # not with usb # [ "${disk:5:1}" = "s" ] && dtyp="--device=ata"
+        message -a "Starting self-test: $disk"
+        system -p -e -- smartctl --smart=on --test=$mode $dtyp $disk
+    done
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# action to run smart deamon: <no args>
+# ------------------------------------------------------------------------------
+actionDaemon() {
+    checkSmart || return
+    message "Use daemon for checking ..."
+
+    local pid
+    [ -f /var/run/smartd.pid ] && pid=$(</var/run/smartd.pid)
+    if [ -n "$pid" -a -e "/proc/$pid" ] ; then
+        # running, send signal to cause an immedeate check ...
+        dryrun -s "kill daemon" && return
+        kill -s SIGUSR1 "$pid"
+        message -a "Found S.M.A.R.T daemon: sent SIGUSR1 to process $pid"
+    else
+        # start smartmontools if not yet running - this triggers
+        # a check on all disks...
+        runservice smartmontools start &&
+        message -a "Started S.M.A.R.T daemon"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# action to show smart status: [<drive>]...
+# ------------------------------------------------------------------------------
+actionStatus() {
+    checkSmart || return
+    message "Show S.M.A.R.T status ..."
+    diskFind "$@"
+    if [ -z "$DAT_DISKS" ] ; then
+       message -i "No disks found"
+       return
+    fi
+
+    local item
+    for item in "${DAT_DISKS[@]}" ; do
+        system -e -- smartctl -A -H -i -l selftest "$item"
+    done
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+actionShort() {
+    checkSmart || return
+
+    # first stop the deamon (to prevent any problems) ...
+    stopSmartd
+
+    # now loop over all disks and shedule a self-test ...
+    selfTest short "$@"
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+actionLong() {
+    checkSmart || return
+
+    # first stop the deamon (to prevent any problems) ...
+    stopSmartd
+
+    # now loop over all disks and shedule a self-test ...
+    selfTest long "$@"
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+actionTest() {
+    checkSmart || return
+
+    local next file="$CEN_ROOT/persistent/$CEN_NAME.long"
+    local curr fflg ; [ -e "$file" ] && fflg=1
+    case "${1:-info}" in
+    sho*)   next='short'
+            ;;
+    lon*)   next='long'
+            ;;
+    inf*)   [ -n "$fflg" ] && message "Long self-test flag set" ||
+                              message "Long self-test flag not set"
+            ;;
+    run)    [ -n "$fflg" ] && curr='long' || curr='short'
+            selfTest "$curr" ; next='short'
+            ;;
+    *)      invoke -e "Invalid argument:" "$1" ; return
+    esac
+
+    if [ "$next" = 'short' ] ; then
+        [ -n "$fflg" ] && remove -- "$file"
+    elif [ "$next" = 'long' ] ; then
+        [ -z "$fflg" ] && create -- "$file"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# implement action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    dae*)
+        invoke -r "daemon" - 0 ;;
+    sho*)
+        invoke -r "short"  - 0 + ;;
+    lon|long)
+        invoke -r "long"   - 0 + ;;
+    sta*)
+        invoke -r "status" - 0 + ;;
+
+    tes|test)
+        invoke -r "test"   - 0 1 ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -a "daemon               run daemon to check the SMART status" \
+        -a "short                run short self-tests  (stops deamon)" \
+        -a "long                 run long self-tests   (stops deamon)" \
+        -a "test    [<mode>]     set test mode, run tests" \
+        -a "" \
+        -a "status  [<disk>]...  show SMART status of (all) disk(s)" \
+        \
+        -l "arguments" \
+        -t "<disk>               disk name like 'sda' or '/dev/sdc'" \
+        -t "<mode>               one of: info|short|long|run" \
+        \
+        -l "examples" \
+        -t "$CEN_NAME test short # clear 'long' self-test flag" \
+        -t "$CEN_NAME test long  # set 'long' self-test flag" \
+        -t "$CEN_NAME test run   # run test, clear 'long' flag"
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

@@ -1,0 +1,1543 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2018-2024; BSD License"
+CEN_TITLE="Repository Management and Synchronisation Tool"
+
+# ATTENTION: PATH is set non-standard to allow action 'setup' as described in help
+PATH="${0%/*}:$PATH" . _centauri_bash_lib -a -d -f -m sys -y - '0.32:2' || exit 2
+
+CEN_OPT_ALL=                    # see --all
+CEN_OPT_CONFIG=                 # see --config
+CEN_OPT_DISTRO=                 # see --distro
+CEN_OPT_DOMAIN=                 # see --domain
+CEN_OPT_EXTRA=                  # see --extra
+CEN_OPT_FAMILY=                 # see --family
+CEN_OPT_GLOBAL=                 # see --global
+CEN_OPT_CLIENT=                 # see --host
+CEN_OPT_MASTER=                 # see --master
+CEN_OPT_NICKNAME=               # see --nickname
+CEN_OPT_OVERRIDE=               # see --override
+CEN_OPT_PRIVATE=                # see --private
+CEN_OPT_ROLE=                   # see --role
+CEN_OPT_ROOT=                   # see --root
+CEN_OPT_SHARED=                 # see --shared
+CEN_OPT_PROXY=                  # see --proxy
+CEN_OPT_REPO=                   # see --repository
+
+# Data
+
+DAT_ROOT=                       # repository root folder
+DAT_CONFIG=                     # config file/folder, see do_setup()
+DAT_CONFIG_PARSED=              # set by do_parse()
+DAT_DISTRO=                     # distribution name
+DAT_FAMILY=                     # distribution family
+DAT_KEYS=                       # distribution/family prefix keys
+DAT_OVERRIDE=                   # flag options that override defaults
+DAT_PRIVATE=                    # private configs path
+DAT_NICKNAME=                   # distro release name
+DAT_SHARED=                     # shared configs path
+DAT_REPSTAT=                    # repository problems, see do_setup()
+DAT_REPOSIT=                    # host's path in repository
+DAT_FILTER=                     # filter passed to do_parse()
+DAT_CFGSTAT=                    # see do_conf_updt()
+DAT_INSTALL=()                  # see actionAutorun()
+DAT_UPDATE=()                   # see actionAutorun()
+
+DAT_NET_HOST="$HOSTNAME"        # client's host name
+DAT_NET_DOMAIN=                 # non-qualified domain
+DAT_NET_NICK=                   # server nick name
+DAT_NET_ROLE=                   # computer role: WORKSTATION PRIMARY SECONDARY
+DAT_NET_MODE=                   # computer mode: CLIENT MASTER SLAVE
+
+# parser data
+
+declare -A DAT_MAP_DISTRO DAT_MAP_FAMILY
+DAT_MAP_DISTRO=([debian]=d [raspbian]=r [ubuntu]=u [suse]=s)
+DAT_MAP_FAMILY=([debian]=d [raspbian]=d [ubuntu]=d [suse]=s)
+
+DAT_COND_DIST=
+DAT_COND_BOOL=
+DAT_COND_CRON=                  # cput/cget flag
+
+# ------------------------------------------------------------------------------
+# convert repository file name: -d|-u <name> <vnam>
+# ------------------------------------------------------------------------------
+#   -d decorate
+#   -u undo '-d' decoration
+# ------------------------------------------------------------------------------
+do_convert() {
+    local _sout _sinp _spat
+    case "$1" in
+    -d)     _spat="${2%/*}" ; _sinp="${2##*/}"
+            _spat="${_spat//_/°}"
+            _sout="${_spat//\//_}+$_sinp"
+            ;;
+    -u)     _spat="${2%+*}" ; _sinp="${2##*+}"
+            _spat="${_spat#*/?_}" ; _spat="${_spat#_}"
+            _spat="${_spat//_/\/}" ; _spat="${_spat//°/_}"
+            _sout="$_spat/$_sinp" ; [ "${_sout::1}" = '/' ] || _sout="/$_sout"
+            ;;
+    *)      fatal -t '?' "$1"
+    esac
+    printf -v "$3" '%s' "$_sout"
+}
+
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+
+# list/remove orphaned private folders: [-r]
+do_orphans() {
+    [ -z "$CEN_OPT_CLIENT" ] || return
+    [ -z "$CEN_OPT_GLOBAL" ] || return
+    local fdel ; [ "$1" = '-r' ] && fdel=1
+
+    # should only have host repo...
+    local item icnt=0
+    for item in "$odom"/[!@]* ; do
+        [ -d "$item" ] || continue
+        item="${item##*/}"
+        [ "$item" = "$DAT_NET_HOST" ] && continue
+        if [ -n "$fdel" ] ; then
+            confirm -a -y "Remove orphaned private repository folder:" "$item" &&
+                remove -d -- "$odom/$item"
+        else
+            warning -a "Orphaned private repository folder:" "$item"
+        fi
+    done
+}
+
+# setup paths (after option parsing): [-h|-r]
+do_setup() {
+    local anam hopt ropt
+    [ "$1" = "-h" ] && hopt=1
+    [ "$1" = "-r" ] && ropt=1
+    if [ -z "$hopt" ] ; then
+        local vopt="-u"
+        # get distribution info
+        [ -n "$CEN_OPT_FORCE" ] && vopt="-w"    # always update
+        sysversion $vopt                        # get/update system info
+    fi
+
+    DAT_DISTRO="${CEN_OPT_DISTRO:-$CEN_SYS_DISTRO}"
+    case "${DAT_DISTRO,,}" in
+        ubu*)   DAT_KEYS=('u' 'u') ; DAT_FAMILY="debian" ; DAT_DISTRO="ubuntu" ;;
+        sus*)   DAT_KEYS=('s' 's') ; DAT_FAMILY="suse"   ; DAT_DISTRO="suse" ;;
+        ras*)   DAT_KEYS=('d' 'r') ; DAT_FAMILY="debian" ; DAT_DISTRO="raspbian" ;;
+        ter*)   DAT_KEYS=('d' 't') ; DAT_FAMILY="debian" ; DAT_DISTRO="termux" ;;
+        deb*)   DAT_KEYS=('d' 'd') ; DAT_FAMILY="debian" ; DAT_DISTRO="debian" ;;
+        *)      fatal "Unknown linux distribution"": $DAT_DISTRO"
+    esac
+    DAT_FAMILY="${CEN_OPT_FAMILY:-$DAT_FAMILY}"
+    DAT_NICKNAME="${CEN_OPT_NICKNAME:-$CEN_SYS_NICKNAME}"
+    [ -z "$hopt" ] && trace -a \
+        "Distribution '$DAT_DISTRO'  Family '$DAT_FAMILY'  Nick-name '$DAT_NICKNAME'"
+
+    # get network info
+    embed -r -a anam centauriname --domain --nick --role --mode
+    DAT_NET_DOMAIN="${anam[0]}"
+    DAT_NET_NICK="${anam[1]}"
+    DAT_NET_ROLE="${anam[2]}"
+    DAT_NET_MODE="${anam[3]}"
+
+    # set domain and host
+    DAT_ROOT="$CEN_ROOT"
+    [ "${CEN_OPT_ROOT:--}" != '-' ] && DAT_ROOT="$CEN_OPT_ROOT"
+    [ -z "$hopt" -a -z "$CEN_OPT_FORCE" ] && folder -f "$DAT_ROOT"
+    joinpath -s DAT_PRIVATE -- "$DAT_ROOT" "${CEN_OPT_PRIVATE:-private}"
+    joinpath -s DAT_SHARED  -- "$DAT_ROOT" "${CEN_OPT_SHARED:-shared}"
+
+    # get configuration
+    DAT_CONFIG="$DAT_ROOT/default"
+    [ "$DAT_CONFIG" -ef "/etc/default" ] && DAT_CONFIG="/etc/default"
+    joinpath -s DAT_CONFIG -- "$DAT_CONFIG" "${CEN_OPT_CONFIG:-$CEN_NAME}"
+
+    if [ -n "$CEN_OPT_DOMAIN" ] ; then
+        DAT_NET_DOMAIN="$CEN_OPT_DOMAIN" ; DAT_OVERRIDE=1
+    fi
+    DAT_NET_DOMAIN="${DAT_NET_DOMAIN%%.*}"
+    [ -z "$hopt" ] || return                    # end of partial setup
+
+    if [ -n "$CEN_OPT_CLIENT" ] ; then
+        DAT_NET_HOST="$CEN_OPT_CLIENT" ; DAT_OVERRIDE=1
+    fi
+
+    # get OPTION files
+    local odom="$DAT_ROOT/configs/$DAT_NICKNAME/$DAT_NET_DOMAIN"
+    if [ -r "$odom/@shared/OPTIONS" ] ; then
+        trace -a "Reading '$odom/@shared/OPTIONS'"
+        . "$odom/@shared/OPTIONS"
+    fi
+
+    if [ -z "$DAT_NET_HOST" ] ; then
+        error "Please use '--host=' to specify this computer's name"
+    elif [ -r "$odom/$DAT_NET_HOST/OPTIONS" ] ; then
+        trace -a "Reading '$odom/$DAT_NET_HOST/OPTIONS'"
+        . "$odom/$DAT_NET_HOST/OPTIONS"
+    fi
+
+    # set defaults
+    if [ -n "$CEN_OPT_ROLE" ] ; then
+        case "$CEN_OPT_ROLE,," in
+            pri*) DAT_NET_ROLE="PRIMARY" ;;
+            sec*) DAT_NET_ROLE="SECONDARY" ;;
+            wor*) DAT_NET_ROLE='WORKSTATION' ;;
+            *)    DAT_NET_ROLE=
+        esac
+        DAT_NET_MODE=
+        #DAT_OVERRIDE=1
+    fi
+    case "$DAT_NET_ROLE" in
+        PRIMARY|SECONDARY|WORKSTATION) ;;
+        *) error "Please use '--role=' to specify this computer's role"
+    esac
+
+    [ "${DAT_NET_DOMAIN:-(none)}" = "(none)" ] &&
+        error "Please use '--domain=' to specify the domain name"
+    [ "${DAT_NET_NICK:--}" = '-' ] &&
+        error "Please use '--repository=' to specify the server name"
+
+    error -t || return
+    do_orphans ${ropt:+-r}                  # list/remove orphaned private folders
+
+    # helper to check repository folder and symlink: <varname> <branch> <folder>
+    ___repo_folder() {
+        local rpre rful="$DAT_REPOSIT/$3"
+        if [ ! -d "$rful" ] ; then
+            warning -a "Missing repository folder :" "$rful"
+            DAT_REPSTAT=1
+        fi
+        if [ ! -L "$2" ] ; then
+            warning -a "Missing repository symlink:" "$2"
+            ((DAT_REPSTAT += 2))
+        elif [ ! "$2" -ef "$rful" -a -z "$DAT_OVERRIDE" ] ;then
+            warning -a "Repository symlink invalid:" "$2"
+            ((DAT_REPSTAT += 4))
+        fi
+        joinpath -s "$1" -- "$DAT_ROOT" "$rful"
+    }
+
+    local rcnf="$CEN_ROOT/secrets/import/repository.conf"
+    if [ -z "$CEN_OPT_MASTER" -a -r "$rcnf" ] ; then
+        . "$rcnf" 2>/dev/null || error "Cannot read file:" "$rcnf"
+    fi
+    [ -n "$CEN_RSYNC_MODULE" ] && trace -a "rsync module name  : $CEN_RSYNC_MODULE"
+
+    DAT_REPOSIT="$DAT_ROOT/configs/$DAT_NICKNAME/$DAT_NET_DOMAIN"
+    ___repo_folder DAT_SHARED  "$DAT_SHARED"  "@shared"
+    ___repo_folder DAT_PRIVATE "$DAT_PRIVATE" "$DAT_NET_HOST"
+    trace -a "Shared  repository : $DAT_SHARED"
+    trace -a "Private repository : $DAT_PRIVATE"
+
+    # check configuration
+    [ -r "$DAT_CONFIG" -o -n "$CEN_OPT_FORCE" ] ||
+        error "Configuration not found:" "$DAT_CONFIG"
+}
+
+# initialize local repository: -no args-
+do_repository() {
+    [ -z "$DAT_REPSTAT" ] && return
+
+    ___repo_setup() {
+        trace -a "Creating symlink:" "$2 => $DAT_ROOT/$1"
+        folder -f -m -- "$2"
+        symlink -m -f -r -- "$2" "$DAT_ROOT/$1"
+    }
+
+    trace -a "Creating repository folders at:" "$DAT_REPOSIT"
+    folder -m "$DAT_REPOSIT"
+    folder -m "$DAT_ROOT/archived"
+    folder -m "$DAT_ROOT/remote"
+    folder -m "$DAT_ROOT/secrets"
+
+    ___repo_setup 'shared'  "$DAT_SHARED"
+    ___repo_setup 'private' "$DAT_PRIVATE"
+}
+
+# update configuration file: -no args-
+do_conf_updt() {
+    [ -n "$DAT_CFGSTAT" ] && return ; DAT_CFGSTAT=1
+    local cfgr
+    do_convert -d "$DAT_CONFIG" cfgr
+    cfgr="$DAT_SHARED/$DAT_KEYS$cfgr"
+    if [ ! -e "$cfgr" ] ; then
+        local cfgd="${DAT_NET_DOMAIN:-(none)}"
+        [ "$cfgd" = "(none)" ] && cfgd="${CEN_OPT_REPO#*:}"
+        do_convert -d "$DAT_CONFIG" cfgr
+        cfgr="$DAT_ROOT/configs/$DAT_NICKNAME/$cfgd/@shared/$DAT_KEYS$cfgr"
+        [ -e "$cfgr" ] || return
+        message -a "Configuration file repository:" "${cfgr%/*}"
+    fi
+    [ "$cfgr" -nt "$DAT_CONFIG" ] || return
+    confirm -a -y -q "Update configuration file from repository" || return
+    system -e -p -- cp -av "$cfgr" "$DAT_CONFIG"
+}
+
+# save/restore right/owner of edited files: -s|-r <array> <file1> <file2>
+do_rights() {
+    local _fil1="$3" _fil2="$4"
+    if [ "$1" = "-s" ] ; then
+        [ -e "$_fil1" ] || _fil1="$_fil2"
+        [ -e "$_fil2" ] || _fil2="$_fil1"
+        system -e -p -r -a $2 -d "|\n" -- stat --format="chmod 0%a|chown %U:%G" "$_fil1" "$_fil2"
+    else
+        local -n _asta="$2"
+        if [ "${#_asta[@]}" = 4 ] ; then
+            if [ -e "$_fil1" ] ; then
+                system -e -p -- ${_asta[0]} "$_fil1"
+                system -e -p -- ${_asta[1]} "$_fil1"
+            fi
+            if [ -e "$_fil2" ] ; then
+                system -e -p -- ${_asta[2]} "$_fil2"
+                system -e -p -- ${_asta[3]} "$_fil2"
+            fi
+        else
+            warning "Cannot restore rigths and owner"
+        fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# configuration parser: <item_func> <filter>|<path>|@
+# ------------------------------------------------------------------------------
+# condition [else] [not] [true|false] [any] [<filter>]...
+#    "else"                                 # previous condition not matched
+#    "not"                                  # invert result
+#    "any"                                  # force a_ prefix
+#    "true"                                 # set result true
+#    "false"                                # set result false
+#
+# condition [...] [distro|family] <name>...
+#    -none-    filter by distro, use family prefix
+#    "distro"  filter by distro, use distro prefix
+#    "family"  filter by family, use family prefix
+#
+# condition [...] [cget|cput]               # filter cron get/put
+#
+# condition [...] [client|server]           # filter client/server
+#
+# condition [...] [@<host>|<rex>]           # filter host/expression
+#
+do_parse() {
+    system -c -e cmp || return  # used by compare()
+    local optc opta="$CEN_OPT_ALL"
+    [ "$1" = '-c' ] && { opta=1 ; optc=1 ; shift ; }
+    local aind keyw=() keyl keyp line=0 func="$1" ; DAT_FILTER="$2"
+    aind="$CEN_AUTOIND" ; CEN_AUTOIND=
+    trace -a "Parsing config file: $DAT_CONFIG"
+
+    ___condition() {
+        #debug CONDITION "$*" "(#$line)"
+        local argu                              # current token
+        local argm                              # prefix letter
+        local argd                              # distribution or family
+
+        local -i def_any           # flag for 'any'
+        local -i def_bln=0         # boolean (0 := true)
+        local -i def_not           # flag for 'not'
+        local    def_dis           # distro/family match flag
+        local -i def_else          # flag for 'else' (do not reset DAT_COND_BOOL)
+        local -i def_fam           # "" exact distro, 1 distro or family, 2 family
+
+        DAT_COND_DIST='a'                       # distro/family prefix
+        DAT_COND_CRON=                          # cron mode (get or put)
+        DAT_COND_BOOL=0                         # boolean condition (0:=ok)
+
+        while [ $# -gt 0 ] ; do
+            argu="$1" ; shift
+            case "$argu" in
+
+            # computer role ...
+            client) [ "$DAT_NET_ROLE" != 'WORKSTATION' ] && [ -z "$opta" ] && def_bln=1 ;;
+            server) [ "$DAT_NET_ROLE"  = 'WORKSTATION' ] && [ -z "$opta" ] && def_bln=1 ;;
+
+            dist*|family)
+                    [ -n "$def_fam" ] &&
+                        error -a "Conflicting 'any/distro/family' attributes, line #$line:" "$argu"
+                    [ "${argu::1}" = 'd' ] && def_fam=1 || def_fam=2 ;;
+
+            any)    def_any=1 ;;
+
+            cget|cput)
+                    [ -n "$DAT_COND_CRON" ] &&
+                        error -a "Only one 'cget' or 'cput' attribute permitted, line #$line"
+                    DAT_COND_CRON="@${argu:1}" ;;
+
+            true)   def_bln=0 ; def_not= ;;
+            false)  def_bln=1 ; def_not= ;;
+            not)    def_not=1 ;;
+
+            else)   def_else=1 ;;
+
+            [a-z]*) if [ -z "$def_fam" ] ; then     # by distro, family prefix
+                        argm="${DAT_MAP_FAMILY["$argu"]}"
+                        argd="$DAT_DISTRO"
+                    elif [ "$def_fam" = 1 ] ; then  # by distro, distro prefix
+                        argm="${DAT_MAP_DISTRO["$argu"]}"
+                        argd="$DAT_DISTRO"
+                    else                            # by family, family prefix
+                        argm="${DAT_MAP_FAMILY["$argu"]}"
+                        argd="$DAT_FAMILY"
+                        [ "$argu" != "$DAT_FAMILY" -a "$argu" = "$DAT_DISTRO"  ] &&
+                            error -a "Expected a family name, line #$line:" "$argu"
+                    fi
+                    if [ -z "$argm" ] ; then
+                        error -a "Invalid 'condition' argument, line #$line:" "$argu"
+                        continue
+                    fi
+                    [ "$argu" = "$argd" ] && DAT_COND_DIST="$argm"
+                    def_dis=1 ;;
+
+            /*)     [ -z "$opta" -a ! -e "$argu" ] && def_bln=1 ;;
+
+            @*)     [ "$HOSTNAME" = "${argu:1}" ] || def_bln=1 ;;
+
+            *)      argu+=" $*"
+                    $argu &>/dev/null ; def_bln=$?
+                    #debug "EXPR $argu (#$line)" def_bln
+                    break ;;
+            esac
+        done
+
+        # all 'distro' or 'family' matches failed ...
+        [ "$DAT_COND_DIST" = 'a' -a -n "$def_dis" ] && def_bln=1
+        # override prefix for 'any'
+        [ -n "$def_any" ] && DAT_COND_DIST='a'
+        # toogle result for 'not'
+        if [ -n "$def_not" ] ; then
+            [ "$def_bln" = 1 ] && def_bln=0 || def_bln=1
+        fi
+
+        if [ -z "$def_else" ] ; then
+            DAT_COND_BOOL="$def_bln"
+        elif [ "$DAT_COND_BOOL" = 1 ] ; then
+            DAT_COND_BOOL="$def_bln"
+        else
+            DAT_COND_BOOL=1
+        fi
+        # [ "$DAT_COND_BOOL" = 0 ] && debug "MATCH     " DAT_COND_DIST
+    }
+
+    ___folder() {
+        [ ! -d "${keyw[1]}" ] && [ -z "$opta" ] && return
+        if [ "${DAT_FILTER::1}" = '@' ] ; then
+            [ -z "$DAT_COND_CRON" ] && return
+            [ "$DAT_FILTER" != '@' -a "$DAT_COND_CRON" != "$DAT_FILTER" ] && return
+        fi
+        $func "${keyw[@]}"
+    }
+
+    # loop over config file lines
+    DAT_COND_BOOL=1
+    while read -r -u4 keyl; do
+        ((line++))
+        if [ -n "$keyp" ] ; then
+            keyl="$keyp $keyl" ; keyp=
+        fi
+
+        # preprocessing, handle skip on DAT_COND_BOOL
+        case "$keyl" in
+            '')             continue ;;
+            *\\)            keyp="${keyl::-1}" ; continue ;;
+            \#*)            continue ;;
+            condition*)     ;;
+            debug*)         $keyl ; continue ;;
+            *)              [ "$DAT_COND_BOOL" = 0 ] || continue
+        esac
+
+        if ! eval keyw=( ${keyl%%#*} ) &>/dev/null ; then   # handle vars and quotes
+            error -a "Syntax error, line #$line:" "$keyl" ; continue
+        fi
+
+        # process enabled statements
+        case "$keyw" in
+            condition)      ___condition "${keyw[@]:1}" ;;
+            private|shared) ___folder ;;
+            linkto)         ___folder ;;
+            remove)         ___folder ;;
+            install)        DAT_INSTALL+=("${keyw[@]:1}" "\n$line") ;;
+            update)         DAT_UPDATE+=("${keyw[@]:1}" "\n$line") ;;
+            stop)           message "Parsing stopped, line #$line" ; break ;;
+            message)        message -- "${keyw[@]:1}" ;;
+            *)              error -a "Unknown command, line #$line:" "${keyw[*]}"
+        esac
+    done 4< "$DAT_CONFIG"
+
+    CEN_AUTOIND="$aind"
+    trace -a "Config file parsed, $line lines"
+    DAT_CONFIG_PARSED="$line"
+}
+
+# ignore missing file if name starts with '-': <path> <item> <fldr>
+do_ignore() {
+    local optc="$CEN_OPT_ALL"
+    [ "$1" = '-c' ] && { optc=1 ; shift ; }
+    local -n _vfil="$1" _vitm="$2"
+    local _pref ; [ "${3:--}" = '-' ] || _pref="$3/"
+    if [ "${_vitm::1}" = '-' ] ; then
+        _vitm="${_vitm:1}"
+        _vfil="$_pref$_vitm"
+        [ -n "$CEN_OPT_EXTRA" -o -n "$optc" ] && return 1
+        [ -e "$_vfil" ] || return 0
+    else
+        _vfil="$_pref$_vitm"
+    fi
+    return 1
+}
+
+# implement filtering: <item>
+do_filter() {
+    [ -z "$DAT_FILTER" ] && return 0
+    local fpat="$1" fmod="${DAT_FILTER::1}"
+    [ "$fmod" = '@' ] && return 0
+    [ "$fmod" = '/' ] || fpat="${fpat##*/}"
+    [[ "$fpat" == *$DAT_FILTER* ]]
+}
+
+# remove symlink: <path>
+do_nosymlink() {
+    [ -h "$1" ] || return 0
+    [ -n "$CEN_YESNO" ] &&
+        message -a "File should not be a symlink:" "$1"
+    confirm -a -y "Remove invalid symlink '$1'" || return 1
+    remove -- "$1" && return 2 || return 1
+}
+
+# ------------------------------------------------------------------------------
+# compare two files: <locl> <repo1> [<repo2>|-]
+# ------------------------------------------------------------------------------
+# compare <locl> and <repo>. If the file <repo1> is missing the <repo2> file is
+# used.  If a <locl> and a <repo> are found, diff is run.  Return status:
+#
+#  0 files are equal
+#  1 <locl> does not exist
+#  2 <repo> does not exist
+#  3 <locl> is newer
+#  4 <repo> is newer
+#  5 no file at all
+# ------------------------------------------------------------------------------
+compare() {
+    local locl="$1" des1="$2" des2="${3:--}" repo lret=3
+    [ "$des1" = "$des2" ] && des2='-'
+
+    # do we have a local file?
+    [ -e "$locl" ] || locl=
+
+    # do we have a destination file?
+    if [ -e "$des1" ] ; then
+        repo="$des1"
+    elif [ "$des2" != '-' -a -e "$des2" ] ; then
+        repo="$des2" ; lret=2
+    else
+        [ -z "$locl" ] && return 5
+        return 2
+    fi
+    [ -z "$locl" ] && return 1
+
+    # override/force for get/put
+    if [ -n "$CEN_OPT_FORCE" ] ; then
+        [ "$CEN_ACTION" = 'get' ] && return 3
+        [ "$CEN_ACTION" = 'put' ] && return 4
+    else
+        case "$CEN_ACTION$CEN_OPT_OVERRIDE" in
+        get0)   return 0 ;;
+        get1)   cmp -s "$locl" "$repo" &>/dev/null && return 0 ; return 3 ;;
+        put0)   return 0 ;;
+        put1)   cmp -s "$locl" "$repo" &>/dev/null && return 0 ; return 4 ;;
+        esac
+    fi
+
+    # check content and times - don't use system() for speed
+    cmp -s "$locl" "$repo" &>/dev/null && return 0
+    [ "$locl" -nt "$repo" ] && return $lret
+    return 4
+}
+
+# ------------------------------------------------------------------------------
+# automatic updates: -no args-
+# ------------------------------------------------------------------------------
+# update /etc/default/centaurinetcfg        /etc/hosts    centaurinetcfg setup
+# update '"$CEN_OPT_CLIENT" != "$HOSTNAME"' evaluate      centaurinetcfg setup "$CEN_OPT_CLIENT"
+# update /etc/xxx.conf                      missing       xxx delete
+# update /etc/xxx.conf                      existing      xxx run
+# install +otto +emil -hugo
+#
+# condition family debian
+#     update "/etc/exim4/update-exim4.conf.conf" "/var/lib/exim4/config.autogenerated" \
+#            "Configuring exim4 ..."             /usr/sbin/update-exim4.conf
+#     update "/etc/ssl/certs/ssl-cert-snakeoil.pem" "/etc/ssl/certs/ca-certificates.crt" \
+#            "Update ca-certificates.crt ..."    /usr/sbin/update-ca-certificates
+#     update /etc/sudoers existing  chmod 440 /etc/sudoers
+# condition suse
+#     update /etc/aliases /etc/aliases.db - /usr/bin/newaliases
+#     update /etc/sudoers existing  chmod 640 /etc/sudoers
+#
+# ------------------------------------------------------------------------------
+actionAutorun() {
+    # check if newer: <trigger> <timestamp>
+    ___is_newer() {
+        [ -e "$1" ] || return 1         # no trigger - don't update
+        local base="${2%/*}"
+        [ -d "$base" ] || return 1      # no base folder - don't update
+        [ -e "$2" ] || return 0         # no timestamp
+        local trig="$1" tims="$2"
+        [ -h "$trig" ] && resolve -c -s trig -- "$trig"
+        [ -h "$tims" ] && resolve -c -s tims -- "$tims"
+        [ -z "$trig" -o -z "$tims" ] && return 1
+        [ "$trig" -nt "$tims" ]         # result
+    }
+
+    # run command if newer: <trigger> <timestamp> <command...>
+    ___update() {
+        trace -a "autorun: $4 ($1)"
+        case "$2" in
+            eval*)  eval "$1"   || return ;;
+            exis*)  [ -e "$1" ] || return ;;
+            miss*)  [ -e "$1" ] && return ;;
+            *)       ___is_newer "$1" "$2" || return 0
+        esac
+        [ "${3:--}" = '-' ] || message -a -- "$3"
+        shift 3
+        if [ "${1::1}" != '/' -a -e "$CEN_TOOLS/$1" ] ; then
+            embed -i -v -y -z -- "$@"
+        else
+            if ! system -c "$1" ; then
+                warning -a "autorun: $1 [program not found]" ; return 0
+            fi
+            system -e -p -n -- "$@"
+        fi ; return 0
+    }
+
+    [ -z "$DAT_CONFIG_PARSED" ] && do_parse true
+    syssetup -s -u                      # update tools, services, links etc.
+    embed -i -v -z centauridivert update
+
+    [ -n "$DAT_INSTALL" ] && warning -a "autorun: install not implemented"
+
+    # base folder of timestamp files must exist
+    if [ ! -d "$CEN_ROOT/persistent" ] ; then
+        invoke -e "missing folder: %s" "$CEN_ROOT/persistent"
+        return
+    fi
+
+    local line item acmd=()
+    for item in "${DAT_UPDATE[@]}" ; do
+        if [ "${item::2}" = "\n" ] ; then
+            # line="${item:2}"
+            ___update "${acmd[@]}"
+            # error "Bad statement, line #$line: ${item##*[0-9]: }"
+            acmd=() ; continue
+        fi
+        acmd+=("$item")
+    done
+
+    line="# autorun completed ($CEN_ACTION)"
+    create -t -h - -v line "$CEN_ROOT/persistent/$CEN_NAME"
+}
+
+# ------------------------------------------------------------------------------
+# remove backups: -no args-
+# ------------------------------------------------------------------------------
+actionCleanup() {
+    # setup the repository
+    do_setup -r                         # remove orphaned private folders
+    do_repository ; error -t || return
+    confirm -a -y "Remove backups in '/etc' and '$DAT_ROOT'" || return
+
+    local fcmd="-exec" ; [ "$CEN_VERB" -gt 1 ] && fcmd="-ok"
+    local farr=( '(' -name '*~' -or -name '*.save?' -or -name '*-' ')' $fcmd rm '{}' ';' )
+    system -e -- find "/etc" "${farr[@]}"
+    system -e -- find "$DAT_ROOT/configs" "${farr[@]}"
+    [ -d "$DAT_ROOT/machines" ] && system -e -- find "$DAT_ROOT/machines" "${farr[@]}"
+    remove -d "$DAT_ROOT/backup"
+}
+
+# ------------------------------------------------------------------------------
+# local get/put: <what>
+# ------------------------------------------------------------------------------
+actionLocal() {
+    local over                              # set be 'override' action
+    local cmdc="cp -abu --dereference"
+    local cmdd="rm -f"
+    local cmdl="/usr/bin/ln -f -r -s"       # no bash built-in
+    [ -n "$CEN_OPT_FORCE" ] && cmdc="cp -preserve=mode,ownership --dereference"
+    CEN_HISTORY='-'
+
+    # setup the repository
+    do_repository ; error -t || return
+    do_conf_updt
+
+    # handle parser output: <command> <repo_fldr> <arg>...
+    ___output() {
+        local acmd="$1" ; shift             # shared|private|linkto|remove
+        local afld="$1" ; shift
+        local argu ffil
+        if [ "$acmd" = 'linkto' ] ; then
+            [ "$CEN_ACTION" = 'put' ] || return
+            argu="$1"
+            do_ignore ffil argu "$afld" && return
+            if ! do_filter "$2" ; then
+                do_filter "$ffil" || return
+            fi
+            [ "$2" -ef "$ffil" ] || ___confirm "Link" "$2" "$ffil" - "$cmdl"
+        elif [ "$acmd" = 'remove' ] ; then
+            [ "$CEN_ACTION" = 'put' ] || return
+            for argu in "$@" ; do
+                do_filter "$afld/$argu" || continue
+                [ -e "$afld/$argu" -o -h "$afld/$argu" ] && ___confirm "Delete" "$afld/$argu" - - "$cmdd"
+            done
+        else
+            local frep fsha fpri
+            for argu in "$@" ; do
+                do_ignore ffil argu "$afld" && continue
+                do_filter "$ffil" || continue
+                do_convert -d "$DAT_COND_DIST$ffil" frep
+                fsha="$DAT_SHARED/$frep"
+                [ "$acmd" = 'private' ] && fpri="$DAT_PRIVATE/$frep" || fpri="$fsha"
+
+                compare "$ffil" "$fpri" "$fsha"
+                case $? in
+                1)  [ "$CEN_ACTION" = 'put' ] && ___confirm "Create"  "$ffil" "$frep" "$acmd" "$cmdc" ;;
+                2)  [ "$CEN_ACTION" = 'get' ] && ___confirm "Create"  "$frep" "$ffil" "$acmd" "$cmdc" ;;
+                3)  [ "$CEN_ACTION" = 'get' ] && ___confirm "Replace" "$frep" "$ffil" "$acmd" "$cmdc" ;;
+                4)  [ "$CEN_ACTION" = 'put' ] && ___confirm "Replace" "$ffil" "$frep" "$acmd" "$cmdc" ;;
+                esac
+            done
+        fi
+    }
+
+    ___help() {
+        echo "
+        Commands can be abreviated. The follwing commands can be used:
+
+        help         show this message
+        no           skip this item
+        yes          perform item action
+        quit         quit program"
+
+        [ "$1" != '-' ] && echo "\
+        diff         Use the diff program to show differences
+        edit         Edit left|right|both|shell files, see prompt
+        kompare      Use the kde kompare program to show differences
+        revert       Revert local file to older repository file
+        shared       Get local file into shared repository folder
+        "
+        CEN_AUTOIND=
+    }
+
+    # confirm action and run: <prompt> <file1> <file2> private|shared <command>
+    ___confirm() {
+        local pdes="$2" psrc="$3" xcmd="$4"
+        local vali="yes no quit help" palt frep fdel fadd
+        local bpri="$DAT_PRIVATE" bsha="$DAT_SHARED"
+
+        if [ "${psrc:--}" = '-' ] ;  then               # delete
+            fdel=1
+        elif [ "${xcmd:--}" = '-' ] ; then              # link
+            if [ ! -e "$psrc" ] ; then
+                trace -a "Link source missing: $psrc" ; return
+            fi
+        elif [ "${pdes::1}" != '/' ] ; then             # destinaton in repo
+            palt="$bsha/$pdes"                          # alternate destination
+            do_nosymlink "$bpri/$pdes" ; do_nosymlink "$palt"
+            [ "$xcmd" = 'private' -a "$over" != 3 ] && pdes="$bpri/$pdes" || pdes="$palt"
+            frep=1
+        else                                            # destination is local
+            if [ ! -e "$bpri/$psrc" ] ; then            # private -> shared
+                psrc="$bsha/$psrc"
+                trace -a "No private file, using shared: $psrc"
+            else
+                psrc="$bpri/$psrc"
+            fi
+            [ -h "$pdes" ] && warning -a "Destination symlink will be removed: $pdes"
+        fi
+        trace    -c "source" -- "$psrc"
+        trace -a -c "destination" -- "$pdes ($xcmd)"
+
+        local prom="$pdes" blen="${#DAT_REPOSIT}"
+        [ -n "$frep" ] && prom="${prom:blen+1}"
+        printf -v prom "%-8s %-50s\n" "$1" "$prom"
+        [ "${xcmd:--}" != '-' ] && vali+=" diff kompare edit revert shared"
+
+        while true ; do                                 # input loop
+            case "$over" in                             # action over, no prompts
+            1|2)    if   [ "$CEN_ACTION" = 'get' ] ; then
+                        ___revert  "$psrc" "$pdes" "$palt" && break
+                    elif [ "$CEN_ACTION" = 'put' ] ; then
+                        break
+                    fi ;;
+            3|4)    [ -e "$pdes" ] && return ; fadd=1 ; break ;;
+            esac
+
+            dryrun && case "$CEN_YESNO" in
+            y)      [ "$CEN_VERB" -ge 1 ] && echo -n "[yes] $prom" ; return 0 ;;
+            n)      [ "$CEN_VERB" -ge 1 ] && echo -n "[no] $prom" ; return 1
+            esac
+            confirm -a -n -p " [no] " -v "$vali" "$prom" && break
+            case "$CEN_CONFIRM" in
+                quit)   quit ;;
+                help)   ___help "${xcmd:--}" ;;
+                diff)   ___diff -d "$psrc" "$pdes" "$palt" "$blen" ;;
+                edit)   ___edit    "$psrc" "$pdes" "$palt" ;;
+                komp*)  ___diff -k "$psrc" "$pdes" "$palt" ;;
+                rev*)   ___revert  "$psrc" "$pdes" "$palt" && break ;;
+                sha*)   ___shared  "$psrc" "$pdes" "$palt" && break ;;
+                *)      return ;;
+            esac
+        done
+
+        if [ -n "$fdel" ] ; then
+            system -e -p -- $5 "$pdes"
+        elif [ -n "$fadd" ] ; then
+            system -e -p -- $5 "$psrc" "$pdes"
+        else
+            [ -L "$pdes" ] && remove "$pdes"
+            system -e -p -- $5 "$psrc" "$pdes"
+        fi
+    }
+
+    # edit command:  <src> <dest> <alt-dest>
+    ___edit() {
+        system -c -e editor || return
+        local fsrc="$1" fdes="$2" falt="$3" # blen="$4" asta
+        [ -n "$falt" -a ! -e "$fdes" ] && fdes="$falt"
+        message -a "Left  file (\$L): $fsrc"
+        message -a "Right file (\$R): $fdes"
+        do_rights -s asta "$fsrc" "$fdes"
+        while true ; do
+            confirm -a -p " [left|right|both|shell] " -d "none" -v "none left right both shell" "Edit file(s)"
+            case "${CEN_CONFIRM:--}" in
+                left)   editor "$fsrc" ;;
+                right)  editor "$fdes" ;;
+                both)   editor "$fsrc" "$fdes" ;;
+                shell)  export L="$fsrc" R="$fdes"
+                        export PS1="$CEN_NAME \w\$ " ; bash --norc ;;
+                *)      do_rights -r asta "$fsrc" "$fdes" ; return
+            esac
+        done
+    }
+
+    # shared command: <src> <dest> <alt-dest>
+    ___shared() {
+        if [ "$2" = "$3" -o -z "$3" ] ; then
+            warning -a "Cannot use 'shared' here" ; return 1
+        fi
+        pdes="$3" ; remove "$2" ; system -q -- touch "$1"
+    }
+
+    # revert to repos command: <src> <dest> <alt-dest>
+    ___revert() {
+        local fsrc="$1" fdes="$2" falt="$3"
+        [ -n "$falt" -a ! -e "$fdes" ] && fdes="$falt"
+        remove "$fsrc" || return 1
+        pdes="$psrc" ; psrc="$fdes"
+        [ -z "$falt" ] && system -q -- touch "$psrc"    # new date in repo
+        return 0
+    }
+
+    # show difference command: -k|-d <src> <dest> <alt-dest> <trunc>
+    ___diff() {
+        local fcmp="$1" fsrc="$2" fdes="$3" falt="$4" blen="$5"
+        [ -n "$falt" -a ! -e "$fdes" ] && fdes="$falt"
+        if ! [ -e "$fsrc" -a -e "$fdes" ] ; then
+            warning -a "Cannot use 'diff' or 'kompare' here"
+        elif [ "$fcmp" = "-k" ] ; then
+            [ -h ~/.cache -a ! -d ~/.cache ] && embed centauriencfs -q mount -
+            embed -v -z centauridiff --kompare --fix "$fsrc" "$fdes"
+        else
+            embed -v -z centauridiff --diff "$fsrc" "$fdes"
+        fi
+    }
+
+    local what="$1"                                     # condition
+    [ "$what" = '@' ] && what+="$CEN_ACTION"
+    do_parse ___output "$what"                          # parse and run
+}
+
+# ------------------------------------------------------------------------------
+# server rget/rput (rget is default): -no args-
+# ------------------------------------------------------------------------------
+actionServer() {
+
+    # helper to run rsync: rget|rput (using rnam, rmod, rcon)
+    #   rnam := remote server
+    #   rmod := repository module (domain)
+    #   rcon := configuration (distro)
+    ___run_rsync() {
+        # override server and module
+        local pdom="${CEN_OPT_DOMAIN:-$DAT_NET_DOMAIN}"
+        local psrv pnam="${rnam:-$DAT_NET_NICK}" pmod="${rmod:-$pdom}"
+        [ "${pnam:--}" = '-' ] && error "Please use '--repository=' to specify the server name"
+        [ "${pmod:--}" = '-' ] && error "Please use '--repository=' to specify the repository name"
+        [ -d "$DAT_ROOT" ] || fatal "DAT_ROOT is invalid: $DAT_ROOT"
+        [ -n "$rcon" ] || fatal "DAT_NICKNAME not set"
+
+        folder -m "$DAT_ROOT/$bdir/$pmod"
+        error -t || return
+
+        local opts=(--silent)
+        opts+=( --exclude="/$bdir/***" --all --exclude=".*" --exclude="*~" --exclude="*.pyc"
+                --exclude="__pycache__/***" --exclude="README.html" --exclude="library/*.?" )
+
+        # protect server against rget/rput (using $HOSTNAME)
+        if [ "$DAT_NET_ROLE" = "PRIMARY" -o "$DAT_NET_ROLE" = "SECONDARY" ] && \
+           [ "$DAT_NET_MODE" != "SLAVE" ] ; then
+            if [ "$1" = "rget" ] ; then
+                if [ "$pnam" = "$HOSTNAME" -o "$pnam" = "$DAT_NET_NICK" ] ; then
+                    message "Ignoring 'rget' on $DAT_NET_ROLE server of '$pmod'"
+                    return
+                fi
+            elif [ "$pnam" = "$HOSTNAME" -o "$pnam" = "$DAT_NET_NICK" ] ; then
+                message "Ignoring 'rput' to myself"
+                return
+            fi
+            opts+=( --include="^/$adir/$"
+                    --include="^/$adir/$pmod/***" )
+        # add client's archive path to rsync
+        elif [ -d "$DAT_ROOT/$adir" ] ; then
+            opts+=( --include="^/$adir/$"
+                    --include="^/$adir/$pmod/$"
+                    --include="^/$adir/$pmod/$DAT_NET_HOST$" )
+        fi
+
+        # exclude library proxy (should be auto updated via config)
+        opts+=( --exclude="^/$cdir/$rcon/@admin/tools/_centauri_bash_lib$" )
+
+        # data to copy
+        opts+=( --include="^/$cdir/$"
+                --include="^/$cdir/$rcon/$"
+                --include="^/$cdir/$rcon/@admin/***" )
+        if [ -n "$CEN_OPT_GLOBAL" ] ; then
+            opts+=( --include="^/$cdir/$rcon/$pmod/***"
+                    --include="^/$cdir/$rcon/@soho/***" )
+         else
+            opts+=( --include="^/$cdir/$rcon/$pmod/$"
+                    --include="^/$cdir/$rcon/$pmod/@shared/***"
+                    --include="^/$cdir/$rcon/$pmod/$DAT_NET_HOST/***" )
+        fi
+        opts+=( --exclude="*" )
+
+        # proxy and repository
+        [ -n "$CEN_OPT_PROXY" ] && opts+=( --proxy="$CEN_OPT_PROXY" )
+        printf -v psrv "root@%s::@%s" "$pnam" "${CEN_RSYNC_MODULE:-$pmod}"
+        if [ -n "$CEN_RSYNC_PASSWD" ] ; then
+            export RSYNC_PASSWORD="$CEN_RSYNC_PASSWD"
+        else
+            opts+=( --passsword=+ )
+        fi
+        [ "$1" = "rget" ] && opts+=( --backup="$DAT_ROOT/$bdir/$pmod" sync "$psrv" "$DAT_ROOT" )
+        [ "$1" = "rput" ] && opts+=( --backup="$bdir/$pmod" sync "$DAT_ROOT" "$psrv" )
+
+        # encfs start for centauricopy (--password disables internal check)
+        if [ -n "$CEN_OPT_PROXY" ] ; then
+            [ -h ~/.ssh -a ! -e ~/.ssh/id_rsa ] && embed -r centauriencfs -q mount -
+        fi
+
+        # copy configs
+        #quit "DEBUG centauricopy ${opts[*]}"
+        embed -z -v centauricopy "${opts[@]}"
+    }
+
+    # setup the repository
+    do_repository ; error -t || return
+
+    local cdir="configs"
+    local bdir="backup"
+    local adir="archived"
+
+    # split repository string (module is optional)
+    local rnam="${CEN_OPT_REPO%%:*}" rmod="${CEN_OPT_REPO#*:}" rcon="$DAT_NICKNAME"
+    [ "$rnam" = "$CEN_OPT_REPO" ] && rmod=
+
+    # get PACKAGES list, sync with server
+    if [ "$CEN_ACTION" = "rput" ] ; then
+        if [ "$DAT_FAMILY" = "debian" ] ; then
+            local dest="$DAT_PRIVATE/PACKAGES"
+            dryrun "create package list: $dest" ||
+                system -e -p -z -- dpkg --get-selections > "$dest"
+        fi
+        [ "$DAT_NET_MODE" = "SLAVE" -o "$DAT_NET_ROLE" = 'WORKSTATION' ] && ___run_rsync rput
+    else
+        [ "$DAT_NET_MODE" = "SLAVE" -o "$DAT_NET_ROLE" = 'WORKSTATION' ] && ___run_rsync rget
+        local dadm="$DAT_ROOT/$cdir/$rcon/@admin"
+        [ -d "$dadm" ] && symlink -m -r "$dadm" "$DAT_ROOT/admin"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# cron/sync action: -no args-
+# ------------------------------------------------------------------------------
+actionSync() {
+    # at least 'rget' must succeed to continue
+    actionServer ; error -t || return
+
+    local carg cyes="$CEN_YESNO"
+    if [ "$CEN_ACTION" = "cron" ] ; then
+        carg='@' ; CEN_YESNO="y"
+    fi
+
+    CEN_ACTION='put'     ; actionLocal $carg
+    CEN_ACTION='get'     ; actionLocal $carg
+
+    CEN_ACTION="rput"    ; actionServer
+
+    if [ -n "$DAT_OVERRIDE" ] ; then
+        warning -a "Using repository overrides - no implicit '$CEN_NAME autorun'"
+    else
+        CEN_ACTION="autorun" ; actionAutorun
+    fi
+    CEN_YESNO="$cyes"
+}
+
+# ------------------------------------------------------------------------------
+# "info" action
+# ------------------------------------------------------------------------------
+actionInfo() {
+    local tab=$'\t'
+    echo "\
+
+Domain${tab}$DAT_NET_DOMAIN
+Host${tab}$DAT_NET_HOST
+Server${tab}$DAT_NET_NICK
+Role${tab}$DAT_NET_ROLE
+
+Distro${tab}$DAT_DISTRO
+Family${tab}$DAT_FAMILY
+Nick${tab}$DAT_NICKNAME
+Keys${tab}${DAT_KEYS[*]}
+
+Root${tab}$DAT_ROOT
+Config${tab}$DAT_CONFIG
+Private${tab}$DAT_PRIVATE
+Shared${tab}$DAT_SHARED
+"
+}
+
+# ------------------------------------------------------------------------------
+# "fix" and "check" action: --no args--
+# ------------------------------------------------------------------------------
+actionCheck() {
+    local -A mdup       # see ___outdup - file map
+    local -A mpre       # see ___checks - prefix map
+    local -A msha       # see ___add_shared - shared file map
+    local -A mpri       # see ___add_private - private file map
+    local outp=()       # output array
+    local repa=()       # repair info array
+    local nrep=0 nfix=0
+
+    ___report() {
+        outp+=("$nrep $*")
+    }
+
+    ___add_shared() {
+        local leng="${#1}"
+        [ "${1:leng-1}" = '~' ] && return
+        do_nosymlink "$1"
+        case "$?" in
+            1)  ((nrep += 1)) ;;
+            2)  ((nrep += 1)) ; ((nfix += 1)) ;;
+            *)   msha["${1##*/}"]=1
+        esac
+    }
+    ___add_private() {
+        local leng="${#1}"
+        [ "${1:leng-1}" = '~' ] && return
+        do_nosymlink "$1"
+        case "$?" in
+            1)  ((nrep += 1)) ;;
+            2)  ((nrep += 1)) ; ((nfix += 1)) ;;
+            *)   mpri["${1##*/}"]=1
+        esac
+    }
+
+    # try to fix problems
+    ___repair() {
+        ((nrep += 1))
+        [ "$CEN_ACTION" = "fix" ] || return
+        [ "$1" = "nofix" ] && return
+        repa[nrep - 1]="$*"
+    }
+
+    # run repository checks: <pref>
+    ___checks() {
+        local pkey="$1$path" pref="$1"
+        mpre["$path"]="$pref"
+
+        # mark file as used
+        if   [ -n "${mpri["$pkey"]}" ] ; then
+            mpri["$pkey"]=2
+        elif [ -n "${msha["$pkey"]}" ] ; then
+            msha["$pkey"]=2
+        else
+            ___report "File missing in repository:" "$acmd/$pkey"
+            ___repair nofix
+        fi
+
+        # shared file cannot be in private
+        if [ "$acmd" = 'shared' ] ; then
+            if   [ -n "${mpri["$pkey"]}" ] ; then
+                ___report "Should be in 'shared' only:" "private/$pkey"
+                ___repair delete 'private' "$pkey"
+            fi
+        fi
+    }
+
+    # run filesystem checks: private|shared <array>
+    ___extra() {
+        local -n rmap="$2"
+        for fkey in "${!rmap[@]}" ; do
+            [ "${rmap["$fkey"]}" = 2 ] && continue
+            [ "$1" = 'shared' -a "${mpri["$fkey"]}" = 2 ] && continue
+
+            local fpre="${fkey::1}" fbas="${fkey:1}"
+
+            # found in config?
+            if [ -z "${mpre["$fbas"]}" ] ; then
+                case "$fpre" in
+                    a)  ;;
+                    ${DAT_KEYS[0]}) ;;
+                    ${DAT_KEYS[1]}) ;;
+                    *)  continue                # ignore other dist
+                esac
+                ___report "File not in configuration :" "$1/$fkey"
+                ___repair delete "$1" "$fkey"
+                continue
+            fi
+
+            if [ "${mpre["$fbas"]}" != "$fpre" ] ; then
+                for pref in "${DAT_MAP_DISTRO[@]}" - ; do
+                    [ "$pref" = "$fpre" ] && break
+                done
+                [ "$pref" = '-' ] || continue
+                ___report "Wrong prefix, expected '${mpre["$fbas"]}':" "shared/$fkey"
+                ___repair prefix "${mpre["$fbas"]}" 'shared' "$fkey"
+            fi
+            continue
+        done
+    }
+
+    ___mkname() {
+        case "$1" in
+        shared)   mknm="$DAT_SHARED/$2" ;;
+        private)  mknm="$DAT_PRIVATE/$2" ;;
+        *)        fatal "___mkname invalid args: $*" ;;
+        esac
+    }
+
+    # check duplicates: <path>
+    ___outdup() {
+        if [ -n "${mdup["$1"]}" ] ; then
+            ___report "Duplicated entry in config:" "[line #$line] $1"
+            ___repair nofix
+        fi
+        mdup["$1"]=1
+    }
+
+    # parser output goes here, handle only private/shared items
+    ___output() {
+        local acmd="$1" ; shift
+        local afld="$1" ; shift
+        local argu ffil
+        if [ "$acmd" = 'private' -o "$acmd" = 'shared' ] ; then
+            for argu in "$@" ; do
+                do_ignore -c ffil argu "$afld" && continue
+                ___outdup "$ffil"
+                do_convert -d "$ffil" path
+                ___checks "$DAT_COND_DIST"
+            done
+        fi
+    }
+
+    # get filesystem info
+    walk -b -r -l 1 -f ___add_shared  -- "$DAT_SHARED"
+    walk -b -r -l 1 -f ___add_private -- "$DAT_PRIVATE"
+
+    # parse configuration
+    do_parse -c ___output
+    mpri['PACKAGES']=2 ; mpri['OPTIONS']=2 ; mpri['OWNERS']=2
+
+    # check filesystem against configuration
+    ___extra 'shared'  msha
+    ___extra 'private' mpri
+
+    # sort output and display in groups
+    local outc outl repi
+    extsort -i outp -a outp -o '-k2' || return
+    for outl in "${outp[@]}" ; do
+        repi="${outl%% *}" ; repi="${repa[repi]}"
+        outl="${outl#* }"
+        if [ "$outc" = "${outl::16}" ] ; then
+            message -i "$outl"
+        else
+            outc="${outl::16}"
+            message "$outl"
+        fi
+
+        local arep repr
+        splitjoin -s arep -d " " "$repi"
+        case "$arep" in
+        del*)
+            repr="${arep[2]}"
+            confirm -i -q -y -- "... Delete file '${arep[1]}/$repr'" || continue
+            ___mkname "${arep[1]}" "$repr"
+            nfix=$((nfix + 1)) ; remove "$mknm"
+            ;;
+        pre*)
+            repr="${arep[3]}"
+            confirm -i -q -y -- "... Rename file '${arep[2]}/$repr'" || continue
+            ___mkname "${arep[2]}" "$repr" ; repi="$mknm"
+            ___mkname "${arep[2]}" "${arep[1]}${repr:1}"
+            nfix=$((nfix + 1)) ; rename -o "$repi" "$mknm"
+            ;;
+        esac
+    done
+message "dist $DAT_DISTRO"
+    if [ "$nrep" = 0 ] ; then
+        message -p "No errors found"
+    else
+        message -p "Found %d errors (%d fixed)" "$nrep" "$nfix"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# list items: <match>
+# ------------------------------------------------------------------------------
+actionItems() {
+    # output item line: <frmt> <arg1> <arg2>
+    ___outlin() {
+        if do_filter "$3" ; then
+            printf "$1" "$acmd" "$2" "$3"
+        elif [ "$acmd" = 'linkto' ] ; then
+            do_filter "$2" && printf "$1" "$acmd" "$2" "$3"
+        fi
+    }
+
+    # handle parser output: <command> <repo_fldr> <arg>...
+    ___output() {
+        local acmd="$1" ; shift
+        local afld="$1" ; shift
+        local argu ffil
+        if [ "$acmd" = 'linkto' ] ; then
+            argu="$1"
+            do_ignore ffil argu "$afld" && return
+            ___outlin "%-8s - %-40s %s\n" "$ffil" "$2"
+        elif [ "$acmd" = 'remove' ] ; then
+            for argu in "$@" ; do
+                ___outlin "%-8s %s %s\n" '-' "$afld/$argu"
+            done
+        else
+            for argu in "$@" ; do
+                do_ignore ffil argu "$afld" && continue
+                ___outlin "%-8s %s %s\n" "$DAT_COND_DIST" "$ffil"
+            done
+        fi
+    }
+
+    # parse and sort output
+    do_parse ___output "$1" | extsort -i - -o '-k3'
+}
+
+# ------------------------------------------------------------------------------
+# list files and status: <match>
+# ------------------------------------------------------------------------------
+actionList() {
+    ___output() {
+        local acmd="$1" ; shift
+        local afld="$1" ; shift
+        local argu fcmp ffil
+        if [ "$acmd" = 'linkto' ] ; then
+            argu="$1"
+            do_ignore ffil argu "$afld" && return
+            if ! do_filter "$2" ; then
+                do_filter "$ffil" || return
+            fi
+            [ "$2" -ef "$ffil" ] && fcmp= || fcmp='-'
+            [ -z "$fcmp" -a "$CEN_ACTION" = 'diff' ] && return
+            printf "%-75s %-2s %s\n" "$2" "$fcmp" "$ffil"
+        elif [ "$acmd" = 'remove' ] ; then
+            for argu in "$@" ; do
+                do_filter "$afld/$argu" || continue
+                [ -e "$afld/$argu" -o -h "$afld/$argu" ] && fcmp='-' || fcmp=
+                [ -z "$fcmp" -a "$CEN_ACTION" = 'diff' ] && return
+                printf "%-75s %-2s %s\n" "$afld/$argu" "$fcmp" "(delete)"
+            done
+        else
+            local ffil frep fsha fpri
+            for argu in "$@" ; do
+                do_ignore ffil argu "$afld" && continue
+                do_filter "$ffil" || continue
+                do_convert -d "$DAT_COND_DIST$ffil" frep
+                fsha="$DAT_SHARED/$frep"
+                [ "$acmd" = 'private' ] && fpri="$DAT_PRIVATE/$frep" || fpri="$fsha"
+                compare "$ffil" "$fpri" "$fsha"
+                case $? in
+                1)  fcmp="<<" ;;
+                2)  fcmp=">>" ;;
+                3)  fcmp=">" ;;
+                4)  fcmp="<" ;;
+                5)  fcmp="?" ;;
+                *)  [ "$CEN_ACTION" = 'diff' ] && continue ;;
+                esac
+                printf "%-75s %-2s %s\n" "$ffil" "$fcmp" "$acmd/$frep"
+            done
+        fi
+    }
+    do_parse ___output "$1" | txtsort -i - -s -
+}
+
+# ------------------------------------------------------------------------------
+# centauritools setup: <init|install|update|uninstall>        (default: install)
+# ------------------------------------------------------------------------------
+actionSetup() {
+
+    # run initial rget: -no args-
+    ___run_rget() {
+        local ofrc="$CEN_OPT_FORCE" ; CEN_OPT_FORCE=1
+        CEN_OPT_ROOT="$DAT_ROOT" ; do_setup -h
+        [ "${DAT_NET_ROLE:-UNKNOWN}" = "UNKNOWN" ] && DAT_NET_ROLE='WORKSTATION'
+        actionServer
+        CEN_OPT_FORCE="$ofrc"
+        do_conf_updt
+        return 0
+    }
+
+    # override installation defaults
+    local inst="${2:-$CEN_OPT_ROOT}"
+    case "${inst:--}" in
+    -)      inst= ;;
+    *:*)    ;;
+    *)      inst+=":${CEN_INSTALL#*:}"
+    esac
+
+    # DAT_ROOT is used by 'rget' action
+    DAT_ROOT="${inst:-$CEN_INSTALL}" ; DAT_ROOT="${DAT_ROOT%%:*}"
+    [ -z "$DAT_ROOT" ] && fatal "Unknown installation root, needs '--root' option"
+
+    case "${1:-ins}" in
+    ini*)   syssetup -p "$inst" && ___run_rget && syssetup -i ;;
+    ins*)   syssetup -i "$inst" ;;
+    upd*)   syssetup -s -u "$inst" ;;
+    uni*)   syssetup -r ;;
+    *)      fatal "Bad '$CEN_ACTION' argument: $1"
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Merge two distributions: <left> <right>
+# ------------------------------------------------------------------------------
+actionMerge() {
+    do_setup -h
+    local dlft="$1" drig="$2" item
+    [ "${dlft:--}" = '-' ] && dlft="$DAT_NICKNAME"
+    [ "${drig:--}" = '-' ] && drig="$DAT_NICKNAME"
+    optarg 'exclude' - -x "_centauri_bash_dyn*"
+    optarg 'exclude' - -x "_*_*_???.[dp]"
+    optarg 'exclude' - -x "*.pyc"
+    optarg 'exclude' - -x "*~"
+    if [ -z "$CEN_OPT_ALL" ] ; then
+        optarg 'exclude' - -x service
+        optarg 'exclude' - -x target
+        optarg 'exclude' - -x wants
+        optarg 'exclude' - -x override
+    fi
+
+    folder -c -s dlft "$CEN_ROOT/configs/$dlft/@admin"
+    folder    -s drig "$CEN_ROOT/configs/$drig/@admin"
+    error -t || return
+    if [ "$dlft" -ef "$drig" ] ; then
+        error "Need two different distributions"
+    fi
+
+    # skip non-existing destination dir
+    ___cmpdir() {
+        [ -d "$drig/$2" ] && return 0           # destination ok
+        message -a "Not a folder:" "$drig/$2"
+        return 2                                # skip in source
+    }
+
+    ___cmpfile() {
+        [ "$1" = "library/_centauri_bash_completion" ] && return 1
+        [ "$1" = "tools/_centauri_bash_lib" ] && return 1
+        [ -e "$drig/$1" ] || return 0
+        system -n -q -r -- cmp --quiet "$1" "$drig/$1" && return 1
+        return 0
+    }
+    walk -d ___cmpdir -f ___cmpfile -i -r 'library' 'tools'
+    message "Changed files found:" "${#CEN_WALK_FILES[@]}"
+    if [ -n "$CEN_OPT_DRYRUN" ] ; then
+        splitjoin -x 'message -a File:' -i CEN_WALK_FILES
+    else
+        folder -c "$CEN_ROOT/configs"
+        for item in "${CEN_WALK_FILES[@]}" ; do
+            message "File:" "$item"
+            embed -i -v centauridiff --merge --fix "$dlft/$item" "$drig/$item" || quit
+        done
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# implement option parsing: <option> <argument>
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+    -A|--all)
+        optarg "all"       -                  ;;            # flag
+    -C|--con*)
+        optarg "config"    -               -t ;;            # text
+    -D|--dis*)
+        optarg "distro"    -               -t ;;            # text
+    -E|--ext*)
+        optarg "extra"     -                  ;;            # flag
+    -F|--fam*)
+        optarg "family"    -               -t ;;            # text
+    -G|--glo*)
+        optarg "global"    -                  ;;            # flag
+    -H|--hos|--host)
+        optarg "host"      CEN_OPT_CLIENT  -t ;;            # text
+    -I|--dom*)
+        optarg "domain"    -               -t ;;            # text
+    -M|--mas*)
+        optarg "master"    -                  ;;            # text
+    -N|--nic*)
+        optarg "nickname"  -               -t ;;            # text
+    -O|--roo|--root)
+        optarg "root"      -               -d ;;            # folder
+    -P|--pri*)
+        optarg 'private'   -               -d ;;            # folder
+    -R|--rol|--role)
+        optarg "role"      -               "pri.*|sec.*|wor.*" ;;
+    -S|--sha*)
+        optarg 'shared'    -               -d ;;            # folder
+    -V|--ove*)
+        optarg 'override'  -               -o ;;            # ternary
+    -X|--pro*)
+        optarg "proxy"     -               -t ;;            # text
+    -Y|--rep*)
+        optarg "repository" CEN_OPT_REPO   -t ;;            # text
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# implement action parsing: <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    ___invoke() {
+        if [ -z "$DAT_NET_ROLE" ] ; then                    # before 1st action
+            context -r ; do_setup                           # must be root
+        fi
+        invoke "$@"
+    }
+
+    case "$CEN_ACTION" in
+    aut*)
+        ___invoke 'autorun' -          0 ;;
+    che*)
+        ___invoke 'check'   -          0 ;;
+    cle*)
+        invoke -r 'cleanup' -          0 ;;
+    cron|sync)
+        ___invoke  -     actionSync    0 ;;
+    dif|diff)
+        ___invoke 'diff' actionList  0 1 ;;
+    fix)
+        ___invoke 'fix'  actionCheck   0 ;;
+    get|put)
+        ___invoke  -     actionLocal 0 1 ;;
+    inf|info)
+        ___invoke 'info'  -            0 ;;
+    ite*)
+        ___invoke 'items' -          0 1 ;;
+    lis|list)
+        ___invoke 'list'  -          0 1 ;;
+    rget|rput)
+        ___invoke  -     actionServer  0 ;;
+
+    # action setup does not call do_setup ...
+    set*)
+        invoke -r 'setup' -          0 2 ;;
+    mer*)
+        invoke -r 'merge' -            2 ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    do_setup -h
+    local _repo="alpha:${CEN_ROOTDEF[3]:-$CEN_ROOT/admin}"
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+$CEN_USE_OPTIONS
+
+       -A --all             ignore conditions except distribution
+       -V --override <ovr>  get/put mode: missing, always, newer (default)
+
+       -H --host    <text>  client name         (default: $DAT_NET_HOST)
+       -I --domain  <text>  domain name         (default: $DAT_NET_DOMAIN)
+       -M --master          use master repository
+       -O --root    <dir>   repository root dir (default: $DAT_ROOT)
+       -R --role    <role>  computer role       (default: ${DAT_NET_ROLE:--})
+
+       -C --config  <file>  configuration file  (default: $DAT_CONFIG)
+       -P --private <dir>   private repos. dir  (default: $DAT_PRIVATE)
+       -S --shared  <dir>   public  repos. dir  (default: $DAT_SHARED)
+
+       -D --distro  <text>  distribution name   (default: $DAT_DISTRO)
+       -F --family  <text>  distribution family (default: $DAT_FAMILY)
+       -N --nick    <nick>  distribution nick   (default: $DAT_NICKNAME)
+
+       -E --extra           select non-installed extra files
+       -G --global          update all hosts (for administrative use only)
+       -X --proxy   <host>  use "ssh <host> nc %H 873" as rsync connection prog
+       -Y --repos   <repo>  modifies server and module
+
+actions:
+       autorun              run automatic actions
+       info                 print parameter information table
+       merge    <nick>|- <nick>|-
+                            merge tools/library of two distributions
+       setup    [install|uninstall]
+                            install or uninstall centauritools
+       setup    init        download repository and install centauritools
+
+       check                check repository against filesystem
+       cleanup              remove backups
+       fix      [<expr>]    like 'check' but prompt for repair
+
+       items    [<expr>]    list configuration items
+       list     [<expr>]    configured files in repo and filesystem
+       diffs    [<expr>]    show diffs between repo and filesystem
+
+       cron                 short for 'rget -- put @ -- get @ -- rput -- auto'
+       get      [<what>]    update repository from local files
+       put      [<what>]    update local files from repository
+       rget                 update local repository from server
+       rput                 update server from local repository
+       sync                 short for 'rget -- put -- get -- rput -- auto'
+
+arguments:
+       <what>               absolute path, expression or '@' for cron items
+       <text>               any text
+       <nick>               a distribution nick name
+       <ovr>                0|off missing only, 1|on always, 2|auto newer
+       <dir>|<file>         path of a folder or file
+       <role>               computer role: primary|secodary|workstation
+       <repo>               [<server>[:<module>]  for example 'alpha:centauri'
+
+setup: Use the following commands for an initial setup
+
+       mkdir -p /tmp/xxx/library /tmp/xxx/tools
+       scp -p $_repo/library/"*_???" /tmp/xxx/library
+       scp -p $_repo/tools/"*centauri*" /tmp/xxx/tools
+       /tmp/xxx/tools/$CEN_NAME --yes --repos=alpha:centauri setup init
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

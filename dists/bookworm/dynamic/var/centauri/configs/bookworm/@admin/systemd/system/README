@@ -1,0 +1,142 @@
+CONTENTS of the the system or user folders
+==========================================
+
+1. service, timer and target systemd unit files
+
+   These are real units that can be symlinked to /etc/systemd/(system|user).
+   This can be done manually via 'systemctl enable' or via configuration
+   entries in $CEN_ROOT/default/centauri-bash-lib and --info setup.
+
+    TODO: unlink a service
+
+2.  <unit>.override files
+
+    These contain 'override.conf' data for the <unit>. The --info setup
+    symlinks them to /etc/systemd/(system|user)/<unit>.d/override.conf
+    (.d folders are created if neccessary).
+
+    Instead using 1. to replace an otherwise existing unit, it is often
+    wiser to 'patch' these units via overrides.
+
+3.  <unit>.wants files
+
+    The files contain lists to 'hack' systemd Wants= or WantedBy= statements.
+    The --info setup can create or remove symlinks in /etc/..../<unit>.wants
+    folders. This is a bit ugly but can save writing a lot of override files.
+
+
+Disabling service autostarts
+============================
+
+In centauri some runlevels/targets to service associations are modified.
+This could be done in one of 5 ways:
+
+1. create a private service file in /etc/systemd/system
+2. override WantedBy= and Wants= directives using *.override files
+3. enable/disable services manually via 'systemctl'
+4. crafting the /etc/systemd/system/*.wants via *.wants files
+5. using vendor defaults
+6. using 'centaurirunvel script'
+
+Methods 1 and 2 are permanent, e.g. are not globally invalidated when
+restoring defaults via 'systemctl'.
+
+Method 3 is completely volatile and cannot be restored automatically.
+
+Method 4 is volatile but can be restored by 'centrauricreate --info install'.
+
+Method 5 is works only at installation time of services or with 'systemctl'.
+
+Method 6 is fine for the initial configuration of a new installation
+
+For most cases in centauri method 4 (*.wants) is used.
+
+
+Services that should not start by default
+=========================================
+
+In centauri SysV run-levels are revived by reconfiguring system services.
+A helper service is used to start some network services (run-level >= 3):
+
+centauri-network.service:
+    cups-browsed.service (implies cups.service)
+    gmediarender.service 
+    inetd.service
+    minidlna.service 
+    networking.service 
+
+There are 5 targets used by centauriswitch (some kind of network location
+awareness) to manage network-state dependent services:
+
+centauri-master.target:                     # the current master server
+      centauri-network.service
+      centauriswitch.service 
+      centauriwsdd.service
+    * cyrus-imapd.service 
+    * dnsmasq.service 
+    * exim4.service 
+      network-online.target 
+      nfs-mountd.service
+      nfs-server.service
+    * ntpsec.service
+    * openvpn@server.service
+      rpcbind.service
+
+centauri-slave.target:                      # the current slave server
+      centauri-network.service
+      centauriswitch.service 
+      centauriwsdd.service
+    * dnsmasq.service 
+      network-online.target 
+      winbind.service 
+      nfs-mountd.service
+      nfs-server.service 
+      rpcbind.service
+
+centauri-member.target:                     # any domain member computer
+    centauri-network.service
+    centauriswitch.service 
+    centauriwsdd.service 
+### cups-browsed.service
+    network-online.target
+    nfs-mountd.service 
+    nmbd.service
+    rpcbind.service
+    smbd.service 
+    winbind.service 
+
+centauri-public.target:                     # in a public network
+    network-online.target
+    centauriswitch.service
+
+centauri-trusted.target:                    # in a trusted network
+    centauriswitch.service
+    centauri-network.service
+    centauriwsdd.service
+    network-online.target
+    nmbd.service
+    smbd.service
+    winbind.service
+### cups-browsed.service
+
+
+The following are started explicitly via 'centauriswitch':
+
+   samba-ad-dc cups cyrus-imapd exim4 ntp openvpn 
+   nfs-server
+
+Some services are started via 'inetd' or 'cron':
+
+   rsync ssh smbd saned vsftpd
+   fetchmail smartmontools
+
+Corresponding entries are added to runlevel *.wants files.
+
+
+SysV Legacy
+===========
+
+See 'centaurirunlevel' and /etc/default/centaurirunlevel
+
+***
+

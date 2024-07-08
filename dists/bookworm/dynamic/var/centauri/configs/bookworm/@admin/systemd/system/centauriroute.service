@@ -1,0 +1,31 @@
+[Unit]
+Description=Interface/Route Configuration
+
+# wanting to start after centauriswitch
+After=centauriswitch.service
+Wants=centauriswitch.service
+
+# must not be running as a daemon ...
+ConditionPathExists=!/run/centauri/centauriroute.run
+
+# for some simple things don't run as service
+ConditionKernelCommandLine=!centauriswitch=disable
+ConditionKernelCommandLine=!centauriswitch=disabled
+ConditionKernelCommandLine=!centauriswitch=static
+ConditionKernelCommandLine=!centauriswitch=simple
+ConditionKernelCommandLine=!centauriswitch=smart
+
+[Service]
+
+TimeoutStartSec=180
+
+# centauriroute runs things in background threads (legacy). So the
+# service must not destroy it's cgroup (RemainAfterExit=yes)
+RemainAfterExit=yes
+
+Type=oneshot
+ExecStart=/var/centauri/tools/centauriroute --daemon=0 start
+ExecStop=/var/centauri/tools/centauriroute --daemon=0 stop
+
+[Install]
+WantedBy=centauriswitch.service

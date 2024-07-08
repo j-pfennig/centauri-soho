@@ -1,0 +1,640 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_dbg = centauri-bash-lib: Debug support and documentation
+#
+# Call:     . _centauri_bash_dbg [-n] [-a] [-m] [-o] [-q]
+#
+# Options:  -n  no debug output (module does nothing)
+#           -a  trace actions()
+#           -m  trace main() until option parsing
+#           -o  trace options()
+#           -q  trace quit()
+#
+#+This module provides the [[debug()]] function to control debug output
+# and for debug instrumentation. It adds debug support for [[main()]],
+# [[options()]], [[actions()]] and [[quit()]]. By explicitly loading the
+# module and passing the module options via  [[embed()]], tracing the
+# above mentioned functions is enbaled. Always the invokation of these
+# functions will be reported. At program termination the list of loaded
+# modules is printed.
+#
+#+When loaded via library option "-m dbg" or for dynamic loading the [[debug()]]
+# function is used to control reporting and tracing.
+#
+#+"CEN_DEBUG=debug" is set whenever the module is loaded. This allows debug
+# instrumentation that causes little overhead when the module is not loaded:
+#
+#.          $CEN_DEBUG -c -- "$*"       # can be 1st statement of a function
+#.          $CEN_DEBUG text myarray     # dump variables
+#
+#.          $CEN_DEBUG -t on            # start "set -x" tracing
+#.          $CEN_DEBUG -t off           # stop tracing
+#
+#+When the debug module is loaded explicitly before calling [[main()]] the command
+# line option --debug is added. This option controls the output of the debug
+# instrumentation. When the module is (auto-)loaded implicitly "--debug=7" is the
+# default.
+#
+#+ The module also contains some documentation for the user callbacks made
+#  by [[main()]]:
+#
+#,   [[options()]]  -  option parsing
+#,   [[actions()]]  -  verb dispatching
+#,   [[run()]]      -  non-verb script execution
+#
+# Copyright Dr. J. Pfennig (c) 2017-2022
+# ------------------------------------------------------------------------------
+
+CEN_MODULES["_centauri_bash_dbg"]="0.03:1"
+
+CEN_OPT_DEBUG=0                 # see --debug
+
+# ------------------------------------------------------------------------------
+# Help + How to get the Centauri Bash Library Documentation
+#
+#+General: The library code contains documentation comments that can be formatted using
+# the [[centaurihelp]] tool. This tool can also generate an HTML tree. It uses
+# caching to allow fast command-line searches. All tools using the library get
+# a --help option that can show usage information. Again [[centaurihelp]] can be
+# used to generate HTML for tools or to pretty-print command-line output.
+#
+#+Aliases: For command line use it is recommended to define two aliases by adding
+# the following lines to your **~/.profile** :
+#
+#.      _clh_helper() { [ $# = 0 ] && set -- help ; centaurihelp --library "$@" ; }
+#.      alias clh=_clh_helper
+#.      _clt_helper() { [ $# = 0 ] && set -- help ; centaurihelp --tools "$@" ; }
+#.      alias clt=_clt_helper
+#
+#,      - **clh**  (short for **centaurihelp --library**) searches the library documentation
+#,      - **clt**  (short for **centaurihelp --tools**) does the same for tools
+#
+#+Speed: The help system is implemented in [[_centauri_bash_doc]], [[_centauri_bash_use]]
+#       and [[centaurihelp]]. All of which is entirely written in bash script. Except on
+#       the 1st execution, when caches get updated, **clh** should not exhibit noticeable
+#       delays on a decent hardware. It works fine on a Raspberry Pi4 and is still usable
+#       on a Raspberry Pi-Zero.
+#
+#+      A little speed up is provided by [[uglify]] option -D, which creates pre-processed
+#       documentation files in "$CEN_LIBRARY", see also [[Preprocessing]].
+#
+# Examples:
+#.      centaurihelp -M -C -R           # list modules, content and reference
+#.      centaurihelp -T                 # list tools
+#.      centaurihelp -B                 # browse HTML documentation
+#.      centaurihelp -i ext             # output _centauri_bash_ext documentation
+#.      centaurihelp sys txt            # show everthing matching 'sys' or 'txt'
+#.      centaurihelp - sys              # show functions matching 'sys'
+#.      centaurihelp + sys              # show topics matching 'sys'
+#.      centaurihelp = dbg              # show module documentation of 'dbg'
+#
+#+HTML: By default HTML documentation is generated into $CEN_ROOT/html by using
+#       [[centaurihelp]] with options --html and/or --generate:
+#
+#.      centaurihelp --generate=all     # generate all docs into $CEN_ROOT/html
+#.      centaurihelp -H mydir -G all    # generate all docs into 'mydir'
+#
+#+      The --generate option runs centaurihelp multiple times to resolve forward
+#       references between tools and library ...
+#
+#.      centaurihelp --html=mydir -T -y # tools doc to folder 'mydir'
+#.      centaurihelp --html=mydir -A -y # library doc to folder 'mydir'
+#.      centaurihelp --html=mydir -T -y # ... update index
+#.      centaurihelp --html=mydir -I -y # ... update index
+#
+#+      The --browse option causes centaurihelp to run ''"''[[centaurilauncher]]°viewer''"''
+#       and in turn **qml** (which servers as a very fast viewer) or a web browser.
+#       See also [[launcher()]].
+#
+#+      To export the HTML data with a Web server you may just create a symbolic link:
+#
+#.      ln -s $CEN_ROOT/html /var/www/html/centauri-bash-lib
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Paths and Shortcuts + Variables that contain filesystem paths
+#
+#+General: In the library documentation often variable names like CEN_ROOT or
+# CEN_LIBRARY or CEN_TOOLS are used. Most of these are only set at script execution
+# time. The variable values are installation dependent. To see the actual values type:
+#
+#.      centaurihelp --info paths
+#
+#+To query installation dependent variables in a script the [[shortpath()]]
+# function or the [[centauripaths]] tool may be used:
+#
+#.      centauripaths 'root' 'library' 'tools'
+#.      centauripaths --list --table
+#
+#+The [[shortpath]] definitions can be extended with entries in the "centauri-bash-lib"
+# configuration file in folder "$CEN_ROOT/default". See [[Library configuration]].
+#
+#+Alias: To navigate between folders using short path names the "ccd" bash alias can be
+# added to your **~/.profile** :
+#
+#.      _ccd_helper() {
+#.      °   if [ $# = 0 -o "${1::1}" = '-' ]; then
+#.      °       centauripaths --embed ccd -I "$@";
+#.      °   else
+#.      °       local cdes=$(centauripaths --embed ccd --error "$@");
+#.      °       [ -n "$cdes" ] && cd "$cdes";
+#.      °   fi
+#.      }
+#.      alias ccd='_ccd_helper'
+#
+#.Examples: ccd                 # list configured short path names
+#.          ccd --table         # ... same in tabular form
+#.          ccd library         # cd to $CEN_LIBRARY
+#.          ccd lib             # ... same (short path names can be abbreviated)
+#.          ccd locale/de       # extra path fragments can be appended
+#.          ccd /var/www        # absolute paths are understood as fall back
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Introduction + How to use the Centauri Bash Library in a Script
+#
+#+General: The library was built to simplify bash scripting and provides command line
+# parsing (**options**, **verbs** and **arguments**), reporting, debugging and helper
+# functions.
+#
+#+• A bash script typically loads **_centauri_bash_lib**, and calls [[main()]]. The
+# script optionally provides routines like [[options()]], [[actions()]], [[run()]] and
+# [[usage()]] to implement the required functionality.
+#
+#+• The library is split into modules that can be loaded dynamically.
+#
+#+• There is support for localization (l10n) using the GNU gettext tools.
+#
+#+• A script can define multiple command **verbs** to invoke an **action** subroutine
+# for each **verb** and its **arguments**. When no **verbs** are used, all non-option
+# arguments are passed to a user defined [[run()]] subroutine.
+#
+#+• Usually each **verb** has its own user defined **action** subroutine. The
+# **verbs** and their **action** subroutines must be registered in a function named
+# [[actions()]]. Otherwise [[main()]] will simply call [[run()]] with all **arguments**.
+#
+#+• There are some predefined **options**. But a script may add any number of
+# custom **options**. Short and long **option** names can be used and **options** can
+# have an option-argument. Argument values can be checked automatically.
+#
+#+• The library should not be loaded directly from its installation folder. Instead
+# an proxy should be used, see [[library proxy]].
+#
+# See [[_centauri_bash_doc]] for more details on how to use the library.
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# User Script + Writing a script using the Centauri Bash Library
+#
+#+Templates: Under "$CEN_ROOT/tools/templates" a couple of templates are provided as
+#           examples and to provide starting-points for own developments:
+#
+#,     centauriAction   - Template using command line verbs (action syntax)
+#,     centauriCgiforms - Demonstrates CGI programming using the XML module
+#,     centauriDaemon   - Example daemon or service
+#,     centauriFiles    - Template for a file processor (no action syntax)
+#,     centauriHello    - A Hello World Example
+#,     centauriRun      - Template for simple scripts (no action syntax)
+#,     centauriService  - Example oneshot service
+#,     centauriSimple   - Using centauri-bash-lib without main() function
+#
+#+     The **centauricreate** tool should be used to generate a user side script.
+#      To create "my-hello-world" from template centauriHello just type:
+#
+#      > **centauricreate** --template=hello my-hello-world
+#
+# Examples: **(1) execution without main() does not parse the command line**
+#
+#.          #!/bin/bash
+#.          PATH+=":${0%/*}" . _centauri_bash_lib -m iom "$0" "0.00:1" || exit 2
+#.
+#.          message "Arguments and Options:" "$*"
+#.          inpfile -- "${1:-+}"
+#.
+#.          quit "File: $CEN_INPFILE"
+#
+#           **(2) using non-verb script execution**
+#
+#.          #!/bin/bash
+#.          CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2019; BSD License"
+#.          CEN_TITLE="Example of a simple script (no action syntax)"
+#.          PATH+=":${0%/*}" . _centauri_bash_lib -r "$0" "0.00:1" || exit 2
+#.
+#.          run() {
+#.              message "Hello World"
+#.          }
+#.
+#.          main "$@" ; quit
+#
+#           **(3) using verb dispatching**
+#
+#.          #!/bin/bash
+#.          CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2019; BSD License"
+#.          CEN_TITLE="Example of a script using command line verbs"
+#.          PATH+=":${0%/*}" . _centauri_bash_lib "$0" "0.00:1" || exit 2
+#.
+#.          actionOne() {
+#.              message "One:" "$*"
+#.          }
+#.
+#.          actionTwo() {
+#.              message "Two:" "$*"
+#.          }
+#.
+#.          actions() {
+#.              case "$1" in
+#.                  one)   invoke - - 2   ;;  # actions wants 2 args
+#.                  two)   invoke - - 1 2 ;;  # actions wants 1 or 2 args
+#.              esac
+#.          }
+#.
+#.          main "$@" ; quit
+#
+#+The variables CEN_TITLE and CEN_LEGAL are used by the --info and --help
+# command line options and should always be defined by a script.
+#
+#+All examples specified a script version (here "0.00") and a minimum API
+# version (here "1"). See [[versioning]] for more information about version
+# checking.
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# options (user) - User defined Option Parsing
+#
+# Call:     options <option> <arg>...
+#
+#.Example:  options() {
+#.              case "$1" in
+#.
+#.              # this is called after the last options was processed
+#.              "")
+#.                  [ -n "$CEN_OPT_EXTRA" -a -n "$CEN_OPT_CHOICE" ] &&
+#.                      error "Mutually exclusive options: --extra and --choice"
+#.                  ;;
+#.
+#.              -A|--arr*)
+#.                  optarg "array"      []  -t ;;           # an array of text
+#.              -C|--cho*)
+#.                  optarg "choice"     -   "left|right" ;; # regular expression
+#.              -N|--number)
+#.                  optarg "number"     -   -n ;;           # a number
+#.              -R|--rec*)
+#.                  optarg "recurse"    -   ;;              # a simple flag
+#.              -X|--extra)
+#.                  optarg "extra"      -   -t ;;           # any text
+#.              esac
+#.          }
+#
+#+This function is optional, but if missing [[main()]] creates an empty
+# dummy instance of it. Before invoking options(), CEN_ACTION is set to
+# the option name.
+#
+#+An option name longer than three characters should be abbreviated.
+# Short options should be uppercase.
+#
+#+Checking options arguments and setting a variable is left to [[optarg()]].
+#
+#+The [[debug]] module will parse the source code of options()
+# in order to handle bash input completion. For this reason there **must**
+# be a case statement containing calls to [[optarg()]].
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# actions (user) - User defined Verb Dispatcher
+#
+# Call:     actions <verb> <arg>...
+#
+#+Examples: An example with three explicit actions. The third action handler
+#           is also invoked when something looking like a file name is seen:
+#
+#.          actions() {
+#.              case "$1" in
+#.
+#.              # this is called before the 1st verb gets dispatched
+#.              "")
+#.                  trace -a "Options  : ${CEN_CMDOPTS[@]}"
+#.                  trace -a "Arguments: ${CEN_CMDARGS[@]}" ;;  # before 1st action
+#.
+#.              one|fir*)
+#.                  invoke "one"    -           1 ;;            # one arg
+#.              two)
+#.                  invoke -        -           1 3 ;;          # 1..3 args
+#.              wal|walk)
+#.                  invoke "walk"   actionWalk  1 + ;;          # more than one arg
+#.
+#.              */*|.*|*.*)
+#.                  invoke "<file>" actionWalk  - - "$@"        # implied action
+#.              esac
+#.          }
+#
+#+This function is required to dispatch verbs. If missing, [[main()]] will
+# call [[run()]] instead. Either [[run()]] or [[actions()]] must be supplied by
+# the user script.
+#
+#+Checking the number of arguments and invoking the action handler can
+# be handled by [[invoke()]]. Before action() gets called, CEN_ACTION is set
+# to the verb (e.g. the 1st argument). This is why invoke() can find the
+# name of the action handler. An action name longer than four characters
+# should be abbreviated. Action may have alias names (here: **one** and **first**).
+#
+#+The example script **centauriTemplate** is a good starting point for
+# writing **verb** based scripts.
+#
+#+The [[debug]] module will parse the source code of actions()
+# in order to handle bash input completion. For this reason there **must**
+# be a case statement containing calls to [[invoke()]].
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# run (user) - User defined Function for non-Action Scripts
+#
+# Call:     run <arg>...
+#
+# Arguments: <arg>...  Arguments passed to [[main()]] with options removed
+#
+#+This function must be defined for non-verb scripts and is called by
+# [[main()]] after option parsing. The return value is ignored, see [[error()]].
+#
+#+[[main()]] calls run() if _centauri_bash_lib is loaded with the -r option.
+# The -r feature option is implied if [[actions()]] is not defined. [[run()]] and
+# [[actions()]] should not be defined at the same time (expect in a service).
+#
+#+When loading [[_centauri_bash_lib]] the extra arguments <amin> and <amax>
+# can be specified. Non-zero values override the allowed minimum and maximum
+# command-line argument count: CEN_RUN_MIN_ARGS or CEN_RUN_MAX_ARGS. <amin>
+# can be a number or have the following special values:
+#
+#,  **0**   don't show help info when no args are given
+#,  **-**   show help with no args (default for feature option '-r')
+#
+# <amax> can be a number or have the following special value:
+#
+#,  **+**   no upper limit for args (default)
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+# debug - control tracing and generate debug output
+#
+# Call:     (1) debug [-a] [-m] [-p] [-q] [-n] ...  # set trace options
+#           (2) debug ... [-i] <text>|<variable>    # dump output
+#           (3) debug ... -c|-f -- <text>...        # call tracing
+#           (4) debug -t on|off                     # bash trace on/off
+#
+#+          Form (1) supports the same options that can be used at module load.
+#           Form (2) generates variable dump output. Using form (3) as the 1st
+#           statement of functions allows call tracing and function execution
+#           tracing via command line --debug. Form (4) should be used to control
+#           bash tracing (instead of "set -x" and "set +x").
+#
+# Options:  -a  "set -x" trace of actions()
+#           -m  "set -x" trace of main() until option parsing
+#           -o  "set -x" trace of options()
+#           -q  "set -x" trace of quit()
+#
+#           -l  set a logfile
+#           -n  do nothing if seen in option list (kill switch)
+#
+#           -c  report function call
+#           -f  start function trace (only one at a time)
+#           -i  indent dump output
+#           -r  register (used internally on module load)
+#           -t  turn bash trace on/off (replaces "set -x" or "set +x")
+#
+# Bitmask:  The --debug option (or CEN_OPT_DEBUG) uses a bitmask to control the
+#           output of debug:
+#
+#,              Bit 1: enable module reporting (main, quit, actions, options)
+#,              Bit 2: enable function call reporting and variable dumps
+#,              Bit 4: enable tracing
+#
+#           When [[_centauri_bash_dbg]] is loaded dynamically, "CEN_OPT_DEBUG=7"
+#           is the default.
+#
+# Examples: **generate debug output (enabled with CEN_OPT_DEBUG=2)**
+#
+#.          local array=(one two tree)
+#.          debug "This is some output..."
+#.          debug -i "data" array "folder" PWD
+#
+#           **using CEN_DEBUG **
+#
+#.          $CEN_DEBUG debug "hello:" my_name
+#
+#           **function tracing**
+#
+#.          my1function() {
+#.              $CEN_DEBUG -c -- "$*"       # report the function call
+#.              ...
+#.          }
+#
+#.          my2function() {
+#.              $CEN_DEBUG -f -- "$*"       # trace this function call
+#.              ...
+#.          }
+# ------------------------------------------------------------------------------
+debug() {
+    # turn bash trace on/off (put here to avoid tracing the while loop)
+    if [ "$1" = "-t" ] ; then
+        if [ "$2" = "on" ] ; then
+            CEN_NOTRACE= ; CEN_OPT_TRACE=1 ; set -x
+        else
+            set +x ; CEN_NOTRACE=":" ; CEN_OPT_TRACE=
+        fi
+        return 0
+    fi
+    $CEN_NOTRACE return                     # stop here when tracing
+
+    # return trap for function tracing
+    if [ "$1" = "-X" ] ; then
+        [ "$2" = 'debug' -o "$2" = '_cen_dyn_load' ] && return 1
+        _cen_dbg_mesg -l "[return] ${FUNCNAME[1]}"
+        return
+    fi
+
+    # normal option handling
+    local _item _sout _fopt _ilog _iopt
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -a)   CEN_DBG_OACT=1 ; CEN_DBG_TRACE+="$1 " ; _item=1 ;;
+        -c)   _fopt=0 ;;
+        -f)   _fopt=1 ;;
+        -i)   _iopt='-i' ;;
+        -l)   shift ; _ilog="${1:--}" ;;
+        -m)   CEN_DBG_OMAI=1 ; CEN_DBG_TRACE+="$1 " ; _item=1 ;;
+        -n)   return 0 ;;
+        -o)   CEN_DBG_OOPT=1 ; CEN_DBG_TRACE+="$1 " ; _item=1 ;;
+        -q)   CEN_DBG_OQUI=1 ; CEN_DBG_TRACE+="$1 " ; _item=1 ;;
+        -r)   _item=0 ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done || :
+
+    # set logfile
+    if [ -n "$_ilog" ] ; then                       # no path, create in tmp folder
+        if [ "${_ilog/\/}" = "$_ilog" ] ; then
+            [ "$_ilog" = '-' ] && _ilog="$$.log"
+            [ "${_ilog::1}" = '.' ] || _ilog="-$_ilog"
+            folder -g -t -s _ilog -- "$_ilog"
+        fi
+        _cen_dbg_mesg '[logfile]' "$_ilog"
+        CEN_DBG_LOGFILE="$_ilog"
+        create -r -a -- "$_ilog"
+    fi
+
+    # register hooks
+    if [ -n "$_item" -a -z "$CEN_DBG_OPT_HOOK" ] ; then
+        context -h CEN_HOOK_OPTIONS CEN_DBG_OPT_HOOK _cen_dbg_options
+        context -h CEN_HOOK_QUIT    CEN_DBG_OPT_QUIT _cen_dbg_quit_hook
+        context -h CEN_HOOK_MAIN    CEN_DBG_OPT_MAIN _cen_dbg_main
+    fi
+
+    # function trace
+    if [ -n "$_fopt" ] ; then
+        [ $((CEN_OPT_DEBUG & 6)) = 0 ] && return 0
+        local _indx=1 levl
+        [ ${FUNCNAME[_indx]} = '_cen_dyn_load' ] && ((_indx += 2))
+        levl=$((${#FUNCNAME[@]} - _indx - 4))
+        _cen_dbg_mesg $_iopt -l "[call $levl] ${FUNCNAME[_indx]} $*"
+        [ "$_fopt" = '0' ] && return 0
+        [ $((CEN_OPT_DEBUG & 4)) = 0 ] && return 0
+        trap 'set +x ; case "$FUNCNAME" in debug) set -x;; _cen_dyn_load);; *) debug -X; trap RETURN; esac' RETURN
+        return 0
+    fi
+    [ $# = 0 ] && return
+
+    # debug output
+    [ $((CEN_OPT_DEBUG & 2)) = 0 ] && return 0
+    while [ $# -gt 0 ] ; do
+        local -n _varg="$1"                     # must be local
+        [ $? = 0 ] && _item="${_varg[@]@A}" || _item=
+        if [ -n "$_item" ] ; then
+            _sout+=" ${_item#declare -* }"
+        else
+            _sout+=" $1"
+        fi
+        shift
+    done &>/dev/null
+    _cen_dbg_mesg $_iopt -l "[debug]" "${_sout:1}"
+}
+
+# ------------------------------------------------------------------------------
+# Startup: [-n]
+# ------------------------------------------------------------------------------
+
+[ "$1" = "-n" ] && return 0                         # do not init
+
+CEN_DBG_LOGFILE=            # redirect output to file
+CEN_DBG_TRACE=              # tracing options
+CEN_DBG_OACT=               # tace actions()
+CEN_DBG_OMAI=               # trace main()
+CEN_DBG_OOPT=               # trace options()
+CEN_DBG_OQUI=               # trace quit()
+CEN_DBG_INIT=               # flags initialization
+
+CEN_DBG_OPT_HOOK=               # hook to trace options()
+CEN_DBG_OPT_MAIN=               # hook to trace main()
+CEN_DBG_OPT_ACTIONS=            # hook to trace actions()
+CEN_DBG_OPT_QUIT=               # hook to trace quit()
+
+_cen_dbg_mesg() {
+    if [ "${CEN_DBG_LOGFILE:--}" = '-' ] ; then
+        _cen_message "$@"
+    else
+        _cen_message "$@" 2>>"$CEN_DBG_LOGFILE"
+    fi || :
+}
+
+_cen_dbg_main() {
+    [ $((CEN_OPT_DEBUG & 1)) = 0 ] && return 0
+   _cen_dbg_mesg -l "[debug] main($*) args:$#"
+    [ -n "$CEN_DBG_OMAI" ] && set -x
+    $CEN_DBG_OPT_MAIN "$@"
+}
+
+_cen_dbg_options() {
+    if [ $((CEN_OPT_DEBUG & 1)) != 0 ] ; then
+        if [ -n "$CEN_DBG_OMAI" ] ; then
+            set +x ; CEN_DBG_OMAI=
+        _cen_dbg_mesg -l "[debug] end of main() trace"
+        fi
+
+        if [ -z "$CEN_DBG_INIT" ] ; then
+            CEN_DBG_INIT=1
+            if isfunction "actions" && [ -z "$CEN_FEATURE_R" ] ; then
+                _cen_dbg_mesg -l "[debug] dispatching verbs via actions()"
+                context -h CEN_HOOK_ACTIONS CEN_DBG_OPT_ACTIONS _cen_dbg_actions
+            else
+            _cen_dbg_mesg -l "[debug] no-verbs, using run()"
+            fi
+        fi
+
+        if [ $# = 0 ] ; then
+        _cen_dbg_mesg -l "[debug] options() end-of-parsing"
+        else
+        _cen_dbg_mesg -l "[debug] options($*) args:$#"
+        fi
+    fi
+
+    # --- option processing ---
+
+    [ -n "$CEN_DBG_OOPT" ] && { CEN_NOTRACE= ; CEN_OPT_TRACE=1 ; set -x ; }
+    case "$1" in
+
+        # pass option info to usage module
+        --help)
+            [ "$2" = 'opts' ] && _cen_use_option '' \
+                "--debug   <mask>" $"debug mode (bit 1:=modules 2:=calls 4:=trace)"
+            ;;
+
+        # options added by this module
+        --debug)
+            optarg "debug" - -n ;;
+    esac
+    $CEN_DBG_OPT_HOOK "$@" || :
+    [ -n "$CEN_DBG_OOPT" ] && { set +x ; CEN_NOTRACE=: ; CEN_OPT_TRACE= ; }
+    return 0
+}
+
+_cen_dbg_actions() {
+    if [ $((CEN_OPT_DEBUG & 1)) = 0 ] ; then
+        $CEN_DBG_OPT_ACTIONS "$@"
+        return
+    fi
+
+    if [ $# = 0 ] ; then
+       _cen_dbg_mesg -l "[debug] actions() end-of-parsing"
+    else
+       _cen_dbg_mesg -l "[debug] actions($*) args:$#"
+    fi
+
+    [ -n "$CEN_DBG_OACT" ] && { CEN_NOTRACE= ; CEN_OPT_TRACE=1 ; set -x ; }
+    $CEN_DBG_OPT_ACTIONS "$@" || :
+    [ -n "$CEN_DBG_OACT" ] && { set +x ; CEN_NOTRACE=: ; CEN_OPT_TRACE= ; }
+} || :
+
+# must use a real hook to be called early
+_cen_dbg_quit_hook() {
+    if [ $((CEN_OPT_DEBUG & 1)) = 0 ] ; then
+        $CEN_DBG_OPT_QUIT "$@" || :
+        return 0
+    fi
+
+    set +x ; CEN_NOTRACE=: ; CEN_OPT_TRACE=
+    _cen_dbg_mesg -l "[debug] quit($*) args: $#"
+
+    local _modu=" ${!CEN_MODULES[*]}"
+    _modu="${_modu// _centauri_bash_/ }"
+    _modu="${_modu/ lib/}"
+    _modu="${_modu/ dyn/}"
+    _modu="${_modu/ usr/}"
+    _modu="${_modu:1}"
+   _cen_dbg_mesg -l "[debug] modules loaded:" "${_modu:-<none>}"
+    [ -n "$CEN_DBG_OQUI" ] && { CEN_NOTRACE= ; CEN_OPT_TRACE=1 ; set -x ; }
+    $CEN_DBG_OPT_QUIT "$@" || :
+    return 0
+}
+
+# set debug options (_centauri_bash_dyn uses '-A' on autoload)
+CEN_DEBUG='debug'
+[ "$1" = '-A' ] && CEN_OPT_DEBUG=7 || debug -r "$@"
+:                                           # must return succes
+
+# end

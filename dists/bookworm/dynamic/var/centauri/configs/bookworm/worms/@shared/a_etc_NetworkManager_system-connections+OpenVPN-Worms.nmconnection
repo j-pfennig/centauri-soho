@@ -1,0 +1,27 @@
+[connection]
+id=OpenVPN Centauri
+uuid=56a2066b-5b39-408a-8c88-335092f0287a
+type=vpn
+
+[vpn]
+service-type=org.freedesktop.NetworkManager.openvpn
+connection-type=tls
+remote=centauri.feste-ip.net
+comp-lzo=yes
+proto-tcp=no
+tap-dev=no
+cert-pass-flags=4
+mssfix=no
+tls-cipher=DEFAULT:@SECLEVEL=0
+ca=/etc/openvpn/client/centauri/ca.crt
+cert=/etc/openvpn/client/centauri/jpf-notebook1.crt
+key=/etc/openvpn/client/centauri/jpf-notebook1.key
+ta=/etc/openvpn/client/centauri/ta.key
+
+[ipv6]
+method=auto
+
+[ipv4]
+method=auto
+dns=10.21.2.12;
+dns-search=centauri.home;

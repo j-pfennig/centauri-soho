@@ -1,0 +1,29 @@
+# centauri-master.target - start master services
+ 
+[Unit]
+Description=Master-Server network mode
+Conflicts=centauri-slave.target centauri-member.target centauri-trusted.target centauri-public.target
+
+After=network-online.target centauriswitch.service dnsmasq.service
+Wants=network-online.target centauriswitch.service dnsmasq.service centauri-network.service
+
+Requisite=multi-user.target
+
+# Starting Samba services:
+#   centauriwsdd.service ntpsec.service samba-ad-dc.service
+#
+# Starting NFS services:
+#   nfs-mountd.service rpcbind.service rpc-gssd.service nfs-server.service 
+#
+# Starting other services:
+#   cyrus-imapd.service exim4.service openvpn@server.service squid.service lighttpd.service
+#
+# All listed services should be stopped by centauri-public.target
+
+Conflicts=slapd.service krb5-kdc.service nmbd.service smbd.service
+
+Wants=centauriwsdd.service ntpsec.service ssh.service samba-ad-dc.service
+Wants=cyrus-imapd.service exim4.service openvpn@server.service squid.service lighttpd.service
+#   debian's nfs-common makes little sense and can be masked if we add it's 
+#   dependencies here (nfs-mountd rpcbind rpc-gssd and rpc-svcgssd) ...
+Wants=nfs-mountd.service rpcbind.service rpc-gssd.service rpc-svcgssd.service nfs-server.service 

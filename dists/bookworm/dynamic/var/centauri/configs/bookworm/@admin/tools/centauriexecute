@@ -1,0 +1,771 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2023; BSD License"
+CEN_TITLE="Tool to run Programs in Window or Console mode"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -m win -t -y - '0.22:2' || exit 2
+
+### TODO replace doFindmount by findmount
+### TODO doReplace -r vs. filenames
+
+# Data
+
+CEN_OPT_ASK=                    # see --ask
+CEN_OPT_CONSOLE=                # see --console
+CEN_OPT_EXT=()                  # see --extension
+CEN_OPT_HEADER=                 # see --header
+CEN_OPT_INPUT=                  # see --input
+CEN_OPT_MESSAGE=                # see --message
+CEN_OPT_NOERR=                  # see --noerror
+CEN_OPT_OUTPUT=                 # see --output
+CEN_OPT_PASSWD=                 # see --passwd
+CEN_OPT_SILENT=                 # see --silent
+CEN_OPT_USER=                   # see --user
+
+CEN_INPFILE=                    # used by inpfile()
+CEN_OUTFILE=                    # used by outfile()
+
+#CEN_DAT_PASSWD=                # passed via environment
+
+DAT_MOUNT=                      # see doFindmount
+DAT_DEVICE=                     # ...
+DAT_FILESYS=                    # ...
+
+embed -c '_centauri_bash_iom'   # dependency for packaged scripts
+
+# ------------------------------------------------------------------------------
+# make argument list: [-f <inp> <out>|-m|-r] [-o <offs>] -- <extra...>
+#
+# Options:  -f  handle --input/--output simple quoting
+#           -m  minimal quoting
+#           -o  offset in CEN_ACTARR [not with -f]
+#           -r  simple quoting
+#           -s  quote space and apostroph [file name quoting]
+#           -w  quoting for .desktop file using ''
+# ------------------------------------------------------------------------------
+_arglist=
+doArglist() {
+    local item eopt optf ores bsub sinp sout offs=0
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -f)   optf=1 ; shift ; sinp="$1" ; shift ; sout="$1" ;;
+      -m)   ores=3 ;;
+      -o)   shift ; offs="$1" ;;
+      -r)   ores=1 ;;
+      -s)   ores=4 ;;
+      -w)   ores=2 ;;
+      *)    fatal "Bad '${FUNCNAME[0]}' argument: $1"
+      esac ; shift
+    done
+
+    # Option -f takes everthing, others take action arguments only
+    if [ -z "$ores" ] ; then
+        _arglist=("$@") ; ores=5 ; bsub=1
+        set -- "${CEN_CMDOPTS[@]}" "${CEN_CMDARGS[@]}"
+    elif [ "$ores" -le "2" ] ; then
+        _arglist=("$@")
+        set -- "${CEN_ACTARR[@]:offs}" ; while [ "${1::3}" = "---" ] ; do shift ; done
+    else
+        _arglist=()
+    fi
+
+    for item in "$@" ; do
+        # Option -f: handle input/output
+        if [ -n "$optf" -a -z "$eopt" ] ; then
+            [ "${item::8}" = "--window" ] && continue
+            [ "${item::7}" = "--input"  ] && item="--input=$sinp"
+            [ "${item::8}" = "--output" ] && item="--output=$sout"
+        fi
+        [ "$item" = "---" ] && eopt=1
+
+        if [ "$ores" = "1" ] ; then             # simple quoting...
+            item="${item//\\/\\\\}"
+            item="${item//\"/\\\"}"
+            case "$item" in
+            --*=*)  item="${item/=/=\"}\"" ;;
+            --*)    ;;
+            -*\ *)  item="${item::2} \"${item:2}\"" ;;
+            -|-?)   ;;
+            -*)     ;;
+            *)      [ "${item/ //}" = "$item" ] || item="\"$item\""
+            esac
+        elif [ "$ores" = "2" ] ; then           # .desktop quoting
+            item="${item//\\/\\\\}"
+            item="${item//\'/\'\"\'\"\'}"       # \' does not work
+            [ -n "${item//[0-9a-zA-Z\/.:=_+-]/}" ] && item="'$item'"
+        elif [ "$ores" = "3" ] ; then           # minimal quoting
+            item="${item//\\/\\\\}"
+            item="${item//\'/\'\"\'\"\'}"       # \' does not work
+            item="'$item'"
+        elif [ "$ores" = "4" ] ; then           # filename quoting
+            item="${item//\"/\\\"}"
+            item="${item//\'/\\\'}"
+            item="${item//\ /\\ }"
+        else                                    # console exec quoting
+            item="${item//\\/\\\\}"
+            item="${item//\'/\'\"\'\"\'}"       # \' does not work
+            item="${item//\\/\\\\}"             # double quotes
+            if [ "$item" = "bash" -a -n "$bsub" ] ; then
+                bsub= ; _arglist+=("exec" "---")
+            fi
+        fi
+        _arglist+=("$item")
+    done
+}
+
+# ------------------------------------------------------------------------------
+# wrappers for inpfile/outfile: <opt>...
+# ------------------------------------------------------------------------------
+doInput() {
+    [ -n "$CEN_INPFILE" ] && return 0
+    [ "${CEN_OPT_INPUT:---}" = "--" ] && return 0
+
+    local opts=("-l" "$@") path="$CEN_OPT_INPUT" extn="$CEN_OPT_EXT"
+    if [ "$path" = "++" ] ; then
+        opts+=("-d") ; path="+"
+        error $"Unsupported for input: ++" ; return 1
+    elif [ "${path::1}" = "+" -a "$path" != "+" ] ; then    # strip leading +
+        path="${path:1}"
+    fi
+    [ "${extn:--}" != "-" ] && opts+=(-x "$extn") ;
+    [ -n "${CEN_OPT_EXT[1]}" ] && CEN_OPT_EXT=(${CEN_OPT_EXT[@]:1})
+    inpfile "${opts[@]}" -- "$path"     # return status
+}
+
+doOutput() {
+    [ -n "$CEN_OUTFILE" ] && return 0
+    [ "${CEN_OPT_OUTPUT:---}" = "--" ] && return 0
+
+    local opts=("-l" "$@") path="$CEN_OPT_OUTPUT" extn="$CEN_OPT_EXT"
+    if [ "$path" = "++" ] ; then
+         opts+=(-d) ; path="+"
+    elif [ "${path::1}" = "+" -a "$path" != "+" ] ; then    # strip leading +
+        path="${path:1}"
+    fi
+    [ "${extn:--}" != "-" ] && opts+=(-x "$extn") ;
+    [ -n "${CEN_OPT_EXT[1]}" ] && CEN_OPT_EXT=(${CEN_OPT_EXT[@]:1})
+    outfile "${opts[@]}" -- "$path"     # return status
+}
+
+# ------------------------------------------------------------------------------
+# Replace place holders: [-a <arr>] [-r] <text>...
+# ------------------------------------------------------------------------------
+# Replaces:     ##        =>  #
+#               %%        =>  %
+#               #i or %x  =>  input path
+#               #o or %y  =>  output path
+#               #p or %z  =>  password
+# ------------------------------------------------------------------------------
+_replace=
+doReplace() {
+    local _frec _orig _item _vset="_replace"
+    while [ "${1::1}" = "-" ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   shift ; _vset="$1" ;;
+      -r)   _frec=1 ;;
+      *)    fatal "Bad '${FUNCNAME[0]}' argument: $1"
+      esac ; shift
+    done
+    local -n _vvaa="$_vset" ; _vvaa=()
+
+    for _item in "$@" ; do
+        # only one replace per item (to protect file names)
+        while : ; do
+            _orig="$_item"
+            case "$_item" in
+                *##*)   _item="${_item//##/#$'\a'}" ;;
+                *#i*)   _item="${_item//#i/$CEN_INPFILE}" ;;
+                *#o*)   _item="${_item//#o/$CEN_OUTFILE}" ;;
+                *#p*)   _item="${_item//#p/$CEN_DAT_PASSWD}" ;;
+                *%%*)   _item="${_item//%%/%$'\a'}" ;;
+                *%x*)   _item="${_item//%x/$CEN_INPFILE}" ;;
+                *%y*)   _item="${_item//%y/$CEN_OUTFILE}" ;;
+                *%z*)   _item="${_item//%z/$CEN_DAT_PASSWD}" ;;
+            esac
+            [ -z "$_frec" -o "$_orig" = "$_item" ] && break
+        done
+        _vvaa+=("${_item//$'\a'/}")
+    done
+}
+
+# ------------------------------------------------------------------------------
+# find device/Mountpoint: <device> <mountpoint>
+# ------------------------------------------------------------------------------
+doFindmount() {
+    local mxxx idev="${1:--}" imnt="${2:--}"
+    [ "$idev$imnt" != "--" ] &&
+        while read DAT_DEVICE DAT_MOUNT DAT_FILESYS mxxx ; do
+            if [ "$idev" = "$DAT_DEVICE" ] ; then
+                [ "${1::5}" = "/dev/" ] && return 0
+            fi
+            if [ "$imnt" -ef "$DAT_MOUNT" ] ; then
+                return 0
+            fi
+        done < "/proc/mounts"
+    DAT_MOUNT= ; DAT_DEVICE= ; DAT_FILESYS= ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# Action desktop: <desktop-file>
+# ------------------------------------------------------------------------------
+actionDesktop() {
+    local xlis xcmd=true xopt="-x" sifs="$IFS" ; IFS="="
+    while read -r key val ; do
+        if [ "$key" = "Exec" ] ; then
+            xcmd="${val//\\\\/\\}"
+        elif [ "$key" = "Path" ] ; then
+            folder -f -c "$val"
+        fi
+    done < "$1"
+    IFS="$sifs" ; shift
+    [ $# -gt 1 ] && xopt=
+    [ $# = 0 ] && set -- --
+
+    local argu argi arge self="$CEN_TOOLS/$CEN_NAME"
+    for argu in "$@" ; do
+        eval xlis=($xcmd)
+        if [ "$self" -ef "$xlis" ] ; then
+            # replace %f arguments by argument
+            if [ "$argu" != "--" ] ; then
+                set -- "${xlis[@]:1}" ; xlis=("xxx")
+                for argi in "$@" ; do
+                    if [ -n "$arge" ] ; then            # after -- marker
+                        xlis+=("$argu")
+                    else                                # substitute %s
+                        xlis+=("${argi/\%f/$argu}")
+                        [ "$argu" = "--" ] && arge=1
+                    fi
+                done
+            fi
+            main "${xlis[@]:1}"
+        else
+            [ "$argu" = "--" ] || xlis+=("$argu")
+            system -f $xopt "${xlis[@]}"
+        fi
+        error -t || break               # stop after error
+    done
+    quit                                # 'desktop' must always stop
+}
+
+# ------------------------------------------------------------------------------
+# Run command: <args>...
+# ------------------------------------------------------------------------------
+actionExecute() {
+    local head mesg deco item="$CEN_ACTION"
+
+    # skip leading ---, check if program exists
+    if [ "$CEN_ACTION" = "execute" ] ; then
+        while [ "${1::3}" = "---" ] ; do shift ; done
+        [ $# = 1 ] && eval "set -- $1"
+        item="$1" ; system -c -e -r -- "$item" || return
+    fi
+
+    # get input/output file
+    doInput  || return 1
+    doOutput || return 1
+
+    # prompt for password
+    if [ -n "$CEN_OPT_PASSWD" -a -z "$CEN_DAT_PASSWD" ] ; then
+        mesg="${CEN_OPT_PASSWD:--}"
+        [ "$mesg" = "-" ] && mesg=$"Password reqired to run"" '$item'"
+        doReplace -- "$mesg"
+        confirm -u -a -m -c quit -s CEN_DAT_PASSWD -p + "$_replace"
+    fi
+
+    # re-run in console
+    if [ -n "$CEN_OPT_CONSOLE" ] ; then
+        if context -q ; then
+            windows -i 0
+        else
+            # bash -> exec --- bash
+            doArglist -f "$CEN_INPFILE" "$CEN_OUTFILE" -- "--wait" "--windows=0"
+            export CEN_DAT_PASSWD
+            context -c "$CEN_TOOLS/$CEN_NAME" "${_arglist[@]}"
+        fi
+    fi
+    error -t || return
+    mesg="${CEN_OPT_CONSOLE:--}"
+    [ "$mesg" != "-" ] && doReplace -a mesg -- "$mesg"
+
+    # assemble command line
+    local cout csta=99 earr=()
+    if [ "$CEN_ACTION" = "script" ] ; then
+        doReplace -a earr -r -- "$@"
+    else
+        doReplace -a earr -- "$@"
+    fi
+    if [ -n "$CEN_OPT_CONSOLE" -a -n "$CEN_OPT_SILENT" ] ; then
+        [ "$mesg" != "-" ] && echo -e "$mesg"
+        system -u "$CEN_OPT_USER" -- "${earr[@]}" ; return
+    elif [ -z "$CEN_OPT_PASSWD" ] ; then
+        [ "$mesg" != "-" ] && message -n -- "$mesg"
+        system -m -s cout -u "$CEN_OPT_USER" -- "${earr[@]}" </dev/null ; csta=$?
+    else
+        [ "$mesg" != "-" ] && message -n -- "$mesg"
+        system -m -s cout -u "$CEN_OPT_USER" -- "${earr[@]}" <<!EOF
+$CEN_DAT_PASSWD
+!EOF
+        csta=$?
+    fi
+    trace -a "Command status $csta (output: $cout)"
+
+    # own error handling for multi-line output
+    if [ "$csta" = 0 ] ; then
+        if [ -z "$CEN_OPT_SILENT" ] ; then
+            [ -n "$CEN_OPT_MESSAGE" ] && windows && deco="-d +3"
+            head="$CEN_OPT_HEADER"
+            [ "$head" = "-" ] && head=
+            [ -n "$head" ] && doReplace -a head -- "$head\n"
+            if [ -z "$CEN_OPT_CONSOLE" ] ; then
+                message -n $deco -- "$head$cout"
+            else
+                echo -e "$head$cout"
+            fi
+        fi
+    elif [ -n "$cout" ] ; then
+        message -e -n -- "$cout"
+    elif [ "$csta" = "127" ] ; then
+        error $"Program not found:" "$earr"
+    elif [ -z "$CEN_OPT_DRYRUN" ] ; then
+        error -p $"Program failed (status %s): %s" "$csta" "$earr"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Create desktop file: <verb> <prog> [<arg>...]
+# ------------------------------------------------------------------------------
+actionMake() {
+    local self="$CEN_TOOLS/$CEN_NAME" prog verb name item offs=0
+
+    # find tool name (skip --- and options)
+    for item in "$@" ; do
+        offs=$((offs + 1))
+        [ "${item::1}" = "-" ] && continue
+        if [ -z "$verb" ] ; then
+            verb="$item" ; continue
+        fi
+        name="$item" ; break
+    done
+
+    # get working dir from --input
+    inpfile -c -d -- "${CEN_OPT_INPUT:-$PWD}" || return 1
+
+    # make argument list
+    case "$verb" in
+    run)
+        prog="$name"
+        doArglist -r -o "$offs"
+        ;;
+    exe*|mou*|scr*|ser*|umo*)
+        prog="$self"
+        # desktop file runs a bash on args, use '' quoting
+        doArglist -w -- "--windows=1"
+        # desktop file does not allow line continuation - remove
+        if [ "${#_arglist[@]}" = 3 ] ; then
+            local nlin=$'\n'
+            _arglist[2]="${_arglist[2]//\\\\$nlin/}"
+        fi
+        ;;
+    *)  error $"Missing or invalid action:" "${verb:--}" ; return
+    esac
+    doReplace -- "${CEN_OPT_HEADER:-Run the '$name' program}"
+
+    # create output
+    [ -z "$CEN_OPT_OUTPUT" ] && CEN_OPT_OUTPUT="${name##*/}"
+    outfile -x desktop -- "${CEN_OPT_OUTPUT:-$CEN_NAME}" || return 1
+    name="${CEN_OUTFILE##*/}"
+    cat <<!EOF >"$CEN_OUTFILE"
+#!$self desktop
+[Desktop Entry]
+Exec=$prog ${_arglist[@]}
+Name=${name%%.desktop}
+Comment=${_replace}
+Icon=favorites
+MimeType=
+Path=$CEN_INPFILE
+StartupNotify=true
+Terminal=false
+Type=Application
+!EOF
+    system -e -p chmod 775 "$CEN_OUTFILE"
+    message -a $"Wrote:" "$CEN_OUTFILE"
+}
+
+# ------------------------------------------------------------------------------
+# mount or unmount: [<mount-options>]
+# ------------------------------------------------------------------------------
+actionMount() {
+    local info opts opte mesg
+
+    # get device and mountpoint from options
+    if [ "${CEN_OPT_INPUT::1}" = "/" ] ; then
+        [ "$CEN_ACTION" = "mount" ] && opte="-e"
+        doInput -b -c $opte || return 1
+    fi
+    if [ "${CEN_OPT_OUTPUT::1}" = "/" ] ; then
+        doOutput -c -d || return 1
+    fi
+    doFindmount "$CEN_INPFILE" "$CEN_OUTFILE"
+
+    if [ "$CEN_ACTION" = "mount" ] ; then
+        if [ -n "$DAT_MOUNT" ] ; then
+            printf -v info $"Device '%s' already mounted at '%s'" "$DAT_DEVICE" "$DAT_MOUNT"
+            confirm -a -f -c ":" -p $" [K|u]? " -d $"keep" -v $"keep umount" \
+                '%s\n \n    %s\n    %s\n \n%s' "$info" \
+                    $"keep    - do nothing" \
+                    $"umount  - unmount the device""\n" \
+                $"Choose one of the actions listed above"
+            if [ "$CEN_CONFIRM" = $"umount" ] ; then
+                CEN_ACTION=umount ; actionMount "$@"
+            fi
+        else
+            doInput -b -c -e || return 1
+            doOutput -c -d || return 1
+            DAT_DEVICE="$CEN_INPFILE" ; DAT_MOUNT="$CEN_OUTFILE"
+
+            if [ $# = 1 ] ; then
+                opts=("-o" "$@")
+            elif [ $# -gt 1 ] ; then
+                splitjoin -j mesg -d "," "$@"
+                opts=("-o" "$mesg")
+            fi
+
+            # prompt for password
+            if [ -n "$CEN_OPT_PASSWD" -a -z "$CEN_DAT_PASSWD" ] ; then
+                mesg="${CEN_OPT_PASSWD:--}"
+                [ "$mesg" = "-" ] && mesg=$"Password reqired for"" '$DAT_DEVICE'"
+                doReplace -- "$mesg"
+                confirm -u -a -m -c quit -s CEN_DAT_PASSWD -p + "$_replace"
+            fi
+            doReplace -a opts -- "${opts[@]}"
+
+            while : ; do
+                if [ -w "$DAT_MOUNT" ] ; then
+                    if [ -z "$DAT_DEVICE" ] ; then
+                        system -q mount "$DAT_MOUNT" "${opts[@]}"  && break
+                    else
+                        system -q mount "$DAT_DEVICE" "$DAT_MOUNT" "${opts[@]}"  && break
+                    fi
+                fi
+                if [ -z "$DAT_MOUNT" ] ; then
+                    system  -q mount "$DAT_DEVICE" "${opts[@]}"  && break
+                    system  -m -s info -u root mount "$DAT_DEVICE" "${opts[@]}"  && break
+                elif [ -z "$DAT_DEVICE" ] ; then
+                    system -m -s info -u root mount "$DAT_MOUNT" "${opts[@]}" && break
+                else
+                    system -m -s info -u root mount "$DAT_DEVICE" "$DAT_MOUNT" "${opts[@]}" && break
+                fi
+                [ -z "$info" ] && info=$"Command failed:"" mount $DAT_DEVICE $DAT_MOUNT"
+                error -p -- "$info" ; break
+            done
+            if [ -z "$info" ] ; then
+                # verify the mount (mount sometimes returns no error code)
+                doFindmount "${CEN_INPFILE:--}" "${CEN_OUTFILE:--}"
+                if [ -n "$DAT_MOUNT" ] ; then
+                    message -a -p $"Mounted '%s' at '%s'" "$DAT_DEVICE" "$DAT_MOUNT"
+                else
+                    error -p $"Mount of '%s' failed" "${CEN_OUTFILE:-$CEN_INPFILE}"
+                fi
+            fi
+        fi
+
+    elif [ "$CEN_ACTION" = "umount" ] ; then
+        if [ -z "$DAT_MOUNT" ] ; then
+            doInput  -c    || return 1
+            doOutput -c -d || return 1
+            doFindmount "$CEN_INPFILE" "$CEN_OUTFILE" || return
+        fi
+        while : ; do
+            system -q fusermount -u -q "$DAT_MOUNT" && break
+            system -q umount "$DAT_MOUNT" && break
+            system -m -s info -u root umount "$DAT_MOUNT" && break
+            [ -z "$info" ] && info=$"Command failed:"" umount $DAT_MOUNT"
+            error -p -- "$info" ; break
+        done
+        [ -z "$info" ] && message -a -p $"Unmounted '%s' from '%s'" "$DAT_DEVICE" "$DAT_MOUNT"
+    else
+        fatal $"Not yet implemented:" "$CEN_ACTION"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+actionRun() {
+    # quit if nothing to do (but still handle --wait)
+    [ $# -gt 0 -o -n "$CEN_OPT_CONSOLE" -o -n "$CEN_OPT_USER" ] || return
+
+    local xcon xusr xwai="$CEN_CMDWAIT" ; CEN_CMDWAIT=
+    if [ -n "$CEN_OPT_USER" -a "$USER" != "$CEN_OPT_USER" ] ; then
+        xusr="$CEN_OPT_USER"
+        if [ -n "$CEN_OPT_CONSOLE" ] ; then
+            context -q || xcon=1
+        fi
+    elif [ -n "$CEN_OPT_CONSOLE" ] ; then
+        context -q && return
+        xcon=1
+    else
+        return
+    fi
+
+    local opts aexp ahdr awai arg0 pcmd="/proc/$PPID/cmdline"
+    [ -r "$pcmd" ] && {   read -r -d '' pcmd
+                          read -r -d '' arg0 ; } <"$pcmd"
+    [ -z "$arg0" ] && fatal $"Cannot get program name from:" "$pcmd"
+
+    if [ "${CEN_OPT_CONSOLE:--}" != "-" -a -n "$xcon" ] ; then
+        doArglist -m "$CEN_OPT_CONSOLE"
+        ahdr="echo -e \"$_arglist\" ; "
+    fi
+
+    opts=(bash -c)
+    if [ -n "$xusr" ] ; then
+        opts=(sudo -u "$xusr" -H bash -c)
+        if [ -n "$xcon" ] ; then
+            aexp="CEN_IS_CONSOLE=0 "
+        else
+            aexp="CEN_IS_CONSOLE=$CEN_IS_CONSOLE "
+        fi
+    fi
+    [ -n "$xwai" -a -n "$xcon" ] && awai=" ; centauriexecute run --wait"
+
+    doArglist -s "$arg0" ; arg0="$_arglist"
+    doArglist -m "$@"
+    opts+=("$ahdr$aexp$arg0 ${_arglist[*]}$awai")
+    #quit "DEBUG ${opts[@]}"
+    if [ -n "$xcon" ] ; then
+        context -x -- "${opts[@]}"
+    else
+        system -f -- "${opts[@]}"
+    fi
+    exit 4              # brute force, return status
+}
+
+# ------------------------------------------------------------------------------
+# run args as bash script: [---] <arg>...
+# ------------------------------------------------------------------------------
+actionScript() {
+    doArglist -r
+    doInput || return
+    if [ "${#_arglist[@]}" -gt 1 ] ; then
+        CEN_CMDARGS=("bash" "-c" "${_arglist[*]}")
+    else
+        while [ "${1::3}" = "---" ] ; do shift ; done
+        CEN_CMDARGS=("bash" "-c" "$1")
+    fi
+    actionExecute "${CEN_CMDARGS[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# control service: <cmd> <name>
+# ------------------------------------------------------------------------------
+actionService() {
+    local actv info
+    system -q -r -s info systemctl is-active "$2" && actv=1
+
+    case "$1" in
+    star|start)
+        if [ -n "$actv" ] ; then
+            printf -v info $"Service '%s' is already active" "$2"
+            confirm -a -f -c ":" -p $" [K|s|r]? " -d $"keep" -v $"keep stop restart" \
+                '%s\n \n    %s\n    %s\n    %s\n \n%s' "$info" \
+                    $"keep    - do nothing" \
+                    $"stop    - stop service" \
+                    $"restart - restart service" \
+                $"Choose one of the actions listed above"
+            [ "$CEN_CONFIRM" = $"stop" ]    && actionService stop "$2"
+            [ "$CEN_CONFIRM" = $"restart" ] && actionService restart "$2"
+        elif system -e -p -u root systemctl start "$2" ; then
+            system -q -r -s info systemctl is-active "$2" && actv=1
+            if [ -n "$actv" ] ; then
+                message -a -p -d +3 $"Service '%s' started" "$2"
+            else
+                warning -a -p $"Service '%s' is not active (status=%s)" "$2" "$info"
+            fi
+        fi
+        ;;
+    sto|stop)
+        system -e -p -u root systemctl stop "$2" || return
+        if system -q -r -s info systemctl is-active "$2" ; then
+            warning -a -p $"Service '%s' did not stop" "$2"
+        elif [ "$info" = "failed" ] ; then
+            warning -a -p $"Service '%s' stopped (status=%s)" "$2" "$info"
+        elif [ -n "$actv" ] ; then
+            message -a -p -d +3 $"Service '%s' stopped" "$2"
+        fi
+        ;;
+    stat*)
+        if [ -n "$actv" ] ; then
+            message -a -p $"Service '%s' is active" "$2"
+        else
+            message -a -p $"Service '%s' is not active (status=%s)" "$2" "$info"
+        fi
+        ;;
+    res*)
+        if system -m -s info -u root systemctl restart "$2" ; then
+            if system -q -r -s info systemctl is-active "$2" ; then
+                message -a -p -d +3 $"Service '%s' restarted" "$2"
+            else
+                warning -a -p $"Service '%s' is not active (status=%s)" "$2" "$info"
+            fi
+        else
+            [ -z "$info" ] && info=$"Command failed:"" systemctl restart $2"
+            error -p -- "$info"
+        fi
+        ;;
+    *)  message -e -p $"Invalid command '%s' (must be: %s)" "$1" "start|stop|restart|status"
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+
+    -A|--ask)
+        optarg "ask"        CEN_OPT_ASK -t ;;               # any text
+    -C|--con*)
+        optarg "console"    CEN_OPT_CONSOLE -t ;;           # any text
+    -H|--hea*)
+        optarg "header"     CEN_OPT_HEADER -t ;;            # any text
+    -M|--mes*|--msg)
+        optarg "message"    CEN_OPT_MESSAGE ;;              # a simple flag
+    -I|--inp*)
+        optarg "input"      CEN_OPT_INPUT  -t ;;            # any text
+    -N|--noe*)
+        optarg "noerr"      CEN_OPT_NOERROR ;;              # a simple flag
+    -O|--out*)
+        optarg "output"     CEN_OPT_OUTPUT -t ;;            # any text
+    -P|--pas*)
+        optarg "passwd"     CEN_OPT_PASSWD -t ;;            # any text
+    -R|--roo|--root)
+        optarg "root"       CEN_OPT_USER   -f "root" ;;     # simple flag
+    -S|--sil*)
+        optarg "silent"     CEN_OPT_SILENT ;;               # a simple flag
+    -U|--use|--user)
+        optarg "user"       CEN_OPT_USER   -t ;;            # any text
+    -X|--ext*)
+        optarg "extension"  CEN_OPT_EXT[]  -t ;;            # an array of text
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing
+# ------------------------------------------------------------------------------
+actions() {
+    case "$CEN_ACTION" in
+
+    "")                                                 # before 1st action
+        [ -z "$CEN_OPT_ASK" ] && return
+        confirm -a -y "$CEN_OPT_ASK" || quit ;;
+
+    des*)
+        invoke "desktop"  actionDesktop ;;
+    exe*)
+        invoke "execute"  actionExecute 1 + ;;          # at least one arg
+    mak|make)
+        invoke "make"     actionMake    1 + ;;          # at least one arg
+    mou*)
+        invoke "mount"    actionMount       ;;
+    scr*)
+        invoke "script"   actionScript  1 + ;;
+    run)
+        invoke "run"      actionRun         ;;
+    ser*)
+        invoke "service"  actionService 2   ;;
+    umo*|unm*)
+        invoke "umount"   actionMount   0   ;;
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usagecat << !EOF
+$CEN_USE_HEADER
+
+       This tool can show input and output dialogs when run from inside a desk-
+       top environment. The program output can be shown in error- or message
+       dialogs. Creation and use of .desktop files is supported.
+
+$CEN_USE_OPTIONS
+
+       -A --ask      <mesg> Yes/No question before any action
+       -C --console  <mesg> run in console, print message if not '-'
+       -H --header   <mesg> prefix success output with <mesg>
+       -I --input    <path> input file or folder, placeholder is '#i'
+       -M --message         try to use a desktop notification for success msg
+       -N --noerror         do not report errors
+       -O --output   <path> output file or folder, placeholder is '#o'
+       -P --passwd   <mesg> prompt for password, pass via stdin or '#p'
+       -R --root            run as user 'root'
+       -S --silent          do not report output
+       -U --user     <user> run as user <user>
+       -X --extension <ext> file extension (array)
+
+actions:
+       execute <arg>...     run a program
+       mount   <opts>       mount a device: --input=<dev> --output=<mpnt>
+       make    <arg>...     create desktop file
+       run     <arg>...     use $CEN_NAME from inside a bash script
+       script  <script>     run inline script
+       service start|stop|restart|status <unit>
+       umount               unmount a device: --input=<dev> --output=<mpnt>
+
+       desktop              internal - used in .desktop file
+
+arguments:
+       <arg>                any argument
+       <dev>                a block device
+       <mesg>               text for UI, may contain '\\\\n' for line breaks
+       <mpnt>               existing folder to be used as mountpoint
+       <opts>               mount options (list or comma separated string)
+       <path>               any path  -or-  '+' to ask for a file
+                                      -or- '++' to ask for a folder
+       <script>             bash script (example: "journalctl | grep batch")
+
+examples:
+       Run a program, run a script, start a service:
+       > $CEN_NAME exec eject /dev/sdc -H "Ejected /dev/sdc" -R
+       > $CEN_NAME script --- "mkdir /mnt/zzz -o ro ; mount /dev/xxx /mnt/zzz"
+       > $CEN_NAME script --- journalctl -b1 \| grep "centauriswitch"
+       > $CEN_NAME service start minidlna
+
+       Show a save-file or directory dialog (mind use of ---):
+       > $CEN_NAME exec --output=+ --extension=pdf ---  pdfunite 1.pdf 2.pdf --out=#y
+       > $CEN_NAME exec --output=++ --extension=pdf --- pdfsplit input.pdf --out=#y
+
+       Show input and output dialog:
+       > $CEN_NAME exec --input=+ --ext=in --output=+ --ext=out --- mytool #x #y
+
+       Mount and unmount:
+       > $CEN_NAME mount -I/dev/xxx -O/mnt/zzz ro,type=ext4 -H"Mounted #x at #y"
+       > $CEN_NAME umount -O/mnt/zzz -H"Unounted #x from #y"
+       > $CEN_NAME mount -I//pokini/pokini_export -O/mnt/zzz -P- "password=#p"
+
+       Make desktop file (mind use of ---):
+       > $CEN_NAME -O browse -H "Run dolphin" make --- run dolphin /mnt/shared
+       > $CEN_NAME -O eject-sdc -H "Optional Text" make --- exec eject /dev/sdc -R
+       > $CEN_NAME make --- script --- "mkdir /mnt/z -o ro ; mount /dev/xxx /mnt/z"
+
+       Use from inside a bash script (hello world example):
+       #!/bin/bash
+       $CEN_NAME --wait --root --console=- --- run "$@" || exit 1
+       echo "Hello world"
+       # End
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

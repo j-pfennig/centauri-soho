@@ -1,0 +1,235 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_rep = centauri-bash-lib: Repository basic operations
+#
+# Call:     . _centauri_bash_rep
+#
+# The module implements exactly one public function: [[repository()]]
+#
+# Copyright Dr. J. Pfennig (c) 2024
+# ------------------------------------------------------------------------------
+
+CEN_MODULES['_centauri_bash_rep']='0.01:2'
+
+CEN_REP_DKEY=                   # distribution key, see 'distro'
+
+# ------------------------------------------------------------------------------
+# repository - Repository basic operations
+#
+# Call:     (1) repository escape  -d|-u <vnam> <name>
+#           (2) repository folder  [-l|-q] <vnam> <dist> <inst> [<host>|+|@]
+#           (3) repository distro  [-f] <anam> [<dist>]
+#           (4) repository locate  [-b|-w] <vnam> <file> [<base> [<dkey>]]
+#
+#           (1) **Decorate/undecorate repository file names**
+#               This command implements the escape rules for file names
+#
+#           (2) **Get repository folder by distribution and instance**
+#               Returns the base folder for (2 arguments), the shared folder
+#               ('@' as 3rd argument), or a private folder ('+' for $HOSTNAME)
+#
+#           (3) **Get an OS distribution information array**
+#               Returns an array of: <dkey> <fkey> <dfam> <dist>
+#
+#           (4) **Locate a repository file by path and vendor key**
+#               Tries <dkey> as first and 'a' for any second attempt. If no <dkey>
+#               is passed it calls (3) to get one. Uses '$CEN_ROOT' if <base> is
+#               empty or '-'. Unless option -b is given it searches the folders
+#               "private" and "shared", which should be symlinks, see (2).
+#
+# Variables:<vnam>  name of a variable to receive a result value
+#           <anam>  name of an array  to receive a result
+#           <dkey>  distro key: d=debian r=raspbian s=suse t=termux u=ubuntu
+#           <fkey>  family key: d=debian r=raspbian s=suse d=termux d=ubuntu
+#           <dfam>  family name: 'debian' or 'suse'
+#           <dist>  distribution name: debian|raspbian|termux|ubuntu|suse
+#           <file>  full path of file to be located
+#           <base>  overrides '$CEN_ROOT'
+#
+# Options:  -b  search <base> path only
+#           -d  decorate
+#           -l  create a symlink in $CEN_ROOT
+#           -q  quiet, no error messages
+#           -u  undo '-d' decoration
+#           -w  write state file, see [[sysversion()]]
+#
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Repository + The Centauri Repository Structure
+#
+#+General:
+# The repository is a data tree and closely related to centauri-bash-lib but not
+# a part of it. Anyhow the library documentation is good place to briefly describe
+# its structure. Data is organised as folders and files around three main axes:
+#
+#,  - by distribution like debian/raspbian bookworm, debian trixie or others
+#,  - by configuration, instance of a configurations of computers in a network
+#,  - by computer machine dependent configs
+#   °
+#- $CEN_ROOT                        # the installation root
+#- °  ├── configs                   # the repository part ...
+#- °  │   ├── <dist>                # a distribution, example: bookworm
+#- °  │   │   ├── @admin            # non-configuration dependent things ...
+#- °  │   │   │   ├── library       # centauri-bash-lib bash code
+#- °  │   │   │   ├── locale        # centauri-bash-lib translations
+#- °  │   │   │   ├── systemd       # systemd services and configs
+#- °  │   │   │   ├── tools         # centauri-tools bash code
+#- °  │   │   │   └── ...
+#- °  │   │   ├── <inst>            # a configuration instance, example: worms
+#- °  │   │   │   ├── @shared       # configurations shared be most computers
+#- °  │   │   │   │   ├── <path>    # a shared configuration file
+#- °  │   │   │   │   └── ...       # other shared configuration files
+#- °  │   │   │   ├── <host>        # configuration of a specific computer
+#- °  │   │   │   │   ├── <path>    # a private configuration file
+#- °  │   │   │   │   └── ...
+#- °  │   │   │   └── ...           # other configuration instances
+#- °  │   │   └── ...               # other distributions
+#- °  │   └── ...
+#- °  └── ...
+#
+#+Escape: The <path> entries are files that have escaped (decorated) absolute path
+# names. The [[repository()]] function is an implementation that handles decorate and
+# undecorate.
+#
+#+      The algorithm is a bit simplistic, but good enough for the moment: for the folder
+# part of the path all "/" characters are escaped as "_" (underscore) and real "_"
+# are escaped by "''°''" (degree). The file name follows after a "+" character and is not
+# escaped (and cannot contain spaces). The whole sequence is prefixed with a single
+# letter key followed by "_".  The key is an architecture/distribution flag, see
+# [[repository()]] for details. Examples:
+#
+#.      $CEN_ROOT/configs/<dist>/<inst>/<host>/<path>
+#
+#.      /etc/password                   # on raspbian
+#.      $CEN_ROOT/configs/bookworm/worms/worm3/r_etc+password
+#.      /etc/password                   # on debian
+#.      $CEN_ROOT/configs/bookworm/worms/worm5/d_etc+password
+#
+#.      /etc/ssh/ssh_config.d/50_xyz.conf
+#.      $CEN_ROOT/configs/bookworm/worms/worm5/d_etc_ssh_ssh''°''config.d+50_xyz.conf
+#
+#+Purpose:
+# The repository is used to distribute centauri-tools, centauri-bash-lib and a lot of
+# configuration files in a local network. The 'main' instance is located at the primary
+# server and contains all data. The clients usually hold only sub-sets of this data in
+# 'local' repositories. The 'centauriconfig' tool implements most of the executable
+# logic and uses 'rsyncd' to synchronize server and clients.
+#
+#+      The clients use timers and the 'centauricron' to run a bi-directional update
+# in regular intervals. This can also trigger update actions on the client side.
+#
+#+Security:
+# For security reasons client computers are usually not allowed to write directly into
+# the 'main' repository. As an intermediate step the 'staging' repository at the server
+# mirrors the 'local' repositories. The 'centaurimachines' tool is used to mirror
+# 'main' and to manually merge changes back to 'main'.
+#
+#+      'centaurimachines' also generates 'rsyncd' configuration files and machine
+# passwords. The clients get their 'rsync' passwords over the 'centaurisecrets'
+# mechanism.
+# ------------------------------------------------------------------------------
+repository() {
+    local _func="$1" ; shift
+    local _opti ; [ "${1::1}" = '-' ] && { _opti="$1" ; shift ; }
+    case "$#${_func::3}" in
+    2esc)       _cen_repo_esc "$@" ;;
+    [34]fol)    _cen_repo_fol "$@" ;;
+    [12]dis)    _cen_repo_dis "$@" ;;
+    [234]loc)   _cen_repo_loc "$@" ;;
+    *)          _cen_abort ? "$_func" $"(or wrong arg count)"
+    esac
+}
+
+_cen_repo_esc() {
+    local _sout _sinp _spat
+    case "$_opti" in
+    -d)     _spat="${2%/*}" ; _sinp="${2##*/}"
+            _spat="${_spat//_/°}"
+            _sout="${_spat//\//_}+$_sinp"
+            ;;
+    -u)     _spat="${2%+*}" ; _sinp="${2##*+}"
+            _spat="${_spat#*/?_}" ; _spat="${_spat#_}"
+            _spat="${_spat//_/\/}" ; _spat="${_spat//°/_}"
+            _sout="$_spat/$_sinp" ; [ "${_sout::1}" = '/' ] || _sout="/$_sout"
+            ;;
+    *)      fatal -t '?' "$_opti"
+    esac
+    printf -v "$1" '%s' "$_sout"
+}
+
+_cen_repo_fol() {
+    local _sout="$CEN_ROOT/configs/$2/$3" _link='private'
+    case "$4" in
+    '')     ;;
+    [a-z]*) _sout+="/$4" ;;
+    +)      _sout+="/$HOSTNAME" ;;
+    @)      _sout+="/@shared" ; _link='shared' ;;
+    *)      fatal -t '?' "$4"
+    esac
+    printf -v "$1" '%s' "$_sout"
+    if [ -d "$_sout" ] ; then
+        if [ "$_opti" = '-l' ] ; then
+            symlink -n -- "${_sout#$CEN_ROOT/}" "$CEN_ROOT/$_link" || return 1
+        fi
+        return 0
+    elif [ "$_opti" != '-q' ] ; then
+        error $"Repository folder is missing:" "$_sout"
+    fi
+    return 1
+}
+
+_cen_repo_dis() {
+    CEN_REP_DKEY=
+    local _sout _sopt _sdis
+    local -n _sarr="$1"
+    [ "$_opti" = '-w' ] && _sopt='-w'
+    if ! sysversion $_sopt ; then
+        _sarr=() ; return 1
+    fi
+
+    _sdis="${2:-$CEN_SYS_DISTRO}"
+    case "${_sdis,,}" in
+        ubu*)   _sarr=('u' 'u' 'debian' 'ubuntu') ;;
+        sus*)   _sarr=('s' 's' 'suse'   'suse') ;;
+        ras*)   _sarr=('r' 'd' 'debian' 'raspbian') ;;
+        ter*)   _sarr=('t' 'd' 'debian' 'termux') ;;
+        deb*)   _sarr=('d' 'd' 'debian' 'debian') ;;
+        *)      error $"Unknown linux distribution:" "$_sdis"
+                _sarr=() ; return 1
+    esac
+    CEN_REP_DKEY="$_sarr"
+    return 0
+}
+
+_cen_repo_loc() {
+    local _sbas="$3" _sdis="${4:-$CEN_REP_DKEY}" _stmp _sitm _sfid
+    [ "${_sbas:--}" = '-' ] && _sbas="$CEN_ROOT"
+    printf -v "$1" ''
+    if [ "${_sdis:--}" = '-' ] ; then
+        _opti= ; _cen_repo_dis _stmp || return 1
+        _sdis="$_stmp"
+    fi
+
+    if [ "$_opti" = '-b' ] ; then
+        local _sarr=("$_sdis" 'a')
+    else
+        local _sarr=("private/$_sdis" 'private/a' "shared/$_sdis" 'shared/a')
+    fi
+
+    _opti='-d' ; _cen_repo_esc _sfid "$2"
+
+    for _sitm in "${_sarr[@]}" ; do
+        [ -e "$_sbas/$_sitm$_sfid" ] || continue
+        printf -v "$1" '%s' "$_sbas/$_sitm$_sfid" ; return 0
+    done
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# Startup: [-n]
+# ------------------------------------------------------------------------------
+
+:                                           # return true to indicate success
+
+# end

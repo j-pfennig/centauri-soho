@@ -1,0 +1,21 @@
+status=on
+target=/usr/sbin/dhclient
+
+# ifup does not check if an ifce exists and dhclient prints a lenghty
+# error message ... so this diversion checks for the ifce ...
+
+divert() {
+    local ifce="${@:$#}"
+    if [ $# -le 1 ] ; then                      # ok, is --help or so
+        ifce=
+    elif [ "${ifce::1}" = '-' ] ; then          # ok, last arg is option
+        ifce=
+    elif [ "${ifce::1}" = '/' ] ; then          # ok, last arg is a path
+        ifce=
+    elif [ -e "/sys/class/net/$ifce" ] ; then   # ok, interface exists
+        ifce=
+    fi
+    [ -z "$ifce" ] && exec /usr/sbin/dhclient.distrib "$@"
+    /usr/bin/logger -t 'dhclient' "No such interface:" "$ifce" 
+    exit 1
+}

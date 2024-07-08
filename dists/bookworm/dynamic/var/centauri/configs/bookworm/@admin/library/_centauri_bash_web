@@ -1,0 +1,1194 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_web = centauri-bash-lib: Web application
+#
+# Call:     . _centauri_bash_web [-n|-w]
+#
+# Options:  -n  no module init
+#           -w  run "webapp -w" after module load
+#
+#+This module adds the --cgibin, --webapp and --webdir options to a script,
+# depending on the module options described above.
+#
+#+When an [[actions()]] is defined, the [[main()]] hook also loads _centauri_bash_cgi
+# (unless disabled via CEN_WEB_CGIAPP=0).
+#
+# The module implements exactly one public function: [[webapp()]]
+#
+# Copyright Dr. J. Pfennig (c) 2023
+# ------------------------------------------------------------------------------
+
+CEN_MODULES["_centauri_bash_web"]="0.02:2"
+
+CEN_WEB_HOOK_OPTIONS=       # hook for option parsing
+CEN_WEB_HOOK_MAIN=          # hook for main()
+
+CEN_OPT_CREATE=             # see --create
+CEN_OPT_REMOVE=             # see --remove
+CEN_OPT_WEBAPP=             # see --webapp
+CEN_OPT_WEBDIR=             # see --webdir
+
+CEN_WEB_WEBAPP=             # set by --webapp or _cen_web_appid
+CEN_WEB_WEBDIR=             # set by --webdir or _cen_web_create
+CEN_WEB_WEBTMP=             # set if using a temporary web dir
+CEN_WEB_CGIBIN=             # set by --cgibin or _cen_web_create
+
+CEN_WEB_FOLDER='webapp/'    # put generated pages into sub-folder
+CEN_WEB_PARENT='../'        # go back from sub-folder to base
+
+CEN_WEB_LAUNCHER=           # see _cen_web_launch
+CEN_WEB_SYNCPIPE=           # pipe to sync launcher
+CEN_WEB_EARLYPID=           # PID of launcher
+
+CEN_WEB_FILE=               # current html file (inside _cen_web_pages)
+CEN_WEB_INDEX=              # main/index page (not always the start page)
+CEN_WEB_PAGES=()            # member page definitions
+CEN_WEB_PAGESOK=            # flag that pages were generated
+CEN_WEB_LAYOUT=()           # page layout components
+CEN_WEB_LAYCNT=             # layout item count
+CEN_WEB_SETUPOK=            # flag that webapp -i has run
+
+CEN_WEB_CGIAPP=             # non-empty to run as cgi, see _centauri_bash_cgi
+
+embed -c _centauri_bash_xml # reference declaration for stand-alone
+
+# ------------------------------------------------------------------------------
+# configuration
+# ------------------------------------------------------------------------------
+
+: ${CEN_WEB_PREFIX:='web_'} # prefix for user defined functions
+
+# main font and app geometry, qmö window size
+CEN_WEB_GEOMETRY=(
+    '14pt Arial,sans-serif' # 0 - basic font
+    '30:5cm:7cm'            # 1 - left panel size [:[minimum][:maximum]]
+    '20:5cm:7cm'            # 2 - right panel size
+    '12cm'                  # 3 - minimum heigth
+  # '1200:860:1.2'          # 4 - optional: qml browser size, zoom factor
+)
+
+# components for flex pagelayout (see wrapper)
+CEN_WEB_COMPONENT=(
+    'header|<header>|</header>'                         # 0 - header
+    'left|<component class="left">|</component>'        # 1 - left panel
+    'center|<component class="cent">|</component>'      # 2 - center
+    'right|<component class="right">|</component>'      # 3 - right panel
+    'footer|<footer>|</footer>'                         # 4 - footer
+                                                        # 5 - center with wrapper
+    'center|<wrapper><component class="cent">|</component></wrapper>'
+    'center'                                            # 6 - center only
+    '<wrapper>|</wrapper>')                             # 7 - layout container
+
+# color model
+CEN_WEB_COLORS=(
+    'palegoldenrod'         # 0 - $H - header
+    'seashell'              # 1 - $L - left
+    'ghostwhite'            # 2 - $C - center
+    'peachpuff'             # 2 - $R - right
+    -                       # 4 - $F - footer (- reuses header)
+    'darkgray|white'        # 5 - $N - navigator
+    'white'                 # 6      - colorx
+    'black|white')          # 7      - colory
+
+# config data, defaults are generated via webapp -i if empty
+CEN_WEB_CSSDATA=()          # css array  -> layout.css
+CEN_WEB_PAGEATTR=()         # <body> attributes
+CEN_WEB_JSCRIPT=()          # javascript -> default.js
+
+# configure window title and navigator bars
+CEN_WEB_NAVIGATE=(
+    -                       # 0 - start page (default is index.html)
+    -                       # 1 - browser windows title (qml only)
+    $" [<< previous]"       # 2 - navigate backward
+    $"[content]"            # 3 - goto main page
+    $"[next>>] "            # 4 - navigate foreward
+    3                       # 5 - flag bits (1:=top 2:=bottom)
+    -                       # 6 - (optional) glob for main index
+    -  )                    # 7 - (optional) glob for box index
+
+# ------------------------------------------------------------------------------
+# Web Applications + Simple Browser based application, optionally using CGI
+#
+#,          using _centauri_bash_web
+#,          optinal _centauri_bash_cgi
+#,          starting centaurilauncher
+#,          using qml if availlable
+#
+#,          autogenerates run
+#,          create base folder
+#,          create cgidir to flag cgi use
+#,          run() calls websetup() as bgnd sub-shell (if existing)
+#,          run() calls cgisetup() as bgnd sub-shell (if existing)
+#,          run() does self-extract as bgnd sub-shell
+#,          run() execs launcher in bgnd
+#,          deletes pid file or so to allow launcher to wait
+#
+#,          launcher checks cgidir to launch lighttpd
+#,          launcher waits for lock
+#,          launcher run kiosk
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Web Config + Section in centauri-bash-lib configuration file
+#
+#,          x
+#,          x
+#,          x
+#,          x
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Web Features + Tweaking the default page generation
+#
+#,          - Set name prefix for bash callbacks and javascript code
+#
+#               CEN_WEB_PREFIX='demo_'          # (default is 'web_' or 'cgi_')
+#
+#,          - Set start page (default is index or 1st page)
+#
+#               CEN_WEB_NAVIGATE[0]='webapp/startpage.html'
+#
+#,          - Generate no index document (default is to generate)
+#
+#               CEN_WEB_PAGES[0]='-'
+#
+#,          - Set main page (the main page is shown in the navigator)
+#
+#               CEN_WEB_INDEX=                  # (default index or 1st page)
+#               CEN_WEB_INDEX='-'               # disable, not shown
+#               CEN_WEB_INDEX='master'          # use 'master.html'
+#
+#,          - Customize the index page
+#
+#               CEN_WEB_PAGES[0]=(||"A different title")
+#               CEN_WEB_PAGES[0]=(::content||"Rename as content.html")
+#               CEN_WEB_PAGES[0]=(myindex||"Page generator: web_page_myindex")
+#
+#               CEN_WEB_NAVIGATE[5]='[0-9]'     # filter for page (index.html)
+#               CEN_WEB_NAVIGATE[6]='2.*'       # filter for box
+#
+#,          - Customize the navigator
+#
+#               CEN_WEB_NAVIGATE[2]='back'      # set different anchor text
+#               CEN_WEB_NAVIGATE[3]='main'
+#               CEN_WEB_NAVIGATE[4]='next'
+#               CEN_WEB_NAVIGATE[4]=1           # no bottom navigator
+#
+#,          - Customize the page layout
+#
+#               CEN_WEB_PAGES+=(":1||No header or footer, center only")
+#               CEN_WEB_PAGES+=(":2||Header and center")
+#
+#,          - Disable default css or no 'layout.css' at all
+#
+#
+#,          - Disable default javascript or no 'default.js' at all
+#
+#
+#,          - Custom colors
+#
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# start webapp: -no args-
+# ------------------------------------------------------------------------------
+_cen_web_appid() {
+    if [ "${CEN_WEB_WEBAPP:--}" = '-' ] ; then
+        local _line _file="/proc/sys/kernel/random/uuid"
+        read _line 2>/dev/null <$_file || fatal "missing kernel file:" "$_file"
+        _line="${_line//-}"
+        CEN_WEB_WEBAPP="${_line::12}${_line:13}"   # group 3 always starts with 4
+        $CEN_TRACE -a $"Generated AppID:" "$CEN_WEB_WEBAPP"
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# get a css color definition: <indx> <dflt>|-|+ <vnam>
+# ------------------------------------------------------------------------------
+_cen_web_color() {
+    local _bgnd _colo="${CEN_WEB_COLORS[$1]:--}"
+    if [ "$_colo" = '-' ] ; then
+        if [ "$2" = '-' ] ; then                    # do not generate
+            CEN_WEB_COLORS[$1]=
+            printf -v $3 '' ; return
+        elif [ "$2" = '+' ] ; then
+            printf -v $3 'background: white; color: black;' ; return
+        fi
+        _colo="${CEN_WEB_COLORS[$2]:--}"
+    fi
+
+    if [ "${_colo/;/}" = "$_colo" -a -n "$_colo" ] ; then
+        _bgnd="${_colo%|*}"
+        [ "$_bgnd" = "$_colo" ] && _colo= || _colo="${_colo#*|}"
+        printf -v _colo 'background: %s; color: %s;' "${_bgnd:-white}" "${_colo:-black}"
+        CEN_WEB_COLORS[$1]="$_colo"
+    fi
+    printf -v $3 '%s' "$_colo"
+}
+
+# ------------------------------------------------------------------------------
+# page call back or default to generate components: -six args-
+# ------------------------------------------------------------------------------
+_cen_web_compo() {
+    local _func="$1" _what _stat=0 _sifs="$IFS"
+    # layout components: _what=(<part> <before> <after> [<always>])
+    set -f ; IFS='|' ; _what=($2) ; set +f
+    IFS="$_sifs" ; shift 2
+
+    xml_flush -n
+
+    if [ -z "${_what[1]}" ] ; then                  # no html for this component
+        $_func "$_what" "${_args[@]}" ; _stat="$?"
+        CEN_XML_BUFFER+="${_what[3]}"               # add any 'always' html
+        return $_stat
+    fi
+
+    CEN_XML_BUFFER="${_what[1]}"                    # prepend layout html
+    "$_func" "$_what" "${_args[@]}" ; _stat="$?"    # may add more html
+    if [ "$CEN_XML_BUFFER" = "${_what[1]}" ] ; then
+        _func='${CEN_WEB_PREFIX}default'
+        isfunction "$_func" || _func='_cen_web_default'
+        $_func "$_what" "${_args[@]}"
+    fi
+
+    if [ "$CEN_XML_BUFFER" = "${_what[1]}" ] ; then
+        CEN_XML_BUFFER=                             # undo, func. generated no html
+    else
+        CEN_XML_BUFFER+="${_what[2]}"
+    fi
+    CEN_XML_BUFFER+="${_what[3]}"                   # add any 'always' html
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# init webapp - test
+# init webapp data, early-start launcher: <url>|-
+#
+# This routine may run centaurilauncher and call quit()
+#
+# The optional url is the webapp start url.
+# ------------------------------------------------------------------------------
+_cen_web_create() {
+    [ -z "$CEN_WEB_FOLDER" ] && CEN_WEB_PARENT=     # need no '..' prefix
+
+    if [ -n "$CEN_OPT_REMOVE" ] ; then
+        [ "${CEN_OPT_WEBDIR:--}" = '-' ] && quit -e $"Missing option:" "--webdir"
+        prettypath -s CEN_WEB_WEBDIR -- "$CEN_OPT_WEBDIR"
+        _cen_web_delete 0 ; quit                    # stop application
+    fi
+
+    [ "${CEN_WEB_WEBDIR:--}" = '-' ] || return 0    # already created
+
+    # create a temporary web folder, deleted by webapp() after error or by launcher
+    if [ -z "$CEN_OPT_WEBDIR" ] ; then
+        [ "$CEN_OPT_CREATE" ] && quit -e $"Missing option:" "--webdir"
+        CEN_WEB_WEBTMP="${CEN_PATHS[4]}/centauri-webapp-$CEN_WEB_WEBAPP"
+        folder -s CEN_WEB_WEBDIR -m -- "$CEN_WEB_WEBTMP" || return 1
+        _cen_web_launch - "$1"                      # early-start launcher
+        return                                      # return status
+    fi
+
+    prettypath -s CEN_WEB_WEBDIR -- "$CEN_OPT_WEBDIR" || return 1
+
+    # verify - delete existing files
+    if [ -e "$CEN_WEB_WEBDIR" ] ; then
+        if [ -z "$CEN_OPT_CREATE" ] ; then
+            folder -c "$CEN_WEB_WEBDIR" || return 1
+            _cen_web_launch 0 "$1" ; quit           # run app, run launcher
+        elif [ -d "$CEN_WEB_WEBDIR" -a -w "$CEN_WEB_WEBDIR" ] ; then
+            if ! _cen_web_delete 1 ; then
+                error $"Folder not empty, no HTML created"
+            fi
+        else
+            error $"Not a writable folder:" "$CEN_WEB_WEBDIR"
+        fi
+    #elif [ -n "$CEN_OPT_FORCE" ] ||
+    elif confirm -y $"Create Web folder:" "$CEN_WEB_WEBDIR" ; then
+        folder -m -- "$CEN_WEB_WEBDIR"
+    else
+        quit
+    fi
+    error -t && _cen_web_launch - "$1"              # start launcher, return status
+}
+
+# ------------------------------------------------------------------------------
+# default component callback: <what> <name> <prev> <next> <info> <titl>
+# ------------------------------------------------------------------------------
+_cen_web_default() {
+    case "$1" in
+        header) xml_flush -n
+                xml_element 'heading.row' -b -n
+                    xml_element 'heading.left'  -n -- "$6"
+                    xml_element 'heading.right' -n -- "$CEN_TITLE"
+                xml_element 'heading' -e -n
+                ;;
+        left)   xml_element 'p' -- $"Left panel" ;;
+        center) xml_element 'p' -- $"Center panel" ;;
+        right)  xml_element 'p' -- $"Right panel" ;;
+        footer) xml_element 'span' -- "$CEN_LEGAL" ;;
+    esac
+    return 1                                    # ok, but continue
+}
+
+###BUG in doc module
+
+# ------------------------------------------------------------------------------
+# delete web files <level>
+#
+# <level>   = 0     root folder, unregister from cgi-bin
+#           = 1     root files and child folders, unregister from cgi-bin
+#           = 2     root files and CEN_WEB_FOLDER/*
+#           = 3     only CEN_WEB_FOLDER/*
+#           = -     return true if <level> = 1 would delete files
+# ------------------------------------------------------------------------------
+_cen_web_delete() {
+    [ -d "$CEN_WEB_WEBDIR" -a -w "$CEN_WEB_WEBDIR" ] || return 1
+    local _cgib="$CEN_WEB_CGIBIN/$CEN_NAME.cgi" ; [ -e "$_cgib" ] || _cgib=
+    local _mesg _curr="$PWD" ; folder -c -f "$CEN_WEB_WEBDIR"
+    local _chck _webd _stat=1 _args=(*.html default.js layout.css)
+
+    # get list of files to be deleted
+    case "$1" in
+    0)  _args=()
+        if [ -n "$CEN_OPT_FORCE" ] || confirm -n "Remove Web Folder" ; then
+            [ -n "$_cgib" ] && _args=("$_cgib") ; _webd=1
+        fi ;;
+    1)  _args+=(*/) ; [ -n "$_cgib" ] && _args+=("$_cgib") ;;
+    2)  [ -n "$CEN_WEB_FOLDER" ] && _args+=("$CEN_WEB_FOLDER") ;;
+    3)  [ -n "$CEN_WEB_FOLDER" ] && _args=("$CEN_WEB_FOLDER") || _args=() ;;
+    *)  [ -n "$CEN_WEB_FOLDER" ] && _args+=("$CEN_WEB_FOLDER") ; _chck=1 ;;
+    esac
+
+    if [ "${#_args[@]}" ] && walk -d false -r -l 1 -h -- "${_args[@]}" ; then
+        if [ -n "$_chck" ] ; then
+            _stat=0
+        elif [ -n "$_webd" ] ; then
+            remove -- "${CEN_WALK_FILES[@]}" && _stat=0
+        else
+            printf -v _mesg $"Folder not empty, remove %s files" "${#CEN_WALK_FILES[@]}"
+            if [ -n "$CEN_OPT_FORCE" ] || confirm -n "$_mesg" ; then
+                remove -- "${CEN_WALK_FILES[@]}" && _stat=0
+            fi
+        fi
+    fi
+    folder -c -f "$_curr"
+    [ -n "$_webd" ] && remove -d "$CEN_WEB_WEBDIR"
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# parse page entry: <entr> <func> <layo> <name> <info> <titl>
+# ------------------------------------------------------------------------------
+_cen_web_entry() {
+    # this regex should always succeed
+    local _regx='([^:\|]*):?([^:\|]*)?:?([^\|]*)?\|?([^\|]*)?\|?(.*)?'
+    [[ "$1" =~ $_regx ]] || fatal $"Invalid page entry:" "$1"
+
+    local _indx=0 ; shift
+    while [ $# -gt 0 ] ; do
+        ((_indx += 1))
+        [ "${1:--}" = '-' ] || printf -v $1 '%s' "${BASH_REMATCH[_indx]}"
+        shift
+    done
+}
+
+# ------------------------------------------------------------------------------
+# enumerate page info array: <func>
+#
+# callback per entry: <indx> <name> <prev> <next> <info> <titl>
+# ------------------------------------------------------------------------------
+_cen_web_enum() {
+    local _call="$1" ; isfunction -f -- "$_call"
+    local _indx _entr _item _page _info _titl _prev='-' _next _curr
+
+    # loop over array items - get prev/next - call page function
+    for _indx in "${!CEN_WEB_PAGES[@]}" - ; do
+        [ "$_indx" = '-' ] && _item= || _item="${CEN_WEB_PAGES[_indx]}"
+
+        # process previous entry
+        if [ -n "$_entr" ] ; then
+            [[ "$_entr" =~ ([^\|]*)?\|?([^\|]*)?\|?(.*)? ]]
+            _page="${BASH_REMATCH[1]}"
+            _info="${BASH_REMATCH[2]}"
+            _titl="${BASH_REMATCH[3]}"
+            _cen_web_href "$_indx" "${_item%%|*}" _next
+            $_call "$_curr" "$_page" "$_prev" "$_next" "$_info" "$_titl"
+            _cen_web_href "$_curr" "$_page" _prev
+        fi
+        _entr="$_item" ; _curr="$_indx"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# make hyperlink (anchor tag): <href>|- <text> [<vnam>]
+# ------------------------------------------------------------------------------
+_cen_web_hlink() {
+    local _varg _navi
+    case "$1" in
+    -)      _navi='-' ;;
+    */*.*)  _navi="$1" ;;
+    */*)    _navi+="$1.html" ;;
+    *.*)    _navi="$CEN_WEB_PARENT$CEN_WEB_FOLDER$1" ;;
+    *)      _navi="$CEN_WEB_PARENT$CEN_WEB_FOLDER$1.html"
+    esac
+
+    if [ "${3:--}" != '-' ] ; then                  # args for anchor
+        _varg="-v $3"
+    fi
+    if [ -z "$CEN_WEB_CGIAPP" ] ; then              # direct href
+        xml_anchor $_varg -u "$_navi" -- "$2"
+    else                                            # via javascript
+        xml_anchor $_varg -u "$_navi" -j "${CEN_WEB_PREFIX}navigate" -- "$2"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# page reference from index/page: <indx> <page>|- <href> [<func> <lout> <name>]
+# ------------------------------------------------------------------------------
+_cen_web_href() {
+    #debug -c -- "$*"
+    local _hre_ _fun_ _lou_ _nam_ _pag_="${2:--}"
+
+    # for <indx> - ... get page via index from page array (exclude page 0)
+    [ "$_pag_" = '-' -a "$1" != '-'  -a "$1" != 0 ] && _pag_="${CEN_WEB_PAGES[$1]%%|*}"
+
+    [[ "$_pag_" =~ ([^:]*)?:?([^:]*)?:?(.*)? ]]
+    _fun_="${BASH_REMATCH[1]}"
+    _lou_="${BASH_REMATCH[2]}"
+    _nam_="${BASH_REMATCH[3]}"
+
+    case "$_fun_" in
+    -)  _hre_="$CEN_WEB_INDEX" ;;
+    \~*)    _hre_="${CEN_WEB_PARENT}static/${_fun_:1}" ;;
+    *[/.]*) _hre_="$_pag_" ;;
+    *)      case "${1:--}" in
+            -)  _hre_="${_pag_%.html}.html" ;;
+            0)   _hre_="$CEN_WEB_INDEX" ;;
+            *)  [ "${_nam_:--}" = '-' ] && _hre_="$_fun_-$1.html" \
+                                        || _hre_="${_nam_%.html}.html"
+            esac
+    esac
+
+    [ "${3:--}" = '-' ] || printf -v $3 '%s' "${_hre_:--}"
+    [ "${4:--}" = '-' ] || printf -v $4 '%s' "$_fun_"
+    [ "${5:--}" = '-' ] || printf -v $5 '%s' "$_lou_"
+    [ "${6:--}" = '-' ] || printf -v $6 '%s' "$_nam_"
+}
+
+# ------------------------------------------------------------------------------
+# link or generate index.html: <clas> <glob> <next> <titl>
+#              page generator: '' <name> <prev> <next> <info> <titl>
+#           emit content list: <clas> <glob>
+# ------------------------------------------------------------------------------
+_cen_web_index() {
+    #debug -c -- "$*"
+
+    # generate link list (no args)
+
+    if [ $# -le 2 ] ; then
+        local _clas="${1:--}" _glob
+        [ "$_clas" = '-' ] && _clas='box'
+        [ "$_clas" = 'box' ] && _glob="${CEN_WEB_NAVIGATE[7]}" || _glob="${CEN_WEB_NAVIGATE[6]}"
+        [ "${_glob:--}" = '-' ] && _glob='*'
+
+        xml_flush -n
+        xml_element "ul.$_clas" -b -n
+        local _indx _entr _href _name _info _titl
+        for _indx in "${!CEN_WEB_PAGES[@]}" ; do
+            [ "$_indx" = 0 ] && continue            # index page ignored
+
+            _entr="${CEN_WEB_PAGES[_indx]}"
+            [[ "$_entr" =~ ([^\|]*)?\|?([^\|]*)?\|?(.*)? ]]
+            _name="${BASH_REMATCH[1]}"
+            _info="${BASH_REMATCH[2]}"
+            _titl="${BASH_REMATCH[3]}"
+            [ -z "$_titl" ] && continue             # missing title
+            [[ "$_info" == $_glob ]] || continue
+
+            _cen_web_href "$_indx" "$_name" _href
+            xml_element "li.$_clas" -b
+            _cen_web_hlink "$_href" "$_titl"
+            xml_element 'li' -e -n
+        done
+        xml_element 'ul' -e ; xml_element 'pages' -e -n
+        return 0
+
+    # page generator call (5 or 6 args)
+
+    elif [ $# -ge 5 ] ; then
+        [ "$1" = 'center' ] && _cen_web_index 'page'
+        return 1                                    # continue
+    fi
+
+ ### TODO static index.html not ok
+
+ #   local _file="$CEN_WEB_WEBDIR/index.html"
+ ###   [ -s "$_file" ] && return 0
+
+ #   _file="$CEN_WEB_WEBDIR/static/index.html"
+ #   if [ -s "$_file" ] ; then
+ #       symlink -- "$_file" "$CEN_WEB_WEBDIR/index.html"
+ #       return 0
+ #   fi
+
+    # run generator: 0 <name> <prev> <next> <info> <titl>
+    _cen_web_pages 0 - - "$3" '' "$4"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# start webapp: <mode>|- <url>|-               mode: -=pipe 0=bgnd 1=exec 2=stop
+# ------------------------------------------------------------------------------
+_cen_web_launch() {
+    debug -c -- "$*"
+    local _vopt _mode="${1:--}"  _wurl="${2:--}" _opts=('webapp')
+    [ "${CEN_WEB_NAVIGATE[1]:--}" != '-' ] && _opts+=('-t' "${CEN_WEB_NAVIGATE[1]}")
+    [ "${CEN_WEB_GEOMETRY[4]:--}" != '-' ] && _opts+=('-i' "${CEN_WEB_GEOMETRY[4]}")
+    [ "$_wurl" = '-' ] && _wurl="${CEN_WEB_NAVIGATE[0]:--}"
+    [ "$_wurl" = '-' ] && _wurl='index.html'
+
+    [ "$CEN_WEB_CGIBIN" = '-' ] && folder -m -s CEN_WEB_CGIBIN -- "$CEN_WEB_WEBDIR/cgidir"
+
+    if [ "$_mode" = '-' ] ; then                    # early launcher start
+        [ -n "$CEN_OPT_CREATE" ] && return 0
+        dryrun && return 0
+        tmpfile -p -s CEN_WEB_SYNCPIPE || return 1
+    elif [ -n "$CEN_OPT_CREATE" ] ; then
+        message "WebApp created:" "$CEN_WEB_WEBDIR" ; return 0
+    fi
+
+    [ -z "$CEN_WEB_LAUNCHER" ] &&
+        sysfind -f -s CEN_WEB_LAUNCHER -- 'centaurilauncher'
+
+    # send 'OK' via pipe to early-started launcher
+    if [ "$_mode" != '-' -a -n "$CEN_WEB_SYNCPIPE" ] ; then
+        local _mesg='OK'
+        [ "$_mode" = 2 ] && _mesg='STOP'
+        $CEN_TRACE -a -p $"send %s to PID %s (%s)" "$_mesg" "$CEN_WEB_EARLYPID" "$CEN_WEB_SYNCPIPE"
+        if kill -0 "$CEN_WEB_EARLYPID" ; then
+            echo "$_mesg" "$_wurl" >"$CEN_WEB_SYNCPIPE" && return 0
+        fi 2>/dev/null
+        error "launcher not ready" ; return 1
+    fi
+
+    # the webapp arguments are: <appid> <webdir> <cgidir> <syncpipe>
+    _opts+=('--' "${CEN_WEB_WEBAPP:--}")
+    [ -z "$CEN_OPT_WEBDIR" ] && _opts+=(-) || _opts+=("${CEN_WEB_WEBDIR:--}")
+    _opts+=("${CEN_WEB_CGIBIN:--}" "${CEN_WEB_SYNCPIPE:--}" "$_wurl")
+
+  ### TODO check for error, init windows module, show error messsage and quit
+
+    [ "$CEN_VERB" -gt 1 ] && _vopt='-v'
+    if [ "$_mode" = 1 ] ; then
+        quit -h                             # must run hooks before exec
+        system -n -x "$CEN_WEB_LAUNCHER" $_vopt --embed="$CEN_NAME" --- "${_opts[@]}"
+    else
+        system -n -x "$CEN_WEB_LAUNCHER" $_vopt --embed="$CEN_NAME" --- "${_opts[@]}" &
+        disown -h $!
+        if [ "$_mode" = '-' ] ; then
+            CEN_WEB_EARLYPID=$! ;
+            $CEN_TRACE -a "early launch PID:" $! "($CEN_WEB_SYNCPIPE)"
+        fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# emit navigator html: <what> <name> <prev> <next> <info> <titl>
+# ------------------------------------------------------------------------------
+_cen_web_navig() {
+    #debug -c -- "$*"
+    if isfunction '${CEN_WEB_PREFIX}navigate' ; then
+        ${CEN_WEB_PREFIX}navigate "$@" && return
+    fi
+
+    case "$1" in
+    -)     ;;
+    [0-9]) [ $((${CEN_WEB_NAVIGATE[5]} & $1)) = 0 ] && return 0 ;;
+    esac
+
+    # create navigator if there is no custom function
+
+    xml_element 'navigator.row' -b -n
+        xml_element 'navigator.item' -b
+            [ "$3" = "$CEN_WEB_FILE" ] || _cen_web_hlink "$3" "${CEN_WEB_NAVIGATE[2]}"
+        xml_element 'navigator' -e -n
+        xml_element 'navigator.item' -b
+            [ "$CEN_WEB_FILE" != "$CEN_WEB_INDEX" -a "$CEN_WEB_INDEX" != '-' ] &&
+                _cen_web_hlink "$CEN_WEB_INDEX" "${CEN_WEB_NAVIGATE[3]}"
+        xml_element 'navigator' -e -n
+        xml_element 'navigator.item' -b
+            [ "$4" = "$CEN_WEB_FILE" ] || _cen_web_hlink "$4" "${CEN_WEB_NAVIGATE[4]}"
+        xml_element 'navigator' -e -n
+    xml_element 'navigator' -e -n
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Configure layout: check for change
+#
+# _cen_web_pages uses CEN_WEB_LAYOUT to enumerate components. Each component
+# entry has two or three fields:    <begin>'|'<end>['|'<always>]
+# The <always> field is always generated (even if the component is left out.
+# ------------------------------------------------------------------------------
+_cen_web_layout() {
+    [ "${1:-3}" = "$CEN_WEB_LAYCNT" ] && return 0
+    CEN_WEB_LAYCNT="${1:-3}" ; CEN_WEB_LAYOUT=()
+    $CEN_TRACE2 -a -p "configure layout for %d items" "$CEN_WEB_LAYCNT"
+
+    local _llis _item _indx _wrap
+    case "$CEN_WEB_LAYCNT" in               # get components ...
+    5)  _llis=(-1 2  3 -4 5) ;;
+    4)  _llis=(-1 2 -3    5) ;;
+    3)  _llis=(-1   -3    5) ;;             # header center footer
+    2)  _llis=(-1   -3)      ;;             # header center
+    1)  _llis=(6) ;;                        # center with wrapper
+    *)  _llis=(7)                           # center only
+    esac
+
+    # neg. value flags a 'wrapper' field
+    for _item in "${_llis[@]}" ; do
+        if [ "$_item" = -1 ] ; then             # append <wrapper>
+            _indx=0 ; _wrap="|${CEN_WEB_COMPONENT[-1]%|*}"
+        elif [ "$_item" -gt 0 ] ; then
+            _indx=$((_item - 1)) ; _wrap=
+        else                                    # append </wrapper>
+            _indx=$((-_item - 1)) ; _wrap="|${CEN_WEB_COMPONENT[-1]#*|}"
+        fi
+        CEN_WEB_LAYOUT+=("${CEN_WEB_COMPONENT[_indx]}$_wrap")
+        #$CEN_TRACE2 -a "Layout[$_indx]: ${CEN_WEB_LAYOUT[-1]}"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# create pages: -no args-
+#
+# call page function:   <indx> <page> <prev> <next> <info> <titl>
+# custom index page :   0      <page> -      <next> -      <titl>
+# custom page       :   -      <page> <prev> <next> <info> <titl>
+#
+# <page> is a triple:   <func> <lout> <name>
+#
+# If <indx> is not 0 and not -: <func> is changed to: web_page_<func>
+#                               <name> defaults to  : <func>-<indx>.html
+# <indx> = 0 ignores <func>   : <func> is web_page_index or _cen_web_index
+#            ignores <name>   : <name> is index.html
+# <index = - leaves <func> and <name> unmodified.
+#
+# To disable index.html creation use: CEN_WEB_PAGES[0]='-'
+#
+# calling web_page_<name> <indx> <prev> <next> <info> <titl>
+# ------------------------------------------------------------------------------
+_cen_web_pages() {
+    # debug -c -- "$*"
+
+    # recursive call (via _cen_web_enum) - generate a page
+
+    if [ $# -gt 0 ] ; then
+        [ "${2/[\/.]}" = "$2" ] || return 0         # ignore path
+
+        # page index 0 is the index page, defer the page generation until all
+        # configured pages are processed ...
+
+        if [ "$1" = 0 -a -z "$_ipag" ] ; then
+            _cen_web_href 0 "$2" - - - _ipag
+            if [ "${_ipag:--}" != '-' ] ; then
+                CEN_WEB_INDEX="${_ipag%.html}.html"
+                $CEN_TRACE -a $"Renaming index:" "$_name"
+            fi
+            _ipag="${2:--}"; _inxt="$4"; _itit="${6:--}"
+            [ "$_itit" = '-' ] && _itit=$"Table of Content"
+            return 0
+        fi
+
+        # process a configured page - no document when no title is configured
+
+        # split page field into func layout and name
+        local _file _dest _func _lout _name _what _indx="${1:-0}"
+        _cen_web_href "$_indx" "$2" _file _func _lout _name
+        # deviate to index page generator
+        if [ "$1" = 0 ] ; then
+            [ "${_lout:--}" = '-' ] && _lout=3
+            if [ "${_func:--}" = '-' ] ; then
+                _func="${CEN_WEB_PREFIX}page_index"
+                isfunction "$_func" || _func='_cen_web_index'
+            else
+                _func="${CEN_WEB_PREFIX}page_$_func"
+            fi
+            # create an 'index.html' symlink or a redirect to the startpage if needed
+            [ "${CEN_WEB_NAVIGATE[0]:--}" = '-' ] && CEN_WEB_NAVIGATE[0]="$CEN_WEB_FOLDER$_file"
+            _cen_web_redir || return 1
+        else
+            [ "${1:--}" = '-' ] || _func="${CEN_WEB_PREFIX}page_$_func"
+        fi
+        $CEN_TRACE2 "PAGE: $_file $_func $_lout $_name"
+        CEN_WEB_FILE="$_file"                       # relative file name (but not path!)
+        _dest="$CEN_WEB_WEBDIR/$CEN_WEB_FOLDER$_file"
+
+        # the remaining args are passed to the page callback
+        shift 2
+
+        if [ -s "$_dest" ] ; then
+            $CEN_TRACE $"found page file:" "#$_indx" "$_dest"
+            return 0                                # existing file
+        elif [ "${_lout:--}" != '-' ] ; then        # create file/document
+            local _doca=(-o "$_dest")
+            [ "${#CEN_WEB_JSCRIPT[@]}" -gt 1 ]  && _doca+=(-s "${CEN_WEB_PARENT}default.js")
+            [ "${#CEN_WEB_CSSDATA[@]}" -gt 1 ]  && _doca+=(-c "${CEN_WEB_PARENT}layout.css")
+            if [ "${CEN_WEB_PAGEATTR:--}" != '-' ] ; then
+                # give the cgi module a way to tweak page generation
+                isfunction -c _cen_cgi_tweak _dest _func _lout _name _page _titl
+                local _jarg="\"${1%-}\", \"${2%-}\", \"${3%-}\", "
+                if [ "$4" = '!!!TITLE!!!' ] ; then
+                    _jarg+="\"!!!PAGE!!!\""
+                else
+                    _jarg+="\"${_name%-}\""
+                fi
+                _doca+=(-- "${CEN_WEB_PAGEATTR/\*/$_jarg}")
+                _doca+=("${CEN_WEB_PAGEATTR[@]:1}")
+            fi
+            xml_document -5 -b -t "$4" "${_doca[@]}" || return 1
+            $CEN_TRACE $"generating page:" "#$_indx" "$_func"
+            isfunction -e -- "$_func" || return 1
+        else                                        # no title -> custom
+            $CEN_TRACE $"custom page    :" "#$_indx" "$_func"
+        fi
+                                                    # 1st is default main page
+        [ "${CEN_WEB_NAVIGATE:--}" = '-' -a "${CEN_WEB_PAGES[0]:--}" = '-' ] &&
+            CEN_WEB_NAVIGATE[0]="$CEN_WEB_FOLDER$_file"
+        if [ -z "$CEN_WEB_INDEX" ] ; then
+            CEN_WEB_INDEX="$_file"
+            $CEN_TRACE "index set to:" "$_file"
+        fi
+        $_func "$_indx" "$_dest" "$@"               # principal page callback
+        case "$?" in
+        0)  [ "${_lout:--}" = '-' ] || xml_document -e ; return 0 ;;
+        1)  ;;
+        *)  warning -a "page creation failed:" "#$_indx" "$_func" ; return 2
+        esac
+        [ "${_lout:--}" = '-' ] && return           # no document
+
+        # run callbacks to generate code for page components
+
+        _cen_web_layout "$_lout"                    # configure layout
+        xml_element 'article#top' -b -n             # outermost component
+
+        local _html _sifs _stat _args=("$_dest" "$@")
+        _cen_web_navig 1 "${_args[@]}"
+        for _what in "${CEN_WEB_LAYOUT[@]}" ; do            # inner components ...
+            _cen_web_compo "$_func" "$_what" "${_args[@]}" ; _stat="$?"
+            case "$_stat" in
+            0)  break ;;
+            1)  continue ;;
+            *)  return 2
+            esac
+        done
+        _cen_web_navig 2 "${_args[@]}"
+
+        xml_element 'article' -e ; xml_document -e          # close container and doc
+        return 0
+    fi
+
+    # principal call - enumerate configured pages - recursive call
+
+    [ -n "$CEN_WEB_PAGESOK" ] && return 0                   # already run, ignore
+    CEN_WEB_PAGESOK='-'
+    if [ -n "$CEN_WEB_FOLDER" ] ; then                      # extra page folder
+        folder -m "$CEN_WEB_WEBDIR/$CEN_WEB_FOLDER" || return 1
+    fi
+
+    [ "${#CEN_WEB_CSSDATA[@]}" -gt 1 ] &&                   # css file if not cleared
+        create -v CEN_WEB_CSSDATA -- "$CEN_WEB_WEBDIR/layout.css"
+    [ "${#CEN_WEB_JSCRIPT[@]}" -gt 1 ] &&                   # js file if not cleared
+        create -v CEN_WEB_JSCRIPT -- "$CEN_WEB_WEBDIR/default.js"
+
+    # check if any pages or index are generated
+    [ -z "${CEN_WEB_PAGES[0]}" ] && CEN_WEB_PAGES[0]='--'   # autogenerate index
+    local _pcnt="${#CEN_WEB_PAGES[@]}"
+    [ "${CEN_WEB_PAGES[0]}" = '-' ] && ((_pcnt -= 1))
+    if [ "$_pcnt" = 0 ] ; then
+        if [ "${CEN_WEB_PAGES[0]}" != '-' ] ; then
+            fatal $"not generating index or any pages"
+        fi
+    else
+        $CEN_TRACE -p $"%s page(s) to generate" "$_pcnt"
+    fi
+
+    case "$CEN_WEB_INDEX" in
+    '')     [ "${CEN_WEB_PAGES[0]}" = '-' ] || CEN_WEB_INDEX='index.html' ;;
+    -)      ;;
+    *)      CEN_WEB_INDEX="${CEN_WEB_INDEX%.html}.html"
+    esac
+    [ -z "${CEN_WEB_PAGES[0]}" ] && CEN_WEB_PAGES[0]='--'   # autogenerate index
+    if [ "${CEN_WEB_PAGES[0]}" = '-' ] ; then
+        $CEN_TRACE -a $"not generating index, main page:" "${CEN_WEB_INDEX:-$"(1st page)"}"
+        [ -z "$CEN_WEB_INDEX" ] && CEN_WEB_INDEX='-'
+    else
+        $CEN_TRACE -a $"generating index, main page:" "$CEN_WEB_INDEX"
+    fi
+
+    # index is built deferred, must declare state variables here ...
+    local _ipag _inxt _itit
+
+    _cen_web_enum _cen_web_pages                        # build pages but not index
+    error -t || return 1
+    [ "${CEN_WEB_PAGES[0]}" = '-' ] && return 0         # no index page
+
+    # _ipag is set in a recursive call to _cen_web_pages
+    $CEN_TRACE2 "INDEX:" "$_ipag" "$_inxt" "$_itit"
+    case "$_ipag" in
+        --|'')  _cen_web_index - - "$_inxt" "$_itit" || return 1 ;;
+        *)      _cen_web_pages 0 "$_ipag" '-' "$_inxt" '' "$_itit" || return 1
+    esac
+    error -t || return 1
+    CEN_WEB_FILE=
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# helper to redirect browser: [<dest>|- [<file>|-]]
+#
+# Arguments:<dest>  destination (might end with .html) or '-' for startpage
+#           <file>  symlink or redirect page or '-' for index.html
+#
+# for a webapp a symlink will be generated
+# ------------------------------------------------------------------------------
+_cen_web_redir() {
+    local _dest _file
+    case "${1:--}" in
+    -)      [ -z "$CEN_WEB_FOLDER" ] && return 0    # no symlink/redirect needed
+            _dest="${CEN_WEB_NAVIGATE[0]:--}"
+            [ "$_dest" = '-' ] && return 1 ;;       # no start page known
+    *.html) _dest="$1" ;;
+    *)      _dest="$1.html" ;;
+    esac
+
+    case "${2:--}" in
+    -)      _file="$CEN_WEB_WEBDIR/index.html" ;;
+    */*.*)  _file="$2" ;;
+    */*)    _file="$2.html" ;;
+    *.*)    _file="$CEN_WEB_WEBDIR/$2" ;;
+    *)      _file="$CEN_WEB_WEBDIR/$2.html" ;;
+    esac
+
+    if [ -z "$CEN_WEB_CGIAPP" ] ; then
+        symlink -n -- "$_dest" "$_file" || return 1
+    else
+        shift ; shift
+        _cen_cgi_redir "$_dest" "$_file" "$@" || return 1
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Setup data structures
+# ------------------------------------------------------------------------------
+_cen_web_setup() {
+    [ -n "$CEN_WEB_SETUPOK" ] && return 0
+    CEN_WEB_SETUPOK=1
+
+    # translate colors from names to css
+    local H L C R N X Y
+    _cen_web_color 0 2 H
+    _cen_web_color 1 2 L
+    _cen_web_color 2 + C
+    _cen_web_color 3 2 R
+    _cen_web_color 4 0 F
+    _cen_web_color 5 0 N
+    _cen_web_color 6 - X
+    _cen_web_color 7 - Y
+
+    local _slef _srig _plef _prig _wlef _wrig
+
+    splitjoin -s _slef -d ':' -- "${CEN_WEB_GEOMETRY[1]}"
+    splitjoin -s _srig -d ':' -- "${CEN_WEB_GEOMETRY[2]}"
+    _plef="${_slef[0]:-20}" ; _prig="${_srig[0]:-20}"
+    [ -n "${_slef[1]}" ] && _wlef+=" min-width:${_slef[1]};"
+    [ -n "${_slef[2]}" ] && _wlef+=" max-width:${_slef[2]};"
+    [ -n "${_srig[1]}" ] && _wrig+=" min-width:${_srig[1]};"
+    [ -n "${_srig[2]}" ] && _wrig+=" max-width:${_srig[2]};"
+
+    [ "${#CEN_WEB_CSSDATA[@]}" = 0 ] && mapfile -t CEN_WEB_CSSDATA <<!EOF
+/* Generated by _centauri_bash_web */
+
+body            { font: $CEN_WEB_GEOMETRY; margin: 0px; }
+article         { width: 100%; $C }
+header          { padding: 5px 10px; $H }
+
+navigator.row   { display: flex; justify-content: space-between; padding: 3pt; $N }
+navigator.item  { }
+navigator a     { text-decoration: none; $N }
+navigator a:active { color:gray; }
+
+heading.row     { display: flex; justify-content: space-between; padding: 3pt; }
+heading.left    { font-size: 160%; font-weight: bolder; }
+heading.right   { align-self: center; }
+
+wrapper         { display: flex; }
+component       { float: left; padding: 2mm; min-height: ${CEN_WEB_GEOMETRY[3]}; box-sizing: border-box; }
+component.left  { width: $_plef%;$_wlef $L }
+component.cent  { flex-grow: 1; }
+component.right { width: $_prig%;$_wrig $R }
+
+footer          { text-align: center; padding: 5px; $F }
+
+ul.box          { border-style: solid; border-width: thin; border-color: black; box-sizing: border-box; $R }
+li.box          { margin-left: -5mm; }
+
+ul.page         { list-style-type: none; padding: 0; margin: 1cm; }
+li.page         { border: 2pt solid #ddd; margin-top: -2pt; padding: 1mm; }
+
+code            { display: block; white-space: pre-wrap; font-size: smaller; }
+
+.colorx         { $X }
+.colory         { $Y }
+!EOF
+
+    # page attributes, page.web_onload(), javascript script text
+    [ "${#CEN_WEB_PAGEATTR[@]}" = 0 ] && CEN_WEB_PAGEATTR=(
+        # 1st item only: '(*)' passes: <prev> <next> <info>
+        "onload='${CEN_WEB_PREFIX}onload(*)'"
+    )
+
+    [ "${#CEN_WEB_JSCRIPT[@]}" = 0 ] && CEN_WEB_JSCRIPT=(
+        "function ${CEN_WEB_PREFIX}onload(prev, next, info, page) {"
+        "   // alert('OnLoad: ' + prev + ', ' + next + ', ' + info ', ' + page);"
+        "}"
+    )
+
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# webapp - Web application generator and starter
+#
+# Call:     (1) webapp [-a] [-b] [-i] [-l] [-p] [<page>]
+#           (2) webapp -h <href>|- <text> [<vnam>]
+#           (3) webapp -n <> <> <>
+#           (4) webapp -x box|page|- [<glob>]
+#
+#+          This function provides a way to generate a (temporary) web site. The
+#           structure and the layout follow a declarative approach, imdividual
+#           page are created imperatively. Data from [[_centauri_bash_xtr]]
+#           can be used too.
+#
+# Options:  -a   generate an application id
+#           -b   create html base folder
+#           -h
+#           -i   initialize data structures
+#           -l   run launcher
+#           -n   add a navigator
+#           -p   create web pages
+#           -r   create a redirect
+#           -x   add index list
+#           -z   continue running after error
+#
+# Arguments:<xxxx>  blurb
+#
+#+Components: Generated pages consist of one to five components. In HTML each component
+#           is a **<div°class='name'>** element, where <name> is the component
+#           name. The default CSS contains the neccessary definitions to put the
+#           components into place:
+#
+#,          - header            (optional) page header
+#,          - left              (optional) left panel
+#,          - center            the main part
+#,          - right             (optional) right panel
+#,          - footer            (optional) page footer
+#
+#+Pages:    CEN_WEB_PAGES
+#
+#+Layout:   CEN_WEB_LAYOUT
+#
+#+Geometry: CEN_WEB_GEOMETRY
+#
+#+Colors:   CEN_WEB_COLORS
+#
+#+Sequence: To create a WebApp a sequence of calls to the webapp functions can
+#           be run:
+#
+#,          webapp -a           find a unique application id
+#,          webapp -b           create temporary HTML base folder
+#,          webapp -c           write a CSS file for page layout
+#,          webapp -g           generate pages
+#,          webapp -l           run launcher via exec (does not return)
+#
+#+          As these steps depend on each other, -b implies -a, -c implies -b
+#           and so on, a single call to webapp -l would run the whole sequence.
+#
+#+Startup:  Instead of running running the above sequence of steps explicitly it
+#           is possible to automate this by caling webapp -r as the last command
+#           inside run():
+#
+#,          webapp -r           running/completing the startup sequence
+#
+#+          For a script that has no run() method inself, a sumple run() is
+#           generated, that just contains a call to webapp -r. The function
+#           webapp -r runs these steps (simpliefied code shown):
+#
+#.          webapp -b                           # html base folder
+#.          embed -m '_centauri_bash_xtr' -q    # self extract to cache
+#.          symlink -- "$CEN_XTR_RUNTIME" "$CEN_WEB_WEBDIR/static"
+#.          isfunction -c '${CEN_WEB_PREFIX}setup'           # callback to script
+#.          webapp -c                           # create or symlink layout.css
+#.          webapp -g                           # generate pages
+#.          webapp -l                           # run launcher (no return)
+#
+#+Callbacks: The library code ...
+#
+#,          _web_<name>
+#,          _web_navig
+#,          _web_header
+#,          _web_footer
+#
+#+web_setup: Some CEN_WEB_ variables are need setup for the page generator.
+#           This can be done in a user callback.
+#
+#+web_page: If a configured page does not exist, the page generator makes calls
+#           to a user-defined function. The function name is built from the
+#           prefile **web_page_** and the page name.
+# ------------------------------------------------------------------------------
+webapp() {
+    debug -c -- "$*"
+    local _coun=0 _opta _optb _optd _opth _opti _optl _optn _optp _optr _optx _optz
+
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   _opta=1 ;;
+      -b)   _optb=1 ; _opta=1 ;;
+      -d)   _optd=1 ;;
+   #  -f)   _optf=1 ;;                  # create frame page
+      -h)   _opth=1 ;;
+      -i)   _opti=1 ;;
+      -l)   _optl=1 ; _optp=1 ; _opti=1 ; _optb=1 ; _opta=1 ;;
+      -n)   _optn=1 ; _opti=1 ;;
+      -p)   _optp=1 ; _opti=1 ; _optb=1 ; _opta=1 ;;
+      -r)   _optr=1 ;;
+      -x)   _optx=1 ;;
+      -z)   _optz=1 ;;
+       *)   _cen_abort - "$1"
+      esac ; shift ; ((_coun += 1))
+    done
+
+    [ "$_coun" -gt 1 -a -n "$_opth$_optn$_optx" ] &&
+        _cen_abort $"cannot combine options:" '-h|-n|-x'
+
+    while : ; do
+        [ -n "$_opta" ] && { _cen_web_appid             || break; }
+        [ -n "$_optb" ] && { _cen_web_create "$1"       || break; }
+        [ -n "$_opti" ] && { _cen_web_setup             || break; }
+        [ -n "$_optp" ] && { _cen_web_pages             || break; }
+        [ -n "$_optl" ] && { _cen_web_launch 0 "$1"     || break; }
+
+        [ -n "$_optd" ] && { _cen_web_delete "$1"       || break; }
+        [ -n "$_opth" ] && { _cen_web_hlink "$@"        || break; }
+        [ -n "$_optn" ] && { _cen_web_navig "$@"        || break; }
+        [ -n "$_optr" ] && { _cen_web_redir "$@"        || break; }
+        [ -n "$_optx" ] && { _cen_web_index "$1" "$2"   || break; }
+        break
+    done || :
+    error -t && return 0
+
+    # clean-up after error
+
+    _cen_web_launch 2                           # stop launcher
+    [ -n "$_optz" ] && return 1
+    [ -n "$CEN_WEB_WEBTMP" ] && remove -d -- "$CEN_WEB_WEBTMP"
+    quit
+}
+
+# ------------------------------------------------------------------------------
+# Hooks
+# ------------------------------------------------------------------------------
+_cen_web_main() {
+
+    # load the cgi module and run main hook (unless skipped)
+    if [ -z "$CEN_WEB_CGIAPP" ] ; then
+        # using actions mode, but the module will call run() explicitly
+        if isfunction actions ; then
+            CEN_WEB_CGIAPP=1
+            embed -m _centauri_bash_cgi
+        fi
+    fi
+    $CEN_WEB_HOOK_MAIN "$@"
+
+    # create a default run() if neccessary, continue with main()
+    isfunction 'run' && return 0
+    run() {
+        local _page="$1"                        # 1st arg: start page
+        webapp -b "$_page" || return            # create web base folder
+
+        # run self-extractor
+        if [ -n "$CEN_OPT_WEBDIR" ] ; then
+            embed -m '_centauri_bash_xtr' -q "$CEN_WEB_WEBDIR/static"
+        else
+            embed -m '_centauri_bash_xtr' -q &&
+                symlink -- "$CEN_XTR_RUNTIME" "$CEN_WEB_WEBDIR/static"
+        fi
+        $CEN_TRACE $"extracted data:" "$CEN_XTR_RUNTIME"
+
+        # run user init (optional) - generate pages - start httpd/browse
+        if isfunction "${CEN_WEB_PREFIX}init" ; then
+            ${CEN_WEB_PREFIX}init || return
+        fi
+
+        _cen_web_setup
+        [ -n "$CEN_WEB_CGIAPP" ] && cgiapp -i
+
+        webapp -l "$_page"                      # run centaurilauncher
+    }
+}
+
+# hook for options()
+_cen_web_options() {
+    $CEN_WEB_HOOK_OPTIONS "$@"
+    case "$1" in
+
+    # end of option processing
+
+    '')
+        if [ -n "$CEN_PACKAGE" ] ; then
+            [ -z "$CEN_OPT_CREATE$CEN_OPT_REMOVE" ] &&
+                error "missing option:" '--create | --remove'
+        fi
+        CEN_WEB_WEBAPP="$CEN_OPT_WEBAPP"
+        ;;
+
+    # pass option info to usage module
+
+    --help)
+        [ "$2" = "opts" ] || return                 # ignore unless _cen_usage()
+
+     #   _cen_use_option ''  "--cgibin <path> " $"path of cgibin folder"
+        _cen_use_option ''  "--create        " $"just create the webapp folder and quit"
+        _cen_use_option ''  "--remove        " $"remove the webapp folder and quit"
+        _cen_use_option ''  "--webdir <path> " $"path of html base folder"
+        _cen_use_option ''  "--webapp <appid>" $"pass application id"
+        ;;
+
+    # options added by this module
+
+   # --cgibin)   optarg 'cgibin' - -t ;;
+    --cre*)     optarg 'create' - -f ;;
+    --rem*)     optarg 'remove' - -f ;;
+    --webapp)   optarg 'webapp' - -t ;;
+    --webdir)   optarg 'webdir' - -t ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Startup: [-n|-w]
+# ------------------------------------------------------------------------------
+
+[ "$1" = "-n" ] && return 0                         # do not init
+
+# register main & option hook
+CEN_WEB_HOOK_OPTIONS="$CEN_HOOK_OPTIONS"
+CEN_HOOK_OPTIONS="_cen_web_options"
+if [ "$1" = "-w" ] ; then
+    CEN_WEB_HOOK_MAIN="$CEN_HOOK_MAIN"
+    CEN_HOOK_MAIN="_cen_web_main"
+fi
+:
+
+# end

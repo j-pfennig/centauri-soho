@@ -1,0 +1,19 @@
+# centauri-member.target
+[Unit]
+Description=Member-Computer network mode
+
+Conflicts=centauri-master.target centauri-slave.target centauri-trusted.target centauri-public.target
+After=network-online.target centauriswitch.service
+Wants=network-online.target centauriswitch.service centauri-network.service
+
+Requisite=multi-user.target
+
+# Services to start
+Wants=winbind.service smbd.service nmbd.service centauriwsdd.service
+#   we do not use debian's nfs-common, so add dependencies here...
+Wants=nfs-mountd.service rpcbind.service rpc-gssd.service centauri-netconf.service
+
+# Stops centauri-master services
+Conflicts=ntpsec.service samba-ad-dc.service centaurinmbd.service
+Conflicts=cyrus-imapd.service exim4.service openvpn@server.service squid.service
+Conflicts=nfs-server.service 

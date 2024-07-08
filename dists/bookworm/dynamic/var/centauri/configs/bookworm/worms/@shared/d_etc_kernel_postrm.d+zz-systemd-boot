@@ -1,0 +1,13 @@
+#!/bin/sh
+
+exit 0  # jpf@centauri - using a hook in /etc/initramfs/post-update.d
+
+set -e
+
+test -x /usr/bin/bootctl || exit 0
+
+bootctl is-installed --quiet || exit 0
+
+echo "Removing kernel version $1 from systemd-boot..."
+
+kernel-install remove "$1"

@@ -1,0 +1,1353 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_run = centauri-bash-lib: Configuration related functions
+#
+# Call:     . _centauri_bash_run
+#
+#+Functions in this module are related to the "centauri-bash-lib" configuration
+# file and depend on module [[_centauri_bash_iom]], see [[configfile()]].
+#
+#+Functions:This module implements these public functions:
+#
+#,          [[launcher()]]   Run an external application using a generic name
+#,          [[shortpath()]]  Resolve shortcut names for file system paths
+#,          [[terminal()]]   Run a terminal emulator if needed
+#
+#+Variables:The following public variables are used:
+#
+#,          CEN_DESKTOP     current desktop or 'tty' if no desktop is detected
+#,          CEN_LAUNCHER    default result variable of [[launcher()]]
+#,          CEN_SHORTPATH   default result variable of [[shortpath()]]
+#,          CEN_TERMINAL    default result variable of [[terminal()]]
+#
+# Copyright Dr. J. Pfennig (c) 2022-2023
+# ------------------------------------------------------------------------------
+
+CEN_MODULES["_centauri_bash_run"]="0.11:2"
+
+embed -c '_centauri_bash_iom'           # reference declaration
+
+# get current desktop, use 'tty' if no desktop is detected
+
+CEN_DESKTOP="${XDG_CURRENT_DESKTOP,,}"
+[ -n "$KDE_FULL_SESSION" -o -n "$KDE_SESSION_UID" ] && CEN_DESKTOP='kde'
+
+# cached config sections, see _cen_run_config
+
+CEN_RUN_LAUNCHER=       # config [launcher] lines
+CEN_RUN_TERMINAL=       #        [terminal] lines
+CEN_RUN_SHORTPATH=      #        [shortpath] lines
+
+# TODO --embed=<name>:<idnt>:<desktop>
+# TODO windows -i <minimal-mode>
+# TODO search centauri-bash-lib  also in CEN_ROOT
+# TODO quit exit message should use "signal" for exit-code > 128
+# TODO terminal -c|-x not really implemented
+
+# builtin logical paths for shortpath()
+
+CEN_SHORTPATH_LIB=(
+        "root:$CEN_ROOT:centauritools "$"installation root"
+        "library:$CEN_LIBRARY:centauri-bash-lib library "$"files"
+        "tools:$CEN_TOOLS:centauritools "$"applications"
+        "locale:$CEN_ROOT/locale:centauritools/library "$"translations"
+        "default:${CEN_PATHS[6]}:centauritools/library "$"configuration files"
+        "persistent:$CEN_ROOT/persistent|${CEN_PATHS[4]}:centauritools "$"persistent cache"
+        "transient:$CEN_ROOT/transient|${CEN_PATHS[4]}:centauritools "$"volatile cache"
+        # cannot use single quote due to uglify limits. Using  unicode apostrophe
+        "temporary:$XDG_RUNTIME_DIR|${CEN_PATHS[4]}|$TMPDIR:"$"the userʼs temporary folder"
+        )
+
+# function shortpath and terminal drop CEN_RUN_xxx after 1st run
+
+CEN_SHORTPATH_DAT=      # dynamically loaded data
+CEN_TERMINAL_DAT=
+
+#CEN_LAUNCHER_APPS=()
+# declare -g -A CEN_LAUNCHER_PARS
+
+# ------------------------------------------------------------------------------
+# Library configuration + The centauri-bash-lib configuration file
+#
+#+General:  In addition to built-in data some library functions can use information
+#           configured in the optional file "centauri-bash-lib" at folder
+#           "$CEN_ROOT/default". The file uses INI style syntax, e.g. is organized
+#           into sections. Empty lines and comments are ignored. Most of the data
+#           gets cached at run time, so feel free to use comments for documentation.
+#
+#+Sections: All sections are optional and may be missing or empty.
+#
+#,          - [shortpath]   for [[shortpath()]] and [[centauripaths]], see [[shortpath Config]]
+#,          - [launcher]    for [[launcher()]] and [[centaurilauncher]], see [[launcher Config]]
+#,          - [terminal]    for [[terminal()]] and [[centaurilauncher]], see [[terminal Config]]
+#,          - [library]     miscellaneous data, see [[prettypath]] and [[Installation]]
+#,          - [proxy]       script code added to the proxy, see [[Library Proxy]]
+#
+#+Any extra sections can be added for local needs. See [[configfile]] for details on how to
+# process configuration files.
+#
+#+The [[centauricreate]] tool can be used to generate a default configuration. See:
+#
+#.          centauriconfig --template config -
+#
+# Examples: (1) A simple configuration for use with Termux (Linux on Android):
+#
+#.          [library]
+#.  °   # installation defaults (root, binaries, shortcut, repository, owner)
+#.  °   defaults    private  $HOME/.centauri $HOME/bin $HOME/centauritools
+#.  °   defaults    shared   /var/centauri /usr/local/bin /opt/centauritools
+#.
+#.  [launcher]
+#.  °   # desktop apps (- is for any desktop session, must be last)
+#.  °   editor      -       kwrite featherpad
+#.  °   files       -       dolphin
+#.  °   browser     -       firefox falkon qml
+#.  °   kiosk       -       qml falkon firefox
+#.  °   console     -       @terminal
+#.  °   httpd       -       lighttpd
+#.
+#.  °   # terminal apps (tty is for non-desktop mode)
+#.  °   editor      tty     nano vim
+#.  °   files       tty     mc
+#.  °   browser     tty     w3m
+#.
+#.  °   # qml needs a few hints (@_cen_win_qmlweb creates the qml script)
+#.  °   -ignore:qml         qtchooser
+#.  °   -path:qml           /usr/lib/*/qt5/bin/qml
+#.  °   browser:qml         @launcher_qmlweb 1024 768 1.2
+#.  °   kiosk:qml           @launcher_qmlweb  1000 800 1.2
+#.  °   httpd:lighttpd      @launcher_httpd 8080 /var/www
+#.
+#.  °   # command line args
+#.  °   kiosk:firefox       --fullscreen --new-window
+#.  °   browser:firefox     --new-window
+#.
+#.  °   kiosk:falkon        --fullscreen --new-window --no-extensions
+#.  °   browser:falkon      --new-window --no-extensions
+#.
+#.  °   # info text for apps (not commands)
+#.  °   info:editor         text editor
+#.  °   info:files          file manager
+#.  °   info:browser        web browser
+#.  °   info:kiosk          web browser in kiosk mode
+#.  °   info:console        command line terminal
+#.  °   info:httpd          launch a private web server
+#.
+#.  [terminal]
+#.  °   # emulators for KDE/Gnome sessions:
+#.  °   emulator    kde     konsole qterminal gnome-terminal xterm
+#.  °   emulator    gnome   gnome-terminal konsole qterminal xterm
+#.  °   # other session types (must be last emulator line):
+#.  °   emulator    -       qterminal gnome-terminal konsole  xterm
+#.
+#.  °   # options for emulator apps
+#.  °   -args:konsole       --hide-tabbar --hide-menubar --nofork
+#.  °   -title:konsole      --title
+#.
+#.  °   -args:gnome-terminal  --hide-menubar --wait --
+#.  °   -title:gnome-terminal --title
+#.
+#.  °   -args:xterm         -fa Monospace -fs 14 -geometry 100x30
+#.
+#.  °   # in many cases we don't need to run an emulator, so we check our ancestors until
+#.  °   # we find something blacklisted (start emulator) or whitelisted (no emulator):
+#.
+#.  °   # no emulator if we find a login shell
+#.  °   login               -bash|-dash|-csh|-sh
+#.  °   # continue search if ancestor is a shell
+#.  °   shell               bash|dash|csh|sh
+#.  °   # no emulator for these ...
+#.  °   white               sudo|kdeinit.*\ konsole.*|konsole.*|gnome.*|qterminal|xterm
+#.  °   # needing to launch emulator ...
+#.  °   black               krunner.*|lx.*-session|plasma.*
+#.  °   # no desktop, no xroot
+#.  °   black-startup       sddm.*|startkde.*|startplasma.*
+#.
+#.  [shortpath]
+#.  °   # These are examples of shortcuts for centauripaths (alias ccd)
+#.  °   path "export"    "$/export"                   "Export Folder"
+#.  °   path "docs"      "$/usr/share/doc"            "Linux Documentation"
+#.  °   path "bin"       "${CEN_PATHS[1]}"            "Linux Anwendungen"
+#.  °   path "etc"       "${CEN_PATHS[2]}"            "Linux Konfiguration"
+#.  °   path "docs"      "/share/doc|/usr/share/doc"  "Linux Dokumentation"
+#.
+#.  °   path "android"   "$HOME/storage"              "Android gemeinsamer Speicer"
+#.
+#.  °   path "export"    "$HOME/storage/shared/export"         "Export Verzeichnis"
+#.  °   path "bilder"    "$HOME/storage/shared/export/Bilder"  "Bilder (in export)"
+#.  °   path "musik"     "$HOME/storage/shared/export/Musik"   "Musik  (in export)"
+#.  °   path "rezepte"   "$HOME/storage/shared/export/Rezepte" "Kochrezepte"
+#
+#           (2) A more complex config for a native Linux system:
+#
+#.          [shortpath]
+#.  °       # ...
+#.  [launcher]
+#.  °       # ...
+#.  [terminal]
+#.  °       # ...
+#.  [library]
+#.  °   defaults shared  "/var/centauri" "/usr/local/bin" "/admin" \
+#.  °                    "/var/centauri/admin" "root:staff"
+#.  °   defaults private $HOME/.centauri $HOME/bin $HOME/centauritools
+#.  °   include "utilities/show-unattended-upgrades" "virtualbox/vbox"
+#.  °   exclude ""
+#.  °   obsolete "centaurigencfg" "centaurisync"
+#.  °   service "centauriswitch" "centauriroute"
+#.  °   repath -l "/dev/shm(/.*)?" "/tmp%1"
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# launcher Config + Section in centauri-bash-lib configuration file
+#
+#+General:  The [[launcher()]] function reads the (cached) configuration statements
+#           from section **[launcher]** in file "centauri-bash-lib". The preferred
+#           location of this file in "$CEN_ROOT/default", see [[configfile()]] for
+#           more details.
+#
+#+Config:   Valid "centauri-bash-lib" configuration lines are:
+#
+#           # potential real commands for a generic name
+#           °°<what>             § <desk> @<func>|<tool>...
+#           # set options and arguments of a command to be run
+#           °°<what>**:**<tool>  § <arg>...
+#           # command is run by a function
+#           °°<what>**:**<tool>  § @<func> <arg>...
+#           # optional: command not found if sym-linked to <nogo>
+#           °°**-ignore:**<tool> § <nogo>
+#           # optional: short commad description
+#           °°**-info:**<tool>   § <text>
+#           # optional: any kind of flags (not used by launcher)
+#           °°**-flag:**<tool>   § <arg>...
+#           # optional: explicit path(s) of a command
+#           °°**-path:**<tool>   § <path>...
+#
+#           Where place holders are defined as:
+#
+#           °°<what>        § generic command name
+#           °°<desk>        § desktop type filter
+#           °°<tool>        § is a command name (not a path)
+#           °°<arg>         § any kind of argument
+#           °°<func>        § call a (user script) function to run <what>
+#           °°<path>        § file system path, bash globbing allowed
+#           °°<nogo>        § sym link destination (example: **qtchooser**)
+#           °°<text>        § short command description
+#
+#           Configuration Example:
+#.  °       [launcher]
+#.  °           # desktop apps (* is for any desktop session, must be last)
+#.  °           editor      *       kwrite featherpad
+#.  °           browser     *       unfug firefox falkon qml
+#.  °           kiosk       *       qml falkon sauwetter firefox
+#.  °           terminal    *       @terminal quarkteig
+#.
+#.  °           # terminal apps (tty is for non-desktop mode)
+#.  °           editor      tty     nano vim
+#.  °           browser     tty     w3m
+#.
+#.  °           # qml needs some care (@launcher_qmlweb creates the qml script)
+#.  °           -ignore:qml         qtchooser
+#.  °           -path:qml           /usr/lib/*/qt5/bin/qml
+#.  °           browser:qml         @launcher_qmlweb 1024 768 1.2
+#.  °           kiosk:qml           @launcher_qmlweb 1000 800 1.2
+#.
+#.  °           # command line args
+#.  °           kiosk:firefox       --fullscreen --new-window
+#.  °           browser:firefox     --new-window
+#.  °           kiosk:falkon        --fullscreen --new-window --no-extensions
+#.  °           browser:falkon      --new-window --no-extensions
+#.
+#.  °           # info text for generic names (not commands)
+#.  °           info:editor         text editor
+#.  °           info:browser        web browser
+#.  °           info:kiosk          web browser in kiosk mode
+#.  °           info:terminal       terminal emulator
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# launcher (callback) - Implementing a user defined command
+#
+# Call:     <func> <option>.. -- <arg>...
+#
+# Options:  -f  error are fatal
+#           -i  information string
+#           -m  lauch per exec or in background
+#           -o  override desktop status (force running emulator)
+#           -q  no error messages
+#           -r  ignore --dryrun
+#           -t  window title
+#           -x  query if command can be run (args: <cmd> <arg...>)
+#           -y  session type override
+#
+#+          The function must ignore all non-option words and all unspecified
+#           options before the '--' separator.
+#
+#.Example:  launcher_my_command() {
+#.              local oerr oinf over orun otit mode desk
+#.              while [ $# -gt 0 ] ; do
+#.              case "$1" in
+#.                  --)   shift ; break ;;
+#.                  -f)   oerr='-f' ;;
+#.                  -i)   shift ; oinf="$1" ;;      # not used in this example
+#.                  -m)   shift ; mode="$1" ;;      # not used in this example
+#.                  -o)   shift ; over="$1" ;;      # not used in this example
+#.                  -q)   oerr='-q' ;;
+#.                  -r)   orun='-r' ;;
+#.                  -t)   shift ; otit="$1" ;;
+#.                  -x)   ochk=1 ;;
+#.                  -y)   shift ; desk="$1" ;;      # not used in this example
+#.                  *)    continue
+#.                  esac ; shift
+#.              done
+#.
+#.              # option -x: check if executable and return status
+#.              if [ -n "$ochk" ] ; then
+#.                  sysfind -q -c -- 'my-command' || return 1
+#.              # run the command
+#.              else
+#.                  system $oeff $orun -- 'my-command' --tile "$otit" "$@" || return 1
+#.              fi
+#.              return 0
+#.          }
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# launcher - Run an external application using a generic name
+#
+# Call:     (1) launcher [-f|-q] [-m <mode>] [-t <titl>] -o <desk> [--] <what> <arg>...
+#           (2) launcher [-f|-q] [-t <titl>] -n -o <desk> -a <rslt> [--] <what> <arg>...
+#           (3) launcher [-f|-q] -l <lsel> -o <desk> -a <rslt>
+#           (4) launcher -x [-m <mode>] [-t <title>] [-y <desk>] <opt>... -- <arg>...
+#
+# Options:  -a  array of resulting command words (default is CEN_LAUNCHER)
+#           -f  errors are fatal
+#           -i  information string passed to callback
+#           -l  [*] get application list
+#           -m  launch via exec or in background
+#           -n  [*] do not run, return command array
+#           -q  no error messages
+#           -r  ignore --dryrun
+#           -t  window title (supported by [[terminal()]] and callback)
+#           -x  run a command or function via system()
+#           -y  override session type
+#
+#           [*] these options are mutually exclusive
+#
+# Arguments:<arg>   arguments to be passed to the application
+#           <lsel>  0:all  1:session  2:paths  3:valids generic names
+#           <mode>  0:just run   1:exec   2:background   3:disown
+#           <rslt>  variable name, receives returned data as array
+#           <desk>  "tty", "kde", "lxqt", ... (see $XDG_SESSION_DESKTOP)
+#           <titl>  window title text
+#           <what>  generic name for a command like "browser" or "editor"
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#+This function can select and run an application depending on session type and
+# installation status. It depends on configuration entries in "centauri-bash-lib"
+# section "[launcher]", see [[launcher config]].
+#
+#+If the launcher configuration calls an argument function or a command function,
+# the final call passes options -f -i -m -q -r -t and -y to the function, see
+# [[launcher (callback)]].
+#
+# Form (1) searches a matching command and runs it. Form (2) does not run the
+# command, but returns the command (as an array of words). The configuration
+# "-args:<command>" line is expanded via **eval** to unquote words (single quotes
+# must be escaped, variable substitutions may work).
+#
+#+Form (3) can be used to get a list of commands. The list entries are made up
+# of four or five fields: <what>°<desk>°<path>|<tool>...°<info>°[<flag>] . The
+# fields are delimited by "\a". The <tool>... names are separated by spaces
+# (as in the config line). The <flag> field is only present for **-flag:**<what>
+# statements.
+#
+#+Form (4) is used to run a command or function, typically from inside a launcher
+# function.
+#
+# Examples: (1) Launch browser as independent process
+#.          launcher -m 3 -- browser || quit -e - "failed to run browser"
+#.          local bpid=$!
+#.          if kill -0 $bpid 2>/dev/null ; then
+#.              message "Browser is running (PID=$bpid)"
+#.          else
+#.              message "Browser has stopped"
+#.          fi
+#
+#           (2) Get a list of configured applications
+#.          launcher -l 0
+#.          local item flds
+#.          for item in "${CEN_LAUNCHER[@]}" ; do
+#.              splitjoin -s flds -d $'\a' -- "$item"
+#.              printf "%-12s  %-6s  %-40s  %s\n" "${flds[@]::4}"
+#.          done
+# ------------------------------------------------------------------------------
+CEN_LAUNCHER=
+launcher() {
+    $CEN_DEBUG -c -- "$*"
+    local _flst _oerr='-e' _ofun='-e' _onot _odsk _orun=() _temp
+    local _desk="${CEN_DESKTOP:-tty}" _warn="_cen_run_config -m launcher" _vnam='CEN_LAUNCHER'
+
+    # do we have an -x option?
+    for _temp in "$@" ; do
+        case "$_temp" in
+            --)     break ;;
+            -x)     _cen_run_command "$@" ; return $? ;;
+        esac
+    done
+
+    while [ "${1::1}" = '-' ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -a)   shift ; _vnam="$1" ;;
+        -f)   _oerr='-f' ; _ofun='-f' ;;
+        -i|-t)
+              _orun+=("$1" "$2") ; shift ;;
+        -l)   shift ; _flst="$1" ;;
+        -m)   shift ; _orun+=('-m' "${1:-0}") ;;
+        -n)   _onot=1  ;;
+        -q)   _oerr='-q' ; _ofun= ; _warn=':' ;;
+        -r)   _orun+=('-r') ;;
+        -y)   shift ; _desk="${1:--}"
+              [ "$_desk" = '-' ] && _desk='tty' ; _odsk="-y $_desk" ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+    local -n _vres="$_vnam" ; _vres=()
+
+    # fetch configuration for [launcher]
+    local _what="$1" _apps _line _larr _name _path _igno _fltr
+    local -A _pard
+    $CEN_TRACE2 -c " parsing" -- "${_what:--} (mode=$_desk)"
+    _cen_run_config $_oerr 'launcher' || return 1
+
+    # generic-name filtering if not listing
+    if [ -n "$_flst" ] ; then
+        _what='*'
+        [ "$_flst" = 0 ] && _desk=
+    fi
+
+    # _pard keys:
+    #
+    #   '-<flag>:<exec>'        # flags for executable
+    #   '<what>:<exec>'         # commandline args for executable
+    #   '<what>'                # executable names
+    #   '<what::>'              # flag for match
+    #   '<what:<fltr>'          # list of executables
+    #   '<exec>/'               # executable fs path
+
+    # --- evaluate configuration ---
+
+    for _line in "${CEN_RUN_LAUNCHER[@]}" ; do
+
+        # All data should have been correctly quoted at caching time. So we use eval
+        # directly without error handling. The slower equivalent is: spliteval -u
+        eval "_larr=($_line)"
+        [ -z "${_larr[1]}" ] && _larr=                   # need value, flag error
+
+        # On an intermedeate level the quote cache strings are converted back to an
+        # array (see '_larr'). Only '-path:*' and '-wants:*' handle fs paths. All
+        # others use names as arguments that cannot contain spaces.
+
+        case "$_larr" in
+            *-)
+                $_warn -- "$_line" ; continue ;;        # warning, ignore this line
+
+            # All arguments are joined to a single string:
+
+            -info:*)
+                [ -n "$_flst" ] && _pard["$_larr"]="${_larr[*]:1}" ;;
+            -flags:*|-ignore:*)
+                _pard["$_larr"]="${_larr[*]:1}" ;;
+
+            # In _cen_run_tools these strings are expanded by globbing. This can be
+            # used to escape spaces, see [:space:] - this will work in most cases:
+
+            -path:*|-wants:*)
+                local _aarr=("${_larr[@]:1}")                   # arguments ony
+                _pard["$_larr"]="${_aarr[@]// /[[:space:]]}" ;; # keep spaces
+
+            # No path names used, join args to a single string:
+
+            $_what:*)
+                _pard["$_larr"]="${_larr[*]:1}" ;;
+            $_what)
+                _fltr="${_larr[1]}"                     # session name
+                if [ -n "$_desk" ] ; then               # session filtering...
+                    case "$_fltr" in
+                    -)      ;;                                  # all sessions
+                    \*)     [ "$_desk" = 'tty' ] && continue ;; # any desktop
+                    $_desk) ;;                                  # this desktop
+                    *)      continue
+                    esac
+                fi
+
+                if [ -z "$_flst" ] ; then               # 1st match only
+                    [ -z "$_apps" -o "$_fltr" != '*' ] || continue
+                    _apps=("$_larr:$_fltr")
+                elif [ "$_flst" = 0 ] ; then            # list everything
+                    _apps+=("$_larr:$_fltr")
+                elif [ -z "${_pard["$_larr::"]}" ] ; then
+                    _pard["$_larr::"]="${_larr[*]:2}"   # filter 1st match
+                    _apps+=("$_larr:$_fltr")
+                fi
+                _pard["$_larr:$_fltr"]="${_larr[*]:2}"
+                ;;
+            [a-z]*[a-z0-9.])                            # looks ok, no warning
+                continue ;;
+            *)
+                $_warn -- "$_line" ; continue ;;        # warning, ignore this line
+        esac
+    done
+
+    # --- return a command list or find command ---
+
+    local _fldr="$PWD" ; folder -c -f "${CEN_PATHS:-/}"
+    for _line in "${_apps[@]}" ; do
+        _fltr="${_line#*:}" ; _name="${_line%%:*}"
+        if _cen_run_tools "$_flst" "$_name" ${_pard[$_name:$_fltr]} ; then
+            $CEN_TRACE2 -c -p " tool" "%-18s => %s" "$_line" "${CEN_RUN_TOOLS[1]}"
+            case "$_flst" in
+            '')     break
+                    ;;
+            2)      _vres+=("$_name"$'\a'"$_fltr"$'\a'"${CEN_RUN_TOOLS[1]}"$'\a'"${CEN_RUN_TOOLS[2]}")
+                    ;;
+            3)      _vres+=("$_name")
+                    ;;
+            *)      _temp="${_pard[$_name:$_fltr]}"
+                    [ "$_temp" = '.' ] && _temp='centaurilauncher'
+                    _vres+=("$_name"$'\a'"$_fltr"$'\a'"$_temp"$'\a'"${CEN_RUN_TOOLS[2]}")
+            esac
+        else
+            $CEN_TRACE2 -c -p " tool" "%-18s    NO MATCH" "$_line"
+            if [ -z "$_flst" ] ; then
+                folder -c -f "$_fldr"
+                return 1
+            fi
+        fi
+    done
+    folder -c -f "$_fldr"
+    [ -n "$_flst" ] && return 0                         # return a command list
+
+    # --- run a command ---
+
+    if [ -z "$_name" ] ; then
+        $CEN_TRACE -c " miss" -- "$_what" ; return 1
+    fi
+
+    # split and unquote arguments via eval
+    _temp="${CEN_RUN_TOOLS[2]}"
+    if ! eval "_vres=($_temp)" 2>/dev/null ; then
+        _vres=($_temp)
+        $_warn $"Syntax error:" "$_temp"
+    fi
+
+    if [ "${_temp::1}" = '@' ] ; then           # argument function
+        _vres=("${_temp%% *}" "${CEN_RUN_TOOLS[1]}" "${_vres[@]:1}" "${@:2}")
+    else                                        # command or function
+        _vres=("${CEN_RUN_TOOLS[1]}" "${_vres[@]}" "${@:2}")
+    fi
+
+    $CEN_TRACE2 -c " exec" -- "$_name  =>  ${_vres[*]}"
+    [ -n "$_onot" ] && return 0
+    _cen_run_command  $_oerr "${_orun[@]}" $_odsk -- "${_vres[@]}" || return $?
+    return 0
+}
+
+# check if tool can be run: <list> <tool> <name>...    (using variable _pard)
+CEN_RUN_TOOLS=()                # (<tool> <path>)
+_cen_run_tools() {
+    local _list="$1" _tool="$2" _name _path _igno _want _args _nice
+    shift ; shift
+    if [ "${1::1}" = '@' ] ; then
+        CEN_RUN_TOOLS=('@' "$1" "${_pard[-info:$_tool]}") ; return 0
+    fi
+    CEN_RUN_TOOLS=()
+
+    for _name in "$@" ; do
+        [ "$_name" = '.' ] && _nice='centaurilauncher' || _nice="$_name"
+
+        if [ -z "$_list" ] ; then
+            _args="${_pard[$_tool:$_name]}"
+        else
+            _args="${_pard[-info:$_tool]}"
+            if [ "$_list" = 0 ] ; then
+                CEN_RUN_TOOLS=("$_nice" - "$_args") ; return 0
+            fi
+        fi
+        _path="${_pard[$_nice/]}"
+        [ "$_path" = '-' ] && return 1                      # negative cache entry
+
+        if [ -n "$_path" ] ; then
+            $CEN_TRACE2 -a -c -p " CACHED" "%-18s => %s" "$_nice" "$_path"
+            CEN_RUN_TOOLS=("$_nice" "$_path" "$_args") ; return 0
+        fi
+
+
+        _path="${_pard[-path:$_name]}"
+        [ -n "$_path" ] && sysfind -q -s _path -o -- $_path # try -path:*
+        [ -z "$_path" ] && sysfind -q -s _path -- "$_nice"  # fallback
+        [ -z "$_path" ] && continue                         # no executable
+
+        _igno="${_pard[-ignore:$_name]}"
+        if [ -n "$_igno" ] ; then                           # symlink ignore ...
+            resolve -s _want -c -- "$_path"
+            if [ "$_igno" = "${_want##*/}" ] ; then
+                $CEN_TRACE2 -c -p " IGNORE" "%-18s => %s" "$_nice" "$_path"
+                continue
+            fi
+        fi
+
+        _want="${_pard[-wants:$_name]}"                     # installation requirement...
+        if [ -n "$_want" ] ; then
+            for _want in $_want "" ; do
+                [ -e "$_want" ] && break
+            done
+            $CEN_TRACE2 -c -p " WANTS" "%-18s => %s" "$_nice" "${_want:--miss-}"
+            [ -z "$_want" ] && continue
+        fi
+
+        $CEN_TRACE2 -a -c -p " FOUND" "%-18s => %s" "$_nice" "$_path"
+        CEN_RUN_TOOLS=("$_nice" "$_path" "$_args")
+        _pard[$_nice/]="$_path" ; return 0
+    done
+    _pard[$_nice/]='-' ; return 1                           # nothing found
+}
+
+# ------------------------------------------------------------------------------
+# shortpath Config + Section in centauri-bash-lib configuration file
+#
+#+General:  The [[shortpath()]] function reads the (cached) configuration statements
+#           from section **[shortpath]** in file "centauri-bash-lib". The preferred
+#           location of this file in "$CEN_ROOT/default", see [[configfile()]] for
+#           more details.
+#
+#+Format:   A shortpath is a short name that is resolved to the path of an existing
+#           folder. Multiple destination paths per shortpath definition can be given
+#           in a list and only the 1st existing path is used.
+#
+#+          Each shortpath definition is stored as a text line made of the literal word
+#           **path** followed by three fields of (quoted) text that are separated by
+#           spaces (e.g. the fields are bash words):
+#
+#,          <shortpath> := **path** <name> **"**<paths>**"** **"**<info>**"**
+#
+#+          No ":" characters must appear in <name> or <paths> fields, they are internally
+#           used as field delimiters. The list of paths can contain any number of paths
+#           separated by "|" characters:
+#
+#,          <paths> := <path> [ **|** <path> ] ...
+#
+#+          Extra spaces are not allowed. Spaces and single quotes must be escaped like
+#           "\ " and "\'''". The lines are passed through bash **eval** and can contain
+#           variables. "~" expansion also works.
+#
+#.Example: [shortpath]
+#.             path disk       "/mnt/backup/disk|$BACKUPS/disk" "folder for disk archives"
+#.             path data       "/mnt/backup/data|$BACKUPS/data" "folder for data archives"
+#.             path phys       "/mnt/backup/phys|$BACKUPS/phys" "folder for disk images"
+#
+#+Builtin:  Some predefined entries are provided by the library iself
+#
+#.             path root       "$CEN_ROOT"              "centauritools installation root"
+#.             path library    "$CEN_LIBRARY"           "centauri-bash-lib library files"
+#.             path tools      "$CEN_TOOLS"             "centauritools applications"
+#.             path locale     "$CEN_ROOT/locale"       "centauritools/library translations"
+#.             path default    "$CEN_ROOT/default|${CEN_PATHS[2]}/default"  "config files"
+#.             path persistent "$CEN_ROOT/persistent|${CEN_PATHS[4]}"       "persistent cache"
+#.             path transient  "$CEN_ROOT/transient|${CEN_PATHS[4]}"        "volatile cache"
+#.             path temporary  "$XDG_RUNTIME_DIR|${CEN_PATHS[4]}|$TMPDIR"   "user tmp folder"
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# shortpath - Resolve short alias names for file system paths
+#
+# Call:     shortpath [-q] [-f] [-e] [-g] [-a <rslt>] [-n <ndir>]
+#           shortpath ... [-r] -m <part>                # get matching data
+#           shortpath ... [-r] <name>...                # get exact matches
+#
+# Arguments:<name>  a logical path name (shortcut)
+#           <ndir>  **dash**    add a '-' to result list
+#                   **empty**   add empty entry (default for option -m)
+#                   **ignore**  skip this item, do not report as error
+#                   **path**    add the 1st defined path to result list
+#           <part>  a prefix to be searched in data
+#           <rslt>  result array or variable to be set (default: CEN_SHORTPATH)
+#
+# Options:  -a  result array or variable
+#           -e  generate error messages on query operations
+#           -f  make errors fatal
+#           -g  ignore unknown shortcut names
+#           -m  match prefix, search shortcut table
+#           -n  folder-not-present action, see <ndir>
+#           -q  do not report problems in config/cache handling
+#           -r  return raw string, not a path
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#+General:  The library implements a user configurable shortcut system for paths
+#           by providing the [[shortpath()]] function and the [[centauripaths]] tool.
+#           Some paths below "$CEN_ROOT" are provided by the library itself. For
+#           example:
+#
+#.          shortpath "locale/de" "pers" ; message "${CEN_SHORTPATH[@]}"
+#
+#.          > centauripaths "loca/de" "persistent"
+#
+#+          will return "/var/centauri/locale/de" and "/var/centauri/persistent"
+#           if CEN_ROOT was set to "/var/centauri" at installation time.
+#
+#+Config:   Any number of user defined shortcuts can be added to the search list
+#           via "$CEN_ROOT/defaults/centauri_bash_lib". The following example
+#           adds the shortcut "backup" (must be in section "[centauripaths]"):
+#
+#.          path "backup" "/mnt/backup/Backup|$ROOT/Backup" "Backup volume/folder"
+#
+#+          The 1st argument of "path" is the shotcut name. The 2nd is a list
+#           of possible filesystem paths (separated by "|"). The last argument
+#           is a textual description. The shortcut will be resolved to the first
+#           existing filesystem path.
+#
+#+The function loops over a (chached) list of shorcut definition lines. These are
+# loaded at 1st call from "centauri-bash-lib" section "[shortpath]". The format is
+# described at [[shortpath°config]]. Each shortcut can have a list of paths and
+# the 1st path specifying an existing folder becomes the resulting path.
+#
+# Examples: (1) get some paths from (abbreviated) shortcuts
+#.          shortpath -a rslt -- default persi transient
+#
+#           (2) like (1) but tolerate unknown shortcuts
+#.          shortpath -a rslt -g -- default unknown transient
+#
+#           (3) load the configuration data and return raw array
+#.          shortpath -f -q -a rslt -r -m ""
+#.          shortpath -f -q -a part -r -m "auto"
+#
+#           (4) resolve shortcut, check if unique
+#.          shortpath -g -n ignore -m "$part"
+#.          case "${#CEN_SHORTPATH[@]}" in
+#.              0)  message "Shortcut '$part' has no path" ;;
+#.              1)  message "Shortcut '$part' is '$CEN_SHORTPATH'" ;;
+#.              *)  error "Shortcut '$part' is ambiguous"
+#.          esac
+#
+#.          (5) list existing shortcuts
+#.          shortpath -m "" -n "dash" ; splitjoin -i CEN_SHORTPATH
+# ------------------------------------------------------------------------------
+CEN_SHORTPATH=
+shortpath() {
+    local _vres="CEN_SHORTPATH" _emsg='error -z' _stat=0 _fqui _ferr
+    local _pref _plen _fgra _fraw _item _name _ndir _isok _full _ndef
+    local _oerr='-e' _warn='_cen_run_config -m shortpath'
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -a)   shift ; _vres="$1" ;;
+        -e)   _ferr=1 ;;
+        -f)   _oerr='-f' ; _emsg="fatal" ;;
+        -g)   _fgra=1 ;;
+        -m)   shift ; _pref="$1" ; _plen="${#_pref}" ;;
+        -n)   shift ; _ndir="$1" ;;
+        -q)   _oerr='-q' ; _emsg="$CEN_TRACE" ; _fqui='-q' ; _warn=':' ;;
+        -r)   _fraw=1 ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+    [ -n "$_plen" -a "$#" -gt 0 ] && _cen_abort - "$*"      # -m with arg list
+    local -n _vvar="$_vres" ; _vvar=()
+
+    # read configuration file on 1st call
+    if [ -z "$CEN_SHORTPATH_DAT" ] ; then
+        sysversion                                          # get CEN_SYS_xxx vars
+        _cen_run_config $_oerr 'shortpath' || return 1
+        local _line _sifs="$IFS" _atmp
+        for _line in "${CEN_RUN_SHORTPATH[@]}" ; do
+            #$CEN_TRACE2 -a -c " parse" -- "$_line"
+            local _skey="${_line%% *}" _sval="${_line#* }"
+            if [ "$_skey" != 'path' ] ; then
+                warning -i -- $"1st argument must be 'path':" "$_line"
+                _stat=1 ; continue
+            fi
+            # _line entries should already be correctly quoted
+            eval _atmp="($_sval)"                           # replace variables
+            if [ -z "${_atmp[0]}" -o -z "${_atmp[1]}" -o -z "${_atmp[2]}" ] ; then
+                warning -i  -- $"Empty fields are invalid:" "$_line"
+                _stat=1 ; continue
+            fi
+            IFS=':' _sval="${_atmp[*]}" ; IFS="$_sifs"
+            CEN_SHORTPATH_DAT+=("$_sval")
+        done
+        unset CEN_RUN_SHORTPATH                             # drop config data
+        [ -z "${#CEN_SHORTPATH_DAT[@]}" ] && CEN_SHORTPATH_DAT=(-)
+    fi
+
+    # error handling
+    [ "$_stat" != 0 ] && warning -p $"Error(s) in [%s] configuration: %s" 'shortcut' "$CEN_RUN_CONFIG"
+    [ -z "$_plen" -a "$#" = 0 ] && return 0                 # nothing to find
+    _stat=0
+
+    # handling of missing entries
+    case "$_ndir" in
+        "")     _ndef='E' ;;
+        dash)   _ndef='-' ;;
+        empty)  ;;
+        ignore) _ndef='I' ;;
+        path)   _ndef='P'  ;;
+        *)      _cen_abort - "-n $_ndir"
+    esac
+
+    # loop over arguments and data
+    while : ; do
+        _isok=
+        if [ -n "$1" ] ; then                           # match an argument
+            _plen="${#1}" ; _pref="$1"
+        fi
+
+        for _item in "${CEN_SHORTPATH_LIB[@]}" "${CEN_SHORTPATH_DAT[@]}" ; do
+            [ "${_item:--}" = '-' ] && continue         # placeholder
+            _full=
+
+            # simple prefix matching, return raw data
+
+            _name="${_item%%:*}"
+            if [ -n "$_plen" ] ; then                   # partial match (prefix)
+                [ "${_name::_plen}" = "$_pref" ] || continue
+            elif [ "$_name" = "$1" ] ; then             # full match
+                 _full=1
+            elif [ -z "$_fraw" ] ; then                 # ignore if not raw mode
+                continue
+            fi
+            if [ -n "$_fraw" ] ; then                   # return raw data
+                [ -z "$_plen" -a -z "$_full" ] && continue
+                _isok=2 ; _vvar+=("$_item") ; continue
+            fi
+
+            # got match in raw data, get a path
+
+            local _parr
+            _item="${_item#*:}" ; _item="${_item%%:*}"
+            splitjoin -s _parr -d '|' -i _item      # array of alternatives
+            for _item in "${_parr[@]}" '' ; do      # loop over alternatives
+                [ -z "$_item" ] && continue
+                if [ "${_item::3}" = ".. " ] ; then
+                    prettypath -c -p -s _item -- "${_item:3}" || continue
+                    _item="${_item%/*}"
+                elif [ "${_item::1}" = '~' ] ; then
+                    _item="${_item// /\\ }"         # escape spaces
+                    eval _item=$_item
+                elif [ "${_item::1}" = '@' ] ; then
+                    local rnam="${_item:1}" _shortpath_rec
+                    shortpath -a _shortpath_rec -q -- "${rnam%%/*}" || return
+                    _item="$_shortpath_rec/${rnam#*/}"
+                fi
+                if [ -n "$CEN_PATHS" ] && [ -d "$CEN_PATHS/$_item" ] ; then
+                    _item="$CEN_PATHS/$_item" ; break
+                fi
+                [ -d "$_item" ] && break
+            done
+            _isok=1
+
+            if [ -z "$_item" ] ; then               # no folder found
+                case "$_ndef" in
+                    E)  $_emsg $"No folder for shortcut:" "$_name"
+                        _stat=1 ; _isok=2 ;;
+                    I)  _isok=2 ;;
+                    P)  _item="${_parr[0]}" ;;
+                    *)  _item="$_ndef" ;;
+                esac
+            fi
+
+            if [ "$_plen" = 0 ] ; then                  # match all (list)
+                _vvar+=("${_item% }")
+            elif [ -n "$_plen" ] ; then                 # prefix match
+                [ -n "$_item" -o -z "$_ndef" ] && _vvar+=("${_item% }")
+            else                                        # exact match
+                [ -n "$_item" ] && break
+            fi
+        done
+
+        # save result or report error
+
+        if [ -n "$_isok" ] ; then                       # save match
+            [ -z "$_plen" -a "$_isok" != "2" ] && _vvar+=("${_item% }")
+        elif [ -n "$_fraw" ] ; then                     # error for raw data
+            if [ -z "$_fgra" ] ; then
+                $_emsg $"Not a valid shortcut:" "${1:-$_pref}" ; _stat=1
+            fi
+        else                                            # got an error ...
+            if [ "$_ndef" != 'E' -a -n "$_fgra" ] ; then
+                case "$_ndef" in
+                E|I) ;;
+                P)  _vvar+=('') ;;
+                *)  _vvar+=("$_ndef") ;;
+                esac
+            elif [ -z "$_fgra" ] ; then
+                $_emsg $"Not a valid shortcut:" "${1:-$_pref}" ; _stat=1
+            fi
+        fi
+        shift ; [ "$#" = 0 ] && break
+    done
+
+    # fix paths if we have a FS prefix
+    if [ -n "$CEN_PATHS" -a -z "$_fraw" ] ; then
+        local _curr=0 _clen="${#_vvar[@]}"
+        while [ "$_curr" -lt "$_clen" ] ; do
+            _item="${_vvar[_curr]}"
+            case "$_item" in
+                //*)    ;;                      # ignore samba path
+                /*)     _vvar[_curr]="$CEN_PATHS${_item#$CEN_PATHS}"
+            esac
+            ((_curr += 1))
+        done
+    fi
+    return "$_stat"
+}
+
+# ------------------------------------------------------------------------------
+# terminal Config + Section in centauri-bash-lib configuration file
+#
+#+General: The [[terminal()]] function reads the (cached) configuration statements
+#          to find an executable command to be run as a console emulator.
+#
+#+          "$CEN_ROOT/default" is the preferred location for "centauri-bash-lib",
+#           see [[configfile]] for more details.
+#
+#+Config:   Valid "centauri-bash-lib" configuration lines are:
+#
+#           # potential emulator commands
+#           °°**emulator**       § <desk> <tool>...
+#           # optional: emulator tool configuration
+#           °°**-args:**<tool>   § <arg>...
+#           °°**-flags:**<tool>  § <arg>...
+#           °°**-title:**<tool>  § <arg>...
+#           # no emulator if we find a login shell
+#           °°**login**          § <arg>...
+#           # continue search if ancestor is a shell
+#           °°**shell**          § <arg>...
+#           # need no emulator for these parents ...
+#           °°**white**          § <arg>...
+#           # needing to launch emulator ...
+#           °°**black**          § <arg>...
+#                   # no desktop, no xroot
+#           °°**black-startup**  § <arg>...
+#                   # embedded konsole, check KONSOLE_DBUS_SERVICE
+#           °°**black-konsole**  § <arg>...
+#
+#           Where place holders are defined as:
+#
+#           °°<tool>        § is a command name (not a path)
+#           °°<arg>         § any kind of argument
+#
+#           Configuration Example:
+#
+#.      [terminal]
+#.              # emulators for KDE/Gnome desktop sessions:
+#.              emulator     kde     konsole qterminal gnome-terminal xterm
+#.              emulator     gnome   gnome-terminal konsole qterminal xterm
+#.              # other session types (must be last emulator line):
+#.              emulator     *      qterminal gnome-terminal konsole  xterm
+#.
+#.              # options for emulators
+#.              -args:konsole       --hide-tabbar --hide-menubar --nofork
+#.              -title:konsole      --title
+#.              -args:gnome-terminal    --hide-menubar --wait --
+#.              -title:gnome-terminal   --title
+#.
+#.              # configure desktop state detection
+#.              login               -bash|-dash|-csh|-sh
+#.              shell               bash|dash|csh|sh
+#.              white               sudo|kdeinit.*\ konsole.*|konsole.*|gnome.*|qterminal|xterm
+#.              black               krunner.*|lx.*-session|plasma.*
+#.              black-startup       sddm.*|startkde.*|startplasma.*
+#.              black-konsole       dolphin.*|kde.*
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# terminal - Run a terminal emulator if needed
+#
+# Call:     (1) terminal [-c|-x] [-f|-q] [-o <over>] [-y <desk>]
+#           (2) terminal [-f|-q] [-m <mode>] [-o <over>] [-t <titl>] [-y <desl>] [--] <arg>...
+#
+# Options:  -a  array of resulting command words (default is CEN_TERMINAL)
+#           -b  run via 'bash -c <arg>...' (arguments will be quoted)
+#           -c  check ''terminal'' emulator status, don't run, set CEN_IS_DESKTOP
+#           -f  errors are fatal
+#           -m  launch via exec or as background process
+#           -n  do not run, only return command array
+#           -o  [*] override desktop status (force running ''terminal'' emulator)
+#           -q  no error messages
+#           -r  ignore --dryrun
+#           -t  window title (if supported by ''terminal'' emulator)
+#           -x  check if any configured ''terminal'' emulator can be run
+#               (CEN_IS_DESKTOP == 0 returns **false**)
+#           -y  [*] desktop type override
+#
+#           [*] these options discard any previous detection state
+#
+# Arguments:<arg>   arguments passed to ''terminal'' emulator via "<tool> -e <arg>..."
+#           <desk>  desktop config to use like: **tty** **kde** **lxqt** **gnome**
+#           <mode>  0:wait (default)  1:exec  2:background  3:disown
+#           <titl>  window title
+#           <over>  0:don't start  1:start  2:auto (default)
+#
+# Return:   **true** at success or **false** otherwise. The following variables are set:
+#
+#,          - CEN_IS_DESKTOP        desktop status, see below
+#,          - CEN_RUN_EMULATOR      used ''terminal'' emulator like "/usr/bin/konsole"
+#,          - CEN_TERMINAL          command to be executed (array of words)
+#
+#+A main feature of this function is to find out if a desktop session is active and
+# if the caller is running in a ''terminal'' emulator window. Depending on this
+# the following happens (unless overridden by -o):
+#
+#,          °°Desktop running, no emulator: start an emulator
+#,          °°No desktop or in an emulator: simply execute
+#
+#+Common ''terminal'' emulators are: **konsole**, **qterminal** or **gnome-terminal**.
+# The emulator detection process and the emulator that is to be started are configurable,
+# see [[terminal Config]].
+#
+#+The variable CEN_IS_DESKTOP is set on the first call or if option -c is passed:
+#
+#,          °°CEN_IS_DESKTOP=       # state unknown, will check
+#,          °°CEN_IS_DESKTOP=0      # no desktop or in emulator
+#,          °°CEN_IS_DESKTOP=1      # have desktop need emulator
+#,          °°CEN_IS_DESKTOP=2      # have no desktop but need emulator
+#
+#+All common ''terminal'' emulators seem to support command line option "-e" that is
+# followed by a list of arguments that are to be executed as a command. This is
+# used by terminal if no "-b" option is given. The 1st <arg> value is converted
+# to a full path via [[sysfind()]].
+#
+#.Examples: terminal -c             # check only, do not run
+#.          terminal                # open a terminal (desktop only)
+#.          terminal -- top         # run a program, wait for exit
+#.          terminal -b read '$>'   # run using 'bash -c <cmd>'
+#
+#.          terminal -x -y kde   && message "KDE   uses: $CEN_RUN_EMULATOR"
+#.          terminal -x -y gnome && message "Gnome uses: $CEN_RUN_EMULATOR"
+#.          terminal -x -o -        # reset status
+# ------------------------------------------------------------------------------
+CEN_TERMINAL= ; CEN_RUN_EMULATOR=
+terminal() {
+    #$CEN_DEBUG -c -- "$*"
+    local _bash _ochk _oerr='-e' _onot _orun _otit _over _mode=0 _stat=0 \
+           _desk="$CEN_DESKTOP" _vnam='CEN_TERMINAL'
+    local _warn='_cen_run_config -m terminal'
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -a)   shift ; _vnam="$1" ;;
+        -b)   _bash=1 ;;
+        -c)   _ochk=1 ;;
+        -e)   ;;                        # ignore, passed from launcher
+        -f)   _oerr='-f' ;;
+        -m)   shift ; _mode="${1:-0}" ;;
+        -n)   _onot=1 ;;
+        -o)   shift ; _over="${1:--}" ; CEN_IS_DESKTOP= ;;
+        -q)   _oerr='-q' ;;
+        -r)   _orun='-r' ;;
+        -t)   shift ; _otit="$1" ;;
+        -x)   _ochk=2 ;;
+        -y)   shift ; _desk="$1" ; CEN_IS_DESKTOP= ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+    local -n _acmd="$_vnam" ; _acmd=()
+
+    [ -z "$CEN_DISPLAY" ] && CEN_IS_DESKTOP=0
+    [ -n "$CEN_IS_DESKTOP" -a "$_ochk" = 1 ] && return 0    # valid status
+
+    if [ -z "$CEN_IS_DESKTOP" ] ; then                      # unknown state ...
+        CEN_RUN_EMULATOR= ; CEN_TERMINAL_DAT=()
+
+        if [ -z "$CEN_RUN_TERMINAL" ] ; then                # must read configuration
+            _cen_run_config $_oerr 'terminal' || return 1
+        fi
+
+        local _line _temp _indx _sarr _what
+        [ -z "$_desk" ] && _desk='tty'
+        $CEN_TRACE2 -a -c -p " parse" "lines=%d  desktop=%s" "${#CEN_RUN_TERMINAL[@]}" "$_desk"
+
+        for _line in "${CEN_RUN_TERMINAL[@]}" ; do
+            # All data should have been correctly quoted at caching time. So we use eval
+            # directly without error handling. The slower equivalent is: spliteval -u
+            eval "_sarr=($_line)"
+            #$CEN_TRACE2 -a -c -p " key val" "%-20s %s\n" "$_sarr" "${_sarr[*]:1}"
+            [ -z "${_sarr[1]}" ] && _sarr=                  # no argument -> incrorrect
+
+            _indx=
+            case "$_sarr" in
+                emulator)
+                    [ -n "$CEN_RUN_EMULATOR" ] && continue
+                    _temp="${_sarr[1],,}"                   # desktop filter
+                    case "$_temp" in
+                    '*')    [ "$_desk" = 'tty' ] && continue ;;
+                    -)      ;;                              # no check
+                    $_desk) ;;
+                    *)      continue
+                    esac
+                    if ! sysfind $_oerr -o -s CEN_RUN_EMULATOR -- ${_sarr[@]:2} ; then
+                        _stat=2 ; break
+                    fi
+                    _what="${CEN_RUN_EMULATOR##*/}"
+                    CEN_TERMINAL_DAT[0]="$_temp"
+                    $CEN_TRACE2 -a -c " session" -- "$_temp: $CEN_RUN_EMULATOR"
+                    ;;
+
+                -args:$_what)   _indx=1 ;;
+                -flags:$_what)  _indx=2 ;;
+                -title:$_what)  _indx=3 ;;
+                -args:*|-flags:*|-title:*)
+                                 continue ;;
+
+                login)          _indx=4 ;;
+                shell)          _indx=5 ;;
+                white)          _indx=6 ;;
+                black)          _indx=7 ;;
+                black-startup)  _indx=8 ;;
+                black-konsole)  _indx=9 ;;
+
+                *)  $_warn -- "$_line" ; _stat=1    # warning, ignore this line
+            esac
+            if [ -n "$_indx" ] ; then
+                CEN_TERMINAL_DAT[_indx]="${_sarr[*]:1}"
+                #$CEN_TRACE2 -a -c -p "param" "%-7s [%s]: %s" "${_sarr%%-*}" "$_indx" "${_sarr[*]:1}"
+            fi
+        done
+
+        [ -z "$CEN_TERMINAL_DAT" ] && CEN_TERMINAL_DAT=(-)
+        if [ "$_stat" = 1 ] ; then
+            warning -p $"Error(s) in [%s] configuration: %s" 'terminal' "$CEN_RUN_CONFIG"
+        elif [ "$_stat" != 0 ] ; then
+            return 1
+        fi
+    fi
+
+    # check if a terminal emulator should be run: CEN_IS_DESKTOP 0:no  1:yes  2:startup
+    if [ "$CEN_TERMINAL_DAT" = '-' ] && [ -n "$_ochk" -a $# != 0 ] ; then
+        warning $"No terminal configuration, see:" "$CEN_RUN_CONFIG"
+        CEN_IS_DESKTOP=1
+    fi
+
+    if [ -z "$CEN_DISPLAY" ] ; then
+        $CEN_TRACE $"No desktop running, see $DISPLAY or $XDG_SESSION_DESKTOP"
+        CEN_IS_DESKTOP=0
+    fi
+
+    # index [0]    session          type of desktop session
+    #       [1]    args             command option arguments
+    #       [2]    flags            flags (not used by launcher)
+    #       [3]    title            option set set app title
+    #       [4]    login            login shells
+    #       [5]    shell            shells
+    #       [6]    white            white list
+    #       [7]    black            black lisst
+    #       [8]    black-startup    no desktop session, no xroot window
+    #       [9]    black-konsole    special kde for sub-window
+
+    if [ -z "$CEN_IS_DESKTOP" ] ; then
+        CEN_IS_DESKTOP=0
+        local _pcmd _ppid="$PPID" _xxxx
+        while [ -n "$CEN_DISPLAY" ] ; do
+            local _pcmd="/proc/$_ppid/cmdline" ; [ -r "$_pcmd" ] || break
+            read -r -d '' _pcmd <"$_pcmd"
+            [ "${_pcmd::1}" = "/" -o "${_pcmd::2}" = "./" ] && _pcmd="${_pcmd##*/}" ;
+            $CEN_TRACE2 -a -c " parent" -- "$_pcmd"
+
+            # login: no emulator needed
+            if [[ "$_pcmd" =~ ^(${CEN_TERMINAL_DAT[4]})$ ]] ; then
+                :
+
+            # shell: loop until other parent than a shell
+            elif [[ "$_pcmd" =~ ^(${CEN_TERMINAL_DAT[5]})$ ]] ; then
+                [ -r "/proc/$_ppid/stat" ] &&
+                    read _xxxx _xxxx _xxxx _ppid _xxxx </proc/$_ppid/stat
+                if [ -z "$_xxxx" ] ; then
+                    system -r -s _ppid -- ps -p $_ppid -o ppid= || break
+                    _ppid="${_ppid// /}" ;
+                fi
+                [ "${_ppid:-1}" = 1 ] || continue
+
+            # white: we need no emulator
+            elif [[ "$_pcmd" =~ ^(${CEN_TERMINAL_DAT[6]})$ ]] ; then
+                :
+
+            # black-konsole: must not launch emulator in sub-window
+            elif [[ "$_pcmd" =~ ^(${CEN_TERMINAL_DAT[9]})$ ]] ; then
+                [ -z "$KONSOLE_DBUS_SERVICE" ] && CEN_IS_DESKTOP=1
+            # black-startup: must launch emulator without desktop
+            elif [[ "$_pcmd" =~ ^(${CEN_TERMINAL_DAT[8]})$ ]] ; then
+                CEN_IS_DESKTOP=2
+            # black: must launch emulator
+            elif [[ "$_pcmd" =~ ^(${CEN_TERMINAL_DAT[7]})$ ]] ; then
+                CEN_IS_DESKTOP=1
+
+            # don't know, don't launch a konsole
+            elif [ "$CEN_VERB" -gt 2 ] ; then
+                $CEN_TRACE -c " parent" -- "$_pcmd"
+                #system -r -q -- logger -t "centauri_bash_lib" "terminal: PARENT=$_pcmd"
+            fi
+            break
+        done
+    fi
+    $CEN_TRACE2 -a -c " result" "CEN_IS_DESKTOP=$CEN_IS_DESKTOP"
+
+    if [ -n "$_ochk" ] ; then                               # check only, do not run
+        [ "$_ochk" = 1 ] && return 0
+        [ "$CEN_IS_DESKTOP" != 0 ] ; return                 # return status
+    fi
+
+    local _strt="$CEN_IS_DESKTOP" _xopt _sepa='-e'
+    case "${_over:--}" in
+        0)      _strt=0 ;;                                  # run as "bash -c", no emulator
+        1)      [ -z "$CEN_DISPLAY" ] && return 1           # run in emulator if possible
+                [ -z "$CEN_RUN_EMULATOR" ] && return 1
+                _strt=1 ;;
+        2|-)    ;;
+        *)      _cen_abort - "-o $_over"
+    esac
+
+    # no emulator or shell, just run
+    if [ "$_strt" = 0 ] ; then
+        if [ -n "$_bash" ] ; then
+            _acmd=(bash -c "${*@Q}")
+        elif [ "$#" = 0 ] ; then
+            _acmd=(bash -i)
+        else
+            _acmd=("$@")
+        fi
+        sysfind -c -e -s _acmd[0] -- "$_acmd" || return 1
+
+    # build console command
+    else
+        set -f ; _acmd=("$CEN_RUN_EMULATOR" ${CEN_TERMINAL_DAT[1]}) ; set +f
+        if [ "${_acmd[-1]}" = '--' ] ; then
+            unset _acmd[-1] ; _sepa='--'
+        fi
+        if [ -n "$_otit" -a -n "${CEN_TERMINAL_DAT[3]}" ] ; then
+            [ "$_otit" = '-' ] && _otit="$CEN_NAME"
+            _acmd+=("${CEN_TERMINAL_DAT[3]}" "$_otit")      # title option
+        fi
+        if [ -n "$_bash" ] ; then                           # run bash
+            sysfind -c -e -s _bash -- bash || return 1
+            _acmd+=("$_sepa" "$_bash")
+            [ $# = 0 ] && _acmd+=(-i) || _acmd+=(-c "${*@Q}")
+        elif [ $# != 0 ] ; then                             # just start
+            local _path
+            sysfind -c -e -s _path -- "$1" || return 1
+            shift ; _acmd+=("$_sepa" "$_path" "$@")
+        fi
+    fi
+
+    # execute emulator auto=0  exec=1  background=2   disown=3
+    [ -n "$_onot" ] && return 0
+    _cen_run_command -m "$_mode" $_oerr $_orun -- "${_acmd[@]}" || _stat=$?
+    return $_stat
+}
+
+# ------------------------------------------------------------------------------
+# use system to run a command: -m <mode> -t <title> -y <desk> <opt>... -- <arg>...
+#
+# The '--' separator is required, all parameters before are options or option args.
+# The 1st argument must be a full path (starts with /) or a function (starts with @)
+#
+# mode: 0=just run   1=exec (no return)  2=background   3=disown
+# ------------------------------------------------------------------------------
+_cen_run_command() {
+    $CEN_DEBUG -c -- "$@"
+    local _stat=0 _mode=0 _oerr _opts=()
+    while [ $# -gt 0 ] ; do
+        case "$1" in
+        --)         shift ; break ;;
+        -m)         shift ; _mode="${1:-0}" ;;
+        -t|-y)      [ "${1:--}" = '-' ] || _opts+=("$1" "$2") ; shift ;;
+        -x)         ;;
+        -[efq])     _opts+=("$1") ; _oerr="$1" ;;
+        -w)         _oerr="$1" ;;
+        *)          _opts+=("$1") ;;
+        esac ; shift
+    done
+
+    case "$_mode${1::1}" in
+    0/) system -n "${_opts[@]}" -- "$@" || _stat=$?
+        ;;
+    1/) quit -h                             # must run hooks before exec
+        system $_oerr -n -q -x -- "$@" || _stat=$?
+        ;;
+    2/) system $_oerr -n -q -x -- "$@" & _stat=$?
+        ;;
+    3/) system $_oerr -n -q -x -- "$@" & _stat=$? ; disown -h $!
+        ;;
+    [0-3]@)
+         if [ "$1" = '@terminal' ] ; then
+            ${1:1} -o 1 "${_opts[@]}" -m "$_mode" -- "${@:2}" || _stat=$?
+         else
+            isfunction -e -c -- ${1:1} "${_opts[@]}" -m "$_mode" -- "${@:2}" || _stat=$?
+         fi
+         ;;
+    *)   _cen_abort - "-m $_mode ... $1 ..."
+    esac
+    return $?
+}
+
+# ------------------------------------------------------------------------------
+# Read library configuration: (1) [-f|-q] -a|-l|-r <reader> <section>
+#                             (2) [-f|-q] -v <array> <section>
+#                             (3) -m [<info>] <line>        # error reporting
+# For sections launcher|terminal|shortpath the corresponding data in
+# CEN_RUN_LAUNCHER CEN_RUN_TERMINAL CEN_RUN_SHORTPATH is cached.
+# ------------------------------------------------------------------------------
+CEN_RUN_CONFIG=
+_cen_run_config() {
+    local _ferr _read _ropt _fcch _fpri _fqui _stat=0 _smsg _path='centauri-bash-lib'
+    while [ "${1::1}" = "-" ] ; do
+        case "$1" in
+        --)   shift ; break ;;
+        -a|-l|-r)
+              _ropt="$1" ; shift ; _read="$1" ;;
+        -e)    ;;
+        -f)   _ferr='-f' ;;
+        -m)   shift ; _smsg="$1" ;;
+        -p)   shift ; _path="$1" ;;
+        -q)   _ferr='-q' ; _fqui='-q' ;;
+        -v)   _ropt='-v -r' ; shift ; _read="$1" ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+    done
+    [ "$EUID" = 0 ] || _fpri='-p'
+
+    # error messages
+    if [ -n "$_smsg" ] ; then
+        CEN_CONFIGFILE=("$CEN_RUN_CONFIG" "$1" - -)     # message parameters
+        [ $# = 1 ] && shift
+        configfile -w "$_smsg" "$@" ; return 0
+    fi
+
+    # cached sections
+    case "$1" in
+        launcher|terminal|shortpath)
+        _fcch=1 ;;
+    esac
+
+    if [ -z "$_fcch" -o $# -gt 1 ] ; then
+        [ -z "$_read" ] && _cen_abort + '-a|-l|-r'
+        configfile -i true $_fpri $_ropt $_read -n "$_path" "$@" || _stat=$?
+    elif [ -z "$CEN_RUN_CONFIG" ] ; then
+        if ! cachefile $_ferr -s -w "$_path.dat" "$_path" ; then
+            configfile $_fqui $_fpri -r CEN_RUN_LAUNCHER  -v -x -n "$CEN_CONFIGFILE" 'launcher'
+            configfile $_fqui $_fpri -r CEN_RUN_TERMINAL  -v -x -n "$CEN_CONFIGFILE" 'terminal'
+            configfile $_fqui $_fpri -r CEN_RUN_SHORTPATH -v -x -n "$CEN_CONFIGFILE" 'shortpath'
+            CEN_RUN_CONFIG="$CEN_CONFIGFILE"
+            if [ -s "$CEN_CONFIGFILE" ] ; then
+                serialize $_ferr -w -n "$CEN_CACHEFILE" -m 664 -- CEN_RUN_CONFIG \
+                        CEN_RUN_LAUNCHER CEN_RUN_TERMINAL CEN_RUN_SHORTPATH
+            else
+                $CEN_TRACE -c " no data" $"Not writing config cache"
+            fi
+        fi
+    fi
+    return $_stat
+}
+
+# end

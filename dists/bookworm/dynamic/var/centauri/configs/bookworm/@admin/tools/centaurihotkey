@@ -1,0 +1,209 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2004-2023; BSD License"
+CEN_TITLE="Helper to start Applications via Hotkeys"
+
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r "$0" '0.10' || exit 2
+
+# ------------------------------------------------------------------------------
+# A helper to list Qt-subapplication uris. The optional 1st argument
+# can be used as sub-class filter. The output fields are:
+# <window-id> <pid> <class>
+# ------------------------------------------------------------------------------
+by_class() {
+    ___output() {
+        local head="window-id__ pid____ class___________________ title______"
+
+        local wxx0 wpid wcls wxx1 wxx2 lcnt=0
+        while read -r wid wxx0 wpid wcls wxx1 wxx2 ; do
+            if [ -z "$fltr" -a "$lcnt" = 0 ] ; then
+                output    -i 5 -l -- "${head//_/ }"                 # title text
+                output    -i 5 -l -d one -x - _ -- "$head"          # header line
+            fi
+            if [ -z "$fltr" ] ; then
+                if [ "${#wcls}" -gt 24 ] ; then
+                    printf -v text "%11s %7s %s" "$wid" "$wpid" "$wcls"
+                    output -i 5 -b 45 -l "$text"
+                    wid= ; wpid= ; wcls=
+                fi
+                printf -v text "%11s %7s %-24s %s" "$wid" "$wpid" "$wcls" "$wxx2"
+                output -i 5 -b 45 -l "$text"
+            fi
+            ((lcnt++))
+        done
+
+        if [ -z "$fltr" -a "$lcnt" -gt 0 ] ; then
+            output    -i 5 -l -d two -x - _ -- "${head// /_}"   # footer line
+            output    -l
+        fi
+    }
+
+    ___winact() {
+        local wid wxx0 wpid wcls wxx1 wxx2
+        while read -r wid wxx0 wpid wcls wxx1 wxx2 ; do
+            if [ "${1:--}" = '-' ] ; then
+                printf "%11s |%6s |%24s | %s\n" "$wid" "$wpid" "$wcls" "$wxx2"
+            elif [[ "${wcls,,}" == ${1,,} ]] ; then
+                system -e -x wmctrl -i -a $wid
+                break
+            elif [ "Qt-subapplication.${1##*.}" = "$wcls" ] ; then
+                system -e -x wmctrl -i -a $wid
+                break
+            fi
+        done
+    }
+
+    tmpfile -f
+    local ares item flds
+    # wmctrl does not escape spaces, use hostname as separator
+    sysrun -e -p -a ares -r -- wmctrl -lxp || return
+    for item in "${ares[@]}" ; do
+        splitjoin -s flds -d ' ' -i item
+        local wid="${flds[0]}" wxxx="${flds[1]}" wpid="${flds[2]}" wcls= winf= finf=
+        for item in "${flds[@]:3}" ; do
+            if [ "$item" = "$HOSTNAME" ] ; then
+                finf="$item" ; continue
+            fi
+            [ -z "$finf" ] && wcls+="_$item" || winf+=" $item"
+        done
+            echo "$wid" "$wxxx" "$wpid" "${wcls:1}" "$finf" "${winf:1}"
+    done > "$CEN_TMPFILE"
+
+    # data is in tmpfile, wcls replaced spaces by '_'
+    if [ "${1:--}" = '-' ] ; then
+        ___output
+    else
+        ___winact "$1"
+    fi < "$CEN_TMPFILE"
+    return
+}
+
+# ------------------------------------------------------------------------------
+# activate a window if by_class can find the id or exec a command...
+# ------------------------------------------------------------------------------
+run_or_act() {
+     by_class "$1"
+     shift
+     system -e -x -- "$@"
+}
+
+# ------------------------------------------------------------------------------
+# helper to show a message
+# ------------------------------------------------------------------------------
+show_message() {
+    if system -c kdialog ; then
+        kdialog --title "Power Management" --passivepopup "$1 please wait..." 3
+    else
+        message -a "Power Management: $1 please wait..."
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# The one and only action
+# ------------------------------------------------------------------------------
+run() {
+    system -f -c wmctrl qdbus dbus-send
+    case "$1" in
+    br*2|konq*)
+        run_or_act konqueror.Konqueror konqueror ;;
+    calc*|kcal*)
+        run_or_act kcalc.kcalc kcalc ;;
+    [kc]ons*)
+        run_or_act konsole.Konsole konsole ;;
+    dict*)
+        if [ -x /usr/bin/opendict ] ; then
+            run_or_act python.Phython opendict
+        else
+            run_or_act kdict.Kdict kdict
+        fi
+        ;;
+    file*|dolp*)
+        run_or_act dolphin.Dolphin dolphin ;;
+    brow*|fire*|icew*)
+        if [ -x /usr/bin/firefox-esr ] ; then
+            run_or_act "Navigator.Firefox-esr" firefox-esr
+        else
+            run_or_act "Navigator.Firefox" firefox
+        fi ;;
+    mail*|thun*|evol*|kmai*)
+        if [ -x /usr/bin/thunderbird ] ; then
+            run_or_act Mail.thunderbird-default thunderbird
+        elif [ -x /usr/bin/evolution ] ; then
+            run_or_act evolution.Evolution evolution
+        else
+            run_or_act kmail.Kmail kmail
+        fi ;;
+    susp*)
+        if systemctl suspend -i ; then
+            show_message "System is suspending"
+        else
+            systemctl poweroff -i --no-wall
+        fi ;;
+    hibe*)
+        if systemctl hibernate -i ; then
+            show_message "System is hibernating"
+        elif systemctl suspend -i ; then
+            show_message "System is suspending"
+        else
+            systemctl poweroff -i --no-wall
+        fi ;;
+    lock)
+        xset dpms force standby
+        qdbus org.freedesktop.ScreenSaver /ScreenSaver Lock
+        ;;
+    shu*)
+        dbus-send --print-reply --dest=org.kde.ksmserver \
+                /KSMServer org.kde.KSMServerInterface.logout int32:0 int32:2 int32:2
+        ;;
+    sys*m*)
+        run_or_act ksysguard.Ksysguard ksysguard ;;
+    vbo*)
+        run_or_act VirtualBox_Manager.VirtualBox_Manager centaurivbox -g1 gui ;;
+    *)
+        by_class "$@" ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -u "$CEN_NAME <option>... <name>|<class>|<state>|-" \
+        -u - \
+        -u "$CEN_TITLE. Usually the KDE keyboard shortcut" \
+        -u "system-settings page is used to configue keys that invoke $CEN_NAME." \
+        -u - \
+        -u "The tool uses generic names to launch applications or to raise already running" \
+        -u "applications. It is based on 'wmctrl' and windows classes. Specifying '-' as" \
+        -u "argument lists running applications and their windows classes."
+
+    usageset \
+        -a "<name>               "$"generic name (see below), or a real application name" \
+        -a "<class>              "$"a windows class, example: kcalc.kcalc" \
+        -a "<state>              "$"change system state" \
+
+    usageset \
+        -l "Names" \
+        -t "browser              "$"WEB browser            (firefox)" \
+        -t "calculator           "$"Calculator             (kcalc)" \
+        -t "console              "$"Console window         (konsole)" \
+        -t "files                "$"Calculator             (kcalc)" \
+        -t "mail                 "$"Mail client            (thunderbird, kmail)" \
+        -t "vbox                 "$"VirtualBox manager GUI (virtualbox)"
+
+    usageset \
+        -l "States" \
+        -t "hibernate            "$"Save system state to disk and power off" \
+        -t "lock                 "$"Lock desktop, display off" \
+        -t "shutdown             "$"System power off" \
+        -t "suspend              "$"Enter sleep mode" \
+
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+#end

@@ -1,0 +1,289 @@
+# jpf@Centauri - modified bash startup
+# ------------------------------------------------------------------------
+# The /etc/bashrc file is modified to source this script unless the user's
+# home folder contains custom .profile and/or .bashrc files. Invocations:
+#
+#   ./etc/bash.centauri INIT        # from /etc/bash.bashrc
+#   ./etc/bash.centauri PROFILE     # from ~/.profile or via INIT
+#   ./etc/bash.centauri BASHRC      # from ~/.bashrc  or via INIT and PROFILE
+#   ./etc/bash.centauri ALIASES     # from ~/.aliases or via BASHRC
+#
+# Use 'BASHRC_IGNORE=1' to disable this script (except for setting CEN_ROOT)
+# ------------------------------------------------------------------------
+
+#logger "bash.centauri $1 [$CEN_ROOT $$]"
+#echo "bash.centauri $1 [$CEN_ROOT $$]"
+
+if [ -z "$BASH_VERSION" ] ; then
+    BASHRC_IGNORE=2
+else
+    # No root - must be 1st call to bash.centauri, default to PROFILE
+    [ -z "$1" -a -z "$CEN_ROOT" ] && set -- PROFILE
+fi
+
+################################# INITIALIZE ############################
+if [ -z "$CEN_ROOT" ] && [ "$BASHRC_IGNORE" != 2 ]  ; then
+################################# INITIALIZE ############################
+
+    # need EUID, adjust umask to centauri default
+    [ -n "$EUID" ] || EUID=`id -u`
+    [ "$EUID" = 0 ] || umask 02
+
+    # sanitize /tmp and /tmpdir
+    [ -n "$TMP" ] || export TMP="${XDG_RUNTIME_DIR:-/tmp}" ;
+    [ -n "$TMPDIR" ] || export TMPDIR="$TMP"
+
+    # get CEN_ROOT if not yet set
+    if [ "${CEN_ROOT:-.}" = '.' ] || [ ! -d "$CEN_ROOT" ] ; then
+        CEN_ROOT='/var/centauri'
+        if [ ! -d "$CEN_ROOT" ] ; then
+            type -t centauripaths &>/dev/null && eval CEN_ROOT=$(centauripaths root)
+            [ -e "$CEN_ROOT" ] || CEN_ROOT='.'
+        fi
+    fi
+    export CEN_ROOT
+
+    # add python virtual environment
+    [ -d "/shared/python/bin" ] && PATH="/shared/python/bin:$PATH"
+
+    # set PATH so it includes user's private bin if it exists
+    [ -d "$HOME/bin" ] && PATH="$HOME/bin:$PATH"
+
+    # load local defs
+	[ -f "/etc/bash.local" ] && . /etc/bash.local
+fi
+ 
+############################# ignore BASHRC #############################
+if [ -n "$BASHRC_IGNORE" ] ; then
+############################# ignore BASHRC #############################
+    :
+
+################################# PROFILE ###############################
+elif [ "$1" = "PROFILE" ] ; then
+################################# PROFILE ###############################
+
+    # if running bash
+    if [ -n "$BASH_VERSION" ]; then
+        if [ -f "$HOME/.bashrc" ] ; then
+            . "$HOME/.bashrc" 
+        else
+            . /etc/bash.centauri BASHRC
+        fi
+    fi
+
+    # check XDG_RUNTIMEDIR and if encrypted .cache is ok
+    if ! [ -d "$XDG_RUNTIME_DIR" -a -d ".cache" ] ; then
+        type -t centaurisession &>/dev/null && eval $(centaurisession profile)
+    fi
+
+    # fix environment for pulseaudio with sudo
+    if [ -n "$DISPLAY" -a -z "$PULSE_SERVER" -a -n "$SUDO_USER" ] ; then
+        export PULSE_SERVER=127.0.0.1
+    fi
+
+    # hide sudo from kde
+    if [ "$LOGNAME" = "root" ] ; then
+        export _SUDO_GID="$SUDO_GID"
+        export _SUDO_COMMAND="$SUDO_COMMAND"
+        export _SUDO_USER="$SUDO_USER"
+        export _SUDO_UID="$SUDO_UID"
+        unset SUDO_GID SUDO_COMMAND SUDO_USER SUDO_UID
+    fi
+
+    # initialize the roaming profile
+    type -t centaurisession &>/dev/null && centaurisession login
+
+################################# BASHRC ################################
+elif [ "$1" = "BASHRC" ] ; then
+################################# BASHRC ################################
+
+    # to make styles work via sudo and ssh
+    #[ -z "$QT_PLUGIN_PATH" ] && QT_PLUGIN_PATH=/usr/lib/x86_64-linux-gnu/qt5/plugins
+    #export QT_PLUGIN_PATH
+
+    # don't put duplicate lines or lines starting with space in the history.
+    HISTCONTROL=ignoreboth
+    # append to the history file, don't overwrite it
+    shopt -s histappend
+    # for setting history length see HISTSIZE and HISTFILESIZE in bash(1)
+    HISTSIZE=1000
+    HISTFILESIZE=2000
+
+    # check the window size after each command
+    shopt -s checkwinsize
+
+    # If set, the pattern "**" used in a pathname expansion context will
+    # match all files and zero or more directories and subdirectories.
+    #shopt -s globstar
+
+    # make less more friendly for non-text input files, see lesspipe(1)
+    [ -x /usr/bin/lesspipe ] && eval "$(SHELL=/bin/sh lesspipe)"
+    
+    # set variable identifying the chroot you work in (used in the prompt below)
+    if [ -z "${debian_chroot:-}" ] && [ -s /etc/debian_chroot ]; then
+        debian_chroot=$(</etc/debian_chroot)
+    fi
+
+    # set a fancy prompt (non-color, unless we know we "want" color)
+    case "$TERM" in
+        xterm-color) color_prompt=yes;;
+    esac
+
+    # uncomment for a colored prompt, if the terminal has the capability; turned
+    # off by default to not distract the user: the focus in a terminal window
+    # should be on the output of commands, not on the prompt
+    #force_color_prompt=yes
+    
+    if [ -n "$force_color_prompt" ]; then
+        if [ -x /usr/bin/tput ] && tput setaf 1 >&/dev/null; then
+    	    # We have color support; assume it's compliant with Ecma-48
+	        # (ISO/IEC-6429). (Lack of such support is extremely rare, and such
+	        # a case would tend to support setf rather than setaf.)
+	        color_prompt=yes
+        else
+	        color_prompt=
+        fi
+    fi
+
+    if [ "$color_prompt" = yes ]; then
+        PS1='${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
+    else
+        PS1='${debian_chroot:+($debian_chroot)}\u@\h:\w\$ '
+    fi
+    unset color_prompt force_color_prompt
+
+    # If this is an xterm set the title to user@host:dir
+    case "$TERM" in
+        xterm*|rxvt*)
+            PS1="\[\e]0;${debian_chroot:+($debian_chroot)}\u@\h: \w\a\]$PS1" ;;
+    esac
+
+    # enable programmable completion features 
+    if [ -n "${BASH_COMPLETION_VERSINFO:-}" ] ; then
+        : #echo "bash completion already loaded"
+    elif ! shopt -oq posix; then
+        if [ -f /usr/share/bash-completion/bash_completion ]; then
+                . /usr/share/bash-completion/bash_completion
+            elif [ -f /etc/bash_completion ]; then
+                . /etc/bash_completion
+        fi
+    fi
+
+    # Load alias definitions.
+    if [ -f ~/.bash_aliases ]; then
+        . ~/.bash_aliases
+    else
+        . /etc/bash.centauri ALIASES
+    fi
+
+    # start .autologin or X-Server
+    if [ "$SHLVL" = "1" -a -z "$DISPLAY" -a "$EUID" != "0" ] ; then
+         case "$XDG_VTNR" in
+             3|4|5|6)   if type -t centaurisession &>/dev/null ; then
+                             centaurisession bashrc 
+                             [ $? = 127 ] || exit
+                        fi ;;
+         esac
+    fi
+
+################################# ALIASES ###############################
+elif [ "$1" = "ALIASES" ] ; then
+################################# ALIASES ###############################
+
+    # enable color support
+    if [ -x /usr/bin/dircolors ]; then
+        [ -r ~/.dircolors ] && eval "$(dircolors -b ~/.dircolors)" \
+                            || eval "$(dircolors -b /etc/DIR_COLORS)"
+        alias ls='ls --color=auto --time-style="+%F %H:%M"'
+        alias grep='grep --color=auto'
+        alias less='less --tabs=4'
+    else
+        alias ls='ls --time-style="+%F %H:%M"'
+    fi
+
+    # utf-8 support for bsd-mailx
+    [ /usr/bin/mail -ef /usr/bin/bsd-mailx ] && alias mail='mail -a "Content-Type: text/plain; charset=UTF-8"'
+
+    # for root only
+    if [ "$EUID" = 0 ] ; then
+        alias upgrade='DEBIAN_FRONTEND=noninteractive apt update && apt --yes upgrade'
+    fi
+
+    # some more ls aliases
+    alias ll='ls -lh'
+    alias ..='cd ..'
+    alias cid='centauriinfo disk'
+    alias cim='centauriinfo mount'
+    alias cis='centauriinfo syslog ---'
+    alias clh='centaurihelp -L'
+    alias cth='centaurihelp -T'
+    alias crm='centauriremove'
+    alias phys='cd -P "$PWD"'
+    alias server='centaurissh exec ---'
+
+    # cfi need a little helper
+    _cfi_helper() {
+        find -xdev \( -name ".encfs_*" -o -name ".cache" \) -prune -o -iname  "*$**" -print
+    }
+    alias cfi="_cfi_helper"
+
+    # ccd needs a little helper
+    _ccd_helper() {
+        if [ $# = 0 -o "${1::1}" = '-' ] ; then
+            centauripaths --embed ccd -I "$@"
+        else
+            local cdes=$(centauripaths --embed ccd --error "$@");
+            [ -n "$cdes" ] && cd "$cdes"
+        fi
+    }
+    alias ccd="_ccd_helper"
+
+    # init needs a helper
+    _init_helper() {
+        case "$1" in 
+        0)  centauripower shutdown ;;
+        6)  centauripower reboot   ;;
+        *)  /sbin/init "$1" ;;
+        esac
+    }
+    alias init="_init_helper"
+    [ -n "$DISPLAY" ] && alias logout="centauripower logout"
+    reboot="centauripower reboot"
+    shutdown="centauripower shutdown"
+
+    # register alias completion: <alias> <tool> 
+    if type -t _cen_completion_alias >/dev/null ; then
+        _cen_completion_alias ccd centauripaths
+        _cen_completion_alias clh centaurihelp
+        _cen_completion_alias crm centauriremove
+    fi
+
+################################# LOGOUT ################################
+elif [ "$1" = "LOGOUT" ] ; then
+################################# LOGOUT ################################
+
+    #echo "LOGOUT $SHLVL"
+
+    if [ -n "$LOGNAME" ] ; then
+        type -t centaurisession &>/dev/null && centaurisession logout
+    fi
+
+############################## do not modify ############################
+elif [ "$1" = "INIT" ] ; then
+############################## do not modify ############################
+	# this is called from /etc/bash.bashrc for interactive bash shells
+    #
+    # /etc/profile      -> /etc/bash.bashrc
+    # /etc/bash.bashrc  -> /etc/bash.centauri INIT
+
+    if shopt -q login_shell ; then
+        #echo "INIT (login)"
+        [ -f "$HOME/.profile" ] || . /etc/bash.centauri PROFILE
+    else
+        #echo "INIT (interactive)"
+        [ -f "$HOME/.bashrc" ] || . /etc/bash.centauri BASHRC
+    fi
+else  # [ -n "$1" ] ; then
+	echo "$0: Bad call arg: $1"
+fi
+
