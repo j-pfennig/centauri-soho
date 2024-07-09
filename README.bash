@@ -5,15 +5,6 @@
 # ------------------------------------------------------------------------------
 
 run() {
-
-    # example code
-    if [ -n "$CEN_HOOK_MESSAGE" ] ; then
-        message -p "Using centauri-bash-lib version '%s'" "${CEN_MODULES['_centauri_bash_lib']}"
-    else
-        message "Using mini-bash-lib"
-    fi
-    quit
-
     # This script i s stupid, also must run as root ...
 
     [ "$EUID" = 0 ] || quit -e "Must run as root user"
@@ -26,15 +17,15 @@ run() {
     # 3) install git and clone 'j-pfennig/centauri-soho':
 
     [ -x /usr/bin/git ] || { system apt install git || quit ; }
-    [-d centauri-soho ] || { system git clone \
-                             https://github.com/j-pfennig/centauri-soho || quit ; }
+    [ -d centauri-soho ] || { system git clone \
+                              https://github.com/j-pfennig/centauri-soho || quit ; }
 
     # 4) goto centauri-soho/dists/bookworm and copy:
 
     if [ ! -d /centauritools ] ; then
         folder -c centauri-soho/dists/bookworm || quit
-        getent group wheel || { echo 'wheel:x:51' >/etc/group ; }
-        getent passwd pulse || { echo 'pulse:x:505:audio::/run:/usr/sbin/nologin' >/etc/passwd ; }
+        getent group wheel || { echo 'wheel:x:51' >>/etc/group ; }
+        getent passwd pulse || { echo 'pulse:x:505:audio::/run:/usr/sbin/nologin' >>/etc/passwd ; }
         system chown -r root:root .  || quit
         system cp -ra static/* dynamic/* / || quit
     fi
