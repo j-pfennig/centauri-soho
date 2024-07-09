@@ -1,10 +1,10 @@
 #!/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. Jürgen Pfennig; BSD License"
+CEN_LEGAL="Dr. Jürgen Pfennig (c) 2021-2024; BSD License"
 CEN_TITLE="Example daemon or service"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -v "$0" "0.00:1" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -v - '0.01:2' || exit 2
 
 # By default a service with a run() method becomes a simple service:
 # CEN_SVC_TYPE=simple

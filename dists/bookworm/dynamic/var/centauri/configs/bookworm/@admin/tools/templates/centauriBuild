@@ -1,9 +1,9 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2021; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2021-2024; BSD License"
 CEN_TITLE="Build distributable tar for portable stand-alone script with l10n"
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -y "$0" "0.00:1" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -y - "0.01:2" || exit 2
 
 CEN_RUN_MAX_ARGS=0                              # don't allow script arguments
 

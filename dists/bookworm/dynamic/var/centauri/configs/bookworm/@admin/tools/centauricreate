@@ -4,11 +4,11 @@
 #       Other scripts may use '/usr/bin/bash' or '/bin/bash' see --shell option.
 
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2023; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2024; BSD License"
 CEN_TITLE=$"Create a script, module or configuration from a template"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -s -t -y - '0.20:2' 1 1 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -s -t -y - '0.21:2' 1 1 || exit 2
 
 # Data
 CEN_OPT_AUTHOR=                 # see --author
@@ -53,18 +53,18 @@ get_templates() {
         fi
     done
 
-    if [ -e "$DAT_TEMPLATE/centauri-bash-lib" ] ; then
+    if [ -e "$DAT_TEMPLATE/mini-bash-lib" ] ; then
         [ -n "$DAT_NAME_REG" ] && DAT_NAME_REG+='|'
-        DAT_NAME_REG+='config'
-        DAT_NAME_MAP['config']='centauri-bash-lib'
-        [ -n "$1" ] && usageset -t "" -t "config        '$CEN_ROOT/default/centauri-bash-lib' "$"configuration"
+        DAT_NAME_REG+='minilib'
+        DAT_NAME_MAP['minilib']='mini-bash-lib'
+        [ -n "$1" ] && usageset -t '' -t 'minilib       '$"stand-alone script using mini-bash-lib"
     fi
 
     if [ -e "$DAT_TEMPLATE/_custom_module_usr" ] ; then
         [ -n "$DAT_NAME_REG" ] && DAT_NAME_REG+='|'
         DAT_NAME_REG+='module'
         DAT_NAME_MAP['module']='_custom_module_usr'
-        [ -n "$1" ] && usageset -t "module        "$"a custom library module"
+        [ -n "$1" ] && usageset -t 'module        '$"a custom library module"
     fi
 
     if [ -e "$DAT_TEMPLATE/setup" ] ; then
@@ -72,6 +72,13 @@ get_templates() {
         DAT_NAME_REG+='setup'
         DAT_NAME_MAP['setup']='setup'
         [ -n "$1" ] && usageset -t "setup         "$"a simple centauri-bash-lib setup script"
+    fi
+
+    if [ -e "$DAT_TEMPLATE/centauri-bash-lib" ] ; then
+        [ -n "$DAT_NAME_REG" ] && DAT_NAME_REG+='|'
+        DAT_NAME_REG+='config'
+        DAT_NAME_MAP['config']='centauri-bash-lib'
+        [ -n "$1" ] && usageset -t '' -t "config        '$CEN_ROOT/default/centauri-bash-lib' "$"configuration"
     fi
 }
 
@@ -324,23 +331,23 @@ usage() {
     usageset -l $"examples" \
              -t "# "$"create script without 'main()' from centauriHello template" \
              -t "$CEN_NAME --shell='/usr/bin/env bash' myfolder/simple" \
-             -t "" \
+             -t '' \
              -t "# "$"create script with 'action' syntax" \
              -t "$CEN_NAME --template=action mytool" \
-             -t "" \
+             -t '' \
              -t "# "$"create script without demo code" \
              -t "$CEN_NAME --template=action --option=minimal mytool" \
-             -t "" \
+             -t '' \
              -t "# "$"create a custom library module" \
              -t "$CEN_NAME --template=module example" \
-             -t "" \
+             -t '' \
              -t "# "$"create centauri-bash-lib configuration file" \
              -t "$CEN_NAME --template=config -" \
-             -t "" \
+             -t '' \
              -t "# "$"run the 'shellcheck' tool (a bash lint)" \
              -t "$CEN_NAME -C myscript" \
              -t "$CEN_NAME -C myscript --- -e 1098 -W3" \
-             -t "" \
+             -t '' \
              -t "# "$"replace shebang for bash scripts in a folder" \
              -t "$CEN_NAME --shell ${CEN_PATHS[1]}/bash --dryrun --yes myfolder" \
              -t "$CEN_NAME -S + /var/centauri/tools -i centauricreate" \

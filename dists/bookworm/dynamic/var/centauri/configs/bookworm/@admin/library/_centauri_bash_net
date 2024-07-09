@@ -43,6 +43,7 @@ CEN_NET_PREFIX_IP6_DFLT='fc01::/72'
 
 CEN_NET_IFNAMES=                # 0:=no mapping  1:=systemd names
 CEN_NET_IFMAP=                  # list of interface mappings
+CEN_NET_IFKCMD=                 # flag for net.ifnames
 
 # ------------------------------------------------------------------------------
 # Interface Naming + About BIOS, systemd and internal interface names
@@ -401,12 +402,14 @@ nethost() {
 # Call:    (1) netiface [-s <vnam>] [-c|-d|-i|-k] [-e|-w] [-x] <name>|-
 #          (2) netiface -p          # persist mappings
 #          (3) netiface [-k]        # initialize, set CEN_NET_IFNAMES
+#          (4) netiface -n          # no init, get kernel 'net.ifnames'
 #
 # Options:  -c  return a class path (like "/sys/class/net/eth0")
 #           -d  return a device path (like "/dev/eth0")
 #           -e  generate error messages
 #           -i  return an internal device name (like "wlan0" or "eth0")
 #           -k  return a systemd/kernel device name
+#           -n  get kernel 'net.ifnames', no init
 #           -p  persist current mappings in a temporary file
 #           -s  save to variable (default is _netiface)
 #           -w  generate warnings
@@ -421,7 +424,15 @@ nethost() {
 # Return:   Form (3) returns **false** with option -k for BIOS naming.
 #
 #.Examples: # check naming mode
-#.          netiface -k && message "Using systemd naming"
+#.          netiface -k
+#.          case $? in
+#.          0)  message "Found net.ifnames=0" ;;
+#.          1)  message "Found net.ifnames=1" ;;
+#.          *)  message "No net.ifnames"
+#.          esac
+#
+#.          # get kernel 'net.ifnames' status
+#.          netiface -n  message "kernel has net.ifnames=0"
 #
 #.          # map internal name to kernel name and vice versa
 #.          netiface -k "wlan0"  -e && message "Kernel   name:" "$_netiface"
@@ -473,7 +484,7 @@ nethost() {
 # ------------------------------------------------------------------------------
 _netiface=
 netiface() {
-    local _bios _path _exst _mapm _pers _rslt _oerr=':' _vnam
+    local _bios _path _exst _mapm _ncmd _pers _rslt _oerr=':' _vnam
     local _cen_netiface_name _cen_netiface_kern
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
@@ -484,6 +495,7 @@ netiface() {
       -e)   _oerr='error' ;;
       -i)   _mapm='i' ;;
       -k)   _mapm='k' ;;
+      -n)   _ncmd=1 ;;
       -p)   _pers=1 ;;
       -s)   shift ; _vnam="$1" ;;
       -w)   _oerr='warning' ;;
@@ -492,6 +504,9 @@ netiface() {
       esac ; shift
     done
 
+    if [ -n "$_ncmd" ] ; then               # get cmdline status only
+        _cen_net_map_kcmd ; return
+    fi
     [ -z "$CEN_NET_IFNAMES" ] && _cen_net_mapinit
 
     if [ -n "$_pers" ] ; then               # create mapping file
@@ -539,6 +554,19 @@ netiface() {
     return 1
 }
 
+# get net.ifnames status from kernel cmd line
+_cen_net_map_kcmd() {
+    [ -n "$CEN_NET_IFKCMD" ] && return "$CEN_NET_IFKCMD"
+    local _wrds _item
+    read -r -a _wrds < '/proc/cmdline'
+    CEN_NET_IFKCMD=2
+    for _item in "${_wrds[@]}" ; do
+        [ "${_item::13}" = 'net.ifnames=0' ] && CEN_NET_IFKCMD=0
+        [ "${_item::13}" = 'net.ifnames=1' ] && CEN_NET_IFKCMD=1
+    done
+    return "$CEN_NET_IFKCMD"
+}
+
 # get current map mode, set CEN_NET_IFNAMES, load rules
 _cen_net_mapinit()  {
     [ -z "$CEN_NET_DOMAIN" ] && { netconfig || return 1 ; }
@@ -549,13 +577,8 @@ _cen_net_mapinit()  {
     elif [ '/etc/systemd/network/99-default.link' -ef '/dev/null' ] ; then
         CEN_NET_IFNAMES=0
     else
-        CEN_NET_IFNAMES=1
-        local _wrds _item
-        read -r -a _wrds < '/proc/cmdline'
-        for _item in "${_wrds[@]}" ; do
-            [ "${_item::12}" = 'net.ifnames=' ] || continue
-            _item="${_item:12}" ; CEN_NET_IFNAMES="${_item:-1}" ; break
-        done
+        _cen_net_map_kcmd && CEN_NET_IFNAMES=0 || CEN_NET_IFNAMES=1
+        local _item
         if [ "$CEN_NET_IFNAMES" = 0 ] ; then
             _item='bios'
         else
@@ -1092,6 +1115,8 @@ netlink() {
 #
 # Call:     netfile [-h] [-v <vari>] [--] <path> [<mode>]
 #
+#           The function uses [[netpath()]] internally, see CEN_NET_OUTPUT.
+#
 # Options:  -h       write a header
 #           -v       input from variable (or array) instead of stdin
 #
@@ -1150,6 +1175,8 @@ netfile() {
 #           <suffix> optional folder suffix (only used if folder exists)
 #
 # Return:   **true** for file output or **false** for output to /dev/stdout
+#
+#          The **_netpath** variable is set to the generated path.
 #
 # The variable CEN_NET_OUTPUT overrides/modifies the <path> argument:
 #

@@ -1,13 +1,19 @@
 This folder contains some sample scipts
 
-centauriAction   - Template using command line verbs (action syntax)
-centauriCgiforms - Demonstrates CGI programming using the XML module
-centauriDaemon   - Example daemon or service
-centauriFiles    - Template for a file processor (no action syntax)
-centauriHello    - A Hello World Example
-centauriRun      - Template for simple scripts (no action syntax)
-centauriService  - Example oneshot service
-centauriSimple   - Using centauri-bash-lib without main() function
+centauriAction      - Template using command line verbs (action syntax)
+centauriBuild       - Build distributable tar for portable stand-alone with l10n
+centauriCgiforms    - Demonstrates CGI programming using the XML module
+centauriDaemon      - Example daemon or service
+centauriFiles       - Template for a file processor (no action syntax)
+centauriHello       - A Hello World Example
+centauriRun         - Template for simple scripts (no action syntax)
+centauriService     - Example oneshot service
+centauriSimple      - Using centauri-bash-lib without main() function
+
+centauri-bash-lib   - create an /etc/default/centauri-bash-lib file
+_custom_module_usr  - example of a custom library moule
+mini-bash-lib       - script using a very simple library dummy
+setup               - example of a centauri-bash-lib setup tool
 
 The centauricreate tool should be used to generate a user side script
 that can serve as a starting point. Example:

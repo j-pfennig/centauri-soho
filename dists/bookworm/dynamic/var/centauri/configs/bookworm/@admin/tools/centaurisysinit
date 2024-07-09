@@ -171,7 +171,8 @@ run_appliances() {
     case "$netw" in
         router:*)   ;;
         switch:*)   ;;
-        *)          netw=                       # no network services
+        *)          [ -z "$auto" ] && return    # no appliance to run
+                    netw=                       # no network services
     esac
     message -a -c $"Appliance mode" "${netw:-$auto}"
 
@@ -199,16 +200,31 @@ run_appliances() {
 # called at service start
 # ------------------------------------------------------------------------------
 run() {
+    # make sure to have cached network config
     if [ "${CEN_PATHS[6]}/centaurinetcfg" -nt "$CEN_ROOT/persistent/centaurinetcfg" ] ; then
         message $"Updating network configuration cache"
         embed centaurinetcfg setup
+    fi
+
+    # adjust interface naming
+    local imok='systemd'
+    netiface -n
+    case "$?" in
+    0)  imok='bios' ;;
+    1)  remove "${CEN_PATHS[2]}/systemd/network/99-default.link" ;;
+    *)  [ "${CEN_PATHS[2]}/systemd/network/99-default.link" -ef '/dev/null' ] && imok='bios'
+    esac
+    local imog ; readline -s imog -i "${CEN_PATHS[2]}/network/.centaurinetgen"
+    if [ "$imok" != "$imog" ] ; then
+        message -p $"Interface naming mode changed to '%s'" "$imok"
+        embed -d -v centaurinetgen --keep interfaces
     fi
 
     # get script path and source it
     local scrp="${CEN_PATHS[6]}/$CEN_NAME"
     if [ -e "$scrp" ] ; then
         message -c $"Running script" "$scrp"
-        . "$scrp"
+        source "$scrp"
         run_appliances
     else
         warning -c $"Missing script" "$scrp"

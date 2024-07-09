@@ -1,12 +1,12 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2023; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2024; BSD License"
 CEN_TITLE=$"Template using command line verbs (action syntax)"
 
 MINIMAL="${MINIMAL:-false}" ####################################################
 if $MINIMAL ; then #############################################################
 # Import the bash library
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d - '0.10:1' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d - '0.10:2' || exit 2
 
 # Data
 CEN_OPT_XXX=                    # see --xxx
@@ -20,7 +20,7 @@ actionXxx() {
 
 else ###########################################################################
 # Import the bash library, set name and version TODO
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -t -y -m bat - '0.10:1' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -t -y -m bat - '0.10:2' || exit 2
 
 # Data
 

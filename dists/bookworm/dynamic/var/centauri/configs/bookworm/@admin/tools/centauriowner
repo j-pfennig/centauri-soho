@@ -3,7 +3,7 @@
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
 CEN_TITLE="Save and restore system file ownership and rights"
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d - '0.14' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d - '0.15:2' || exit 2
 
 # Options
 CEN_OPT_ALL=            # see --all
@@ -43,12 +43,12 @@ do_exclude() {
 actionSave() {
     do_checkpath
 
-    do_exclude -i "tmp"
+    do_exclude -i 'tmp'
     if [ -z "$CEN_OPT_ALL" ] ; then
-        do_exclude "home"
-        do_exclude "var/cache"
-        do_exclude "var/centauri"
-        do_exclude "var/tmp"
+        do_exclude 'home'
+        do_exclude 'var/cache'
+        do_exclude 'var/centauri'
+        do_exclude 'var/tmp'
     fi
     local excl
     for excl in "${CEN_OPT_EXCLUDE[@]}" ; do

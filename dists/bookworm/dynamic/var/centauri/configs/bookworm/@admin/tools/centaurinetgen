@@ -209,7 +209,7 @@ do_interface() {
         return
     fi
 
-    message -c "generating" "interfaces (method='$1'  config='$2')"
+    message -c -p "generating" "interfaces (centauriswitch='%s')" "$1:$2"
 
     # --- get address definitions for host ---
 
@@ -219,7 +219,6 @@ do_interface() {
         nethost "$name" || continue
         atab[indx]="$_nethost_ip"
         ((acnt += 1))
-        #trace -a -p "Host: %-15s indx: %s  addr: %s" "$name" "$indx" "$_nethost_ip"
     done
 
     # --- fill generator table: smart/eth0/wlan0/eth1/wlan1 ---
@@ -273,9 +272,13 @@ do_interface() {
     local adb0 mask fwpa owol
 
     local ife0 ife1 ifw0 ifw1                   # kernel interface names ...
-    netiface -s ife0 -k 'eth0'  ; netiface -s ife1 -k 'eth1'
-    netiface -s ifw0 -k 'wlan0' ; netiface -s ifw1 -k 'wlan1'
-    # debug "NAMES:" ife0 ife1 ifw0 ifw1
+    # bios to systemd mapping works only for the current host
+    if [ "$CEN_OPT_HOST" = "$HOSTNAME" ] ; then
+        netiface -s ife0 -k 'eth0'  ; netiface -s ife1 -k 'eth1'
+        netiface -s ifw0 -k 'wlan0' ; netiface -s ifw1 -k 'wlan1'
+    else
+        ife0='eth0' ; ife1='eth1' ; ifw0='wlan0' ; ifw1='wlan1'
+    fi
 
     if [ "$acnt" = 1 ] ; then                   # only 1 address, no index
         netoption 'wlan' "$CEN_OPT_HOST" && adw0="$agen" || ade0="$agen"
@@ -612,7 +615,6 @@ ${hoga}   netmask $mask
         fi
         p6up="$DAT_ETCDIR/network/if-up.d/centauriswitch"
         p6up="[ -e '$p6up' ]"
-#        p6up="[ -e '$p6up' ] || '$frou' addr add"
 
         local suff="$meth" flgn
         case "$meth" in
@@ -655,11 +657,13 @@ ${hoga}   netmask $mask
         esac
 
         # 'option sysdnames' with CEN_NET_IFNAMES=0
-        netoption 'sysdnames' "$CEN_OPT_HOST"
-        case "$?-$CEN_NET_IFNAMES" in
-        0-0)    warning -a "Option 'sysdnames' is set but systemd ifce naming disabled" ;;
-        1-1)    warning -a "Option 'sysdnames' not set but systemd ifce naming enabled" ;;
-        esac
+        if [ "$HOST_NAME" = "$CEN_OPT_HOST" ] ; then
+            netoption 'sysdnames' "$CEN_OPT_HOST"
+            case "$?-$CEN_NET_IFNAMES" in
+            0-0)    warning -a "Option 'sysdnames' is set but systemd ifce naming disabled" ;;
+            1-1)    warning -a "Option 'sysdnames' not set but systemd ifce naming enabled" ;;
+            esac
+        fi
 
         # avoid file to be created twice
         if listsearch -c -i DAT_CREATED -- "$suff" ; then
@@ -804,15 +808,15 @@ ${hoga}   netmask $mask
 }
 
 # ------------------------------------------------------------------------------
-# Interface file writer: [-d] <suff>
+# Interface file writer: [-d] <suff>            # create or delete (-d)
 # ------------------------------------------------------------------------------
 do_interface_file() {
     local fdel
     if [ "$1" = '-d' ] ; then                   # delete <suff> file
         fdel=1 ; shift
     fi
-    local file="$DAT_ETCDIR/network/interfaces.$1"
 
+    local file="$DAT_ETCDIR/network/interfaces.$1"
     CEN_AUTOIND=1
     if [ -z "$CEN_OPT_FORCE" ] && netpath -- "$file" ; then
         if [ -e "$_netpath" ] ; then
@@ -833,10 +837,12 @@ do_interface_file() {
     fi
 
     if [ -n "$fdel" ] ; then                    # delete
-        message -a -c "deleting" "interfaces.$1"
+#        message -a -c "deleting" "interfaces.$1"
+        message -a -c "deleting" "$_netpath"
         remove -s -- "$_netpath"
     else
-        message -a -c "writing" "interfaces.$1"
+#        message -a -c "writing" "interfaces.$1"
+        message -a -c "writing" "$file"
         netfile -h -- "$file" && DAT_CREATED+=("$1")
     fi
 }
@@ -1223,6 +1229,15 @@ actionInterface() {
     fi
 
     # generate interface files
+    if [ "$CEN_OPT_HOST" != "$HOSTNAME" ] &&
+        netoption 'sysdnames' "$CEN_OPT_HOST" ; then
+        invoke -w "No systemd naming for:" "$CEN_OPT_HOST"
+        mode='bios'
+    else
+        netiface -k && mode='systemd' || mode='bios'
+    fi
+    netfile -v mode "$DAT_ETCDIR/network/.$CEN_NAME"
+
     for item in "${list[@]}" ; do
         mode="${item%%:*}"
         case "$mode" in
@@ -1244,63 +1259,69 @@ actionInterface() {
 
 # ------------------------------------------------------------------------------
 # Interface naming: [bios|sys|default]
+#
+# For the current host: - use the library detected mode
+#                       - give a warnig if configuration differs
+# For any other host:   - always use the configured mode
 # ------------------------------------------------------------------------------
 actionNaming() {
-    # can get current state only for current host
-    ___get_naming() {
-        if [ "$CEN_OPT_HOST" = "$HOSTNAME" -a "$DAT_ETCDIR" = '/etc' ] ; then
-            netiface -k && fcur='systemd' || fcur='bios'
-        else
-            fcur='<unknown>'
-        fi
-    }
-
-    local fcfg fcur freq
-    netoption 'sysdnames' "$CEN_OPT_HOST" && fcfg='systemd' || fcfg='bios'
-    ___get_naming
-
-    case "$1" in
-    '') ;;
-    def*)
-        freq="$fcfg" ;;
-    bio|bios)
-        freq='bios' ;;
-    sys*)
-        freq='systemd' ;;
-    *)  invoke -e "1st argument must be one of: default bios systemd"
-        return
-    esac
-
-    if [ -n "$freq" ] ; then
-        if [ "$fcur" = 'bios' ] &&
-           [ ! "$DAT_ETCDIR/systemd/network/99-default.link" -ef '/dev/null' ] ; then
-            # bios mode forced by kernel parameter
-            freq='bios' ; fcur='net.ifnames=0'
-        fi
-        if [ "$freq" != "$fcur" ] ; then
-            if [ "$freq" = 'bios' ] ; then
-                symlink -n '/dev/null' "$DAT_ETCDIR/systemd/network/99-default.link"
-            else
-                remove -- "$DAT_ETCDIR/systemd/network/99-default.link" \
-                          "$DAT_ETCDIR/systemd/network/99-raspi-end0.link"
-            fi
-            CEN_NET_IFNAMES= ; ___get_naming
-        fi
-
-#        if [ -r '/boot/firmware/cmdline.txt' ] ; then
-#            create -c -- "$DAT_ETCDIR/systemd/network/99-raspi-end0.link" <<!EOF
-## on a raspberry pi prevent renaming of 'eth0' to 'end0' ...
-#
-#[Match]
-#    OriginalName=eth*
-#
-## no [Link] to preserve name
-#!EOF
-#       fi
+    if [ "$CEN_OPT_HOST" != "$HOSTNAME" ] ; then
+        invoke -e "works only on current host" ; return
     fi
 
-    message    "Configured interface naming:" "$fcfg"
-    message -a "Current interface naming   :" "$fcur"
+    local stal stak stao stas stag
+    netiface -n
+    case "$?" in
+    0)  stak='bios' ;;
+    1)  stak='systemd'
+    esac
+    if [ "$DAT_ETCDIR/systemd/network/99-default.link" -ef '/dev/null' ] ; then
+        stal='bios' ; stas='bios'
+    else
+        stal="${stak:-systemd}" ; stas='systemd'
+    fi
+    netoption 'sysdnames' "$CEN_OPT_HOST" && stao="systemd" || stao='bios'
+    readline -s stag -i "${CEN_PATHS[2]}/network/.centaurinetgen"
+
+    if [ -z "$1" ] ; then
+        message "Interface naming status:"
+        message -a -- "- kernel 'net.ifnames':" "${stak:-<not set>}"
+        message -a -- "- /etc/systemd/network:" "$stas"
+        message -a -- "- option sysdnames=...:" "$stao"
+        message -a -- "- generated interfaces:" "${stag:-<unknown>}"
+        message -a -- "- current library mode:" "$stal"
+
+        [ -n "$stak" ] && [ "$stao" != "$stak" -o  "$stas" != "$stak" ] &&
+            warning -a "Kernel 'net.ifnames' overrides other configuration settings"
+        [ "$stag" != "$stal" ] &&
+            warning -a "Mode changed, please run" "'$CEN_NAME --keep interfaces'"
+        return
+    fi
+
+    local mode
+    case "$1" in
+    bio|bios)   mode='bios' ;;
+    sys*)       mode='systemd' ;;
+    def*)       mode="$stao" ;;
+    *)          invoke -e "Argument must be one of:" 'bios systemd default'
+
+    esac
+
+    if [ "$mode" = 'bios' ] ; then
+        symlink -n '/dev/null' "$DAT_ETCDIR/systemd/network/99-default.link"
+    else
+        remove -- "$DAT_ETCDIR/systemd/network/99-default.link"
+    fi
+
+    if [ -n "$stak" ] && [ "$mode" != "$stak" ] ; then
+        warning -a "Kernel 'net.ifnames' overrides this setting"
+        return
+    elif [ "$mode" != "$stao" ] ; then
+        warning -a "Config 'option sysnames' does not conform to this setting"
+        return
+    elif [ "$stag" != "$stal" ] ; then
+        warning -a "Mode changed, please run" "'$CEN_NAME --keep interfaces'"
+    fi
 }
 
 # ------------------------------------------------------------------------------

@@ -1,10 +1,10 @@
 #!/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. Jürgen Pfennig (c) 2020; BSD license"
+CEN_LEGAL="Dr. Jürgen Pfennig (c) 2020-2024; BSD license"
 CEN_TITLE=$"Template for a file processor (no action syntax)"
 
 # Import the bash library, set name and version TODO
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -t "$0" "0.00:1" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -t - '0.01:2' || exit 2
 
 # Data
 CEN_RUN_MIN_ARGS=1              # min arg count, see arguments()

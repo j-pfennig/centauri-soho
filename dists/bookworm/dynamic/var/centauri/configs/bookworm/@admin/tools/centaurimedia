@@ -185,7 +185,7 @@ actionCopy() {
      fi
 
      [ "$CEN_VERB" -ge 1 ] && stat='status=progress'
-     message $"copy data§ §'$from  ->  $dest'"
+     message $"Copy data"$" '$from  ->  $dest'"
      system -- dd if="$from" of="$dest" bs=1M $stat
 }
 

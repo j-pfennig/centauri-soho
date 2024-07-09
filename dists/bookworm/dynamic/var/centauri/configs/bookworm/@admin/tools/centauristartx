@@ -680,8 +680,8 @@ usage() {
         -p '<cnum>'      $"console to use  -or- '0' for current console without check" \
         -p '<dpi>'       $"dpi value passed to server <prog> (not for lightdm/sddm)" \
         -p '<mode>'      $"monitor resolution: 'pc|sd|hd|4k' use '-' for autodetect" \
-        -p '<what>'      $"can by a user-name or '-' for everyone" \
-        -p '<prog>'      $"program to run: none|chvt|auto|startx|sddm|lightdm|<path>" \
+        -p '<what>'      $"can be a user-name or '-' for everyone" \
+        -p '<prog>'      $"program to run:"' none|chvt|auto|startx|sddm|lightdm|<path>' \
         -p '<user>'      $"a user name  -or-  '-' to disable check"
 
     usageset \
