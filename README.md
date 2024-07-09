@@ -6,9 +6,7 @@ It depends on centauri-bash-tools and centauri-bash-lib.
 
 UNDER CONSTRUCTION - Documentation is still poor and might be misleading
 
-================================================================================
 Installing the development environment via github.com/j-pfennig/centauri-soho
-================================================================================
 
 This git repository contains a Centauri-Soho development environment for
 Debian 'bookworm' and configuration 'worms'. The make it work you need
@@ -24,9 +22,9 @@ to install centauri-tools 1st. The recommended way to do so is:
     apt install sudo
     echo 'local   ALL=(ALL:ALL)   NOPASSWD: ALL' >/etc/sudoers.d/user-local
 
-================================================================================
 For step 3-5 you may download and use this tool: sudo README.bash
-================================================================================
+
+--------------------------------------------------------------------------------
 
 3) Login as 'local', install git and clone 'j-pfennig/centauri-soho':
 
@@ -47,7 +45,7 @@ For step 3-5 you may download and use this tool: sudo README.bash
     centauriowner --base=. restore OWNERS
     cp -rf --attributes-only static/* dynamic/* /
 
-================================================================================
+--------------------------------------------------------------------------------
 
 6) test building of a distributable tar:
 

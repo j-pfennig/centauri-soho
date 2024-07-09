@@ -1150,6 +1150,35 @@ waitForNetwork() {
 }
 
 # ------------------------------------------------------------------------------
+# Save or restore file ownerships: save|restore
+# ------------------------------------------------------------------------------
+actionOwners() {
+    local osav item file
+    case "$1" in
+    sav|save)   osav=1 ;;
+    res*)       ;;
+    *)          invoke -e "Argument must be one of:" 'save restore' ; return
+    esac
+    get_base -f || return                           # change dir to base folder
+
+    for item in 'dists'/[!@]* ; do
+        [ -d "$item" ] || continue
+        if ! [ -d "$item/dynamic" -a -d "$item/static" ] ; then
+            invoke -e "Missing dynamic|static (run unpack):" "$dist" ; continue
+        fi
+        file="$item/OWNERS"
+        if [ -n "$osav" ] ; then
+            embed centauriowner --base="$item" --all --yes save "$file" || break
+        elif [ -s "$file" ] ; then
+            system -e -p -- chown -R 'root:root' "$item" || break
+            embed centauriowner --base="$item" --all restore "$file" || break
+        else
+            invoke -e "Missing OWNERS file:" "$file" ; continue
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
 # Create seed tars and remove static and dynamic folders
 # ------------------------------------------------------------------------------
 actionPack() {
@@ -1963,6 +1992,8 @@ actions() {
         invoke    'message' -             1 4 ;;
     net*)
         invoke -r 'network' -             0 1 ;;
+    own*)
+        invoke -r 'owners'  -             1   ;;
     ren*)
         invoke -r 'rename'  -             1 2 ;;   # 1 or 2 args
     rep*)
@@ -2042,6 +2073,8 @@ usage() {
         -a 'distrib    [[<dist>]°<conf>]' \
         -a -                      $"# generate distributable tar file from workspace" \
         -a 'expand     [<soho>]'  $"# create workspace from distributable tar file" \
+        -a 'owner      save|restore' \
+        -a -                      $"# restore file attributes (git clone) or save" \
         -a 'pack'                 $"# generate seed tar file from workspace" \
         -a 'unpack     [[<dist>]°<conf>]' \
         -a -                      $"# unpack seed tar file in workspace" \
