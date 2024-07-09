@@ -19,20 +19,19 @@ run() {
     [ -x /usr/bin/git ] || { system apt install git || quit ; }
     [ -d centauri-soho ] || { system git clone \
                               https://github.com/j-pfennig/centauri-soho || quit ; }
+    folder -c centauri-soho/dists/bookworm || quit
 
     # 4) goto centauri-soho/dists/bookworm and copy:
 
     if [ ! -d /centauritools ] ; then
-        folder -c centauri-soho/dists/bookworm || quit
         getent group wheel || { echo 'wheel:x:51' >>/etc/group ; }
-        getent passwd pulse || { echo 'pulse:x:29:audio::/run:/usr/sbin/nologin' >>/etc/passwd ; }
+        getent passwd pulse || { echo 'pulse:x:505:505::/run:/usr/sbin/nologin' >>/etc/passwd ; }
         system chown -R root:root .  || quit
         system cp -rauP static/* dynamic/* / || quit
     fi
 
     # 5) goto centauri-soho/dists/bookworm to fix ownerships of files:
 
-    folder -c centauri-soho/dists/bookworm || quit
     embed centauriowner --base=. restore OWNERS || quit
     system cp -rf --attributes-only static/* dynamic/* / || quit
 
