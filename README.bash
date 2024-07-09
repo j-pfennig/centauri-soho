@@ -25,16 +25,16 @@ run() {
     if [ ! -d /centauritools ] ; then
         folder -c centauri-soho/dists/bookworm || quit
         getent group wheel || { echo 'wheel:x:51' >>/etc/group ; }
-        getent passwd pulse || { echo 'pulse:x:505:audio::/run:/usr/sbin/nologin' >>/etc/passwd ; }
-        system chown -r root:root .  || quit
-        system cp -ra static/* dynamic/* / || quit
+        getent passwd pulse || { echo 'pulse:x:29:audio::/run:/usr/sbin/nologin' >>/etc/passwd ; }
+        system chown -R root:root .  || quit
+        system cp -rauP static/* dynamic/* / || quit
     fi
 
-    # 5) goto cenrauri-soho/dists/bookworm to fix ownerships of files:
+    # 5) goto centauri-soho/dists/bookworm to fix ownerships of files:
 
     folder -c centauri-soho/dists/bookworm || quit
     embed centauriowner --base=. restore OWNERS || quit
-    system cp -r --attributes-only static/* dynamic/* / || quit
+    system cp -rf --attributes-only static/* dynamic/* / || quit
 
     quit "Ready for centauri-soho development"
 }
