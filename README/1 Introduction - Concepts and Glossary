@@ -9,10 +9,10 @@
 
 Centauri-Soho is a solution to install and configure Debian Linux systems. It has
 various target types: server, client and appliances. Soho stands for small-office
-home-office, so there is a lot of stuff preconfigured for networking, file sharing
+home-office, so there is a lot of stuff pre-configured for networking, file sharing
 and user management.
 
-Supported platforms are Intel/AMD x86 Raspberry 32bit and 64bit. The Debian Edition
+Supported platforms are Intel/AMD X86 Raspberry 32bit and 64bit. The Debian Edition
 of Mint Linux may work too. Ubuntu based distributions do not work as Ubuntu tweaks
 Debian too much.
 
@@ -44,12 +44,12 @@ Repository
 ----------
 
 Configuration data, tools and library are stored in the 'Centauri Repository'. The
-master instance lives on tha primary server and is replicated (in parts) to clients.
+master instance lives on the primary server and is replicated (in parts) to clients.
 
 Primary and Secondary Server
 ----------------------------
 
-It is server centric and there can be one primary server and one optional secodary backup
+It is server centric and there can be one primary server and one optional secondary backup
 server. Clients auto-detect the available server. The primary server mirrors data to the
 secondary server. Data on the Server is considered as safe, while client data is considered
 as volatile. Client hardware may be faulty or can be stolen.
@@ -66,7 +66,7 @@ are managed on the server, so they can be revoked if needed.
 Appliance
 ---------
 
-A machine that boots into a state were it fullfills some special purpose, usually without
+A machine that boots into a state were it fulfills some special purpose, usually without
 human interaction is called an appliance. Centauri-Soho comes with: router, switch, kiosk
 and HomeAssistant support.
 
@@ -81,7 +81,7 @@ be used from Windows.
 Samba AD/DC comes with its own Kerberos implementation and tweaks DNS. Samba also implements
 windows file sharing. This is all supported via centauri-tools.
 
-To some extent user accounts can optionally be managed from windows. From the linux side
+To some extent user accounts can optionally be managed from windows. From the Linux side
 samba-tool should be used. There exist high level centauri-tools like 'centaurikerberos' and
 'centauriusers' to simplify administration.
 
@@ -108,14 +108,14 @@ configuration is shared by all clients and managed via 'centaurinetcfg'. There i
 text file that contains a declarative network description that gets implementated using the
 centauri-tools.
 
-Mobile networking via attachable routers or thethering phones is optional. See 'appliances'
+Mobile networking via attachable routers or tethering phones is optional. See 'appliances'
 for details. Basically every client computer can be made a router the connects a local network
 over a mobile service provider to the internet.
 
 File System and Data Protection
 -------------------------------
 
-Using the Btrfs filesystem is strictly recommend. This includes automatic snapshots. Btrfs
+Using the Btrfs file-system is strictly recommend. This includes automatic snapshots. Btrfs
 protects against hardware bit-rot or user mistakes. Backups are handled separately and can
 include automatic traditional backups or mirroring of data.
 
@@ -130,11 +130,11 @@ Centauri-Soho has the 'centauribackup' and 'centaurirestore' tools for this purp
 are intended to backup/restore the operating system and a minimal user environment.
 
 For a full backup of user data the 'centaurimirror' tool is used to mirror a system to a
-backup disk. Multiple clients clients can share the same disk, data gets deduplicated. A
+backup disk. Multiple clients clients can share the same disk, data gets de-duplicated. A
 mirror disk can be connected to any system and can be used across the network from all
 clients.
 
-A server can have a mirrot disk to automatically mirror data and additionally a secondary
+A server can have a mirror disk to automatically mirror data and additionally a secondary
 server can mirror the primary server.
 
 Automation
@@ -231,9 +231,9 @@ centaurisoho domain
 -------------------
 
 Basically the Samba AD/DC domain of a local network. This network must not
-be exposed to directly to the internet. Use a router with port forewarding
+be exposed to directly to the internet. Use a router with port forwarding
 instead. The primary server of a centaurisoho domain handles AD/DC, DHCP,
-DNS, IPv6 router advertisments and other network services.
+DNS, IPv6 router advertisements and other network services.
 
 centaurisoho setup
 ------------------
@@ -268,16 +268,16 @@ configuration
 -------------
 
 Systems created by 'centaurisoho' have an example default configuration
-(like 'worms' with debian bookworm). Any number of extra configurations
-can be customized but must properly added to 'centarisoho-master'.
+(like 'worms' with Debian bookworm). Any number of extra configurations
+can be customized but must properly added to 'centaurisoho-master'.
 
 imagetool
 ---------
 
 Tool to install an image tar to a disk medium. The 'imagetool' script is included
 in backups. If run after extracting it from the backup this tool also
-extracts the required components and starts the installition by running
-'centurisoho restore'. The installation process should run on any up to date
+extracts the required components and starts the installation by running
+'centaurisoho restore'. The installation process should run on any up to date
 Linux installation.
 
 distributable tar
@@ -285,7 +285,7 @@ distributable tar
 
 A tar file containing the centaurisoho software (including tools and library)
 and configuration data. The tar file can be unpacked on a minimal Debian system.
-After doing so the centaurisoho installtion can be started.
+After doing so the centaurisoho installation can be started.
 
 distribution
 ------------
@@ -303,9 +303,9 @@ purpuses.
 diversion
 ---------
 
-A debian 'dpkg' specific mechanism that provides a method for persistently
+A Debian 'dpkg' specific mechanism that provides a method for persistently
 replacing files installed by 'dpkg'. These replacements survive updates.
-See 'man dpkg-divert'. Centarusoho does not patch debian but it uses diversions
+See 'man dpkg-divert'. Centauri-Soho does not patch Debian but it uses diversions
 and systemd customizations.
 
 image tar
@@ -313,14 +313,14 @@ image tar
 
 A physical or virtual disk image can be backed up as image tar. Such tars can be
 distributed and can be restored to physical disk media. Virtual machines should
-be distrubuted as 'ova files'. Image tars contain 'imagetool' that is used to
+be distributed as 'ova files'. Image tars contain 'imagetool' that is used to
 run the installation.
 
 installer
 ---------
 
 A little tool the unpack a seed tar. After unpacking a distributable tar the installer
-can be used to install the centarisoho software. After this step 'centaurisoho' can
+can be used to install the Centari-Soho software. After this step 'centaurisoho' can
 be run to make the system a centaurisoho system.
 
 master repository
@@ -347,7 +347,7 @@ primary server
 
 Centauri-Soho supports a primary and an optional secondary server. Usually the primary
 server takes the 'MASTER' role and the secondary serves is 'SLAVE'. When the primary
-server becomes unavaillable the secondary server can take over the 'MASTER' role.
+server becomes unavailable the secondary server can take over the 'MASTER' role.
 
 repository
 ----------
@@ -376,7 +376,7 @@ staging repository
 ------------------
 
 Clients usually do not access the master repository (for security reasons). Instead the
-server creates a per client copy in a statiging area. Client side changes to the repository
+server creates a per client copy in a staging area. Client side changes to the repository
 must be merged back manually to the master. See 'centaurimachines' for managing the staging
 repository and 'centaurisecrets register' for registering a client.
 

@@ -4,92 +4,419 @@
 .title
 .content
 
+. Runlevels
+===========
+
+The runlevels 1 ... 5, 0 (shutdown) and 6 (reboot) are an archaic relict of SysV Linux.
+But they are an existing infrastructure and are more or less supported by systemd.
+Centauri-Soho uses run-levels in the following way:
+
+    SysV [*]    systemd                         Centauri-Soho use ...           °
+    -----------------------------------------------------------------------------
+    ─────────────────────────────────────────────────────────────────────────────
+    init 0      systemctl shutdown              Run a regular system shutdown
+    init 1                                      - not used -
+    init 2      systemctl isolate runlevel2     Maintenance mode (minimal system)
+    init 3      systemctl isolate runlevel3     Like level 2 + networking started
+    init 4      systemctl isolate multi-user    Full system without GUI login
+    init 5      systemctl graphical             Full system with GUI
+    init 6      systemctl reboot                Run a regular system reboot
+    ─────────────────────────────────────────────────────────────────────────────
+    [*] switching between runlevels using 'init' seems not to work correctly, use
+        the 'systemctl isolate ...' command instead.
+
+Level 2 ... 4 are also used to run appliances (see below). Boot manager entries for the
+supported boot modes are generated automatically by 'centauriefilinux' or 'centauriraspi'.
+The high level configuration interface is 'centaurisysinit':
+
+        centaurisysinit list            # list available boot modes and appliances
+
+        centaurisysinit enable  <mode>  # add mode/appliance to the boot menu
+        centaurisysinit disable <mode>  # remove mode/appliance from the boot menu
+
+        centaurisysinit default <mode>  # boot into this mode by default
+
+At boot time 'centaurisysinit' runs as a service and starts configured appliance modes.
 
 . Appliances
 ============
 
 A machine that boots into a state were it fullfills some special purpose, usually without
-human interaction is called an appliance. Centauri-Soho support the following:
+human interaction is called an appliance. Centauri-Soho supports the following:
 
-    Networking Boot Menu
-    --------------------
+    Networking Boot Menu: runlevel 2 - autologin
+    --------------------------------------------
 
         Allows to switch between Network modes at boot time. Can start a desktop session.
         Nice for testing.
 
-    Router
-    ------
+    Router: runlvel 3 - centauriswitch
+    ----------------------------------
 
         Connects two Networks using NAT. Provides DNS and DHCP services. The default
         configuration joins ethernet and wireless into an internal network and uses
-        mobile phone tethering via USB to connect to the internet.
+        mobile phone tethering via USB (or a modem) to connect to the internet.
 
-    Repeater
-    --------
+    Repeater: runlevel 2 - centauriswitch
+    -------------------------------------
 
         A router configuration where an external net is connected via wireless and an
         internal net is provided by ethernet. This uses NAT, so from the internal net
-        one can reach the extern net but not the other way round.
+        a machine can reach the external net but not the other way round.
 
-    Switch
-    ------
+    Switch: runlevel 2 - centauriswitch
+    -----------------------------------
 
-    Extender
+        This wants to be an IP layer 2 bridge (using a Linux bridge interface). But
+        unfortunately most Wlan hardware won't work with a bridge as a hardware
+        feature called 'WDS' (also '4addr mode') is not implemented. Try 'extender'
+        instead.
+
+    Extender: runlevel 2 - centauriswitch
+    -------------------------------------
+
+        Simulates an IP layer 2 bridge running ARP routing and DNS relay (IPv4 only).
+        The default configuration lets the Wlan interface connect to the local net
+        and provides a network extension via ethernet. Use this to connect hardware
+        that has ethernet only via Wlan to your local net.
+
+    Kiosk: runlevel 2 - autologin
+    -----------------------------
+
+        Start a browser-only GUI after boot. Nothing but the browser will be run by
+        this GUI.
+
+    HomeAssistant: runlevel 2 - autologin
+    -------------------------------------
+
+        Runs HomeAssistant on a computer. Although the autologin parameter is needed
+        the HomeAssistant engine runs as a service. Additionally a browser-only GUI
+        gets started that shows the dashboard.
+
+For an appliance mode to start the kernel command line must contain special parameters.
+These can be:
+
+    centaurilogin=local             # enter 'boot menu' via autologin of user 'local'
+    centaurilogin=kiosk             # enter 'kiosk mode' via autologin of user 'kiosk'
+    centaurautologin=homeassistant  # run HomeAssistant (as a service, see below)
+
+While autologin is optional and runs appliances that may show a GUI, the 'centauriswitch'
+parameter is required and some of its settings run the computer as an appliance:
+
+    centauriswitch=router           # router network config (with NAT)
+    centauriswitch=router:repeater  # repeater              (with NAT)
+    centauriswitch=switch           # bridge mode (needs WDS Wlan hardware)
+    centauriswitch=switch:extender  # simulated bridge mode
+
+By default the automatically generated configurations add an appropriate runlevel. But it
+is possible to create a manual config that runs an appliance in runlevel 5. It all cases
+one should get a console login prompt and from there runlevel 5 can be entered explicitly.
+
+
+. Router and Repeater - 'centauriswitch' settings
+=================================================
+
+It is important for the following to know that 'centaurisysinit' starts the 'networking'
+service for appliances even in runlevel 2, so there is no need to start it explicitly.
+
+The file '/etc/default/centauriswitch' configures actions to be taken when the computer
+is booted using a 'centauriswitch=<...>' parameter. The terms network mode and network
+configurate were discussed detail in section 5 of this documentation. A typical
+configuration is (see real config file for more documentation):
+
+    [router]
     --------
+    # services to be started in runlevel 4 or 5:
+        services=nmbd smbd lighttpd squid
+    # services to be started unconditionally
+        always=centaurimounter
 
+    # Home (dns) server to be used
+        home=local
 
-    Kiosk
-    -----
+    # force firewall to 'home' mode
+        override=centaurifilter     home
 
+    # modem/wlan/lte/android dialup configurations (see vwdial, wpa-supplicant)
+        # is there a real modem (default: gsmmodem), try this...
+        dialup=modem  aldi-talk
+        # do we have a router stick (default: lterouter), then try...
+        dialup=router
+        # can we use android tethering (default usbrouter), ...
+        dialup=tether
 
-    HomeAssistant
-    -------------
+    # The wlan interface and config name for a hostapd access point
+        wlan=wlan0 sirius
 
-. Router and Repeater
-=====================
+Unfortunately you must provide udev rules for your devices to make 'dialup' work. This
+will be discussed in detail below. A repeater configuration may look like this:
 
-    Writing an Udev-Rule to handle a mobile phone
-    ---------------------------------------------
+    [repeater]
+    ----------
+    # bridging: no wildcards, use same order as in centaurinetcfg ...
+        bridge=br0 eth0 eth1 wlan1
 
+    # do not start any services in runlevel 4 or 5
+        services=
 
-. Switch and Extender
-=====================
+    # no location dependent services to be started
+        guest=
+        client=
+        local=
+
+    # use the compurter's generic address at wlan0
+        home=local@wlan0
+
+    # do 'ifup wlan0' at open, which will use dhclient to configure the interface.
+        dialup=wlan wlan0 -
+
+    # The wlan interface and config for hostapd
+        wlan=none
+
+    # provide remote access (not started by default in runlevel 2)
+        always=inetd
+
+. Switch and Extender - 'centauriswitch' settings
+=================================================
+
+Like for 'router' and 'repeater' modes you need an '/etc/default/centauriswitch'
+configuration. For a switch this may look like:
+
+    [switch]
+    --------
+    # No extra services to be started
+        services=
+
+    # No network location dependent services except inetd
+        guest=+inetd
+        client=+inetd
+        local=
+
+    # Switch may dialup to a wlan (use dialup=none to disable)
+        dialup=none
+
+    # Switch is stand alone, local DNS
+        home=local
+
+    # The wlan interface for hostapd (use wlan=none to disable)
+        wlan=none
+
+And for an extender it may look like:
+
+    [extender]
+    ----------
+    # No extra services to be started
+        services=
+
+    # use computer's generic address at wlan0
+        home=local@wlan0
+
+    # we do not run hostapd
+        wlan=none
+
+    # proxy interfaces (inits to bridge=none): <trunc> <extension>
+        proxy=wlan0 eth0
+
+    # provide remote access (not started by default in runlvel 2)
+        always=inetd
 
 
 . Network Boot Menu and Kiosk
 =============================
 
-. HomeAssistant
-===============
+This mode shows a network mode selection dialog, similar to a boot menu after boot.
+A call to 'centauriswitch enter <mode>' is then made to activate the selected mode.
+After this another dialog allows to run a simple single user desktop or to enter full
+workstation mode. As the dialogues have timeouts, the simple desktop mode is activated
+without interaction.
 
-. Technical Details
-===================
+Use this mode to configure a system that is not a workstation but occasionally needs
+a graphical desktop, for example a router with mobile network dialup.
 
-    Dialup
-    ------
+. HomeAssistant - Setup and GUI
+===============================
 
-    Access Point
-    ------------
+Besides a very few lines of glue code the 'centaurihass' tool handles the integration
+of HomeAssistant. At installation time 'centaurisoho hass' will install HA core or later
+'centaurihass install' can do this. HA does is not started by default, please continue
+reading.
 
-    Arp Proxy and DHCP Relay
-    ------------------------
+The only supported installation type is 'core'. Even the HA version is limited to
+TODO '2024.4.3' because later versions depend on python 3.12 which is not available in
+Debian bookworm. As an experienced user you will not depend on extra functionality that
+HA provides in its 'managed' version via docker containers. The advantage is that you get
+a 100% Debian that can do things like network extender mode and more in paralel.
 
-    Autologin
-    ---------
+Note that a 'Raspberry Pi Zero 2W' or below have not enough memory to make HA happy -
+it really needs 1GB or more. Anyhow it runs happily on a 'Raspberry Pi 3B 1GB' or later.
+Of coarse X86 systems will also do the job.
 
-The 'Network Boot Menu', 'Kiosk' and 'HomeAssistant' appliances use the kernel command line
-parameter 'centaurilogin=<user>'. This causes the following to be run (abbreviated):
+The 'centaurihass' tool and 'centaurihass.service'
+--------------------------------------------------
 
-        centaurautologin@<user>             # service triggered by 'centaurilogin=<user>'
-        centaurisession autoloin <user> 6   # called by centaurautologin
-        agetty --autologin <user> tty6      # login, run bash
-        /home/<user>/.autologin             # executed by bash profile
-        centauristartup menu                # see below ...
+After a basic python setup HA is self-installing. On the 1st run it downloads a lot of
+components and integrates them. This process can take half on hour on a slow system. This
+is why HA is not started by default after installation. You need an extra step to turn it
+on:
 
-The '.autologin' is optional but usually a symlink to 'centauristartup'
+            sudo -i                     # needing root permissions
+
+        # requirements ('centaurisoho hass' does this)
+            centaurihass deps           # install build dependencies from debian
+            centaurihass install        # install HA core on this system
+
+        # 1st run, download components and integrate them
+            centaurihass -v run         # watch it working, do not disturb
+
+        # enable service start at boot time
+            centaurihass autorun on     # enable start at boot time
+
+Enable GUI mode
+---------------
+
+This depends on kernel boot parameter 'centaurilogin=homeassistant'. Use 'centaurisysinit
+default HomeAssistant' to enable it. Note: 'centaurisysinit' starts 'centaurihass.service'
+with this boot parameter even if the service is not enabled. Starting the GUI can still be
+disabled by a symlink of '.autologin' to '/dev/null'. Summary:
+
+        'centaurilogin=homeassistant' -> start 'centaurihass.service'
+                                      -> start GUI by default
+        ln -s /dev/null ~/.autologin  -> do not start the GUI
+
+Implementation details
+----------------------
+
+HA basically uses two folders: (a) a python virtual environment (b) a home folder. These
+folder contain several hundred MB of data, so Centauri-Soho puts this stuff into a common
+base folder to simplify backups: '/opt/homeassistant'.
+
+        # exclude HA from 'centauribackup disk':
+            touch /opt/homeassistant/WARNING_FOLDER_NOT_ARCHIVED
+
+        # start a shell as user 'homeassistant':
+            centaurihass shell
+
+. How 'centaurisysinit' starts Appliances and Timers
+====================================================
+
+The file '/etc/default/centaurisysinit' contains config statements (dummy functions):
+
+        appliance           # appliance definitions (repeated)
+        apptimers           # timers to start in appliance mode
+        appusers            # allows to redefine account names
+
+Checks for kernel parameters 'centauriswitch=<...>' and 'centaurilogin=<...>'. For
+mode='router' or mode='switch' or login user 'local/kiosk/homeassistant' and runs
+
+        systemctl start networking              # for runlevel 2
+        systemctl start <timers>...             # for runlevel 2 and 3
+        systemctl start centauriautologin@<...> # for centaurilogin=<...> and
+                                                # if ~/.autologin is executable
+           centaurisession autologin <...> 6    # backend for service
+              agetty ...                        # login (at tty6)
+                 centaursession login <...>     # handle .autologin
+                    centauristartup menu        # run via .autologin
+                       startx                   # start display server (at tty6)
+                          .centauristartup      # start browser
+
+The 'centauriswitch' cases are handled by service 'centauriswitch' which starts
+the dependent services.
+
+The 'centauriautologin' service creates a session for the given user, and from the
+bash profile 'centaurisession login' is executed. It checks whether '~/.autologin'
+is executable. This file can be non-executable or can be a symlink to '/dev/null'
+to disable autologin. The it executes '~/.autologin which usually is a symlink to
+'centauristartup'. The later starts an display server and finally sources the file
+'~/centauristartup' which may run a browser.
+
+config statement: appliance
+---------------------------
+
+These statements have five parameters:
+
+        label       descriptive label
+        runlevel    runlevel to use (should be 2 or 3)
+        mode        network mode
+        config      network config -> centauriswitch=<mode>:<config>
+        params      more kernel command line parameters
+
+Here the default configuration:
+
+        #         Label              runlevel   mode     conf    kernel boot params
+        appliance "Kiosk Mode"              3   simple   -       'centaurilogin=kiosk'
+        appliance "Networking Boot Menu"    2   disabled -       'centaurilogin=local'
+
+        appliance "Network Switch Mode"     3   switch
+
+        appliance "Network Router Mode"     3   router
+        appliance "Network Extender Mode"   2   switch   extender
+        appliance "Network Repeater Mode"   2   router   repeater
+
+        appliance "Home Assistant"          2   smart    -        'centaurilogin=homeassistant'
+        appliance "Home Assistant+Repeater" 2   router   repeater 'centaurilogin=homeassistant'
+        appliance "Home Assistant+Extender" 2   switch   extender 'centaurilogin=homeassistant'
+
+config statement: apptimers
+---------------------------
+
+Some timers (apt, cleanup and so on) usually are started via 'mulit-user.target'.
+This statement can specify timers that are to be started in appliance mode. By
+default no extra timers are started.
+
+config statement: appusers
+--------------------------
+
+Can redefine the account used for 'centaurilogin=local' and 'centaurilogin=homeassistant'.
+The default is:
+
+        appusers    local   homeassistant   kiosk
+
+Another example has multiple kiosk users:
+
+        # allows: centaurilogin=local           (user is local)
+        #         centaurilogin=hass            (user is hass)
+        #         centaurilogin=clock           (user is clock)
+        #         centaurilogin=weather         (user is weather)
+
+        appusers    -   hass   clock   weather
+
+All autologin users must belong to group 'kiosk', see the correspending entries in
+'/etc/sudoers.d/centauri'.
 
 
-    Configuration
-    -------------
+. Technical Details - Udev Rules
+================================
 
-See '/etc/default/centauriswitch' and '/etc/default/centauriswitch'
+Most of the network setup uses by appliances in implemented in 'centauriroute' by the
+help of 'udev'. The 'centauriroute.service' gets started at boot time and runs cold-plug
+actions (this includes 'open' and 'dial'). At later time plugging in a modem or phone
+can start 'dial' via 'udev':
+
+        # at system boot time
+            centauriroute open              # device setup, setup bridge, start hostapd
+        # cold-plug phase ...
+            centauriroute dial              # establish a dialup connnection
+            centauriroute udev start        # enable hot-plug
+
+         # hot-plug via udev
+            centauriroute udev stop         # suspend hot-plug
+            centauriroute dial              # establish a dialup connnection
+            centauriroute udev start        # resume hot-plug
+
+         # shutdown
+            centauriroute hangup            # end a dialup connnection
+            centauriroute close             # stop hostapd, close bridge
+
+Writing an Udev-Rule to handle a modem or mobile phone
+------------------------------------------------------
+
+To make 'udev' work proper rules are needed. See:
+
+        /etc/udev/rules.d/01-centauriroute.rules    # plugging modem/phone
+        /etc/udev/rules.d/99-centauriroute.rules    # unplugging modem/phone
+
+The 01 rules create device links used by 'centauriroute dial' and also run this command.
+The 99 rules remove the device links and run 'centauriroute hangup'.
+
+Android phones use several USB ids to indicate the connection state. The rules files
+contain instructions on how to make your phone or modem work.

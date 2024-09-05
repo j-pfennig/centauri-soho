@@ -1,21 +1,21 @@
 
-A Note on Bash
-==============
+. A Note on Bash
+================
 
 Bash is not a shame ...
 
 At the time when centaurisoho started (20 years ago) python 3 was
 not yet the default. At that time simple bash scripts got their
 work done before an equivalent python script even started. Early
-experimental versions of centauri-bash-lib ... 
+experimental versions of centauri-bash-lib ...
 
 Most bash examples in the net ...
 
 Bash evolution ...
 
 
-The centauri repository concept
-===============================
+. The centauri repository concept
+=================================
 
 A <centauri> server keeps a central repository for Linux
 configuration files (and some other stuff). This data
@@ -29,7 +29,7 @@ must be done manually, see 'centaurimachines'.
 
 There is modest security, to register a client the command
 'centaurisecrets register' is used. It passes a secret to
-the server that the client must present to get access. 
+the server that the client must present to get access.
 Clients can see only the part of the repository that is
 relevant.
 
@@ -42,7 +42,7 @@ The repository is organized along these axes:
 
 
 Synchronizing
-=============
+-------------
 
 The 'centauriconfig' tool synchronizes between:
 
@@ -62,7 +62,7 @@ asked. But it does not so much, to get a list of affected files:
 
 
 The server side
-===============
+---------------
 
 As outlined before the server holds a master version of the
 repository:
@@ -71,7 +71,7 @@ repository:
                  /archived      lists of backups
                  /machines      staging area
 
-The path '/var/centauri' is used here for the "$CEN_ROOT" folder. 
+The path '/var/centauri' is used here for the "$CEN_ROOT" folder.
 The 'configs' sub folder contains Debian release specific folders:
 
     config/bookworm
@@ -87,7 +87,7 @@ The Debian release folders contain:
 Each domain data folder holds per-computer and shared data:
 
     @shared     configuration data shared by all members
-    worm0       private data for machine worm0 
+    worm0       private data for machine worm0
     ...         more machines
 
 
@@ -104,15 +104,15 @@ Example of a full repository path:
     /var/centauri/configs/bookworm/worms/worm0/PACKAGES
 
 
-Client side repositories
-========================
+. Client side repositories
+==========================
 
 The server exports repository branches via 'rsyncd' and the 'machines'
 sub folder. On a client the 'centauriconfig' tool is used to maintain
 a local repository branch and to synchonize is with the server.
 
 By default 'centauriconfig' synchronizes only data belonging to the
-local machine. The option '--global' of 'centauriconfig' is used to 
+local machine. The option '--global' of 'centauriconfig' is used to
 make let it synchonize a whole repository branch (but only if the
 setup of the staging area allows this). The OPTIONS file contains
 default settings, for example:
@@ -120,15 +120,15 @@ default settings, for example:
     CEN_GLOBAL=1
 
 
-Repository staging (machines folder)
-====================================
+. Repository staging (machines folder)
+======================================
 
 The staging folder is a security construct designed to protect the master
 repository from being manipulated by clients.
 
 
-Typical 'centauriconfig' usage
-==============================
+. Typical 'centauriconfig' usage
+================================
 
 
 3.1 Repository Concepts
@@ -146,10 +146,10 @@ The Repository
 
 3.y Implementation
 
-Timers and Cron
-===============
+. Timers and Cron
+=================
 
 3.8 Cron
 3.9 Timers
 
-*** 
+***
