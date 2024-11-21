@@ -1,0 +1,355 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8\n"
+
+#: /var/centauri/tools/centauriraspi:3
+msgid "BSD License"
+msgstr "BSD Lizenz"
+
+#: /var/centauri/tools/centauriraspi:4
+msgid "Tool to manage 'Raspberry Pi' boot configurations"
+msgstr "Werkzeug zur Verwaltung von 'Raspberry Pi' Boot Einstellungen"
+
+#: /var/centauri/tools/centauriraspi:43
+msgid "Ambigous selection:"
+msgstr "Mehrdeutige Auswahl:"
+
+#: /var/centauri/tools/centauriraspi:45
+msgid "No matching file:"
+msgstr "Datei nicht gefunden:"
+
+#: /var/centauri/tools/centauriraspi:60
+msgid "raspberry storage"
+msgstr "Raspberry Speicher"
+
+#: /var/centauri/tools/centauriraspi:67
+msgid "Boot folder"
+msgstr "Boot Verzeichnis"
+
+#: /var/centauri/tools/centauriraspi:69
+msgid "Not a raspberry boot partition:"
+msgstr "Keine Raspberry Boot Partition:"
+
+#: /var/centauri/tools/centauriraspi:71 /var/centauri/tools/centauriraspi:72
+msgid "Missing file:"
+msgstr "Fehlende Datei:"
+
+#: /var/centauri/tools/centauriraspi:102
+msgid "Creating initrd"
+msgstr "Erstelle eine 'initrd'"
+
+#: /var/centauri/tools/centauriraspi:114
+msgid "Renaming initrd:"
+msgstr "Umbenennen der 'initrd':"
+
+#: /var/centauri/tools/centauriraspi:219
+msgid "Missing PARTUUID:"
+msgstr "Fehlende PARTUUID:"
+
+#: /var/centauri/tools/centauriraspi:238 /var/centauri/tools/centauriraspi:395
+msgid "Must use options '--boot' and '--root' instead of '--device'"
+msgstr "Statt '--device' müssen Option '--boot' und '--root' benutzt werden"
+
+#: /var/centauri/tools/centauriraspi:244
+msgid "Option '--root' is invalid (no '%s' folder)"
+msgstr "Option '--root' unzulässig (kein '%s' Vezeichnis)"
+
+#: /var/centauri/tools/centauriraspi:247
+msgid "Option '--boot' is missing"
+msgstr "Fehlende '--boot' Option"
+
+#: /var/centauri/tools/centauriraspi:327
+msgid "Arg #2 must be one of:"
+msgstr "Arg #2 muss einen dieser Werte haben:"
+
+#: /var/centauri/tools/centauriraspi:400
+msgid "Ignored in non-legacy mode:"
+msgstr "Im nicht-Legacy Modus ignoriert:"
+
+#: /var/centauri/tools/centauriraspi:406
+msgid "Not running a debian based system?"
+msgstr "Ausführung auf einem nicht Debian basierten system?"
+
+#: /var/centauri/tools/centauriraspi:408
+msgid "Unsupported hardware architecture:"
+msgstr "Nicht unterstützte Hardwarearchitektur:"
+
+#: /var/centauri/tools/centauriraspi:416
+msgid "Invalid event: %s"
+msgstr "Ungültiges Ereignis: %s"
+
+#: /var/centauri/tools/centauriraspi:425
+msgid "Cannot remove 'default' config"
+msgstr "Kann 'default' Einstellung nicht entfernen"
+
+#: /var/centauri/tools/centauriraspi:455
+msgid "No such configuration:"
+msgstr "Keine vorhandene Einstellung:"
+
+#: /var/centauri/tools/centauriraspi:462
+#, fuzzy
+msgid "Invalid configuration:"
+msgstr "Overlay Einstellungen:"
+
+#: /var/centauri/tools/centauriraspi:480
+msgid "Could not auto-detect the root partition uuid"
+msgstr ""
+
+#: /var/centauri/tools/centauriraspi:493
+msgid "Could not auto-detect the root partition label"
+msgstr ""
+
+#: /var/centauri/tools/centauriraspi:516
+#, fuzzy
+msgid "Label '%s' not found"
+msgstr "Partition '%s' nicht gefunden"
+
+#: /var/centauri/tools/centauriraspi:517
+#, fuzzy
+msgid "Partition uuid '%s' not found"
+msgstr "Partition '%s' nicht gefunden"
+
+#: /var/centauri/tools/centauriraspi:521
+#, fuzzy
+msgid "Boot configuration '%s' not modified"
+msgstr "Partition '%s' nicht gefunden, ignoriert"
+
+#: /var/centauri/tools/centauriraspi:540
+msgid "Kernel command line configs:"
+msgstr "Kernel Kommandozeilen Einstellungen:"
+
+#: /var/centauri/tools/centauriraspi:542
+msgid "Overlay configurations:"
+msgstr "Overlay Einstellungen:"
+
+#: /var/centauri/tools/centauriraspi:602
+msgid "path of boot folder         (default: /boot)"
+msgstr "Pfad des Boot Verzeichnisses (Vorgabe: /boot)"
+
+#: /var/centauri/tools/centauriraspi:603
+msgid "raspberry boot device"
+msgstr "Raspberry Boot-Gerät"
+
+#: /var/centauri/tools/centauriraspi:604
+msgid "systemd interface naming    (default: auto)"
+msgstr "Systemd Schnittstellennamen  (Vorgabe: auto)"
+
+#: /var/centauri/tools/centauriraspi:605
+msgid "override host name"
+msgstr "Hostnamen festlegen"
+
+#: /var/centauri/tools/centauriraspi:606
+msgid "pre-bookworm boot layout    (default: auto)"
+msgstr "Vor-Bookworm Boot Auslegung  (Vorgabe: auto)"
+
+#: /var/centauri/tools/centauriraspi:607
+msgid "don't check boot partition"
+msgstr "Boot Partition nicht prüfen"
+
+#: /var/centauri/tools/centauriraspi:608
+msgid "path of root folder         (default: /)"
+msgstr "Pfad des Root Verzeichnisses (Vorgabe: /)"
+
+#: /var/centauri/tools/centauriraspi:609
+msgid "use PARTUUID in cmdline.txt (default: auto)"
+msgstr "Nimm PARTUUID in cmdline.txt (Vorgabe: auto)"
+
+#: /var/centauri/tools/centauriraspi:613
+msgid "set boot to given configuration"
+msgstr "Boot auf gegebene Einstellung setzen"
+
+#: /var/centauri/tools/centauriraspi:614
+msgid "copy boot data (needs --root and --boot)"
+msgstr "Boot Daten kopieren (braucht --root und --boot)"
+
+#: /var/centauri/tools/centauriraspi:615
+msgid "set default configuration"
+msgstr "Vorgabe Einstellung setzen"
+
+#: /var/centauri/tools/centauriraspi:617
+msgid "create a cmdline boot entry (use '-' to disable adding"
+msgstr "Erstelle cmdline Boot-Eintrag (mit '-' Vorgabewerte"
+
+#: /var/centauri/tools/centauriraspi:618
+msgid "default parameters and 'nosplash' to disable plymouth)"
+msgstr "abschalten und mit 'nosplash' plymouth abschalten)"
+
+#: /var/centauri/tools/centauriraspi:619
+msgid "(booted system) manage initrd file"
+msgstr "(gebootetes System) initrd Datei verwalten"
+
+#: /var/centauri/tools/centauriraspi:620
+msgid "remove the given configuration"
+msgstr "Gegebene Einstellung entfernen"
+
+#: /var/centauri/tools/centauriraspi:622
+msgid "set 'root=' in kernel command line. Use '-' for default"
+msgstr "Setze 'root=' in Kernel Kommandozeile, benutze '-'"
+
+#: /var/centauri/tools/centauriraspi:623
+msgid "and '.' to keep current setting."
+msgstr "für Vorgabe und '.' zum Behalten aktueller Werte"
+
+#: /var/centauri/tools/centauriraspi:624
+msgid "Show current boot configuration"
+msgstr "Zeige aktuelle Boot Einstellunggen"
+
+#: /var/centauri/tools/centauriraspi:627
+msgid "one of: 0|off 1|on 2|auto"
+msgstr "Eines von: 0|off 1|on 2|auto"
+
+#: /var/centauri/tools/centauriraspi:628
+msgid "extra argument(s) for 'cmdline'"
+msgstr "Extra Argument(e) für 'cmdline'"
+
+#: /var/centauri/tools/centauriraspi:629
+msgid "a configuration name (for cmdline-*.txt)"
+msgstr "Name einer Einstellung (für cmdline-*.txt)"
+
+#: /var/centauri/tools/centauriraspi:630
+msgid "name of a 'cmdline' entry:"
+msgstr "Name eines 'cmdline' Eintrags:"
+
+#: /var/centauri/tools/centauriraspi:631
+msgid "'create', 'update' or 'remove' (uninstall hook)"
+msgstr "'create', 'update' oder 'remove' (uninstall Hook)"
+
+#: /var/centauri/tools/centauriraspi:632
+msgid "any existing folder (must contain 'overlays')"
+msgstr "Vorhandenes Verzeichnis (muss 'overlays' enthalten)"
+
+#: /var/centauri/tools/centauriraspi:633
+msgid "target host name (default: $HOSTNAME)"
+msgstr "Name des Zielrechners (Vorgabe: $HOSTNAME)"
+
+#: /var/centauri/tools/centauriraspi:634
+msgid "systemd naming mode: 0|off 1|on 2|auto"
+msgstr "Systemd Schnittstellennamen: 0|off 1|on 2|auto"
+
+#: /var/centauri/tools/centauriraspi:635
+msgid "system name, label or blockdevice"
+msgstr "Systemname, Label oder Blockgerät"
+
+#: /var/centauri/tools/centauriraspi:636
+msgid "an overlay file name (for config-*.txt)"
+msgstr "Name einer Overlay-Einstellung (für config-*.txt)"
+
+#: /var/centauri/tools/centauriraspi:637
+msgid "parameter for root=... (use '-' to disable, '+' for default)"
+msgstr "Wert für root=... ('-' zum Abschalten, '+' für Vorgabe)"
+
+#: /var/centauri/tools/centauriraspi:639
+msgid "legacy"
+msgstr "Altlast"
+
+#: /var/centauri/tools/centauriraspi:640
+msgid "Since 'Rasberry PI OS bookworm' (Oct. 2023) the boot partition layout"
+msgstr "Seit 'Rasberry PI OS bookworm' (Oct. 2023) hat sich die Boot Auslegung"
+
+#: /var/centauri/tools/centauriraspi:641
+msgid "has changed. In $CEN_NAME the earlier layout is called 'legacy'."
+msgstr ""
+"der Bootpartition geändert. Die alte Version wird hier 'legacy' genannt."
+
+#: /var/centauri/tools/centauriraspi:643
+msgid "presets"
+msgstr "Voreinstellungen"
+
+#: /var/centauri/tools/centauriraspi:644
+msgid "Some configuration names (see 'entry ...') have special defaults:"
+msgstr "Einige Einstellungen (siehe 'entry ...') haben besondere Vorgaben:"
+
+#: /var/centauri/tools/centauriraspi:646
+msgid "generate all configurable entries"
+msgstr "alle Konfigurierbaren Einträge erstellen"
+
+#: /var/centauri/tools/centauriraspi:647
+msgid "boot into server mode with WLAN-AP"
+msgstr "In Server Modus booten (mit WLAN-AP)"
+
+#: /var/centauri/tools/centauriraspi:648
+msgid "show a mode/configuration menu after boot"
+msgstr "Ein Modus-/Einstellungsmenü nach Boot anzeigen"
+
+#: /var/centauri/tools/centauriraspi:649
+msgid "connect to WLAN, run arp-proxy and dns-relay"
+msgstr "mit WLAN verbinden, arp-proxy und dns-relay ausführen"
+
+#: /var/centauri/tools/centauriraspi:650
+msgid "don't start network, maintenance mode"
+msgstr "Netzwerk nicht starten, Wartungsmodus"
+
+#: /var/centauri/tools/centauriraspi:651
+msgid "run as a router with NAT and DHCP"
+msgstr "Als Router mit NAT und DHCP ausführen"
+
+#: /var/centauri/tools/centauriraspi:652
+msgid "connect to WLAN, do NAT and DHCP via ethernet"
+msgstr "Mit WLAN verbinden, NAT und DHCP über Ethernet"
+
+#: /var/centauri/tools/centauriraspi:653
+msgid "boot into server mode (WLAN in client mode)"
+msgstr "In Server Modus booten (WLAN Klient Modus)"
+
+#: /var/centauri/tools/centauriraspi:654
+msgid "brigde interfaces (WLAN needs WDS, see extender)"
+msgstr "Netzwerkbrücke (WLAN braucht WDS, siehe extender)"
+
+#: /var/centauri/tools/centauriraspi:655
+msgid "boot into workstation mode (also 'default' mode)"
+msgstr "In Arbeitsplatz Modus booten (auch 'default')"
+
+#: /var/centauri/tools/centauriraspi:657
+msgid "examples"
+msgstr "Beispiele"
+
+#: /var/centauri/tools/centauriraspi:674
+msgid "remarks"
+msgstr "Anmerkungen"
+
+#: /var/centauri/tools/centauriraspi:675
+msgid "The /boot partition must contain the following default configs:"
+msgstr "Die /boot Partition muss folgende Vorgabeeinstellungen enthalten:"
+
+#: /var/centauri/tools/centauriraspi:677
+msgid "the kernel command line"
+msgstr "die Kernel Kommandozeile"
+
+#: /var/centauri/tools/centauriraspi:678
+msgid "overlay configuration"
+msgstr "overlay Einstellung"
+
+#: /var/centauri/tools/centauriraspi:680
+msgid "Any number of cmdline-<config>.txt and config-<config>.txt files"
+msgstr "Beliebig viele cmdline-<config>.txt und config-<config>.txt Dateien"
+
+#: /var/centauri/tools/centauriraspi:681
+msgid "is permitted and will be copied to cmdline.txt or config.txt as"
+msgstr "sind möglich und werden nach cmdline.txt bzw. config.txt kopiert,"
+
+#: /var/centauri/tools/centauriraspi:682
+msgid "specified by <config>."
+msgstr "so wie es durch <config> angegeben wird."
+
+#~ msgid "Found 'PARTUUID=%s' with '%s' filesystem"
+#~ msgstr "'PARTUUID=%s' mit Filesystem '%s' gefunden"
+
+#~ msgid "Found PARTUUID '%s' with label '%s'"
+#~ msgstr "PARTUUID '%s' mit Label '%s' gefunden"
+
+#~ msgid "Change root PARTUUID from '%s' to '%s'"
+#~ msgstr "Ändern der Root PARTUUID von '%s' nach '%s'"
+
+#~ msgid "Root LABEL is current, no update"
+#~ msgstr "Root LABEL ist stimmt, keine Aktualisierung"
+
+#~ msgid "Change root LABEL from '%s' to '%s'"
+#~ msgstr "Root LABEL von '%s' nach '%s' ändern"
+
+#~ msgid "Root PARTUUID is current, no update"
+#~ msgstr "Root PARTUUID ist stimmt, keine Aktualisierung"
+
+#~ msgid "Found no 'root=PARTUUID' or 'root=LABEL=...' in kernel command line"
+#~ msgstr ""
+#~ "Weder 'root=PARTUUID=...' noch 'root=LABEL=...' in Kernel "
+#~ "KommandozeileKein 'root=PARTUUID' oder 'root=LABEL=' in Kernel "
+#~ "Kommandozeile gefunden"

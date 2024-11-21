@@ -1,0 +1,13 @@
+# This service does impersonate as user %I and opens a grapical
+# display by running centauridisplay on tty7 ...
+
+[Unit]
+Description=Run centauridisplay for given user
+ConditionPathExists=/home/%I
+
+[Service]
+User=%I
+WorkingDirectory=/home/%I
+Type=simple
+RemainAfterExit=no
+ExecStart=/var/centauri/tools/centauridisplay --nowait --console=7

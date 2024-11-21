@@ -1,0 +1,216 @@
+#!/usr/bin/bash
+
+# ------------------------------------------------------------------------------
+# This tool can be run without centauri-bash-lib being installed. If so it uses
+# a couple simplified library equivalents that are created below ...
+# ------------------------------------------------------------------------------
+
+[ "${CEN_NAME:--}" = '-' ] && [ -x '/usr/local/bin/_centauri_bash_lib' ] &&
+    . /usr/local/bin/_centauri_bash_lib -a -d -f - '0.01:2' 0
+
+# ------------------------------------------------------------------------------
+# Script supporting mini-bash-lib
+# ------------------------------------------------------------------------------
+run() {
+    [ "$#" = 0 ] && { usage ; quit -s 2 ; }
+
+MINIMAL="${MINIMAL:-false}" ####################################################
+if $MINIMAL ; then #############################################################
+    quit "TODO: your code ..."
+else ###########################################################################
+    # example code
+    if [ -n "$CEN_HOOK_MESSAGE" ] ; then
+        message -p "Using centauri-bash-lib version '%s'" "${CEN_MODULES['_centauri_bash_lib']}"
+    else
+        message "Using mini-bash-lib"
+    fi
+    system -- "$@"
+    quit
+fi #############################################################################
+}
+
+# ------------------------------------------------------------------------------
+# help display
+# ------------------------------------------------------------------------------
+usage() {
+    cat <<!EOF
+usage: $CEN_NAME [-d] [-f] [-h] [-v] <arg>... 
+!EOF
+}
+
+# ------------------------------------------------------------------------------
+# The mini-bash-lib contains these functions and options ...
+# ------------------------------------------------------------------------------
+#
+#   confirm     -a -i -n -y
+#   dryrun      [no options]
+#   embed       [all options ignored]
+#   error       -a -t -q
+#   folder      -c -m -q
+#   message     -a -i
+#   symlink     -n
+#   system      -q -r -e -p [-e|-p ignored]
+#   trace       [all options ignored]
+#   quit        -e -s
+#
+# ------------------------------------------------------------------------------
+
+if [ -z "$CEN_HOOK_MESSAGE" ] ; then                # have no centauri-bash-lib
+    CEN_OPT_DRYRUN=         # option -d
+    CEN_OPT_FORCE=          # option -f
+    CEN_VERB=1              # option -v
+    CEN_EXIT=0              # exit code
+    CEN_NAME="${BASH_SOURCE##*/}"
+
+    message() {
+        local _pref="$CEN_NAME:"
+        while [ "${1::1}" = '-' ] ; do
+            case "$1" in
+            --) shift ; break ;;
+            -i) _pref="${_pref//?/ }" ;; 
+            esac ; shift
+        done
+        [ -z "$*" ] && return 0
+        echo "$_pref" "$@" >&2
+    }
+
+    trace() {
+        [ "$CEN_VERB" -lt 2 ] && return 0
+        while [ "${1::1}" = '-' ] ; do shift ; done
+        echo "${CEN_NAME//?/ }  $*" >&2
+    }
+
+    dryrun() {
+        [ -z "$CEN_OPT_DRYRUN" ] && return 1
+        trace "dryrun:" "$@" ; return 0
+    }
+
+    # simplified error message: [-q|-t] <text>...
+    error() {
+        local _fqui
+        while [ "${1::1}" = '-' ] ; do
+            case "$1" in
+            --) shift ; break ;;
+            -q) _fqui=1 ;;   
+            -t) [ "${CEN_EXIT}" = 0 ] && return 0 || return 1
+            esac ; shift
+        done
+        if [ -n "$_fqui" ] ; then
+            [ "${CEN_EXIT}" = 0 ] && return 0
+            quit -e "$@"
+        fi 
+        echo "$CEN_NAME: ***ERROR***" "$@" >&2
+        CEN_EXIT=1 ; return 1
+    }
+
+    # yes/no confirm: [-y|-n] [-a|-i] <text>...
+    confirm() {
+        local oind yesn='[Y/n]' defn=0
+        while [ "${1::1}" = '-' ] ; do
+            case "$1" in
+            --) shift ; break ;;
+            -i) oind=1 ;;
+            -n) yesn='[y/N]' ; defn=1 ;;
+            esac ; shift
+        done
+
+        if [ -n "$oind" ] ; then
+            read -p "${CEN_NAME//?/ }  $* $yesn "
+        else
+            read -p "$CEN_NAME: $* $yesn "
+        fi
+        [ "${REPLY::1}" = 'y' ] && return 0
+        [ "${REPLY::1}" = 'n' ] && return 1
+        return "$defn"
+    }
+
+    embed() {
+        while [ "${1::1}" = '-' ] ; do shift ; done
+        local prog="$1" ; shift
+        system -r "$prog" ${CEN_OPT_DRYRUN:+--dryrun} --embed="$CEN_NAME" "$@"
+    }
+
+    folder() {
+        local ochg omak oqui
+        while [ "${1::1}" = '-' ] ; do
+            case "$1" in
+            --) shift ; break ;;
+            -c) ochg=1 ;;
+            -m) omak=1 ;;
+            -q) oqui=1 ;;
+            esac ; shift
+        done
+        if [ -d "$1" ] ; then
+            [ -z "$ochg" ] && return 0
+            system -r cd "$1" ; return
+        elif [ -n "$omak" ] ; then
+            system mkdir -p "$1" ; return
+        fi
+        [ -z "$oqui" ] && error "Not a folder:" "$1"
+        return 1
+    }
+
+    symlink() {
+        local nock
+        while [ "${1::1}" = '-' ] ; do
+            case "$1" in
+            --) shift ; break ;;
+            -n) nock='-f' ;;
+            esac ; shift
+        done
+        [ "$1" -ef "$2" ] && return 0
+        system ln -s $nock -- "$@"
+    }
+
+    system() {
+        local _fqui _frun
+        while [ "${1::1}" = '-' ] ; do
+            case "$1" in
+            --) shift ; break ;;
+            -e|-p) ;;
+            -q) _fqui=1 ;;
+            -r) _frun=1 ;;
+            esac ; shift
+        done
+
+        [ -z "$_frun" ] && dryrun "$@" && return 1
+        trace "system: $@"
+        if [ -n "$_fqui" ] ; then
+            "$@" &>/dev/null ; return
+        else
+            "$@" && return 0
+        fi
+        error "Running '$1' failed (status $?)"
+    }
+
+    quit() {
+        local _mesg='message'
+        while [ "${1::1}" = '-' ] ; do
+            case "$1" in
+            --) shift ; break ;;
+            -e) _mesg='error' ;;
+            -s) shift ; CEN_EXIT="${1:-2}"  
+            esac ; shift
+        done
+        $_mesg "$*"
+        exit "$CEN_EXIT"
+    }
+
+    while [ "${1::1}" = '-' ] ; do
+        case "$1" in
+        ---)         break ;;
+        -d|--dry*)   CEN_OPT_DRYRUN=1 ;;
+        -f|--for*)   CEN_OPT_FORCE=1 ;;
+        -h|--help)   usage ; exit 2 ;;
+        -v|--ver*)   CEN_VERB=2 ;;
+        *)  break
+        esac ; shift
+    done
+    run "$@" ; exit                         # using mini-bash-lib
+elif [ -n "$CEN_STAGE" ] ; then
+    run "$@"                                # we got sourced
+else
+    main "$@" ; quit                        # using centauri-bash-lib
+fi
+
+# end

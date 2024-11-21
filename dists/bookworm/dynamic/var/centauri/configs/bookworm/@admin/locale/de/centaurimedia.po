@@ -1,0 +1,371 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8\n"
+
+#: /var/centauri/tools/centaurimedia:3
+msgid "BSD License"
+msgstr "BSD Lizenz"
+
+#: /var/centauri/tools/centaurimedia:4
+msgid "Tool to wipe, partition, format and label storage media"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:38
+msgid "Not applicable for image: %s"
+msgstr "Nicht für Abbild anwendbar: %s"
+
+#: /var/centauri/tools/centaurimedia:59
+msgid "Not a valid partition number:"
+msgstr "Ist keine gültige Partitions-Nummer:"
+
+#: /var/centauri/tools/centaurimedia:65
+msgid "Not a partition:"
+msgstr "Ist keine Partition:"
+
+#: /var/centauri/tools/centaurimedia:76
+msgid "Cannot read from:"
+msgstr "Kann Datei nicht lesen:"
+
+#: /var/centauri/tools/centaurimedia:116
+msgid "Change label of partition '%s'. Continue"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:131
+msgid "Unsupported for this device:"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:143
+msgid "progress"
+msgstr "Fortschritt"
+
+#: /var/centauri/tools/centaurimedia:148
+msgid "completed."
+msgstr "abgeschlossen"
+
+#: /var/centauri/tools/centaurimedia:169 /var/centauri/tools/centaurimedia:774
+msgid "Missing '--device' option"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:175
+msgid "Cannot read from input:"
+msgstr "Kann Eingabe nicht lesen:"
+
+#: /var/centauri/tools/centaurimedia:177
+msgid "Create output file '$dest'"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:180
+msgid "Cannot write to output:"
+msgstr "Kann Ausgabe nicht schreiben:"
+
+#: /var/centauri/tools/centaurimedia:184
+msgid "Input and output are equal"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:187
+msgid "Copy data"
+msgstr "Daten kopieren"
+
+#: /var/centauri/tools/centaurimedia:187
+msgid " '$from  ->  $dest'"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:205
+msgid "Running 'dd' failed (status %s)"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:217
+msgid "Done."
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:248
+msgid "Flags for partition #%s: %s"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:327 /var/centauri/tools/centaurimedia:720
+msgid "No filesystem type specified"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:329 /var/centauri/tools/centaurimedia:461
+#: /var/centauri/tools/centaurimedia:722
+msgid "Unsupported filesystem: %s"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:360
+msgid "Creating '%s' filesystem on '%s', label '%s'"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:362
+msgid "Creating '%s' filesystem on '%s', no label"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:459
+msgid "No filesystem type identified"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:466
+msgid "Labeling filesystem on '%s', label '%s'"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:546
+msgid "Partition table type must be 'msdos' or 'gpt': %s"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:551
+msgid "Need at least one partition size (use '+' for whole device)"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:560
+msgid "'+' can be used for the last partition only"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:565 /var/centauri/tools/centaurimedia:574
+msgid "Not a valid partition size: %s"
+msgstr "Ist keine gültige Partitions-Größe:"
+
+#: /var/centauri/tools/centaurimedia:583
+msgid "Creating '%s' partition table with %s partition(s)"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:608
+msgid "Created partition table"
+msgstr "Partitions-Tabelle erstellt"
+
+#: /var/centauri/tools/centaurimedia:637
+msgid "Invalid argument:"
+msgstr "Argument ungültig:"
+
+#: /var/centauri/tools/centaurimedia:691
+msgid "Unmounted %s %s"
+msgstr "Ausgehängt: %s %s"
+
+#: /var/centauri/tools/centaurimedia:691
+msgid "partition"
+msgstr "Partition"
+
+#: /var/centauri/tools/centaurimedia:691
+msgid "partitions"
+msgstr "Partitionen"
+
+#: /var/centauri/tools/centaurimedia:768
+msgid "Bad use of '--label' option"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:828 /var/centauri/tools/centaurimedia:829
+#: /var/centauri/tools/centaurimedia:830 /var/centauri/tools/centaurimedia:831
+msgid "Form"
+msgstr "Form"
+
+#: /var/centauri/tools/centaurimedia:829
+msgid "mount multiple disk partitions, run a shell and unmount."
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:830
+msgid "copy data from stdin or a device using the 'dd' tool."
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:831
+msgid "run a shell that avoids the udisks automount problem."
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:834
+msgid "form (2) actions mount folder (default: $CEN_OPT_BASE)"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:835
+msgid "[*] block device to use"
+msgstr "[*] Zu verwendendes Block-Gerät"
+
+#: /var/centauri/tools/centaurimedia:836
+msgid "[*] volume or partition label"
+msgstr "[*] Volume oder Partion Label"
+
+#: /var/centauri/tools/centaurimedia:837
+msgid "append fstab entry to file, use '-' for stdout"
+msgstr "fstab Einträge an Datei anhängen, '-' für stdout verwenden"
+
+#: /var/centauri/tools/centaurimedia:838
+msgid "set sector size (used for brtfs only)"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:840
+msgid "[*] ohne of these is required by form (1) or (2) actions"
+msgstr "[*] eins von beiden ist für Form (1) oder (2) Aktionen nötig"
+
+#: /var/centauri/tools/centaurimedia:842
+msgid "••• media setup •••"
+msgstr "••• Medien einrichten •••"
+
+#: /var/centauri/tools/centaurimedia:843
+msgid "discard all data via 'blkdiscard'"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:844
+msgid "zerofill device or partition"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:847
+msgid "create a new partition table"
+msgstr "Erstelle neue Partitions-Tabelle"
+
+#: /var/centauri/tools/centaurimedia:849
+msgid "set partition flags"
+msgstr "Setze Flags für Partitions"
+
+#: /var/centauri/tools/centaurimedia:851
+msgid "format device or partition"
+msgstr "Gerät oder Partition formatieren"
+
+#: /var/centauri/tools/centaurimedia:853
+msgid "set filesystem label for dev/partition"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:855
+msgid "create 3/4 partition EFI system disk with btrfs,"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:856
+msgid "swap partition size is <size> or 8G if missing"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:858
+msgid "discard data (if supported), create one partition"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:859
+msgid "and format the entire medium"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:861
+msgid "••• (un-)mounting media •••"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:862
+msgid "mount partitions of the given device"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:863
+msgid "mount, run a shell and unmount"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:864
+msgid "unmount all partitions of the given device"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:866
+msgid "••• other/helpers •••"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:868
+msgid "run 'dd' to copy from stdin/file/device"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:869
+msgid "run a bash-shell using udisks2-inhibit"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:870
+msgid "re-read the partition table"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:872
+msgid "output path (use '-' for /dev/stdout)"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:873
+msgid "a dev name or path (like 'sda' or '/dev/sdb')"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:874
+msgid "volume or partition label (like 'raspi4' or 'worm1_boot')"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:875
+msgid "'efi' 'boot' 'bios_grub'"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:876
+msgid "kind of partition table: msdos|gpt"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:877
+msgid "label text"
+msgstr "Label Text"
+
+#: /var/centauri/tools/centaurimedia:878
+msgid "a partition number"
+msgstr "Eine Partitions-Nummer"
+
+#: /var/centauri/tools/centaurimedia:879
+msgid "sector size in bytes"
+msgstr "Sektorgröße in Bytes"
+
+#: /var/centauri/tools/centaurimedia:880
+msgid "size of partition: <number><M|G|T>"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:881
+msgid "the last size can be '+' to use all space"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:882
+msgid "file system type: swap,fat,ext4,exfat,ntfs,fs2fs, btrfs or"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:883
+msgid "'volume' or 'system' to create btrfs with subvolume tree"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:886
+msgid "# EFI btrfs boot disk"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:887
+msgid "# raspi btrfs boot disk"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:889
+msgid "# create 2 partitions"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:890
+msgid "# 2 filesystems"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:891
+msgid "# zerofill partition"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:893
+msgid "# entire medium"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:894
+msgid "# system disk"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:896
+msgid "automount"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:897
+msgid ""
+"The udisk2 automount problem can be circumvented by launching a bash-shell"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:898
+msgid "that disables device polling via udisk2-inhibit. No partition detection"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:899
+msgid "or automount should happen until the shell terminates. See 'inhibit'."
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:902
+msgid "Only the 'format' action can be used with <dev> being an image file."
+msgstr ""
+
+#~ msgid "partion"
+#~ msgstr "Partition"
+
+#~ msgid "mount base folder for form (2) actions"
+#~ msgstr "Basisverzeichnis zum Einhängen, Form (2) Aktionen"

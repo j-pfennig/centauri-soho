@@ -1,0 +1,112 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL="Dr. J. Pfennig (c) 2024; all rights reserved"
+CEN_TITLE=$"Template using command line verbs (action syntax)"
+
+# Import the bash library
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g - '0.10:3' || exit 2
+
+# Data
+CEN_OPT_INVERT=                     # coordinate inversion
+DAT_DPMS_OFF=                       # see actionTimer
+DAT_UNCLUTTER=
+
+if [ "$CEN_NAME" = '.centauristartup' ] ; then
+    CEN_NAME='centauriclock'
+    [ $# = 0 ] && set -- run
+fi
+
+# ------------------------------------------------------------------------------
+# action run: -no args-
+# ------------------------------------------------------------------------------
+actionRun() {
+    export XDG_CURRENT_DESKTOP=xinit
+
+    if [ -z "$CEN_OPT_INVERT" -a -e '/sys/class/backlight/10-0045/brightness' ] ; then
+        CEN_OPT_INVERT=1
+        message -a "Assuming input coordinates to be inverted"
+    fi
+
+    [ "$CEN_OPT_INVERT" = 1 ] && sysrun -e xinput set-prop 'Virtual Core Pointer' \
+                                'Coordinate Transformation Matrix' 0 -1 1  0 -1 1  0 0 1
+
+    if system -c unclutter ; then
+        sysrun -e unclutter &
+    else
+        warning "Please install 'unclutter' to hide the mouse cursor"
+    fi
+
+    # for clock user only, in background
+    if [ "$USER" = 'clock' ] ; then
+        sysrun -q systemd-run --user --on-calendar='*-*-* *:00:20' "$CEN_NAME" timer &
+        DAT_DPMS_OFF='dpms off --' ; actionTimer &
+        quit -h                                         # must run quit hooks ...
+        embed -x -v -z centaurilauncher --gui=1 clock
+    fi
+
+    # ... other user
+    embed -v -z centauripower --force dpms off
+    embed -v -z centaurilauncher --gui=1 clock
+    embed -v -z centauripower --force dpms on
+}
+
+# ------------------------------------------------------------------------------
+# timer call: -no args-
+# ------------------------------------------------------------------------------
+actionTimer() {
+    local hour zone
+    local bval=( 10  10  10  10  10  10 \
+                 20  40  50  60  70  70 \
+                 70  70  70  60  60  50 \
+                 50  40  30  30  20  20 )
+    printf -v hour "%(%H)T" -1 ; [ "$hour" != 0 ] && hour="${hour#0}"
+    printf -v zone "%(%Z)T" -1
+    [ "$zone" = 'CEST' ] || ((hour += 1))
+    message "Brightness timer:" "$zone ${hour}h -> ${bval[hour]}"
+    embed -v -z centauripower --force $DAT_DPMS_OFF brightness "${bval[hour]}"
+}
+
+# ------------------------------------------------------------------------------
+# implement option parsing: <option> [<argument>]
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    -I|--inv*)
+        optarg 'invert'         -    -o ;;          # on|off|auto
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <verb> <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$1" in
+    run)
+        invoke 'run'    -           0   ;;      # no args
+    tim*)
+        invoke 'timer'  -           0   ;;      # no args
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# print usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -o - \
+        -o '-I --invert  <mode>' $"invert input coordinates (on|off|auto)" \
+
+    usageset \
+        -a 'run'                 $"start clock (implied for '.centauristartup' symlink)" \
+        -a 'timer'               $"called by brightness timer" \
+
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

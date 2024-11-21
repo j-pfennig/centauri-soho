@@ -1,0 +1,14 @@
+# centauri-netconf.service
+[Unit]
+Description=Check IPv6 and HTTP-Proxy Connectivity
+
+[Service]
+Restart=no
+TimeoutSec=240
+IgnoreSIGPIPE=no
+KillMode=process
+GuessMainPID=no
+RemainAfterExit=no
+# waiting 10s to allow neighbor discovery
+ExecStart=/var/centauri/tools/centauriroute --tool --zombie wait 10 -- ipv6 auto -- proxy auto
+
