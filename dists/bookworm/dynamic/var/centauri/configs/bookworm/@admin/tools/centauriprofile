@@ -4,22 +4,16 @@ CEN_TITLE="Manage KDE and Firefox profiles"
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2024; BSD License"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -t -y - '0.40:2' || exit 2
-
-### TODO make links for centauriroaming local/roaming
-### TODO currentfile -r: use .. if not found in buster
-
-### centaurisession
-###      local   links back to local
-###      roaming go to roaming dir [Roaming must exist, make backups]
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -m sys -t -y - '0.41:3' || exit 2
 
 # options
-CEN_OPT_CREATE=             # see --create
-CEN_OPT_SELECT=0            # see --select
-CEN_OPT_USER=               # see --user
+CEN_OPT_CREATE=                     # see --create
+CEN_OPT_SELECT=0                    # see --select
+CEN_OPT_USER=                       # see --user
 
 # set by currentFile
-CURRENT_FILE=                       # result
+CURRENT_FILE=                       # result for KDE
+CURRENT_LXQT=                       # result for LxQt
 CURRENT_MOZI=                       # result
 CURRENT_PATH=                       # result: roaming profile path
 
@@ -33,12 +27,14 @@ DAT_KDE_VERS="${DAT_KDE_VERS#0}"
 DAT_KDE_VERS="${DAT_KDE_VERS#0}"    # version number like 4, 5 ...
 DAT_KDE_VERS="kde$DAT_KDE_VERS"
 
-DAT_REPODIR="$CEN_TOOLS/kde/Roaming" # default profiles in repository
+DAT_REPODIR="$CEN_TOOLS/Desktop"    # default profiles in repository
+DAT_ROAMING="$CEN_TOOLS/Roaming"    # default roaming profiles
+
 DAT_PROFILE="Roaming/Profiles/kde"  # example: $HOME/Roaming/Profiles/kde/buster
 DAT_NICKNAME="$CEN_SYS_NICKNAME"    # OS nick name
 
 # Localized data
-DAT_DESKT=($"Desktop"   "Desktop")
+DAT_DESKT=($"Desktop"   'Desktop')
 
 # ------------------------------------------------------------------------------
 # Check or create temporary folders: [-m|-n]
@@ -63,7 +59,7 @@ tempFolders() {
     }
 
     local rval omak onew osil
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -m)   omak=-m ;;
@@ -97,34 +93,46 @@ tempFolders() {
 #           CURRENT_MOZI    found file (default: dot_mozilla...)
 #           CURRENT_PATH    (writable) profile location
 #
-# Search:   $HOME/Roaming/Profiles/kde/$DAT_NICKNAME/
+# Search:   $HOME/Roaming/Profiles/kde/$DAT_NICKNAME/       DAT_PROFILE
 #           $HOME/Roaming/Profiles/kde/
-#           $CEN_TOOLS/kde/Roaming/$LOGNAME/
-#           $CEN_TOOLS/kde/Roaming/
+#           $CEN_TOOLS/Roaming/$CEN_OPT_USER                DAT_ROAMING
+#           $CEN_TOOLS/Roaming
+#           $CEN_TOOLS/Desktop                              DAT_REPODIR
+#
+# Names:    $1
+#           $1-config.t*
+#           dot-$1.t*
 # ------------------------------------------------------------------------------
 currentFile() {
     # helper to find file: -r|-w <name> <dir>...
     ___findfile() {
         local fldr rwop="$1" ; shift
         local name="${1:--}" ; shift
-        for fldr in "$@" ; do
+        local curr="$PWD" ; CURRENT_FILE=
+        for fldr in "$@" "$DAT_ROAMING/$CEN_OPT_USER" "$DAT_ROAMING" "$DAT_REPODIR" ; do
             [ -n "$fldr" -a -d "$fldr" ] || continue
+            folder -c -f "$fldr"
             if [ -z "$CURRENT_PATH" ] ; then        # get best folder
-                [ $rwop "$fldr" ] && CURRENT_PATH="$fldr"
+                [ $rwop "$fldr" ] && CURRENT_PATH="$PWD"
             fi
-            if [ "$rwop" = "-w" ] ; then            # -w: check folder
-                [ -w "$fldr" ] || continue
-            else                                    # -r: file checked
-                [ -r "$fldr/$name" ] || continue
+            if [ "$rwop" = '-w' ] ; then            # -w: check folder
+                [ -w "$PWD" ] || continue
+            elif matchpath -o -f -- "$name" "$name-config".t* \
+                         dot[_\-]"$name"* ; then    # -r: file checked
+                name="$CEN_MATCHPATH"
+            else
+                continue
             fi
-            CURRENT_FILE="$fldr/$name" ; return 0
+            prettypath -s CURRENT_FILE -- "$PWD/$name" ; break
         done
-        CURRENT_FILE= ; return 1
+        folder -c -f "$curr"
+        trace -c 'profile' "$name -> $CURRENT_FILE"
+        [ -n "$CURRENT_FILE" ]                      # return status
     }
 
     # options
     local rwop="-r" optz
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -)    break ;;
@@ -136,33 +144,32 @@ currentFile() {
     CURRENT_PATH=
 
     # default local files
-    if [ "$1" = "-" -o "$1" = "." -o "$1" = ".." ] ; then
+    if [ "$1" = '-' -o "$1" = '.' -o "$1" = '..' ] ; then
         local dtim ; system -e -p -r -s dtim -- date "+%Y-%m-%d"
         CURRENT_MOZI="$PWD/dot_mozilla_$dtim.tgz"
         CURRENT_FILE="$PWD/dot_${DAT_KDE_VERS}_$dtim.tgz"
 
     # default roaming file(s)
-    elif [ "${1:-+}" = "+" ] ; then
+    elif [ "${1:-+}" = '+' ] ; then
         local rpth rnik name="${2:--}"
-        [ "$name" = "-" ] && name="dot_${DAT_KDE_VERS}_default.tgz"
+        [ "$name" = '-' ] && name="$DAT_KDE_VERS"
         eval rpth="~$CEN_OPT_USER/$DAT_PROFILE"
         rnik="$rpth/$DAT_NICKNAME"
         [ -n "$CEN_OPT_CREATE" ] && folder -f -m "$rnik"
-
-        ___findfile "$rwop" "dot_mozilla.tgz" \
-                    "$rnik" "$rpth" "$DAT_REPODIR/$CEN_OPT_USER" "$DAT_REPODIR"
+        ___findfile "$rwop" 'mozilla' "$rnik" "$rpth"
         CURRENT_MOZI="$CURRENT_FILE"
 
-        ___findfile "$rwop" "$name" \
-                    "$rnik" "$rpth" "$DAT_REPODIR/$CEN_OPT_USER" "$DAT_REPODIR"
+        ___findfile "$rwop" 'lxqt' "$rnik" "$rpth"
+        CURRENT_LXQT="$CURRENT_FILE"
+
+        ___findfile "$rwop" "$name" "$rnik" "$rpth"
 
     # explicit file
     else
         local name="$1"
         [ -n "$optz" ] && name="${1%.tgz}.tgz"
         if [ "${name/\//}" = "$name" ] ; then   # no / in name ...
-            ___findfile "$rwop" "$name" \
-                        "$rpth" "$DAT_REPODIR/$CEN_OPT_USER" "$DAT_REPODIR"
+            ___findfile "$rwop" "$name" "$rpth"
             [ -z "$CURRENT_FILE" ] && CURRENT_FILE="$PWD/$name"
         else
             resolve -m -s CURRENT_FILE "$name"
@@ -198,18 +205,18 @@ updateFile() {
 }
 
 # ------------------------------------------------------------------------------
-# undo generalize: -no args-
+# undo generalize: [<folder>]
 # ------------------------------------------------------------------------------
 specialize() {
     local item from="${HOME//\//\\/}" flis fgen
     local s0_0="$from/$DAT_DESKT"   s0_1="##GEN##/Desktop"
     local s1_0="\$HOME/$DAT_DESKT"  s1_1="\$HOME/Desktop"
     local sedo="s|$s0_1|$s0_0|g ; s|$s1_1|$s1_0|g ; s/##GEN##/$from/g ; s/##USR##/$USER/g"
-
-    # typo in old profile versions...
-    for item in ".generalized_profile" ".generalsized_profile" ; do
+    local curr="$PWD"
+    [ -n "$1" ] && folder -c -f "$1"
+    for item in ".generalized_profile" ; do
         [ -e "$item" ] || continue
-        dryrun "specialize" "$item" && continue
+        dryrun "specialize" "$PWD/$item" && continue
         flis=()
         echo >> "$item"                 # last line must have \n
         while read -r fgen ; do
@@ -218,24 +225,35 @@ specialize() {
         [ -n "$flis" ] && system -e -p -- sed -i "$sedo" "${flis[@]}"
         remove "$item"
     done
+    [ -n "$1" ] && folder -c "$PWD"
 }
 
 # ------------------------------------------------------------------------------
 # apply profile settings: -see currentFile for argument-
 # ------------------------------------------------------------------------------
 actionApply() {
-    # get profile file path
-    currentFile -z "$1" || return
-    [ "$CEN_OPT_SELECT" -gt 1 ] && CURRENT_FILE="$CURRENT_MOZI"
-    [ -r "$CURRENT_FILE" ] || fatal "Cannot read: $CURRENT_FILE"
 
-    local ptxt omsg=trace ; [ "$CEN_YESNO" = "y" ] && omsg=message
-    printf -v ptxt $"Install profile settings from '%s'" "$CURRENT_FILE"
-    confirm -a "$ptxt" || return 1
-    $omsg -a -p $"Installing profile for '%s' from '%s'" "$DAT_USER_DIR" "$CURRENT_FILE"
-    system -e -p -- tar -xzf "$CURRENT_FILE" --directory="$DAT_USER_DIR" --no-same-owner
+    ___apply() {
+        [ "${1:--}" = '-' ] && return
+        confirm -y -f $"Install profile settings from '%s'" "$1" || return
+        local omsg=trace ; [ "$CEN_YESNO" = 'y' ] && omsg=message
+        $omsg -a -p $"Installing profile for '%s' from '%s'" "$DAT_USER_DIR" "$1"
+        system -e -p -- tar -xzf "$1" --directory="$DAT_USER_DIR" --no-same-owner
+        specialize "$DAT_USER_DIR/$2"           # undo generalize
+    }
 
-    specialize              # undo generalize
+    # get profile file paths
+    if [ "$1" = '+' ] ; then
+        currentFile +
+        local mask="${CEN_OPT_SELECT/0/7}"
+        ((mask & 2)) && ___apply "$CURRENT_FILE" '.kde'
+        ((mask & 1)) && ___apply "$CURRENT_MOZI" '.mozilla'
+        ((mask & 4)) && ___apply "$CURRENT_LXQT" '.config/lxqt'
+    elif currentFile -z "$1" ; then
+        ___apply "$CURRENT_FILE"
+    else
+        fatal $"Cannot find file:" "$1"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -395,7 +413,7 @@ actionCurrent() {
     currentFile "$1"
     local stat=
     [ -f "$CURRENT_FILE" ] || stat=$" [not found]"
-    if [ "${1:-+}" = "+" -o "$1" = "-" ] ; then
+    if [ "${1:-+}" = '+' -o "$1" = '-' ] ; then
         [ "$CEN_OPT_SELECT" = 2 ] ||
             message -a -p $"Profile:  %-50s %s" "$CURRENT_FILE" "$stat"
         stat=
@@ -464,11 +482,13 @@ actionGeneral() {
 # --select can be used to filter output of '+'.
 # ------------------------------------------------------------------------------
 actionInfo() {
-    if [ "$1" = "+" ] ; then
+    if [ "$1" = '+' ] ; then
         currentFile -w +
-        [ "$CEN_OPT_SELECT" = "2" ] || echo "${CURRENT_FILE:--}"
-        [ "$CEN_OPT_SELECT" = "1" ] || echo "${CURRENT_MOZI:--}"
-    elif [ "$1" = "-" ] ; then
+        local mask="${CEN_OPT_SELECT/0/7}"
+        ((mask & 2)) && echo "${CURRENT_FILE:--}"
+        ((mask & 1)) && echo "${CURRENT_MOZI:--}"
+        ((mask & 4)) && echo "${CURRENT_LXQT:--}"
+    elif [ "$1" = '-' ] ; then
         currentFile -w +
         echo -e "${CURRENT_PATH:--}"
     elif [ -n "$1" ] ; then
@@ -575,7 +595,7 @@ actionSave() {
 ### TODO deref tar folder args!
 
     # do we have .kde or .mozilla?
-    local tara="."
+    local tara='.'
     if [ "$CEN_OPT_SELECT" -gt 1 ] ;then
         folder -f ".mozilla"
         tara=".mozilla"
@@ -602,7 +622,7 @@ actionSizes() {
     esac
 
     for prog in "qdirstat" "k4dirstat" - ; do
-        [ "$prog" = "-" ] && fatal $"Please install 'qdirstat' or 'k4dirstat'"
+        [ "$prog" = '-' ] && fatal $"Please install 'qdirstat' or 'k4dirstat'"
         system -c "$prog" && break
     done
     system -e -p -- "$prog" "$base"
@@ -631,11 +651,11 @@ options() {
     case "$CEN_ACTION" in
 
     -C|--cre*)
-        optarg "create"     CEN_OPT_CREATE ;;
+        optarg 'create'     CEN_OPT_CREATE ;;
     -S|--sel*)
-        optarg "select"     CEN_OPT_SELECT -n ;;
+        optarg 'select'     CEN_OPT_SELECT -n ;;
     -U|--use*)
-        optarg "user"       CEN_OPT_USER -t   ;;
+        optarg 'user'       CEN_OPT_USER -t   ;;
     esac
 }
 
@@ -647,43 +667,43 @@ actions() {
     case "$CEN_ACTION" in
 
     # end option parsing, check --user option
-    "")
-        if [ "${CEN_OPT_USER:--}" = "-" ] ; then
+    '')
+        if [ "${CEN_OPT_USER:--}" = '-' ] ; then
             CEN_OPT_USER="$LOGNAME" ; DAT_USER_DIR="$HOME"
         else
             eval DAT_USER_DIR=~$CEN_OPT_USER
-            [ "${DAT_USER_DIR::1}" = "~" ] && fatal $"No such user"": $CEN_OPT_USER"
+            [ "${DAT_USER_DIR::1}" = '~' ] && fatal $"No such user"": $CEN_OPT_USER"
             message -a -p $"Home folder of user '%s' is '%s'" "$CEN_OPT_USER" "$DAT_USER_DIR"
         fi
         ;;
 
     # actions
     app*)
-        invoke "apply"   -            1 ;;
+        invoke 'apply'   -            1 ;;
     cre*)
-        invoke "create"  -            0 1 ;;
+        invoke 'create'  -            0 1 ;;
     cle*)
-        invoke "cleanup" -            0 ;;
+        invoke 'cleanup' -            0 ;;
     com*|kom*)
-        invoke "compare" -            0 ;;
+        invoke 'compare' -            0 ;;
     cur*)
-        invoke "current" -            0 1 ;;
+        invoke 'current' -            0 1 ;;
     fil*|dol*)
-        invoke "files"   -            0 ;;
+        invoke 'files'   -            0 ;;
     gen*)
-        invoke "general" -            0 ;;
+        invoke 'general' -            0 ;;
     inf|info)
-        invoke "info"    -            0 1 ;;
+        invoke 'info'    -            0 1 ;;
     ini*)
         invoke 'init'    -            1 ;;
     loa|load)
-        invoke "load"    -            0 2 ;;
+        invoke 'load'    -            0 2 ;;
     sav|save)
-        invoke "save"    -            0 1 ;;
+        invoke 'save'    -            0 1 ;;
     siz*)
-        invoke "sizes"   -            0 1 ;;
+        invoke 'sizes'   -            0 1 ;;
     swa|swap)
-        invoke "swap"    -            0 ;;
+        invoke 'swap'    -            0 ;;
     esac
 }
 
@@ -720,20 +740,21 @@ actions:
        info    [<file>]     machine readable version of 'current'
        compare              compare 'old' and 'new' folders
        files                open dolphin to show 'old' and 'new'
-       sizes   [old|new]    run qdirstat/k4dirstat to show sizes
-       cleanup              delete 'old' and 'new' foldes
+       sizes   [old|new]    run 'qdirstat' to show sizes
+       cleanup              delete 'old' and 'new' folders
 
 arguments:
-       <mode>               0:= all 1:=ignore .mozialla 2:=only .mozilla
+       <mode>               0:= all  1:=ignore mozilla  2:=mozilla  4:=lxqt
        <user>               user name (action save may not work if roaming)
        <file>               a path or -:=to use local file  +:=to use profile
 
 profile: the search-order for profiles is:
 
-       $HOME/Roaming/Profiles/kde/$DAT_NICKNAME/
-       $HOME/Roaming/Profiles/kde/
-       $CEN_TOOLS/kde/Roaming/$LOGNAME/
-       $CEN_TOOLS/kde/Roaming/
+       • $HOME/$DAT_PROFILE/$DAT_NICKNAME/
+       • $HOME/$DAT_PROFILE/
+       • $DAT_ROAMING/$LOGNAME/
+       • $DAT_ROAMING/
+       • $DAT_REPODIR/
 
 examples:
        $CEN_NAME create scratch    # create profile as 'scratch.tgz'

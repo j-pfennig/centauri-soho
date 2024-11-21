@@ -183,7 +183,7 @@ progress() {
             CEN_PROGRESS=0                      # no error return!
         elif [ "$CEN_OPT_GUI" = 0 ] ; then      # disables auto-init
             _stat=1
-            trace -c ' disabled' "option --gui=0"
+            $CEN_TRACE -c ' disabled' "option --gui=0"
         elif [ -z "${CEN_MODULES["_centauri_bash_win"]}" ] ; then
             console || _stat=$?
         elif [ -z "$CEN_WINDOWS" ] ; then       # _centauri_bash_win is loaded

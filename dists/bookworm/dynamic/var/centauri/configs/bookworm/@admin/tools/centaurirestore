@@ -3,7 +3,7 @@
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2017-2024; BSD License"
 CEN_TITLE="Restore a centauribackup, optionally cloning an existing machine"
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -m bat -r -y - '0.60:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -m bat -r -y - '0.60:3' || exit 2
 
 # Options
 
@@ -248,9 +248,10 @@ do_marker() {
 # ------------------------------------------------------------------------------
 do_rewrite() {
     local fnam="$1" ; shift
-    if [ -n "$CEN_OPT_DRYRUN" ] ; then
-        message -a "dryrun: not rewriting: $fnam" ; return 0
-    fi
+  #  if [ -n "$CEN_OPT_DRYRUN" ] ; then
+  #      message -a "dryrun: not rewriting: $fnam" ; return 0
+  #  fi
+    dryrun -s "Not rewriting: $fnam" && return 0
     if [ ! -r "$fnam" ] ; then
         warning "Cannot rewrite: $fnam" ; return 1
     fi
@@ -279,7 +280,7 @@ do_rename() {
     if matchpath -d -o -s vroot "$vroot-$CEN_FLG_DIST" "$vroot" ; then
         base="$PWD"
         matchpath -d -o -p -s home "$vhome-$CEN_FLG_DIST" "$vhome" ||
-            fatal "Missing home volume"
+            fatal "Missing 'Home' volume"
         folder -c -f "$vroot"
 
     elif [ -z "$CEN_OPT_DRYRUN" -a ! -d 'etc' ] ; then
@@ -294,7 +295,7 @@ do_rename() {
         return 0
     fi
 
-    local orig='<unknown>' conf="${CEN_ROOT:1}/default/centaurinetcfg"
+    local item orig='<unknown>' conf="${CEN_ROOT:1}/default/centaurinetcfg"
     [ -r 'etc/hostname' ] && orig="$(< etc/hostname)"
     if [ "$orig" = "$name" ] ; then
         if [ -z "${CEN_FLG_CLONE[1]}" ] ; then
@@ -307,15 +308,16 @@ do_rename() {
         message -a "Rename machine: $orig => $name"
     fi
 
-    do_marker "$base" 'vol0' ; do_marker "$home" "home" ; do_marker '.'
+    do_marker "$base" 'vol0' ; do_marker "$home" 'home' ; do_marker '.'
     do_machine_id
     confirm -n -b "Generate new ssh host keys" &&
         embed -i -v centaurikeys -y -q hostkeys 'etc/ssh'
 
-    # remove persistent device names
+    # remove persistent device names (legacy)
     remove -f "etc/udev/rules.d/"*-persistent-*
 
-    # clean samba cache
+    # clean dhcp and samba caches
+    remove -f 'var/lib/dhcp'/*
     remove -f 'var/lib/samba/wins.dat' 'var/cache/samba/browse.dat'
 
     # generate network configuration
@@ -331,9 +333,10 @@ do_rename() {
 
     # create resume
     do_label "$name"
-    if [ -d "etc/initramfs-tools/conf.d" ] ; then
+    if [ -d 'etc/initramfs-tools/conf.d' ] ; then
         if [ -z "$CEN_OPT_DRYRUN" ] ; then
-            echo "resume=LABEL=$CEN_DAT_LSWAP" > "etc/initramfs-tools/conf.d/resume"
+            item="resume=LABEL=$CEN_DAT_LSWAP"
+            create -t -v item -- 'etc/initramfs-tools/conf.d/resume'
             message -a "Run 'update-initramfs -u' manually to make hibernate work"
         fi
     fi
@@ -355,7 +358,7 @@ do_update() {
     local sgrb="${CEN_FLG_CLONE[3]:--}"             # 4th --clone is path of grub.cfg
     [ "$sboo" = '+' ] && sboo="$name"
     [ "$sdsk" = '+' ] && sdsk="$name"
-    trace -c -a 'update boot' "boot-label=%s  root-label=%s  grub-path=%s" "$sboo" "$sdsk" "$sgrb"
+    trace -a -c -p 'update boot' "boot-label=%s  root-label=%s  grub-path=%s" "$sboo" "$sdsk" "$sgrb"
 
     # grub: <boot-mpt>/efi/grub
     # load: <boot-mpt>/efi/loader/entries
@@ -394,7 +397,7 @@ do_update() {
     elif [ -d "$mpnt/EFI" ] ; then              # just to be sure
         firm='-' ; load="$mpnt/loader/entries" ; sgrb="$mpnt/grub"
     elif [ -d "$mpnt/grub" ] ; then
-        firm='-' ; sgrb="$mpnt" ; load='-'
+        firm='-' ; sgrb="$mpnt/grub" ; load='-'
     else
         firm="$mpnt" ; sgrb='-' ; load='-'
     fi
@@ -421,7 +424,7 @@ do_update() {
         stab+="; s/^(UUID=[-a-zA-Z0-9 ]*\/ )/LABEL=${sdsk}_root \/ /g"
         stab+="; s/^(UUID=[-a-zA-Z0-9 ]*none )/LABEL=${sdsk}_swap none /g"
         what+=('etc/fstab')
-        do_rewrite "etc/fstab" "$stab"
+        do_rewrite 'etc/fstab' "$stab"
     fi
 
     if [ "$firm" != '-' ] && [ -e "$firm/cmdline.txt" ] ; then
@@ -431,15 +434,15 @@ do_update() {
         what+=('firmware/cmdline.txt')
         do_rewrite "$firm/cmdline.txt" "$stab"
     elif [ "$sgrb" != '-' ] && [ ! -h "$sgrb" ] ; then
-        if netoption 'sysdnames' "$name" ; then
-            stab="s/^set ifnames=.*/set ifnames=/; "
-            remove '/etc/systemd/network/99-default.link'
+        if [ -z "$2" ] ; then                   # only if root is known, see fstab update
+            :
+        elif netoption 'sysdnames' "$name" ; then
+            remove 'etc/systemd/network/99-default.link'
         else
-            stab="s/^set ifnames=.*/set ifnames=0/; "
-            # stab=                     # this leaves some corner cases (virtio?)
-            symlink -n '/dev/null' '/etc/systemd/network/99-default.link'
+            symlink -n '/dev/null' 'etc/systemd/network/99-default.link'
         fi
-        stab+="s/^set myname=.*/set myname=$sdsk/"
+        [ "${sdsk:-}" = '-' ] && stab="$name" || stab="$sdsk"
+        stab="s/^set myname=.*/set myname=$stab/"
         what+=('grub/grub.cfg')
         do_rewrite "$sgrb/grub.cfg" "$stab"
     fi
@@ -478,12 +481,14 @@ do_restore() {
     *.tar.bz2)  ;;
     *.tar.lzo)  ;;
     *.tar.lzma) ;;
+    *.tar.zstd) ;;
     *.img)      isimg=1 ;;
     *.img.xz)   isimg=1 ; xpand='xzcat' ;;
     *.img.gz)   isimg=1 ; xpand='zcat' ;;
     *.img.bz2)  isimg=1 ; xpand='bzcat' ;;
     *.img.lzo)  isimg=1 ; xpand='lzop -cd' ;;
     *.img.lzma) isimg=1 ; xpand='lzcat' ;;
+    *.img.zstd) isimg=1 ; xpand='zstdcat' ;;
     *.img.*)    fatal "Unknown image compression: $file" ;;
     *)          fatal "Unknown archive type or compression: $file" ;;
     esac
@@ -626,21 +631,21 @@ do_sysrest() {
 
     if [ -n "$CEN_FLG_PART" ] ; then
        message -a "Mounting '$CEN_FLG_PART' at '$CEN_FLG_MOUNT' ..."
-       [ -z "$CEN_FLG_EXTFS" ] && fmount="-o subvol=/"
+       [ -z "$CEN_FLG_EXTFS" ] && fmount='-o subvol=/'
        system -f -p -r -- mount "$CEN_FLG_PART" "$CEN_FLG_MOUNT" $fmount
     fi
 
     folder -c -f "$CEN_FLG_MOUNT" ; CEN_FLG_MOUNT="$PWD"
-    local proot='/' phome="/home" puser="/usr"
+    local proot='/' phome='/home' puser='/usr'
     if [ -z "$CEN_FLG_EXTFS" ] ; then
         local vroot="$CEN_DAT_VROOT" vhome="$CEN_DAT_VHOME"
         if matchpath -d -o -s proot "$vroot-$CEN_FLG_DIST" "$vroot" ; then
             puser="$proot/usr"
             matchpath -d -o -s phome "$vhome-$CEN_FLG_DIST" "$vhome" ||
-                fatal "Missing home volume"
+                fatal "Missing 'Home' volume"
             message -a "btrfs volumes: $proot $puser $phome"
         elif [ -n "$CEN_FLG_DIST" ] ; then
-            fatal "Missing root volume:" "$vroot-$CEN_FLG_DIST"
+            fatal "Missing 'Root' volume:" "$vroot-$CEN_FLG_DIST"
         fi
     fi
 
@@ -650,17 +655,17 @@ do_sysrest() {
        confirm -a "Restore data to $CEN_FLG_MOUNT" || quit -t
        # restore but exclude grub stuff
        do_restore "$proot"  "$froot" \
-            "--exclude=./boot/grub/locale"  \
-            "--exclude=./boot/grub/fonts"   \
-            "--exclude=./boot/grub/i386-pc" \
-            "--exclude=./boot/grub/x86_64-efi" \
-            "--exclude=./boot/grub/grubenv" \
-            "--exclude=./boot/grub/*~"      \
-            "--exclude=./boot/grub/*.o"     \
-            "--exclude=./boot/grub/*.img"   \
-            "--exclude=./boot/grub/*.pf2"   \
-            "--exclude=./boot/grub/*.mod"   \
-            "--exclude=./boot/grub/*.lst"
+            '--exclude=./boot/grub/locale'  \
+            '--exclude=./boot/grub/fonts'   \
+            '--exclude=./boot/grub/i386-pc' \
+            '--exclude=./boot/grub/x86_64-efi' \
+            '--exclude=./boot/grub/grubenv' \
+            '--exclude=./boot/grub/*~'      \
+            '--exclude=./boot/grub/*.o'     \
+            '--exclude=./boot/grub/*.img'   \
+            '--exclude=./boot/grub/*.pf2'   \
+            '--exclude=./boot/grub/*.mod'   \
+            '--exclude=./boot/grub/*.lst'
        # create required folders
        do_fixup
     fi

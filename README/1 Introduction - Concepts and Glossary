@@ -75,30 +75,30 @@ Active Directory and User Management
 
 Windows support is a 'must have' in an office environment. So the server configuration uses
 Samba AD/DC. Even as you can use local user accounts the default are AD accounts. The local
-user accounts are shared between clients thanks to the repository. But local account cannot
+user accounts are shared between clients thanks to the repository. But local accounts cannot
 be used from Windows.
 
 Samba AD/DC comes with its own Kerberos implementation and tweaks DNS. Samba also implements
 windows file sharing. This is all supported via centauri-tools.
 
-To some extent user accounts can optionally be managed from windows. From the Linux side
-samba-tool should be used. There exist high level centauri-tools like 'centaurikerberos' and
+To some extent user accounts can optionally be managed from windows. From the Linux side the
+'samba-tool' should be used. There exist high level centauri-tools like 'centaurikerberos' and
 'centauriusers' to simplify administration.
 
 Samba and NFSv4 File Sharing
 ----------------------------
 
-Basic Samba run on client machines by default. User authorization is delegated to the AD/DC
+Basic Samba runs on client machines by default. User authorization is delegated to the AD/DC
 server if the client is connected to the home network. So windows clients see Linux file shares
 and the other way around Linux clients see Windows shares. On Linux there is even some sort
 of Network-Neighborhood, implemented by 'centaurimounter'.
 
-For linux to linux NFS is a better choice than Samba. Unfortunately NFS versions earlier than
+For Linux-to-Linux NFS is a better choice than Samba. Unfortunately NFS versions earlier than
 v4 are not acceptable due to security concerns and v4 is difficult to manage. This is why only
 the server has NFSv4 exports. Client-to-client file sharing should make use of Samba.
 
 Server-to-client NFSv4 is supported via Kerberos authentication. The kerberos implementation
-is provided by Samba. The 'centaurikerberos' tool knows to make this work.
+is provided by Samba. The 'centaurikerberos' tool knows how to make this work.
 
 Networking
 ----------
@@ -109,33 +109,36 @@ text file that contains a declarative network description that gets implementate
 centauri-tools.
 
 Mobile networking via attachable routers or tethering phones is optional. See 'appliances'
-for details. Basically every client computer can be made a router the connects a local network
+for details. Basically every client computer can be made a router that connects a local network
 over a mobile service provider to the internet.
 
 File System and Data Protection
 -------------------------------
 
-Using the Btrfs file-system is strictly recommend. This includes automatic snapshots. Btrfs
+Using the 'btrfs' file-system is strictly recommend. This includes automatic snapshots. Btrfs
 protects against hardware bit-rot or user mistakes. Backups are handled separately and can
 include automatic traditional backups or mirroring of data.
 
 Snapshots, Backups and Mirrors
 ------------------------------
 
-Data can be harmed be human or program failure. Centauri-Soho strictly uses Btrfs as its
-filesystem and automatically manages snapshots to protect against this type of failures.
+Data can be harmed by human or software failure. Centauri-Soho strictly uses 'btrfs' as its
+filesystem and automatically manages snapshots to protect against these types of failures.
 
-Hardware failure and bit-rot can be detected by Btrfs but it needs a Backup for recovery.
+Hardware failure and bit-rot can be detected by 'btrfs' but one needs a backup for recovery.
 Centauri-Soho has the 'centauribackup' and 'centaurirestore' tools for this purpose. These
 are intended to backup/restore the operating system and a minimal user environment.
 
 For a full backup of user data the 'centaurimirror' tool is used to mirror a system to a
 backup disk. Multiple clients clients can share the same disk, data gets de-duplicated. A
 mirror disk can be connected to any system and can be used across the network from all
-clients.
+clients. This gets implemented by the 'centaurimirror' tool.
 
-A server can have a mirror disk to automatically mirror data and additionally a secondary
-server can mirror the primary server.
+A server can have a mirror disk to automatically mirror the server data and additionally a
+secondary server can mirror the primary server.
+
+    TODO:   /mnt/mirror/volX-to-mirror  and  /admin/utilities/mirror-server should be
+            integrated into centaricron
 
 Automation
 ----------

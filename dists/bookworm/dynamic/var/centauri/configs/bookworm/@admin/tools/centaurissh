@@ -8,7 +8,7 @@ PATH+=":${0%/*}" . _centauri_bash_lib -a -d - '0.68:2' 1 || exit 2
 
 # Data
 DAT_SERVER_GEN=                 # default host (generic server name)
-netquery -s DAT_SERVER_GEN current
+netquery -q -s DAT_SERVER_GEN current
 
 CEN_OPT_COMPRESS=               # see --compress
 CEN_OPT_PORT=                   # see --port

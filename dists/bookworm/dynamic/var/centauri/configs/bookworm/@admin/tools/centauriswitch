@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2015-2024; BSD License"
 CEN_TITLE="Network Configuration Switching"
@@ -130,7 +130,7 @@ CEN_TITLE="Network Configuration Switching"
 # ------------------------------------------------------------------------------
 
 # Import the bash library, set name and version
-PATH+=":/usr/local/bin:${0%/*}" . _centauri_bash_lib -a -d -f -v -y - '0.41:2' || exit 2
+PATH+=":/usr/local/bin:${0%/*}" . _centauri_bash_lib -a -d -f -v -y - '0.42:4' || exit 2
 
 CEN_SVC_NOROOT=1        # allow non-root user actions
 
@@ -157,6 +157,10 @@ DAT_SERV_COUNT=         # flag for do_trigger
 DAT_DEFAULT_FILE="$CEN_ROOT/default/centauriswitch"
 
 DAT_WLAN_COUNTRY=       # see do_country
+
+# Flag file used by centaurisoho to keep override files
+DAT_OVERRIDE_FILE="$CEN_ROOT/persistent/centauriswitch-override"
+DAT_SERVER_SETUP="${DAT_OVERRIDE_FILE}-setup"
 
 # Things read from status file only, see centauriroute
 # DAT_SWITCH_MODE=
@@ -268,7 +272,7 @@ do_pppupdown() {
 do_netcfg() {
     [ "$CEN_ROOT/default/centaurinetcfg" -nt "$CEN_ROOT/persistent/centaurinetcfg" ] || return
     message "Running network setup"
-    embed centaurinetcfg setup
+    embed centaurinetcfg setup -
 }
 
 # ------------------------------------------------------------------------------
@@ -779,7 +783,8 @@ actionDhcp() {
     ___carrier() {
         [ "${1::1}" = 'e' ] || return 0                 # only check ethernet
         nettool -d "$1" -i link set up || return 0      # cannot check
-        for tick in 0.2 0.2 0.3 0.3 0.5 1 1 2 2 3 3 '' ; do     # give it some time to settle
+        #for tick in 0.2 0.2 0.3 0.3 0.5 1 1 2 2 3 3 '' ; do     # give it some time to settle
+        for tick in 0.2 0.2 0.3 0.3 0.5 1 1 2  '' ; do     # give it some time to settle
             [ -z "$tick" ] && break
             timer -w "$tick"
             readline -e -i "/sys/class/net/$1/carrier" || return
@@ -996,13 +1001,18 @@ actionStart() {
     local filter_mode='wild'
 
     if [ "$CEN_ACTION" = 'enter' ] ; then
-        nettemp  -c "$CEN_NAME-disable"     # inhibit start via dependency
-    fi #else
-        # parse centauriswitch kernel arg, create centauriswitch status file
-        embed -v centauriroute -t init "$@" || return
-   # fi
+        nettemp -c "$CEN_NAME-disable"      # inhibit start via dependency
+    fi
+
+    # parse centauriswitch kernel arg, create centauriswitch status file
+    embed -v centauriroute -t init "$@" || return
     nettemp && . "$_nettemp"
-    do_override -i                          # init override files
+
+    if [ -e "$DAT_SERVER_SETUP" ] ; then
+        message "Starting in server-setup mode, not deleting override files"
+    else
+        do_override -i                      # init override files
+    fi
 
     # what mode?
     case "$DAT_SWITCH_MODE" in
@@ -1079,6 +1089,9 @@ actionStop() {
 # ------------------------------------------------------------------------------
 actionStatus() {
     embed -v centauriroute -t status
+    [ -e "$DAT_OVERRIDE_FILE" ] && echo "    Have mode override file :" "$DAT_OVERRIDE_FILE"
+    [ -e "$DAT_SERVER_SETUP"  ] && echo "    Server setup flag file  :" "$DAT_SERVER_SETUP"
+
     embed -v centaurisecrets -t status
     netserver
 
@@ -1299,6 +1312,9 @@ actionUpDown() {
         # add ipv6 ULA (only for wlan/ethernet)
         if [ -n "$host" ] ; then
              netoption 'ipv6' "$HOSTNAME" && nethost "$host" && fadr="$_nethost_ip"
+             if [ -n "$CEN_NET_EXTERNAL" ] && netoption 'other' "$HOSTNAME" ; then
+                rbat+=(addr extern "$host" "$ifce" --)
+             fi
         fi
         # check server (not for 'static' mode)
         [ "$DAT_SWITCH_MODE" != 'static' -a -z "$curr" ] && fscr=1

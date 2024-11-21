@@ -1,15 +1,48 @@
-# Config for centaurinetcfg, jpf@centauri 2024-01-14
+# Config for centaurinetcfg, jpf@centauri 2024-09-14
+
+config %O%
 
 # -----------------------------------------------------------------------------
 # network (used to configure ethernet interfaces), dhcp, bad host
 # -----------------------------------------------------------------------------
+# As IPv6 addresses are derived from IPv4 (see below), the following is just
+# IPv4 stuff. centaurisoho knows about the domain network zone that spans the
+# locally accessible IPv4 range plus 7 sub-nets. These subnets must all be
+# inside the domain net. Sub-net 1..6 are used by centaurisoho, sub-net 7 is
+# free for any user-defined purpose. Mapping sub-net names to indexes is
+# handled by library function 'netindex':  
+
+network %D%  %B%    # <0> domain and base address
+
+network iot           <domain>1.0/24    # <1> router, home-equipment
+network trusted       <domain>2.0/24    # <2> trusted
+network guest         <domain>3.0/24    # <3> guest static
+network dynamic       <domain>4.0/24    # <4> guest dhcp
+network repeater      <domain>5.0/24    # <5> repeater sub net
+network vpn           <domain>6.0/24    # <6> openvpn
+
+# The <other> subnet is optional and can be used to integerate another domain
+# network. By default <other> is trusted, see 'filter trusted <other>' ...
+
+network other         <domain>7.0/24    # <7> user defined default
+
+# When <other> is not a sub-net of <domain> then 'option other *' if assumed
+# unless another 'option other ...' setting was made, see below ...
+
+# option    other   ...
+
+# The network name 'external' can be used to override <other> with a different
+# value (but only if set to '-'). This is used by the template generator of
+# centaurisoho ...
+
+network external      %E%                # optional external subnet override
 
 # centaurisoho fully supports IPv6 but builds on a non-routable local IPv4 net.
 # So the local net always has to be behind a NAT router. It is out of question
 # to expose the local network directly to the internet (the router should do
 # firewalling and expose only specific local address/port destinations to the
 # internet).
-#
+
 # For IPv6 support we must consider provider networks where the IPv6 router 
 # prefix changes in regular intervals (like in germany). So our local IPv6
 # support cannot depend on the public router prefix. Instead our server runs
@@ -22,35 +55,8 @@
 # computers do generate the local IPv6 addresses from IPv4, so we use DHCP only
 # with IPv4 (Androids would not understand DHCPv6 anyhow).
 
-# As IPv6 comes for free, the following is not concerned about it.  centaurisoho
-# knows about the following network zones: 
-
-#   local net       one of:  10.0.0.0/8  172.16.0.0/12  192.168.0./16          
-#   soho net        sub-net of the local net (by default a 10 bit sub-net) 
-#   soho group      up to 9 ranges of the soho net (for firewall permissions)
-
-# For the default 10 bit soho net you can choose one of the following base
-# addresses (mind the 0.0.4.0 increments):
-
-#   10.0.0.0    ... 10.255.4.0  ... ... 10.255.252.0    (netmask  8bit)
-#   172.16.0.0  ... 172.16.4.0  ... ... 172.31.252.0    (netmask 12bit)
-#   192.168.0.0 ... 192.168.4.0 ... ... 192.168.252.0   (netmaks 16bit)
-
-# network - configure networks-ips and their netmasks. Used to create *allow
-#           files and to get the default netmask (via default router). The 1st
-#           entry is for ethernet, further entries can follow for virtual nets
-#           (VPN).
-#
-# The local net is auto-detected from the base address. The local net is used
-# only to configure the netmask of network interfaces.
-
-network %D%  %B%
-network repeater      <0>5.0/24
-network  vpn          <0>4.0/24 
-network  iot          <0>1.0/24
-network  trusted      <0>2.0/24
-network  guest        <0>3.0/24 
-network  dynamic      <0>3.64/24
+# override the auto-generated ipv6 ULA prefix
+# prefix fc01::/107
 
 # configure an unreachable network address used to avoid delays when not
 # in home network (the servers get mapped to it):
@@ -80,7 +86,7 @@ option  addc        %P% %S%
     # <host> can be * to select a default
 
 option  tracking      *
-option  simple        raspi*
+option  simple        raspi[23] %G%[973]
 
     # disable mac checking (this configuration template cannot use max
     # addresses, so it's turned on). It is recommended to add mac addresses
@@ -158,12 +164,14 @@ filter  accept      %G%[1-4]            # bypass firewall
 
     # <ip>  can be followed by a bit-count to specify a range
 
-filter  friend      <1>                 # Repeater traffic
-filter  trusted     <2>                 # OpenVPN  traffic
-filter  trash       <3>                 # untrusted home-equipment: log and drop
-filter  trusted     <4>                 # trusted address range
-filter  friend      <5>                 # untrusted address range (static)
-filter  friend      <6>                 # untrusted address range (dhcp)
+filter  friend      <repeater>          # Repeater traffic
+filter  trusted     <vpn>               # OpenVPN  traffic
+filter  trash       <iot>               # untrusted home-equipment: log and drop
+filter  trusted     <trusted>           # trusted address range
+filter  friend      <guest>             # untrusted address range (static)
+filter  friend      <dynamic>           # untrusted address range (dhcp)
+
+filter  trusted     <other>             # this is optional
 
 # firewall permissions for 'home' zone
 
@@ -180,6 +188,7 @@ filter  tcp trusted 143 993             # imap(s)
 filter  tcp trusted 88 389              # kerberos, LDAP
 filter  tcp trusted 631 |631            # CUPS
 filter  tcp trusted 853                 # DNS over TLS
+filter  tcp trusted 1883                # MQTT
 filter  tcp trusted 111 |111 2049       # NFS (111 source also)
 filter  tcp trusted 32767               # NFS mountd fixed port
 filter  tcp trusted |32767              # NFS ... (source)
@@ -199,6 +208,9 @@ filter  udp trusted |32767              # NFS ... (source)
 filter  udp trusted 5060                # SIP
 filter  udp trusted 5353                # AVAHI
 
+filter  tcp trusted 1194                # openvpn
+filter  udp trusted 1194                # openvpn
+
 # === router chain ===
 
 filter  tcp router  8200
@@ -207,9 +219,6 @@ filter  udp router  137:138 |137:138    # samba netbios
 filter  udp router  1900 |1900          # UPNP (also source)
 filter  udp router  5353                # AVAHI
 filter  udp router  8200
-
-filter  tcp router  1194                # openvpn
-filter  udp router  1194                # openvpn
 
 # remotessh, remoteimap and remotesmtp are added automatically
 
@@ -222,6 +231,8 @@ filter  tcp player  8200                # TRIVNET (used by TV)
 filter  udp player  137:138 |137:138    # samba netbios
 filter  udp player  1900 |1900          # UPNP (also source)
 filter  udp player  5353                # AVAHI
+
+filter  tcp player  1883                # MQTT
 
 # examples ...
 #filter lit alien    -p udp --dport 3333 -j ACCEPT
@@ -253,19 +264,29 @@ allow   *             *                             # everything for local
                                                     #    and "filter rules/accept"
 allow   *             192.168.0.0/16                # everything for private net
 allow   *             172.16.0.0/12                 # ...
-allow   *             [fc00::]/7                    # ip6v ULA
+allow   *             [fc00::]/15                   # ip6v ULA
 allow   openvpn       ALL                           # remotssh for everyone
 allow   remotessh     ALL                           # remotssh for everyone
 allow   remoteimap    ALL                           # remotimap for everyone
 allow   remotesmtp    ALL                           # remotsmtp for everyone
 
 # ------------------------------------------------------------------------------
-# Per-host options
+# Per-host options - See 'host naming rules' below 
 # ------------------------------------------------------------------------------
 
 # options (1) hosts that support ipv6
 
-option ipv6          %G%[!7]
+        # used by centaurinetcfg to enable or disable ipv6. Support for ipv6 
+        # is uses embedded ipv4 addresses (UlA) with prefix 'fc01::'. External
+        # ipv6 addressing comes via router advertisments. To support hosts like
+        # mobile devices, windows etc. the 'radv' service must be enabled, to
+        # send 'fc01::' as prefix and to advertise dns. See 'option radv' below.
+        # The 'fc01::' prefix can be changed with a 'prefix' configuration line.
+
+# example (1) enable ipv6 for all hosts
+option ipv6          *
+# example (2) enable for all but %G%2 and %G%3
+#option ipv6          %G%[!23]
 
 # options (2) services:
 
@@ -312,6 +333,21 @@ option  repeater      dummy[3-9] raspi*
 
 # options (5) interface flags
 
+        # Hosts with mulitiple ethernet interfaces (like servers) go here ...
+
+option  ether       %P%-1 %S%-1
+option  wlan        %P%-2 %S%-2
+        
+        # The 'other' option is used to make the <other> sub-net an external
+        # network. This prevents the firewall from implicitly allowing dhcp
+        # and mdns traffic to enter from <other>. Note: the firewall does not
+        # check host names, any name will do.
+
+        # Use 3rd ip as a second addr addr to 1st ip, or add 4th to 2nd. This
+        # gets overridden by 'option ether' or 'option wlan' ...
+
+#option  other      *-2 *-3
+
         # By default the 1st interface of a host is ether and the 2nd is wlan.
         # Only if ether/wlan kind is known configuration entries are generated.
 
@@ -342,11 +378,11 @@ option  metric2     dummy2-0
 option  metric3     *
 
         # enable systemd interface naming
-option  sysdnames   cent8
+option  sysdnames   *
 
         # set the wlan regulatory domain from timezone country table (this is
         # implemented via ifup callback to 'centauriswitch up wl* ...')
-option country raspi*
+option country raspi* %G%[13579]
 
 # ------------------------------------------------------------------------------
 # systemd interface name mapping (see option 'sysdnames')
@@ -414,17 +450,30 @@ homedns -             dummy2         %G%
 # Metric:       eth0    400 ;   eth1    500
 #               wlan0   600 ;   wlan1   700
 #               br0     200
+
 # ------------------------------------------------------------------------------
-# Subnet <0>0.xxx - auxiliary network for testing
+# Private MAC address usage (can be used for bridges and firewall permissions)
+# ------------------------------------------------------------------------------
+# The IEEE802 standard define private macs as:
+#   x2:xx:xx:xx:xx:xx x6:xx:xx:xx:xx:xx xA:xx:xx:xx:xx:xx xE:xx:xx:xx:xx:xx
+#
+# Centaurisoho suggestion is to use:
+#   ee:<index>:<ipv4>       # in hex and with dots replaced by colons 
+#   ee:00:0a:10:02.0a       # Example for IPv4 10.16.2.10 <host> 
+#   ee:00:0a:10:02.0b       #                  10.16.2.11 <host>-1
+
+# ------------------------------------------------------------------------------
+# Subnet <other> - auxiliary network for testing
 # ------------------------------------------------------------------------------
 
-host    -                   <0>30         test0
+host    -                   <other>30     test0
 host    -                   +             test1
 host    -                   +             test2
 host    -                   +             test3
+host    -                   +             test4
  
 # ------------------------------------------------------------------------------
-# Subnet <0>1.xxx - Routers and Home Equipment
+# Subnet <domain>1.xxx - Routers and Home Equipment
 # ------------------------------------------------------------------------------
 
 # Routers are defined via 'router <host>...' and must have 'host' statements.
@@ -438,207 +487,118 @@ host    -                   %R4%       %R%0
 host    -                   +          %R%1
 host    -                   +          %R%2
 
-#host   -                   <0>1.2     router1 fritz.box
-
 # ------------------------------------------------------------------------------
-# Subnet <4>xxx - Trusted computers 
+# Subnet <trusted>xxx - Trusted computers 
 # ------------------------------------------------------------------------------
 
-# servers
+# servers (configured with 2 ethernet interfaces)
 
-host    -                   <4>10         %G%     # generic, no hosts entry
+host    -                   <trusted>10   %G%       # generic, no hosts entry
 
-host    -                   <4>11         %P% server.example.com
-host    1c:69:7a:64:0b:21   <4>13         %P%-0  # ... LAN   NUC
-host    0c:7a:15:6d:2d:5b   <4>15         %P%-1  # ... WLAN  NUC
+host    -                   <trusted>11   %P%       # primary server
+host    -                   <trusted>13   %P%-0     # ... LAN   #1
+host    -                   <trusted>15   %P%-1     # ... LAN   #2 see 'option ether'
+host    -                   <trusted>17   %P%-2     # ... WLAN     see 'option wlan'
 
-host    d0:50:99:23:2a:7a   <4>12         alpha2
-#host    -                   <4>14         alpha2-0
-#host    -                   <4>16         alpha2-1
+host    -                   <trusted>12   %S%       # secondary server
+host    -                   <trusted>14   %S%-0     # ... LAN   #1
+host    -                   <trusted>16   %S%-1     # ... LAN   #2 see 'option ether'
+host    -                   <trusted>18   %S%-2     # ... WLAN     see 'option wlan'
 
 # some well known hosts
 
-#host    -                   <5>100  %P%  centauri-primary
-#host    08:00:27:af:04:01   <5>101  %P%-0  # ... LAN
-#host    08:00:27:af:04:02   <5>102  %P%-1  # ... WLAN
-
-#host    -                   <5>110  %S%  centauri-secondary
-#host    08:00:27:af:04:11   <5>111  %S%-0  # ... LAN
-#host    08:00:27:af:04:12   <5>112  %S%-1  # ... WLAN
-
-#host    -                   <5>120  %C%2  centauri-mobile1
-#host    08:00:27:af:04:21   +       %C%2-0  # ... LAN
-#host    08:00:27:af:04:22   +       %C%2-1  # ... WLAN
-
-#host    -                   <5>130  %C%3  centauri-mobile2
-#host    08:00:27:af:04:31   +       %C%3-0  # ... LAN
-#host    08:00:27:af:04:32   +       %C%3-1  # ... WLAN
-
-#host    -                   <5>140  %C%4  centauri-work
-#host    08:00:27:af:04:41   +       %C%4-0  # ... LAN
-#host    08:00:27:af:04:42   +       %C%4-1  # ... WLAN
-
-#host    -                   <5>150  %C%5  centauri-appl1
-#host    08:00:27:af:04:51   +       %C%5-0  # ... LAN
-#host    08:00:27:af:04:52   +       %C%5-1  # ... WLAN
-
-#host    -                   <5>160  %C%6  centauri-appl2
-#host    08:00:27:af:04:61   +       %C%6-0  # ... LAN
-#host    08:00:27:af:04:62   +       %C%6-1  # ... WLAN
-
-#host    -                   <5>170  %C%7  centauri-hass
-#host    08:00:27:af:04:71   +       %C%7-0  # ... LAN
-#host    08:00:27:af:04:72   +       %C%7-1  # ... WLAN
-
-#host    -                   <5>180  %C%8  centauri-soho-base
-#host    08:00:27:af:04:81   +       %C%8-0  # ... LAN
-#host    08:00:27:af:04:82   +       %C%8-1  # ... WLAN
-
-#host    08:00:27:af:04:91   <5>190  %C%9  centauri-soho-seed
-
-host    -                   <4>195   dummy1
-host    -                   +        dummy2
-host    -                   +        dummy3
-host    -                   +        dummy4
+host    -                   <trusted>195  dummy1
+host    -                   +             dummy2
+host    -                   +             dummy3
+host    -                   +             dummy4
 
 # ------------------------------------------------------------------------------
 # alpha hosts 0 ... 99 (Oberrod)
 # ------------------------------------------------------------------------------
 
-host    -                   <4>30         alpha3    # NUC 2020 generic
-host    -                   +             alpha3-0  # ..       LAN
-host    -                   +             alpha3-1  # ....     WLAN
-#host    1c:69:7a:64:0b:21  +              alpha3-0  # ..       LAN
-#host    0c:7a:15:6d:2d:5b  +              alpha3-1  # ....     WLAN
-
-host    -                   <4>40         alpha4
-host    -                   +             alpha4-0  # ..       LAN
-host    -                   +             alpha4-1  # ....     WLAN
-
-host    -                   <4>50         alpha5    # Notebook generic
-host    00:1d:72:f5:c0:f9   +             alpha5-0  # ..       LAN
-host    00:1f:3b:7d:65:95   +             alpha5-1  # ....     WLAN
-
-host    -                   <4>60         alpha6    # Notebook generic
-host    54:a0:50:be:e0:d4   +             alpha6-0  # ..       LAN
-host    1c:4d:70:c7:0c:86   +             alpha6-1  # ....     WLAN
-
-host    -                   <4>70         alpha7    # Notebook generic
-host    f0:76:1c:fa:cd:84   +             alpha7-0  # ..       LAN
-host    b4:6d:83:72:6f:5f   +             alpha7-1  # ....     WLAN
-
-host    -                   <4>80         alpha8    # Notebook generic
+host    -                   <other>80     alpha8    # Notebook generic
 host    98:fa:9b:aa:28:0b   +             alpha8-0  # ..       LAN-0
 host    40:74:e0:b2:44:5e   +             alpha8-1  # ....     WLAN-0
 host    -                   +             alpha8-2  # ..       LAN-1
 host    -                   +             alpha8-3  # ....     WLAN-1
 
-host    -                   <4>90         alpha9    # Notebook WLAN only
-host    38:d5:7a:a8:0e:e3   +             alpha9-1  # Notebook WLAN only
-
 # ------------------------------------------------------------------------------
-# generic hosts 0 ... 99
+# generic hosts 2 ... 9 (0 and 1 should be servers)
 # ------------------------------------------------------------------------------
 
-host    -                   <4>4          %C%0     #           generic
-host    -                   +             %C%0-0   # ..        LAN
-host    -                   +             %C%0-1   # ....      WLAN
+host    +                   <trusted>25   %M%2     #           generic
+host    +                   +             %M%2-0   # ..        LAN
+host    +                   +             %M%2-1   # ....      WLAN
 
-host    -                   <4>7          %C%1     #           generic
-host    -                   +             %C%1-0   # ..        LAN
-host    -                   +             %C%1-1   # ....      WLAN
+host    +                   <trusted>35   %M%3     #           generic
+host    +                   +             %M%3-0   # ..        LAN
+host    +                   +             %M%3-1   # ....      WLAN
 
-host    -                   <4>25         %C%2     #           generic
-host    -                   +             %C%2-0   # ..        LAN
-host    -                   +             %C%2-1   # ....      WLAN
+host    +                   <trusted>45   %M%4     #           generic
+host    +                   +             %M%4-0   # ..        LAN
+host    +                   +             %M%4-1   # ....      WLAN
 
-host    -                   <4>35         %C%3     #           generic
-host    -                   +             %C%3-0   # ..        LAN
-host    -                   +             %C%3-1   # ....      WLAN
+host    +                   <trusted>55   %M%5     #           generic
+host    +                   +             %M%5-0   # ..        LAN
+host    +                   +             %M%5-1   # ....      WLAN
 
-host    -                   <4>45         %C%4     #           generic
-host    -                   +             %C%4-0   # ..        LAN
-host    -                   +             %C%4-1   # ....      WLAN
+host    +                   <trusted>65   %M%6     #           generic
+host    +                   +             %M%6-0   # ..        LAN
+host    +                   +             %M%6-1   # ....      WLAN
 
-host    -                   <4>55         %C%5     #           generic
-host    -                   +             %C%5-0   # ..        LAN
-host    -                   +             %C%5-1   # ....      WLAN
+host    +                   <trusted>75   %M%7     #           generic
+host    +                   +             %M%7-0   # ..        LAN
+host    +                   +             %M%7-1   # ....      WLAN
 
-host    -                   <4>65         %C%6     #           generic
-host    -                   +             %C%6-0   # ..        LAN
-host    -                   +             %C%6-1   # ....      WLAN
+host    +                   <trusted>85   %M%8     #           generic
+host    +                   +             %M%8-0   # ..        LAN
+host    +                   +             %M%8-1   # ....      WLAN
 
-host    -                   <4>75         %C%7     #           generic
-host    -                   +             %C%7-0   # ..        LAN
-host    -                   +             %C%7-1   # ....      WLAN
-
-host    -                   <4>85         %C%8     #           generic
-host    -                   +             %C%8-0   # ..        LAN
-host    -                   +             %C%8-1   # ....      WLAN
-
-host    -                   <4>95         %C%9     #           generic
-host    -                   +             %C%9-0   # ..        LAN
-host    -                   +             %C%9-1   # ....      WLAN
-
-# ------------------------------------------------------------------------------
-# Peter hosts 100 ... 129
-# ------------------------------------------------------------------------------
-
-host    60:a4:4c:58:94:b4   <4>100        peter0    # Peter server
-
-host    -                   <4>110        peter1    # Peter nb generic
-host    70:5a:b6:9b:c4:cf   +             peter1-0  # ..       LAN
-host    00:26:c6:d8:97:ba   +             peter1-1  # ....     WLAN
-
-host    -                   <4>120        peter2    # Peter nb generic
-host    40:b0:34:51:98:80   +             peter2-0  # ..       LAN
-host    c8:21:58:0c:1c:1e   +             peter2-1  # ....     WLAN
-
-host    8c:fa:ba:bd:03:42   <4>124        apple0    # Peters Ipad
-host    f0:cb:a1:8e:5e:3a   +             apple1    # Peters IPhone
-host    0c:cb:85:5e:c1:31   +             peter7    # Peters Android G6
-host    1c:e5:7f:8f:e8:c7   +             peter8    # Peters Samsung Galaxy-A52
-host    84:d6:08:6f:12:a8   +             peter9    # Peters Tablet T
+host    +                   <trusted>95   %M%9     #           generic
+host    +                   +             %M%9-0   # ..        LAN
+host    +                   +             %M%9-1   # ....      WLAN
 
 # ------------------------------------------------------------------------------
 # Raspberry
 # ------------------------------------------------------------------------------
 
-host    -                   <4>130        raspi1   hass     # Raspi 3 generic
-host    b8:27:eb:b4:6a:4d   +             raspi1-0          # ..       LAN
-host    b8:27:eb:e1:3f:18   +             raspi1-1          # ..       WLAN
+host    -                   <trusted>130  raspi1   hass     # Raspi    generic
+host    -                   +             raspi1-0          # ..       LAN
+host    -                   +             raspi1-1          # ..       WLAN
 
-host    -                   <4>135        raspi2   heizung  # Raspi Z generic
-host    b8:27:eb:c0:aa:85   +             raspi2-0          # ...      WLAN
-host    00:e0:4c:68:02:63   +             raspi2-1          # ...      alu case
+host    -                   <trusted>135  raspi2            # Raspi    generic
+host    -                   +             raspi2-0          # ...      WLAN
+host    -                   +             raspi2-1          # ...      alu case
 
-host    -                   <4>140        raspi3            # Raspi Z2 generic
-host    d8:3a:dd:7e:c5:3b   +             raspi3-0          # ...      WLAN
-host    00:e0:4c:68:01:2e   +             raspi3-1          # ...      alu case
+host    -                   <trusted>140  raspi3            # Raspi    generic
+host    -                   +             raspi3-0          # ...      WLAN
+host    -                   +             raspi3-1          # ...      alu case
 
-host    -                   <4>145        raspi4   harzburg # Raspi 4 generic
-host    dc:a6:32:30:94:d3   +             raspi4-0          # ..      LAN
-host    dc:a6:32:30:94:d4   +             raspi4-1          # ..      WLAN
+host    -                   <trusted>145  raspi4            # Raspi   generic
+host    -                   +             raspi4-0          # ..      LAN
+host    -                   +             raspi4-1          # ..      WLAN
 
 
-host    -                   <4>150        raspi5            # Raspi 4 generic
-host    d8:3a:dd:3e:ab:9f   +             raspi5-0          # ..      LAN
-host    d8:3a:dd:3e:ab:0a   +             raspi5-1          # ..      WLAN
+host    -                   <trusted>150  raspi5            # Raspi   generic
+host    -                   +             raspi5-0          # ..      LAN
+host    -                   +             raspi5-1          # ..      WLAN
 
 # ------------------------------------------------------------------------------
 # attachable interfaces
 # ------------------------------------------------------------------------------
 
-host    00:e0:4c:36:3c:a2   <0>1.80    ether-0   # hopjuery 100 MBit/s
-host    5c:85:7e:3e:c7:8b   <0>1.81    ether-1   # cable matters 1GBit/s
-host    11:11:11:11:11:13   <0>1.82    ether-2
-host    11:11:11:11:11:14   <0>1.83    ether-3
+# See 'option ether' and 'option wlan' settings
+
+host    00:e0:4c:36:3c:a2   <domain>1.80    ether-0   # hopjuery 100 MBit/s
+host    5c:85:7e:3e:c7:8b   <domain>1.81    ether-1   # cable matters 1GBit/s
+host    11:11:11:11:11:13   <domain>1.82    ether-2
+host    11:11:11:11:11:14   <domain>1.83    ether-3
  
-host    11:11:11:11:11:15   <0>1.85    wlan-0
-host    11:11:11:11:11:16   <0>1.86    wlan-1
+host    11:11:11:11:11:15   <domain>1.85    wlan-0
+host    11:11:11:11:11:16   <domain>1.86    wlan-1
 
 # ------------------------------------------------------------------------------
-# fakes
+# fakes - create /etc/hosts entries refering to 'bad-host' reject route
 # ------------------------------------------------------------------------------
 
 fake doubleclick.com

@@ -80,13 +80,16 @@ manually. Registration affects three areas:
 # ------------------------------------------------------------------------------
 
 To start a centauri server the kernel command line must contain:
+
     centauriswitch=static:server        # network without WLAN AP  -or-
     centauriswitch=static:apoint        # server with additional WLAN AP
 
 This will happen if '/etc/default/centaurinetcfg' is properly configured
 and after running:
+
     centaurinetcfg set -                # generate network configuration
     centauriefilinux menu               # for systemd boot (grub autodetects)
+
 # ------------------------------------------------------------------------------
 [step0purge]
 # ------------------------------------------------------------------------------
@@ -215,6 +218,25 @@ The 'swap' entry is not mandatory, systemd can automount swap partitions,
 or otherwise centauriswap can be used to manage swap files/partitions.
 
 # ------------------------------------------------------------------------------
+[inplace]
+# ------------------------------------------------------------------------------
+
+You are going to do an 'in place rename'. This is supported but can make a
+system un-bootable if anything goes wrong. Make sure that you can handle a
+possible desaster properly!
+
+# ------------------------------------------------------------------------------
+[renaming]
+# ------------------------------------------------------------------------------
+
+Do not interrupt any work in progress. Rename needs the following steps to
+succeed:
+
+    1)  update /etc/fstab and grub.cfg       tool: centaurirestore
+    2)  update systemd boot menu and splash  tool: centauri(efilinux|raspi)
+    3)  change partition labels              tool: centaurimedia
+
+# ------------------------------------------------------------------------------
 [renclient]
 # ------------------------------------------------------------------------------
 This system has been configured as a client and was renamed. This breaks some
@@ -238,7 +260,7 @@ A simple way to apply these changes is to repeat the client setup:
 # ------------------------------------------------------------------------------
 [renserver]
 # ------------------------------------------------------------------------------
-This system has been configured as a server and was renamed of changed its IP
+This system has been configured as a server and was renamed or changed its IP
 address. This causes breakage of some services:
 
     AD/DC (samba)       # samba cannot rename a server
@@ -247,7 +269,7 @@ address. This causes breakage of some services:
 
     certificates
 
-A easiest way to apply all of these changes is to repeat the server setup:
+The easiest way to apply all of these changes is to repeat the server setup:
 
     centaurisoho --force server
 
@@ -259,6 +281,7 @@ Template patterns for simple names:
     %A%     wlan AP ssid                    default:  %N% (short domain name)
     %B%     soho network base addr          example:  '10.10.0.0/22'
     %D%     domain name                     ...       'worms.home'
+    %E%     external network addr           ...       '10.01.0.0/16'
     %G%     generic server name             ...       'worm'
     %H%     host name                       ...       'worm8'
     %I%     public internet server name     ...       'myself.mydyndns.org'
@@ -268,41 +291,53 @@ Template patterns for simple names:
     %P%     primary server                  ...       'worm0'
     %R%     router                          ...       'router'
     %S%     secondary server                ...       'worm1'
+    %T%     top level domain                ...       'home'
     %W%     wlan client ssid                default:   %N% (short domain name)
     %Z%     distribution name               ...       'bookworm'
 
-Machine alias names (from 'setup.conf') by machine index:
-
-    %M<n>%  <n> suffix 0...9                get alias of %H%<n>
-
 Network IP:
 
-    %D4%    domain network                  example:  '10.10.2.0' (22 bits)
-    %V4%    VPN network                     ...       '10.10.4.0' (23 bits)
-    %X4%    repeater network                ...       '10.10.5.0' (23 bits)
+    %D4%    domain network                  example:  '10.10.0.0'
+    %E4%    external network                ...       '10.01.0.0'
+    %V4%    VPN network                     ...       '10.10.4.0'
+    %X4%    repeater network                ...       '10.10.5.0'
 
-suffix: instead of '4' also 3, 2, 1 and 0 are supported, see below
+    note: instead of '4' other suffixes are supported, see below
 
-Network bitmask (no IPv6 versions)
-    %B4%    netmask bits                    example:  '22'
-    %N4%    netmask                         ...       '255.255.252.0'
+Network bitmask (no IPv6 versions):
 
-Special hosts
+    %B4%    netmask bits (internal)         example:  '22'
+    %E4%    netmask bits (external)         ...       '22'
+    %N4%    netmask (internal only)         ...       '255.255.252.0'
+
+IP for special hosts:
+
     %G4%    generic server                  example:  '10.10.2.10'
     %H4%    host ip                         ...       '10.10.2.180'
     %P4%    primary server                  ...       '10.10.2.11'
     %R4%    router                          ...       '10.10.1.1'
     %S4%    secondary server                ...       '10.10.2.12'
 
-Suffixes
+Suffixes:
+
     ^       1st letter uppercase
     ^^      uppercase
-    6       get IPv6 address including mask length
-    5       get IPv6 address (no mask length)
+    9       get IPv6 address, lower 120 bits          'fc01::a0a:6'
+    8           IPv6 address, lower 114 bits          'fc01::a0a'
+    6           IPv6 address including mask length
+    5           IPv6 address (no mask length)
     4       get IPv4 address, 4 tuples                'xx.xx.xx.xx'
-    3       get IPv4 address, 3 tuples                'xx.xx.xx'
-    2       get IPv4 address, 2 tuples                'xx.xx'
-    1       get IPv4 address, 1 tuple                 'xx'
-    0       get IPv4 address including mask length    'xx.xx.xx.xx/xx'
+    3           IPv4 address, 3 tuples                'xx.xx.xx'
+    2           IPv4 address, 2 tuples                'xx.xx'
+    1           IPv4 address, 1 tuple                 'xx'
+    0           IPv4 address including mask length    'xx.xx.xx.xx/xx'
 
+Domain name examples:
+
+    worms               %N% -> worms        %T% -> (empty)
+    worms.home          %N% -> worms        %T% -> home
+    worms.home.net      %N% -> worms        %T% -> home.net
+
+    Remark: /etc/samba/smbpass.conf uses LDAP names that need to be fixed
+            manually if %T% is empty or contains a dot.
 # end

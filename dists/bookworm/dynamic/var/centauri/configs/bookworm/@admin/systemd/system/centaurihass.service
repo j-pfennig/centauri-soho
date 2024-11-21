@@ -1,13 +1,13 @@
 # centaurihass.service - Run HomeAssistant
 [Unit]
 Description=Home Assistant Server
-After=networking.service
-Wants=networking.service
+After=networking.service mosquitto.service
+Wants=networking.service mosquitto.service
 
 StartLimitBurst=10
 StartLimitIntervalSec=1000
 
-ConditionPathExists=/var/lib/centauri/centaurihass.enabled
+ConditionPathExists=/opt/HomeAssistant/homeassistant/service-enabled
 
 [Service]
 User=homeassistant

@@ -47,7 +47,7 @@ do_find() {
     local locl path vres="${2:-DAT_CONFIG}"
     [ -z "$2" ] && do_find_=()
     for locl in "$DAT_VBOX" "$DAT_VBOX/$1" "$DAT_MACHINES" "$DAT_MACHINES/$1" \
-                "$DAT_MACHINES"/*/$1 "$DAT_MACHINES"/*/*/$1 ; do
+                "$DAT_MACHINES"/*/$1 "$DAT_MACHINES"/*/*/$1 "$DAT_MACHINES"/*/*/*/$1 ; do
         [ -d "$locl" ] || continue
         if [ -r "$locl" ] ; then
             trace -a -c "check folder" -- "$locl"
@@ -198,11 +198,30 @@ do_ssh() {
 # ------------------------------------------------------------------------------
 # attach a drive to a VM: [<name>] <disk> <port>
 # ------------------------------------------------------------------------------
+# <path> [<alst>|- [<vsiz>|-]]
+do_driveinfo() {
+    local _info _line _used _alst="${2:--}" _vsiz="${3:--}"
+    [ "$_alst" != '-' ] && { local -n _varr="$_alst" ; _varr=() ; }
+    LANG=C system -g 1 -e -p -a _info VBoxManage showmediuminfo disk "$1" || return 1
+    for _line in "${_info[@]}" ; do
+        case "${_line,,}" in
+        'size on disk'*)    _used= ; [ "$_vsiz" = '-' ] && continue
+                            _line="${_line#*:}"
+                            printf -v "$_vsiz" '%s' "${_line#"${_line%%[![:space:]]*}"}" ;;
+        'in use by'*)       _used="${_line#*:}" ;;
+        '    '*)            [ -n "$_used" ] && _used="$_line" ;;
+        *)                  _used=
+        esac
+        [ -z "$_used" -o "$_alst" = '-' ] && continue
+        _varr+=("${_used#"${_used%%[![:space:]]*}"}")
+    done
+}
+
 actionAttach() {
     [ $# -lt 3 ] && set - "$@"
-    execute -m -v -- "$1" || return
+    execute -m -v -- "$1" || return                 # check machine
 
-    local disk
+    local disk size used
     case "$2" in
     -)      disk='none' ;;
     */*)    disk="$2" ;;
@@ -211,9 +230,16 @@ actionAttach() {
     *)      matchpath -s disk -e -o -- "${DAT_CONFIG%/*}/$2.vdi" "$DAT_DRIVES/$2.vdi"
     esac
 
-    local opts=(--storagectl SATA --type hdd --medium "$disk" --port "$3")
-    [ "$disk" != 'none' ] && opts+=(--nonrotational on --discard on)
-    system -e VBoxManage storageattach "$DAT_NAME" "${opts[@]}"
+    local ferr='-e'
+    local opts=(--storagectl SATA --type hdd --medium "$disk" --port "${3:-0}")
+    if [ "$disk" = 'none' ] ; then
+        ferr='-q'
+    else
+#do_driveinfo "$disk" used size ; quit xxx $? $size ${used[*]%% *}
+#        system -q -z VBoxManage showmediuminfo disk "$disk"
+        opts+=(--nonrotational on --discard on)
+    fi
+    system $ferr VBoxManage storageattach "$DAT_NAME" "${opts[@]}"
 }
 
 # ------------------------------------------------------------------------------

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2018-2022; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2018-2024; BSD License"
 CEN_TITLE="Helper to manage script translations"
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m con "$0" "0.12:1" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m con - '0.13:3' || exit 2
 
 # Options
 

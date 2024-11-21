@@ -30,7 +30,6 @@ condition cput distro debian raspbian
 
     private /etc                passwd shadow group
     shared  /etc                shadow.shared
-    shared  /usr/lib/sysusers.d centauri.conf
     shared  /var/lib/extrausers passwd shadow group
 
 condition cget any
@@ -40,7 +39,8 @@ condition cget any
 condition cput family debian
 
     shared  /etc/default        centauriconfig centaurinetcfg centauriusers
-    private /etc/default        centaurisysinit
+    private /etc/default        centauriinfo centaurisysinit
+    shared  /usr/lib/sysusers.d centauri.conf
 
 # ------------------------------------------------------------------------------
 # centauri things
@@ -55,7 +55,7 @@ condition family debian         /var/centauri/configs
     shared  /etc/default        centauri-bash-lib centauribackup centauricopy 
 
     private /etc/default        centauricron centaurirunlevel \
-                                centauriswitch centaurisecrets centauristartx \
+                                centauriswitch centaurisecrets centauridisplay \
                                 -centaurikiosk centaurimounter -daily_shutdown
     remove  /etc                rc.local
 
@@ -81,10 +81,11 @@ condition
                                 host.conf mail.rc nsswitch.conf \
                                 sudoers services sysctl.conf DIR_COLORS
 
-    shared  /etc                -fuse.conf -updatedb.conf 
+    shared  /etc                -fuse.conf -updatedb.conf
+    shared  /etc/dhcp           dhclient.conf 
     shared  /etc/sudoers.d      centauri
 
-    # script checks for configured .local domain - but cause 10s up/down delay
+    # script checks for configured .local domain - but causes a 10s up/down delay
     remove  /etc/network/if-up.d            avahi-daemon
     remove  /etc/network/if-post-down.d     avahi-daemon
 
@@ -97,15 +98,11 @@ condition
     remove  /etc/polkit-1/localauthority/10-vendor.d \
                                 com.ubuntu.pkexec.gparted.pkla
 
-    shared  /etc/ppp            ip-down.local ip-up.local
-
     shared  /etc/ssh            ssh_config sshd_config sshd_remote ssh_known_hosts
     shared  /etc/ssh/ssh_config.d   50-centauri.conf
     private /etc/ssh            ssh_host_ecdsa_key ssh_host_ecdsa_key.pub \
                                 ssh_host_ed25519_key ssh_host_ed25519_key.pub \
                                 ssh_host_rsa_key ssh_host_rsa_key.pub
-    shared  /etc/ssh/ssh_config.d   -10-centauri.conf
-    shared  /etc/init.d         ssh
 
     shared  /etc/ssl            openssl.cnf
     shared  /etc/ssl/certs      ${DAT_NET_DOMAIN^}_CA.pem
@@ -115,11 +112,12 @@ condition
     linkto  /etc/ssl/certs      ssl-cert-snakeoil.pem /etc/ssl/certs/servercrt.pem
     linkto  /etc/ssl/private    ssl-cert-snakeoil.key /etc/ssl/private/servercrt.key
 
-    shared  /etc/sssd           sssd.conf
+    # This file is created via 'centaurikerberos setup sss'
+    #shared  /etc/sssd           sssd.conf
 
     private /etc/systemd        journald.conf logind.conf -timesyncd.conf
 
-    private /etc/tmpfiles.d     centauri.conf
+    private /etc/tmpfiles.d     centauri.conf 
 
     shared  /etc/udev/rules.d   01-centauriroute.rules 99-centauriroute.rules 33-ax88179eth.rules
 
@@ -131,7 +129,7 @@ condition
     # see /etc/xdg/centauri-disabled
     remove  /etc/xdg/autostart  geoclue-demo-agent.desktop hplip-systray.desktop lxqt-qlipper-autostart.desktop at-spi-dbus-bus.desktop solaar.desktop
 
-    shared  /etc/X11            Xmodmap -Xwrapper.config
+    shared  /etc/X11            Xmodmap Xwrapper.config
     shared  /etc/X11/Xreset.d   50centauri
     shared  /etc/X11/Xsession.d 60centauri
     shared  /etc/X11/xinit      xinitrc
@@ -144,9 +142,13 @@ condition
     private /etc/X11/xorg.conf.d 20-tearfree.conf  30-screensetup.conf
     shared  /etc/NetworkManager NetworkManager.conf
 
+condition dist raspbian
+    shared  /etc/X11/xorg.conf.d 99-vc4.conf
+
 condition family debian
     shared  /etc/default        -avahi-daemon -wsdd networking
-    private /etc/default        console-setup
+
+    shared  /etc/default        console-setup
 
     shared  /etc/apt            apt.conf.client apt.conf.local
 
@@ -160,17 +162,14 @@ condition dist debian raspbian
     private /etc/initramfs-tools    initramfs.conf modules
     shared  /etc                    kernel-img.conf reportbug.conf
 
-    shared  /etc/initramfs/post-update.d centauriefilinux systemd-boot
-
     private /etc/modprobe.d         centauri.conf
 
     shared  /var/lib/deborphan      keep
 
 condition dist raspbian
-    shared  /boot/firmware          config-default.txt config-minimal.txt
+    shared  /boot/firmware          config-default.txt config-minimal.txt 
     private /boot/firmware          config.txt cmdline.txt
     private /etc/apt/apt.conf.d     50raspi
-    private /etc/default            raspberrypi-kernel 
 
 condition dist debian               /boot/grub
     shared   /etc/kernel/postinst.d zz-update-grub
@@ -179,6 +178,7 @@ condition dist debian               /boot/grub
 condition dist debian               /boot/efi
     shared   /etc/kernel/postinst.d zz-systemd-boot
     shared   /etc/kernel/postrm.d   zz-systemd-boot
+    shared   /etc/initramfs/post-update.d centauriefilinux systemd-boot
 
 condition server
     private  $CEN_ROOT/machines     rsyncd.conf
@@ -190,6 +190,7 @@ condition server
 
 condition
     shared  /etc/security       -group.template -pam_encfs.conf
+    # shared  /usr/share/pam-configs -sss
     shared  /etc/pam.d          su sudo -sshd -sddm -lightdm
 
 condition                       /usr/share/pam-configs/libpam-mount
@@ -221,7 +222,8 @@ condition
 
 condition family debian
     shared  /etc/default        -bluetooth -hostapd -openvpn
-    private /etc/default        -virtualbox
+    private /etc/default        -virtualbox 
+    private /etc                -locale.gen -locale.nopurge
 
             ### exim4 ###
 condition family debian         /usr/sbin/acpid
@@ -230,6 +232,7 @@ condition family debian         /usr/sbin/acpid
             ### anacron ###
 condition                       /usr/sbin/anacron
     shared  /etc                anacrontab crontab
+    shared  /etc/cron.d         -anacron
 condition family debian         /usr/sbin/anacron
     shared  /etc/default        anacron
 
@@ -241,8 +244,9 @@ condition family debian         /sbin/cachefilesd
 
             ### cups ###
 condition                       /usr/sbin/cupsd
-    #shared  /etc/cups           lpoptions client.conf cupsd.conf -printers_local -printers_${DAT_NET_HOST}
-    private /etc/cups           lpoptions client.conf cupsd.conf printers.conf
+#    remove  /etc/cups           cups-browsed.conf
+    shared  /etc/cups           lpoptions client.conf cupsd.conf printers_local printers_$DAT_NET_NICK
+    shared  /etc/cups/ppd       Einfach_alpha1.ppd Farbe_alpha1.ppd Doppelt_alpha1.ppd Peters_Drucker_alpha1.ppd
     shared  /etc/modules-load.d cups-filters.conf 
     linkto  /etc/ssl/certs      ssl-cert-snakeoil.pem /etc/cups/ssl/servercrt.pem
     linkto  /etc/ssl/private    ssl-cert-snakeoil.key /etc/cups/ssl/servercrt.key
@@ -252,7 +256,7 @@ condition                       /usr/sbin/dnsmasq
     shared  /etc                dnsmasq.conf
     shared  /etc/default        dnsmasq
 condition                       /etc/dnsmasq.d.local
-    shared  /etc/dnsmasq.d.local ${DAT_NET_DOMAIN}_custom
+    shared  /etc/dnsmasq.d.local centauri_feste-ip
 
 condition                       /usr/sbin/inetd
     private /etc                inetd.conf
@@ -275,9 +279,8 @@ condition else                 /usr/bin/gmediarender
 
             ### kerberos and nfs (no keytabs here!) ###
 condition
-    shared  /etc               -krb5.conf
-    shared  /usr/lib/systemd/scripts/ \
-                               -nfs-utils_env.sh
+    shared  /etc               -krb5.conf -nfs.conf
+
 condition family debian
     shared  /etc/default       -nfs-common
     remove  /etc/default       nfs-kernel-server
@@ -293,10 +296,10 @@ condition
 
             ### lighttpd ###
 condition                      /usr/sbin/lighttpd
-    shared  /etc/lighttpd      lighttpd.conf 
-    #linkto  /etc/ssl/certs     ${DAT_NET_DOMAIN^}_CA.pem    /etc/lighttpd/cacert.pem
-    #linkto  /etc/ssl/certs     ssl-cert-snakeoil.pem        /etc/lighttpd/server.pem
-    #linkto  /etc/ssl/private   ssl-cert-snakeoil.key        /etc/lighttpd/server.key
+    shared  /etc/lighttpd      lighttpd.conf README-cert
+    linkto  /etc/ssl/certs     ${DAT_NET_DOMAIN^}_CA.pem /etc/lighttpd/cacert.pem
+    linkto  /etc/ssl/certs     ssl-cert-snakeoil.pem /etc/lighttpd/server.pem
+    linkto  /etc/ssl/private   ssl-cert-snakeoil.key /etc/lighttpd/server.key
 
             ### minidlna ###
 condition                      /usr/sbin/minidlnad
@@ -312,7 +315,18 @@ condition                      /etc/namazu
             ### NetworManager ###
 
 condition                      /usr/sbin/NetworkManager
-    shared  /etc/NetworkManager/system-connections OpenVPN-Centauri.nmconnection 
+    shared  /etc/NetworkManager/system-connections \
+            AldiTalk-MedionMobile.nmconnection \
+            OpenVPN-${DAT_NET_DOMAIN^}.nmconnection FritzVPN-${DAT_NET_DOMAIN^}.nmconnection
+            
+            ### mosquitto ###
+condition                      /usr/sbin/mosquitto
+    shared  /etc/mosquitto     mosquitto.conf 
+             
+            ### ntpsec ###
+condition                      /usr/sbin/ntpd
+    shared  /etc/default       ntpsec
+    shared  /etc/ntpsec        ntp.conf
 
             ### openvpn ###
 condition                      /etc/openvpn
@@ -328,21 +342,19 @@ condition                      /usr/bin/pulseaudio
     # start/stop via Xsession.d and Xreset.d
     remove  /etc/xdg/autostart pulseaudio.desktop 
 
-condition                      /usr/sbin/rsyslogd
-    shared  /etc               rsyslog.conf.client rsyslog.conf.local
-
             ### samba ###
 condition                      /usr/sbin/smbd
-    shared  /etc/samba         smbpasswd smbusers smb.conf.local smbpass.conf
+    shared  /etc/samba         smbpasswd smbusers 
+    shared  /etc/samba         smb.conf.local smbpass.conf.local
     private /etc/samba         services.conf
     remove  /etc/samba         dhcp.conf
 
 condition client               /usr/sbin/smbd
-    shared  /etc/samba         smb.conf.client 
+    shared  /etc/samba         smb.conf.client smbpass.conf.client
 
 condition server               /usr/sbin/smbd
     shared  /etc/samba         nmbd.conf 
-    private /etc/samba         smb.conf.master smb.conf.slave  
+    private /etc/samba         smb.conf.master smb.conf.slave smbpass.conf.master
 
             ### sane ###
 condition                      /usr/sbin/saned
@@ -360,7 +372,11 @@ condition                      /usr/sbin/squid
 
             ### sddm ###
 condition                      /etc/sddm.conf
-    private /etc               sddm.locale
+    private /etc               sddm.conf sddm.locale
+
+            ### tinyproxy ###
+condition                      /etc/tinyproxy
+    shared  /etc/tinyproxy     tinyproxy.conf.template
 
             ### updatedb (mlocate)  ###
 condition                       /usr/bin/updatedb

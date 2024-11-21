@@ -1,11 +1,11 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. J. Pfennig (c) 2022; BSD License"
+CEN_LEGAL="Dr. J. Pfennig (c) 2022-2024; BSD License"
 CEN_TITLE=$"Launcher for GUI or Console Applications"
 CEN_UTL_STIME="$EPOCHREALTIME"
 
 # Import the bash library
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -t - '0.01:1' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g -t - '0.20:4' || exit 2
 
 embed -m _centauri_bash_dbg
 embed -c _centauri_bash_run         # dependency for standalone build
@@ -13,6 +13,7 @@ embed -c _centauri_bash_run         # dependency for standalone build
 # Data
 CEN_OPT_DESKTOP=                    # see --session
 CEN_OPT_FOLDER=                     # see --folder
+CEN_OPT_GEOMETRY=                   # see --geometry
 CEN_OPT_HOST=                       # see --host
 CEN_OPT_MODE=                       # see --mode
 CEN_OPT_PORT=                       # see --port
@@ -25,8 +26,10 @@ DAT_WEBTMP=                         # delete folder/file in quit hook
 DAT_CGIDIR=
 DAT_WEBURL=                         # set by webapp
 DAT_SYNCPIPE=                       # handle of open synchronization pipe
+DAT_MASTER=
 
 DAT_FOLDER=
+DAT_GEOM=
 DAT_HOST=                           # remote host (kiosk, browser)
 DAT_PORT=
 DAT_URL=()                          # set by application_url()
@@ -87,6 +90,135 @@ DAT_QUIT_LIST=                      # quit hook
 # centauribuilder: text ectraction - white/black list - file ; charset=binary
 #
 # ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+#
+#   URL or file arguments:  <config items> <command line items>
+#   Heuristics:             file:// http://
+#
+#   processing is from right to left
+#
+# ------------------------------------------------------------------------------
+# Add url entries to DAT_URL() array
+# ------------------------------------------------------------------------------
+url_builder() {
+    local _item
+    while [ $# -gt 0 ] ; do
+        _item="$1" ; shift
+        case "$_item" in
+        file:/)     [ -z "$DAT_HOST$DAT_PORT" ] && DAT_URL+=("$_item") ;;
+        file:/*)    DAT_URL+=("$_item") ;;
+        http://*)   DAT_URL+=("$_item") ;;
+        *//*|*\\*)  invoke -w $"Invalid URL/file syntax"": $_item" ;;
+        */*)        prettypath -n -s _item ; DAT_URL+=("file:$_item") ;;
+        *.*.*.*)    DAT_URL+=("http://$_item") ;;
+        *:*:*)      DAT_URL+=("http://$_item") ;;
+        *)          prettypath -n -s _item ; DAT_URL+=("file:$_item") ;;
+        esac
+    done
+}
+
+url_http() {
+    # host port try...
+    # --------------------------------
+    # no   no   localhost:{80,http_proxy,8123}
+    # no   no   <master>:{80,8123}
+    # no   no   duckduckgo.com
+    # no   yes  localhost:<port>
+    # no   yes  <mast>:<port>
+    # yes  no   <host>::{80,8123}
+    # yes  yes  <host>:<port>
+    # --------------------------------
+
+    ___url_try() {
+        local _host="${1:--}"
+
+        if [ "$_host" = '-' ] ; then
+            [ -z "$DAT_MASTER" ] && netquery -q -s DAT_MASTER current
+            [ -z "$DAT_MASTER" ] && netquery -q -s DAT_MASTER MASTER
+            [ -z "$DAT_MASTER" ] && return 1
+            _host="$DAT_MASTER"
+        elif [ "$_host" = '+' ] ; then
+            launcher -a _host -k '-flags:def_http' || return 1
+        fi
+
+        while [ $# -gt 1 ] ; do
+            shift ; [ -n "$1" ] || continue
+            trace -a -c "url probe" "$_host $1"
+            system -r -n -q netcat -w 1 -z "$_host" "$1" || continue
+            [ "$1" != '80' ] && _host+=":$1"
+            ___url_vurl="http://$_host" ; return 0
+        done
+        return 1
+    }
+
+    local ___url_vurl
+    system -f -c netcat
+
+    while : ; do
+        case "$DAT_HOST/$DAT_PORT" in
+        /)      ___url_try 'localhost'   80 "$DAT_PROXY" 8123 && break
+                ___url_try "$DAT_MASTER" 80              8123 && break
+                ___url_try '+'           80                   && break
+                ;;
+        /*)     ___url_try 'localhost'   "$DAT_PORT"          && break
+                ___url_try "$DAT_MASTER" "$DAT_PORT"          && break
+                ;;
+        */)     ___url_try "$DAT_HOST"    80             8123 && break
+                ;;
+        *)      ___url_try "$DAT_HOST"   "$DAT_PORT"     8123 && break
+        esac ; break
+    done
+    printf -v "$1" '%s' "$___url_vurl"
+    [ -n "$___url_vurl" ]                               # return status
+}
+
+url_finder() {
+    local _coun="${#DAT_URL[@]}" _item _file
+    trace -a -c "url finder" "entries: $_coun"
+
+    while ((_coun--)) ; do
+        _item="${DAT_URL[_coun]}"
+        trace -a -c "url entry" "$_item"
+        case "$_item" in
+            file:/)     launcher -a _file -k '-flags:def_file'
+                        for _item in "${_file[@]}" ; do
+                            trace -a -c "url file" "$_item"
+                            [ -f "$_item" ] && break
+                            _item=
+                        done
+                        if [ -n "$_item" ] ; then
+                            _item="file:$_item" ; break
+                        fi ;;
+            file:/*#*)  _file="${_item:5}"
+                        [ -f "$_file" ] && break
+                        _file="${_file%#*}"
+                        if [ -f "$_file" ] ; then
+                            _item="file:$_file" ; break
+                        fi
+                        ;;
+            file:/*)    [ -f "${_item:5}" ] && break ;;
+            http://)    url_http _item && break ;;
+            *)          break
+        esac
+        _item=
+    done
+    if [ -z "$_item" ] ; then
+        trace -a -c "url finder" "no match"
+        DAT_URL=() ; return 1
+    fi
+    trace -a -c "url finder" "$_item"
+
+    # url encoding (partial)
+    _item="${_item//%/%25}" ; _item="${_item// /%20}"
+    _item="${_item//(/%28}" ; _item="${_item//)/%29}"
+    _item="${_item//+/%2B}" ; _item="${_item//,/%3C}"
+    _item="${_item//;/%3B}" ; _item="${_item//@/%40}"
+    _item="${_item//\[/%5B}" ; _item="${_item//\]/%5D}"
+    DAT_URL=("$_item") ; return 0
+}
+
+# ------------------------------------------------------------------------------
 # Config callback for html - find default html page
 # ------------------------------------------------------------------------------
 launcher_html() {
@@ -127,25 +259,12 @@ launcher_html() {
             esac ; shift
         done
     fi
-    # the remaining args should be html files or urls
 
-    # search url/file list backwards until an existing file is found
-    local _coun="$#" _indx _strt
-    while ((_coun--)) ; do
-        _indx=$((_coun + 1))
-        _strt="${!_indx}"
-        case "$_strt" in
-            /*)     [ -s "${_strt%#*}" ] && break || _strt= ;;
-            *)      break                       # not a file, use this url
-        esac
-    done
-
-
-    if [ "${_strt:--}" != '-' ] ; then
-        application_url "$_strt" || return 1
-        trace "html url:" "$DAT_URL"
-        args+=("$DAT_URL")
-    fi
+    # the remaining args should be html files or urls ...
+    shift ; [ $# = 0 ] && set -- 'http://'
+    DAT_URL=() ; url_builder "$@"
+    url_finder || quit $"No valid URL found" "($CEN_ACTION)"
+    args+=("$DAT_URL")
 
     # wait for synchronization pipe - see 'launcher_webapp'
     if [ -n "$DAT_SYNCPIPE" ] ; then
@@ -154,9 +273,6 @@ launcher_html() {
     fi
 
     launcher -x -m "$mode" $oerr -p -- "$appl" "${args[@]}"
-
-    ### BUG Firefox 2nd instance will terminate after passing cmd to 1st instance
-
     return 0
 }
 
@@ -339,7 +455,7 @@ $CEN_DEBUG -c -- "$@"
     done
 
     $CEN_DEBUG -c -- "$*"
-    local _pqml="$1" _titl ; shift
+    local _pqml="$1" _titl _full ; shift
     local _file _resx="${1:--}" _resy="${2:--}" _zoom="${3:--}"
     shift ; shift ; shift
 
@@ -349,31 +465,41 @@ $CEN_DEBUG -c -- "$@"
     #   qt5-qtquickcontrols2
     #   qt5-webengine5
 
-    # search url/file list backwards until an existing file is found
-    local _coun="$#" _indx _strt
-    while ((_coun--)) ; do
-        _indx=$((_coun + 1))
-        _strt="${!_indx}"
-        case "$_strt" in
-            /*)     [ -s "${_strt%#*}" ] && break || _strt= ;;
-            *)      break                       # not a file, use this url
-        esac
-    done
+    # the remaining args should be html files or urls ...
+    [ $# = 0 ] && set -- 'file://' 'http://'
+    DAT_URL=() ; url_builder "$@"
+    url_finder || quit $"No valid URL found" "($CEN_ACTION)"
+
+    # no proxy when port is given...
+    if [ "$DAT_URL" != "${DAT_URL%:*}" ] ; then
+        export http_proxy=
+        export https_proxy=
+    fi
+    trace -a -c "http proxy" "${http_proxy:-<none>}" "${https_proxy:-<none>}"
 
     # qml window geometry
+
     [ "${_ainf[0]:--}" != '-' ] && _resx="${_ainf[0]}"
     [ "${_ainf[1]:--}" != '-' ] && _resy="${_ainf[1]}"
     [ "${_ainf[2]:--}" != '-' ] && _zoom="${_ainf[2]}"
+
+    [ -n "${DAT_GEOM[0]}" ] && _resx="${DAT_GEOM[0]}"
+    [ -n "${DAT_GEOM[1]}" ] && _resy="${DAT_GEOM[1]}"
+
+    [ "$_resx$_resy" = '++' ] && _full='; visibility: "FullScreen"'
     [ "$_resx" = '-' ] && _resx='(Screen.desktopAvailableWidth * 6) / 10'
     [ "$_resy" = '-' ] && _resy='(Screen.desktopAvailableHeight * 4) / 5'
+    [ "$_resx" = '+' ] && _resx='Screen.desktopAvailableWidth'
+    [ "$_resy" = '+' ] && _resy='Screen.desktopAvailableHeight'
     [ "$_zoom" = '-' ] && _zoom='Screen.pixelDensity / 4.5'
+
     if [ "${_titl:--}" = '-' ] ; then
         _titl="$CEN_NAME"
         [ -n "$CEN_EMBED" ] && _titl="$CEN_EMBED ⸺ $CEN_NAME"
     fi
 
     local _qvar='Q''t' _pipe                        # hide Qt to avoid mime type qml
-    tmpfile -n -s _file -- "launcher.qml" || return 1
+    tmpfile -n -s _file -- 'launcher.qml' || return 1
 
     # wait for synchronization pipe - see 'launcher_webapp'
     if [ -n "$DAT_SYNCPIPE" ] ; then
@@ -382,26 +508,18 @@ $CEN_DEBUG -c -- "$@"
         read -t 60 -u "$DAT_SYNCPIPE" _flag _wurl _dumy || return 1
         trace -a $"synchronization message :" "$_flag" "$_wurl"
         [ "$_flag" = 'OK' ] || return 1
-        if [ "${_wurl:--}" != '-' ] ; then
-            DAT_URL= ; _strt="$_wurl"
-        fi
     fi
 
-    if [ -z "$DAT_URL" ] ; then
-        trace -a $"generate config for qml :" "$_strt"
-        application_url "$_strt" || return 1
-    fi
-    trace -c $"qml web url" -- "$DAT_URL"
     create -r -t -c -- "$_file" 400 <<!EOF || return 1
-import ${_qvar}Quick 2.0
-import ${_qvar}Quick.Window 2.0
+import ${_qvar}Quick 2.2
+import ${_qvar}Quick.Window 2.2
 import ${_qvar}WebEngine 1.2
 Window {
     function cen_posx() { return (Screen.desktopAvailableWidth - $_resx) / 2; }
     function cen_posy() { return (Screen.desktopAvailableHeight - $_resy) / 2; }
     x: cen_posx() ; y: cen_posy()
     width: $_resx ; height: $_resy
-    visible: true
+    visible: true $_full
     title: "$_titl"
 
     WebEngineView {
@@ -416,7 +534,8 @@ Window {
    }
 }
 !EOF
-
+#cat $_file
+#quit $_mode
     case "$_mode" in
     # mode 1 makes no sense with qml, use mode=0
     0|1)
@@ -527,43 +646,69 @@ launcher_webapp() {
 # ------------------------------------------------------------------------------
 application_url() {
     local _wurl="${1:--}"
-
-    # convert argument to url
+    DAT_URL=()
     case "$_wurl" in
-        *://*)  DAT_URL="$_wurl" ; _wurl= ;;
-        *.*)    ;;
-        -)      _wurl="index.html" ;;
-        *)      _wurl="$1.html" ;;
+    *://*)  DAT_URL=("$_wurl") ; return 0
+            ;;
+    file:)  joinpath -s _wurl "$DAT_WEBDIR" "$_wurl"
+            [ -e "$_wurl" ] || _wurl='/var/www/html/index.html'
+            DAT_URL=("file://$_wurl") ; return 0
+            ;;
+    http:|-)
+            ;;
+    *.*)    prettypath -n -s _wurl || return 0
+            DAT_URL=("file://$_wurl") ; return 0
+            ;;
+    *)      _wurl=
     esac
-    if [ -z "$_wurl" ] ; then
-        :
-    elif [ "$_wurl" != '-' ] ; then
-        if [ -n "$DAT_PORT" ] ; then            # using a web server
-        ### TODO prettypath to string webdir path
-            DAT_URL=("http://${DAT_HOST:-localhost}:$DAT_PORT/$_wurl")
-        else
-            joinpath -s _wurl "$DAT_WEBDIR" "$_wurl"
-            DAT_URL=("file://$_wurl")
-        fi
+quit URL "$*"
+    # host port try...
+    # --------------------------------
+    # no   no   localhost:{80,http_proxy,8123}
+    # no   no   <master>:{80,8123}
+    # no   no   duckduckgo.com
+    # no   yes  localhost:<port>
+    # no   yes  <mast>:<port>
+    # yes  no   <host>::{80,8123}
+    # yes  yes  <host>:<port>
+    # --------------------------------
 
-    # we have a pre-set host or port
-    elif [ -n "$DAT_HOST" -o -n "$DAT_PORT" ] ; then
-        DAT_URL=("http://${DAT_HOST:-localhost}${DAT_PORT:+:$DAT_PORT}")
-    # 1st check: does localhost run a server on 80 and 8080
-    elif port_check 'localhost' 80 ||  port_check 'localhost' 8080 ; then
-        DAT_URL=("http://localhost")
-    # kiosk will try local files next
-    elif [ "$CEN_ACTION" = 'kiosk' -a -e "$CEN_ROOT/html/index.html" ] ; then
-        DAT_URL=("file://$CEN_ROOT/html/index.html")
-    # try configured server
-    elif port_check - 80 || port_check - 8080 ; then
-        DAT_URL=("http://$DAT_HOST/index.html")
-    # kiosk will finally try local files next
-    elif [ "$CEN_ACTION" != 'kiosk' -a -e "$CEN_ROOT/html/index.html" ] ; then
-        DAT_URL=("file://$CEN_ROOT/html/index.html")
-    else
-        DAT_URL=() ; return 0
-    fi
+    ___url_try() {
+        local host="$1"
+        if [ "${host:--}" = '-' ] ; then
+            [ -z "$DAT_MASTER" ] && netquery -q -s DAT_MASTER current
+            [ -z "$DAT_MASTER" ] && netquery -q -s DAT_MASTER MASTER
+            [ -z "$DAT_MASTER" ] && return 1
+            host="$DAT_MASTER"
+        elif [ "$1" = '+' ] ; then
+            launcher -a host -k '-flags:def_url' || return 1
+            DAT_URL=("http://$host:$2") ; return 0
+        fi
+        while [ $# -gt 1 ] ; do
+            shift ; [ -n "$1" ] || continue
+            system -n -q netcat -w 1 -z "$host" "$1" || continue
+            DAT_URL=("http://$host:$1") ; return 0
+        done
+        return 1
+    }
+
+    system -f -c netcat
+
+    while [ -z "$_wurl" ] ; do
+        case "$DAT_HOST/$DAT_PORT" in
+        /)       ___url_try 'localhost'   80 "$DAT_PROXY" 8123 && break
+                 ___url_try "$DAT_MASTER" 80              8123 && break
+                 ___url_try '+'           80                   && break
+                ;;
+        /*)     ___url_try 'localhost'   "$DAT_PORT"          && break
+                ___url_try "$DAT_MASTER" "$DAT_PORT"          && break
+                ;;
+        */)     ___url_try "$DAT_HOST"   80              8123 && break
+                ;;
+        *)      ___url_try "$DAT_HOST"   "$DAT_PORT"     8123 && break
+                return 0
+        esac ; break
+    done
 
     # url encoding (partial)
     DAT_URL="${DAT_URL//%/%25}" ; DAT_URL="${DAT_URL// /%20}"
@@ -662,20 +807,20 @@ options() {
     '')     DAT_FOLDER="$CEN_OPT_FOLDER"
             DAT_HOST="$CEN_OPT_HOST"
             DAT_PORT="$CEN_OPT_PORT"
+            [ -n "$CEN_OPT_GEOMETRY" ] && splitjoin -s DAT_GEOM -d ':' -i CEN_OPT_GEOMETRY
             ;;
 
     -D|--des*)
         optarg 'desktop'    -      -t ;;        # text argument
-
     -F|--fol*)
         optarg 'folder'     -      -d ;;        # folder argument
-
+    -G|--geo*)
+        optarg 'geometry'   - '((\+|-|[0-9]*):){0,3}(\+|-|([-0-9]*)?)' ;;
+        #'[-0-9:]' ;;
     -H|--hos|--host)
         optarg 'host'       -      -t ;;        # text argument
-
     -M|--mod|--mode)
         optarg 'mode'       - '[0-3]' ;;        # regex
-
     -P|--por|--port)
         optarg 'port'       -      -n ;;        # number argument
 
@@ -688,17 +833,20 @@ options() {
 actions() {
     case "$1" in
 
-    '')                                         # end processing must be ignored
-        ;;
+    '') ;;                                      # end processing must be ignored
 
     lis|list)
         invoke 'list'   -           0 1 ;;
 
-    *)                              # get list of configured actions
+    *)                                          # get list of configured actions
         local actn list
         launcher -l 3 -a list || return 1
-        listsearch -m actn -u -- "$1" "${list[@]}" || return 1
-
+        if ! listsearch -m actn -u -i list -- "$1" ; then
+            launcher -l 0 -a list || return 1
+            listsearch -m actn -g -i list  -- "$1*" &&
+                invoke -e $"The action is configured but cannot be invoked now"
+            return 1
+        fi
         list=() ; shift
         [ "${CEN_OPT_DESKTOP:--}" != '-' ] && list+=(-y "$CEN_OPT_DESKTOP")
         [ "${CEN_OPT_MODE:--}" != '-' ] && list+=(-m "$CEN_OPT_MODE")
@@ -716,7 +864,7 @@ actions() {
         done
 
         # this calls launcher() as an action
-        invoke "$actn" 'launcher' - - "${list[@]}" -- "$actn" "$@"
+        invoke "$actn" 'launcher' - - "${list[@]}" -- "$actn" "${CEN_CMDARGS[@]:1}"
         ;;
     esac
 }

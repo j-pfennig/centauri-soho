@@ -21,7 +21,7 @@
 # Copyright Dr. J. Pfennig (c) 2020-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_mnt']='0.11:2'
+CEN_MODULES['_centauri_bash_mnt']='0.12:3'
 
 embed -c '_centauri_bash_utl'   # import on demand, see timer()
 
@@ -88,7 +88,7 @@ declare -g -A CEN_MNT_AMAP      # automount map
 # ------------------------------------------------------------------------------
 automount() {
     local _fbtr _fchk _fnun _freg _fwai _olvl _umnt _labl _lmsg _desc
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -b)    _fbtr=1 ;;
@@ -173,7 +173,7 @@ automount() {
         unset CEN_MNT_AMAP[$_kind:$CEN_MOUNT_DEV]
         _cen_automount_mesg -i $"Unmount:  "
         for _umnt in 0.5 0.5 1 1 2 2 - ; do     # wait, may need time to flush
-            if [ "$_umnt" = "-" ] ; then
+            if [ "$_umnt" = '-' ] ; then
                 system -m -s _emsg -r -- udisksctl unmount -b "$CEN_MOUNT_DEV" && break
                 _cen_automount_mesg -e -l $"Failed to unmount #K" "$_emsg"
                 return 3                        # could not unmount
@@ -202,7 +202,7 @@ automount() {
         if [ -n "$_fwai" ] ; then
             if [ "$_umnt" = "0" ] ; then
                 _cen_automount_mesg -i $"Waiting for" ; continue
-            elif [ "$_umnt" != "-" ] ; then
+            elif [ "$_umnt" != '-' ] ; then
                 _cen_automount_mesg -w ; timer -w "$_umnt" ; continue
             fi
         fi
@@ -226,7 +226,7 @@ automount() {
         # check mountpoint (see CEN_MOUNT_DEV)
         _emsg="$CEN_MOUNT_DEV"
         for _umnt in 0.5 0.5 1 1 - ; do
-            if [ "$_umnt" = "-" ] ; then
+            if [ "$_umnt" = '-' ] ; then
                 _cen_automount_mesg -e -l $"Cannot find #K mountpoint"
                 return 3
             fi
@@ -256,7 +256,7 @@ _cen_automount_mesg() {
     [ "$_efun" = ":" ] && return 0              # quiet mode
     local _fout="$_ofun -a" _fcon _fpro _long
 
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -d)   _fpro=3 ; isfunction -c windows || _fcon=1 ;;
@@ -363,7 +363,7 @@ _cen_automount_register() {
 CEN_BLKDEVICE=
 blkdevice() {
     local _fblk _fexi _fimg _fpar _fmnt _npar _oerr="trace -a" _otra="trace -a" _anam="CEN_BLKDEVICE"
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -a)   shift ; _anam="$1" ;;
@@ -393,7 +393,7 @@ blkdevice() {
             _path="/dev/$_path"
         fi
     fi
-    _varr=("$_path" "-" "-" "-")                # default return values
+    _varr=("$_path" '-' '-' '-')                # default return values
 
     # check for file or block device
     if [ -b "$_path" ] ; then
@@ -525,7 +525,7 @@ blkdevice() {
 #           findmount -r label /dev/sda1 && message "Label:" "$CEN_MOUNT_DIR"
 #
 #.          # what is mounted at /mnt/xxx?
-#.          findmount -- - "/mnt/xxx" && message -p \
+#.          findmount - "/mnt/xxx" && message -p \
 #.              "device=%s (%s filesystem)" "$CEN_MOUNT_DEV" "$CEN_MOUNT_FS"
 #
 #.          # what is mounted on /dev/sda?
@@ -539,9 +539,10 @@ blkdevice() {
 findmount() {
     CEN_MOUNT_DEV= ; CEN_MOUNT_DIR= ; CEN_MOUNT_LBL= ; CEN_MOUNT_FS= ; CEN_MOUNT_ARR=()
     local _labl _fall _fknd _fcas _fdev _ftyp=()
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
+        -)    break ;;
         -a)   _fall=1 ;;
         -c)   _fcas=1 ;;
         -d)   _fdev=1 ;;
@@ -687,7 +688,7 @@ _cen_mnt_quit() {
     automount -q
 }
 
-while [ "${1::1}" = "-" ] ; do
+while [ "${1::1}" = '-' ] ; do
     case "$1" in
     --)   shift ; break ;;
     -d)   CEN_MNT_OPT_D=1 ;;

@@ -1,4 +1,4 @@
-    #!/usr/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
 # _centauri_bash_con = centauri-bash-lib: Console mode support
 #
@@ -19,7 +19,7 @@
 # Copyright Dr. J. Pfennig (c) 2015-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_con']='0.24:2'
+CEN_MODULES['_centauri_bash_con']='0.24:4'
 
 CEN_ROWS=               # console rows
 CEN_COLS=               #         columns
@@ -644,7 +644,7 @@ _cen_con_mesg() {
       -d)   shift ; [ "${1::1}" = '+' ] || _deco="$1" ;;
 
       # standard options
-      -a)   [ -n "$CEN_AUTOIND" ] && { _hasi=1 ; _args+=("-i") ; } ;;
+      -a)   [ -n "$CEN_AUTOIND" ] && { _hasi=1 ; _args+=('-i') ; } ;;
       -c)   _scal=1 ;;
       -e)   _eopt="$1" ; _stat="$CEN_EXIT" ; _verb=1 ;;
       -f)   _eopt="$1" ; _stat="$CEN_EXIT" ; _verb=1 ; _fatl=1 ;;
@@ -717,7 +717,7 @@ _cen_con_mesg() {
         if [ -n "$_fatl" ] ; then               # keep last progress msg
             echo
         else
-            _mret="echo -n -e \r"
+            _mret='echo -n -e \r'
             # don't try to replace a multi-line progress message
             if [ "$CEN_CONS_MSGLEN" -gt "${COLUMNS:-200}" ] ; then
                 CEN_CONS_MSGLEN=0 ; echo 1>&2

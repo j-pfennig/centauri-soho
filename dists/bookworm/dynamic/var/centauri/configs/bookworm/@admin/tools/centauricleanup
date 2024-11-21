@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2023; BSD License"
-CEN_TITLE="Cleanup caches and logfiles"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2024; "$"BSD License"
+CEN_TITLE=$"Cleanup caches and logfiles"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -y - "0.14:2" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -t -y - '0.15:4' || exit 2
 
 # Data
 CEN_OPT_ALL=                    # see --all
@@ -28,8 +28,8 @@ do_delete() {
     # check for symlink or root folder
     ___check() {
         [ -h "$1" ] && return 1
-        [ -n "$CEN_OPT_DRYRUN" ] && trace -a "Removing files/folders: $*"
-        [ "$1" -ef "/" ] && fatal "Refusing to delete the root folder"
+        [ -n "$CEN_OPT_DRYRUN" ] && trace -a $"Removing files/folders:" "$*"
+        [ "$1" -ef "/" ] && fatal $"Refusing to delete the root folder"
         return 0
     }
 
@@ -42,13 +42,13 @@ do_delete() {
     ___fcont() {
         [ -d "$1" ] || return
         ___check "$1" || return
-        [ -z "$CEN_OPT_DRYRUN" ] && trace -a "Removing files/folders: $*"
+        [ -z "$CEN_OPT_DRYRUN" ] && trace -a $"Removing files/folders:" "$*"
         system -e -p -- find -H "$1" -xdev -mindepth 1 -type d -depth -print
         system -e -p -- find -H "$1" -xdev \
             \( -name WARNING_FOLDER_NOT_ARCHIVED -o -name CACHEDIR.TAG \) -prune -o -exec rm {} \;
     }
 
-    [ "$#" = 1 ] || fatal -t "Exactly 1 argument expected"
+    [ "$#" = 1 ] || fatal -t $"Exactly one argument expected"
     local sifs="$IFS" ; IFS= ; set -- $1 ; IFS="$sifs"
     local fldr
     for fldr in "$@" ; do
@@ -89,10 +89,10 @@ do_zero() {
 # Workers
 # ------------------------------------------------------------------------------
 run_root() {
-    message -a "Cleaning system caches"": $PWD"
+    message -a $"Cleaning system caches:" "$PWD"
 
     do_delete ".Trash-*"
-    do_delete "./tmp/"
+    do_delete './tmp/'
 
     if [ -d "./var" ] ; then
         do_delete ".$CEN_ROOT/backup/"
@@ -118,7 +118,7 @@ run_home() {
     # clean a home folder: <folder>
     ___home() {
         joinpath -p -- "$PWD" "${1#./}"
-        message -a "Cleaning user caches  : $CEN_JOINPATH"
+        message -a $"Cleaning user caches  :" "$CEN_JOINPATH"
         do_delete "$1/.xsession-errors*"
         do_delete "$1/.audacity-data"
         do_delete "$1/.davfs2/"
@@ -153,36 +153,36 @@ run_home() {
 
     # clean sub folders: <folder>
     ___walk() {
-        walk -r -l 1 -d "___home" "$1"
+        walk -r -l 1 -d ___home "$1"
     }
 
-    local path="/home"
+    local path='/home'
 
     # home subvolume
     if [ -n "$CEN_OPT_HOME" ] ; then
-        confirm -a -n "Cleanup '$PWD' caches" || return
-        ___walk "."
+        confirm -a -n -f $"Cleanup '%s' caches" "$PWD" || return
+        ___walk '.'
         [ -n "$1" ] && ___home "$1"
 
     # given user name
     elif [ "$CEN_OPT_USER" != "+" ] ; then
         [ "$CEN_OPT_USER" = "-" ] && CEN_OPT_USER="$LOGNAME"
         eval path=~$CEN_OPT_USER
-        [ "$PWD" = "/" ] || path="$PWD$path"
+        [ "$PWD" = '/' ] || path="$PWD$path"
         if [ -d "$path" ] ; then
-            confirm -a -n "Cleanup '$path' caches" || return
+            confirm -a -n -f $"Cleanup '%s' caches" "$path" || return
             folder -r -c -f "$path/.."
             ___home "./${path##*/}"
         else
-            warning "User home folder not found" ": $path"
+            warning $"User home folder not found:" "$path"
         fi
 
     # all users
     else
-        [ "$PWD" = "/" ] || path="$PWD$path"
-        confirm -a -n "Cleanup '$path' caches" || return
-        [ -d "./home" ] && ___walk "home"
-        [ -d "./root" ] && ___home "./root"
+        [ "$PWD" = '/' ] || path="$PWD$path"
+        confirm -a -n -f $"Cleanup '%s' caches" "$path" || return
+        [ -d "./home" ] && ___walk 'home'
+        [ -d "./root" ] && ___home './root'
         [ -d ".$CEN_ROOT/vbox" ] && ___home ".$CEN_ROOT/vbox"
     fi
 }
@@ -209,9 +209,9 @@ run_logs() {
     resolve -a flis -e -m -p -q -- "./root/.synaptics/log" "./var/backups"/* "./var/log/samba/cores"/*
     remove -d -- "${flis[@]}"
 
-    if [ -d "./var/log" ] ; then
+    if [ -d './var/log' ] ; then
         local curr="$PWD"
-        folder -c -f "./var/log"
+        folder -c -f './var/log'
 
         # using persistent systemd journal: remove legacy logs
         if [ -d "journal" ] ; then
@@ -238,7 +238,7 @@ run_logs() {
 run() {
     # option handling
     if [ -n "$CEN_OPT_ALL" ] ; then
-        CEN_OPT_ROOT=1 ; CEN_OPT_USER="+" ; CEN_OPT_ZERO=1
+        CEN_OPT_ROOT=1 ; CEN_OPT_USER='+' ; CEN_OPT_ZERO=1
     fi
     [ -n "$CEN_OPT_ZERO" ] && CEN_OPT_LOGS=1
 
@@ -247,21 +247,21 @@ run() {
     if ! [ "$CEN_OPT_USER" = "-" -o "$CEN_OPT_USER" = "$LOGNAME" ] ; then
         context -r
     elif [ -n "$CEN_OPT_LOGS" -o -n "$CEN_OPT_HOME" -o -n "$CEN_OPT_ROOT" ] ; then
-        fatal "Option --user conflicts with --all|--root|--home|--log"
+        fatal $"Option --user conflicts with --all|--root|--home|--log"
     fi
 
     # should not be a desktop session
     if [ -z "$CEN_OPT_BASE" ] && [ -n "$KDE_SESSION_VERSION" -o -n "$XDG_CURRENT_DESKTOP" ] ; then
-        confirm -a -n "You should not call $CEN_NAME from a desktop session. Continue" || return
+        confirm -a -n $"You should not use this tool in a desktop session. Continue" || return
     fi
 
     # do it ...
     folder -c "${CEN_OPT_BASE:-/}" || return
 
-    if [ -d "Volumes/Root" -o -d "Volumes/Home" ] ; then
-        message -a "Base folder is a BTRFS volume"
-        [ "${CEN_OPT_USER:-+}" = "+" ] || fatal "Cannot use '--user=<name>' in this context"
-        CEN_OPT_HOME=1 ; DAT_ROOT="Volumes/Root" ; DAT_HOME="Volumes/Home"
+    if [ -d 'Volumes/Root' -o -d 'Volumes/Home' ] ; then
+        message -a $"Base folder is a BTRFS volume"
+        [ "${CEN_OPT_USER:-+}" = '+' ] || fatal $"Cannot use '--user=<name>' in this context"
+        CEN_OPT_HOME=1 ; DAT_ROOT='Volumes/Root' ; DAT_HOME='Volumes/Home'
         if [ ! -d "$DAT_ROOT" ] ; then
             CEN_OPT_LOGS= ; CEN_OPT_ROOT=
         fi
@@ -277,19 +277,19 @@ run() {
     fi
 
     local mlst
-    [ -n "$CEN_OPT_ROOT" ] && mlst+="root, "
-    [ -n "$CEN_OPT_USER" ] && mlst+="home, "
-    [ -n "$CEN_OPT_LOGS" ] && mlst+="logs, "
+    [ -n "$CEN_OPT_ROOT" ] && mlst+='root, '
+    [ -n "$CEN_OPT_USER" ] && mlst+='home, '
+    [ -n "$CEN_OPT_LOGS" ] && mlst+='logs, '
     if [ -z "$mlst" ] ; then
-        message -a "Nothing to cleanup" ; return
+        message -a $"Nothing to clean up" ; return
     elif [ -n "$CEN_OPT_LOGS" -o -n "$CEN_OPT_ROOT" ] ; then
-        confirm -a -n "Cleanup '${mlst::-2}' data at '$PWD'" || return
+        confirm -a -n -f $"Cleanup '%s' data at '%s'" "${mlst::-2}" "$PWD" || return
     fi
 
     local root curr=$PWD
         if [ -n "$DAT_ROOT" ] ; then
             folder -c -f "$DAT_ROOT"
-            [ -d "root" ] && root="$PWD/root"
+            [ -d 'root' ] && root="$PWD/root"
         fi
         [ -n "$CEN_OPT_ROOT" ] && run_root
         [ -n "$CEN_OPT_LOGS" ] && run_logs
@@ -307,21 +307,21 @@ options() {
     case "$1" in
 
     -A|--all)
-        optarg "all"    CEN_OPT_ALL        ;;   # simple flag
+        optarg 'all'    -                  ;;   # simple flag
     -B|--bas|--base)
-        optarg "base"   CEN_OPT_BASE -d    ;;   # folder
+        optarg 'base'   -            -d    ;;   # folder
     -H|--hom|--home)
-        optarg "home"   CEN_OPT_HOME       ;;   # simple flag
+        optarg 'home'   -                  ;;   # simple flag
     -L|--log*)
-        optarg "logs"   CEN_OPT_LOGS       ;;   # simple flag
+        optarg 'logs'   -                  ;;   # simple flag
     -S|--sna*)
-        optarg "snap"   CEN_OPT_SNAP       ;;   # simple flag
+        optarg 'snap'   -                  ;;   # simple flag
     -R|--roo|--root)
-        optarg "root"   CEN_OPT_ROOT       ;;   # simple flag
+        optarg 'root'   -                  ;;   # simple flag
     -U|--use|--user)
-        optarg "user"   CEN_OPT_USER -t    ;;   # any text
+        optarg 'user'   -            -t    ;;   # any text
     -Z|--zer|--zero)
-        optarg "zero"   CEN_OPT_ZERO       ;;   # simple flag
+        optarg 'zero'   -                  ;;   # simple flag
     esac
 }
 

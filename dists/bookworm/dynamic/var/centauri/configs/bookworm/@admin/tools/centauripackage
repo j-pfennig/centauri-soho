@@ -1,11 +1,11 @@
 #!/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2009-2023; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2009-2024; BSD License"
 CEN_TITLE="Compare package lists, run apt update(install/remove"
 
 # Import the bash library, set name and version
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -s -t -y - '0.31:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -s -t -y - '0.32:4' || exit 2
 
 # Data
 
@@ -174,6 +174,11 @@ process_apt() {
                 update-alternatives:\ using*)
                     last="$poll" ;;
 
+                Adding\ \'diversion*)
+                    last="$poll" ; progress -a -l "$poll" ;;
+                Removing\ \'diversion*)
+                    last="$poll" ; progress -a -l "$poll" ;;
+
                 Created\ symlink*)
                     last="$poll" ;;
                 '(Reading database ...'*)
@@ -215,11 +220,11 @@ process_apt() {
             ___aptyes "${#lins[@]}" "Install"
             ___aptupd || quit                       # apt update
             if [ -n "$CEN_OPT_DRYRUN" ] ; then
-                echo "apt-get install --yes ${lins[@]}"
+                echo "apt-get install --no-install-recommends --yes ${lins[@]}"
             elif [ -n "$CEN_OPT_FILE" ] ; then
-                echo "apt-get install --yes ${lins[@]}" >"$CEN_OPT_FILE"
+                echo "apt-get install --no-install-recommends --yes ${lins[@]}" >"$CEN_OPT_FILE"
             else
-                ___aptgui $DAT_EATMYDATA apt-get install --yes "${lins[@]}"
+                ___aptgui $DAT_EATMYDATA apt-get install --no-install-recommends --yes "${lins[@]}"
             fi
         fi
         quit
@@ -284,7 +289,7 @@ check_diff() {
 }
 
 # ------------------------------------------------------------------------------
-#
+# remove comments, skip libraries
 # ------------------------------------------------------------------------------
 list_filter() {
     local -n _vflt="$1"
@@ -319,11 +324,9 @@ run() {
         for tool in "$@" ; do
             [ "$tool" = '-' ] && continue
             if [ -n "$CEN_OPT_INST" ] ; then
-                system -c -- "$tool" && continue
-                list+=("$tool install") #; CEN_OPT_DEINST=
+                list+=("$tool install")
             else
-                system -c -- "$tool" || continue
-                list+=("$tool deinstall") #; CEN_OPT_INST=
+                list+=("$tool deinstall")
             fi
         done
         if [ -z "$list" ] ; then
@@ -375,7 +378,7 @@ run() {
         redirect -v hinp                        # close handle
     elif [ -n "$CEN_OPT_SETSEL" ] ; then
         quit $"Not supported"
-        dpkg --set-selections <"$fdif"
+        #dpkg --set-selections <"$fdif"
     else
         $CEN_PAGER process_diff <"$fdif"
     fi
@@ -460,7 +463,7 @@ $CEN_USE_OPTIONS
        -R --reverse         swap source and destination
        -S --set             pipe output through "dpkg --set-selections"
        -T --tool            simple install/remove packages
-       -U --update  <when>  run "apt update" (0:=ever  1:=always  2:=auto)
+       -U --update  <when>  run "apt update" (0:=never  1:=always  2:=auto)
 
        If none of -D and -I are given then -D and -I are implied and if none
        of -D, -I, -L or -X are given -X is implied.  Libraries are usually

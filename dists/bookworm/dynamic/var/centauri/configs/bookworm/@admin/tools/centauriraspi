@@ -4,13 +4,14 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2009-2024; "$"BSD License"
 CEN_TITLE=$"Tool to manage 'Raspberry Pi' boot configurations"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m mnt -t -y - '0.24:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m mnt -t -y - '0.25:4' || exit 2
 
 # Data
 
 CEN_OPT_BOOT=               # see --boot
 CEN_OPT_DEVICE=             # see --device
 CEN_OPT_HOST="$HOSTNAME"    # see --host
+CEN_OPT_IFNAMES=            # see --ifnames
 CEN_OPT_LEGACY=             # see --legacy
 CEN_OPT_NOCHECK=            # see --nocheck
 CEN_OPT_ROOT=               # see --root
@@ -18,6 +19,7 @@ CEN_OPT_UUID=               # see --uuid
 
 DAT_UPDTHOOK="/etc/initramfs/post-update.d/$CEN_NAME"
 DAT_ASK_QUIT=
+DAT_ENTRY_CURR=             # see actionEntry, current boot
 
 # ------------------------------------------------------------------------------
 # ask once to quit: <confirm arguments>
@@ -49,12 +51,13 @@ do_file() {
 # ------------------------------------------------------------------------------
 do_folder() {
     if [ -n "$CEN_OPT_DEVICE" ] ; then
+        local part
         case "$CEN_OPT_DEVICE" in
-            */*)    ;;                          # path
+            */*)    part="*1" ;;                # path, add partition #1
             *_*)    ;;                          # full label
             *)      CEN_OPT_DEVICE+='_boot'     # host name
         esac
-        automount -k $"raspberry storage" -- "$CEN_OPT_DEVICE"
+        automount -k $"raspberry storage" -- "$CEN_OPT_DEVICE"$part
         [ -z "$CEN_OPT_BOOT" ] && CEN_OPT_BOOT="$CEN_MOUNT_DIR"
     elif [ -z "$CEN_OPT_BOOT" ] ; then
         do_legacy && CEN_OPT_BOOT='/boot' || CEN_OPT_BOOT='/boot/firmware'
@@ -81,10 +84,10 @@ do_compare() {
     local targ="$1" item ; shift
     for item in "$@" ; do
         if system -r -q -- cmp --quiet "$targ" "$item" ; then
-            [ "$hook" = "-" ] && return 0
+            [ "$hook" = '-' ] && return 0
             $hook "$targ" "$item" 0
         else
-            [ "$hook" = "-" ] && return 1
+            [ "$hook" = '-' ] && return 1
             $hook "$targ" "$item" 1
         fi
     done
@@ -118,7 +121,7 @@ $CEN_TOOLS/$CEN_NAME initrd update "\$2"
 # ------------------------------------------------------------------------------
 do_legacy() {
     if [ -z "$CEN_OPT_LEGACY" ] ; then
-        sysversion -u
+        sysversion -u -o -f
         [ "${CEN_SYS_VERSION%%.*}" -gt 11 ] && CEN_OPT_LEGACY=0 || CEN_OPT_LEGACY=1
         [ "$CEN_OPT_LEGACY" = 0 ] || warning "Running in legacy mode"
     fi
@@ -216,7 +219,7 @@ actionConfig() {
         warning -a $"Missing PARTUUID:" "$puid"
     fi
 
-    # warn is label does not match HOSTNAME
+    # warn if label does not match HOSTNAME
     if [ -n "$slbl" -a -z "$CEN_OPT_NOCHECK" ] ; then
         if [ "${slbl%_*}" != "$CEN_OPT_HOST" ] ; then
             warning "Label '$slbl' does not match hostname"
@@ -253,12 +256,15 @@ actionCopy() {
 actionEntry() {
     # auto-generate default entries ...
     if [ "$1" = '-' ] ; then
-        local name args
+        local name args hdir
         shift ; name="${1:--}" ; [ "$name" = '-' ] && set -- '+' "${@:2}"
         args=("$@") ; args[1]='splash'
         actionEntry 'default' "${args[@]}"
         netquery 'server' "$CEN_OPT_HOST" && actionEntry 'server' "${args[@]}"
-        [ -e '/home/local/.autologin' ] && actionEntry 'bootmenu' "${args[@]}"
+        for name in 'local' 'kiosk' 'clock' ; do
+            eval hdir=~$name
+            [ -d "$hdir" ] && actionEntry 'bootmenu' "${args[@]}"
+        done
         args[1]='nosplash'
         for name in 'router' 'repeater' 'switch' 'extender' ; do
             netoption "$name" "$CEN_OPT_HOST" && actionEntry "$name" "${args[@]}"
@@ -272,6 +278,11 @@ actionEntry() {
     do_folder -n
     local line name="$1" ramd args=("root=${2:-+}") ; shift ; shift
 
+    if [ -z "$DAT_ENTRY_CURR" ] && do_compare - 'cmdline.txt' "cmdline-$name.txt" ; then
+        DAT_ENTRY_CURR="cmdline-$name.txt"
+        trace -a -c "current boot" "$DAT_ENTRY_CURR"
+    fi
+
     if [ "$args" = 'root=-' ] ; then                # generate no root=
         do_ask_quit "Not creating a 'root=' boot parameter. Really continue"
         args=()
@@ -282,28 +293,30 @@ actionEntry() {
         elif [ -b "/dev/disk/by-label/${CEN_OPT_HOST}_root" ] ; then
             fsty='ext4' ; args=("root=LABEL=${CEN_OPT_HOST}_root")
         else
-            invoke -e "Cannot autotdetect root, please specify as argument" ; return
+            invoke -e "Cannot autodetect root, please specify as argument" ; return
         fi
         do_ask_quit -f "Booting '%s' from '%s' filesystem. Continue" "$CEN_OPT_HOST" "$fsty"
     fi
+    args+=('fsck.repair=yes')
 
     if [[ "$args" =~ LABEL=.*_vol[0-9] ]] ; then    # btrfs config
-        args+=(rootflags=subvol=/Volumes/Root)
+        args+=('rootflags=subvol=/Volumes/Root')
         if do_legacy ; then                         # pre bookworm layout
             args+=(initrd=0) ; ramd=1
         fi
-    elif [ -n "$args" ] ; then                      # ext4 config
+   fi
 
- #### TODO always ...
-        args+=('fsck.repair=yes')
-    fi
-
-    # other methods are not reliable on raspberry pi os ...
-    if netoption 'sysdnames' "$CEN_OPT_HOST" ; then
-        args+=('net.ifnames=1')
-    else
-        args+=('net.ifnames=0')
-    fi
+    local ifna
+    case "$CEN_OPT_IFNAMES" in
+    0)  ifna=0 ;;
+    1)  ifna=1 ;;
+    *)  if  [ "$DAT_ETCDIR/systemd/network/99-default.link" -ef '/dev/null' ] ; then
+            ifna=0
+        elif netoption 'sysdnames' "$CEN_OPT_HOST" ; then
+            ifna=1
+        fi
+    esac
+    [ -n "$ifna" ] && args+=("net.ifnames=$ifna")
 
     case "${1:-splash}" in
     -)          ;;
@@ -351,6 +364,10 @@ actionEntry() {
     do_name name "$name"                                # simplify entry name
     args+=("$@") ; line="${args[*]}"
     create -t -v line -- "cmdline-$name.txt"
+    if [ "${DAT_ENTRY_CURR:--}" != '-' ] ; then
+        copy "$DAT_ENTRY_CURR" 'cmdline.txt'
+        DAT_ENTRY_CURR='-'
+    fi
 
     # create default files and a config file
     local cmdf='cmdline-default.txt'
@@ -411,7 +428,7 @@ actionRemove() {
 }
 
 # ------------------------------------------------------------------------------
-# set root: <config>|-|. <label>|-
+# set root: <config>|-|. <label>|-|.
 #
 #   config: <name>  use cmdline-<name>.txt
 #           -       use cmdline-default.txt
@@ -421,123 +438,92 @@ actionRemove() {
 #           <label> example: cent9_root     -> root=LABEL=<label>
 #           <uuid>  example: abcd1234-03    -> root=PARTUUID=<uuid>
 #           -       1st try 'rootfs' 2 try <hostname>_(vol0|root|rootfs)
-####           .       use PARTUUID
+#           .       use PARTUUID
 # ------------------------------------------------------------------------------
 actionRoot() {
-    do_folder
-
+    do_folder -n
     local conf="${1:-.}" ; shift
     local iden="${1:--}" ; shift
+
     [ "$conf" = '.' ] && conf= ; [ "$conf" = '-' ] && conf='default'
     conf="cmdline${conf:+-}$conf.txt"
 
-    if ! [ -e "$conf" ] ; then
+    local item list puid labl karg
+
+    # parse kernel command line, get 'root=' into 1st position
+    if ! readline -a list -i "$conf" ; then
         error $"No such configuration:" "$conf" ; return
     fi
-
-    # no label arg, try rootfs or default to <host>
-    local item part
-    #if [ "$iden" = '.' ] ; then
-    #    local list indx=0
-    #    if [ -z "$CEN_OPT_DEVICE" ] ; then
-    #        error "Option '--device' missing" ; return
-    #    fi
-    #    system -e -p -a list -- blkid --probe -o value -s TYPE -s UUID "$CEN_OPT_DEVICE" || return
-    #    while [ -n "${list[indx]}" ] ; do
-    #        if [ "${list[indx]}" = 'ext4' -o "${list[indx]}" = 'btrfs' ] ; then
-    #            iden="${list[indx+1]}" ; part="/dev/disk/by-partuuid/$iden"
-    #            message -a -p "Found 'PARTUUID=%s' with '%s' filesystem" "$iden" "${list[indx]}"
-    #            break
-    #        fi
-    #        ((indx += 2))
-    #    done
-    #    if [ "$iden" = '.' ] ; then
-    #        error 'UUID not found' ; return
-    #    fi
-    if [ "$iden" = '-' ] ; then
-        if [ -b "/dev/disk/by-label/rootfs" ] ; then
-            part="/dev/disk/by-label/rootfs"
-        else
-            iden="$CEN_OPT_HOST"
-        fi
-
-    # check for device, PARTUUID and label
-    elif [ -b "$iden" ] ; then
-        part="$iden"
-    elif [ -b "/dev/disk/by-partuuid/$iden" ] ; then
-        part="/dev/disk/by-partuuid/$iden"
-    elif [ -b "/dev/disk/by-label/$iden" ] ; then
-        part="/dev/disk/by-label/$iden"
-    fi
-
-    # not yet found, try <host>_label, <host>_root, <host>_rootfs
-    [ -z "$part" ] &&
-        for item in "${CEN_OPT_HOST}_$iden" "${iden}_vol0" "${iden}_root" "${iden}_rootfs" ; do
-            [ -b "/dev/disk/by-label/$item" ] || continue
-            part="/dev/disk/by-label/$item" ; break
-        done
-    trace -a "Config: $conf  Partition: $part"
-
-    # get puid for label
-    local karg kuid kcmd puid labl
-    if [ -e "$part" ] ; then
-        for labl in "/dev/disk/by-label/"* '' ; do
-            [ "$labl" -ef "$part" ] && break
-        done
-        labl="${labl##*/}"
-        for puid in "/dev/disk/by-partuuid/"* '' ; do
-            [ "$puid" -ef "$part" ] && break
-        done
-    fi
-
-    if [ -z "$puid" ] ; then
-        if [ -n "$CEN_OPT_FORCE" ] ; then
-            trace -p $"Partition '%s' not found, ignored" "$iden"
-            part="$iden"
-        else
-            error -p $"Partition '%s' not found" "$iden" ; return
-        fi
-    else
-        puid="${puid##*/}"
-        message -a -p $"Found PARTUUID '%s' with label '%s'" "$puid" "${labl:-<none>}"
-    fi
-
-    # modify kernel command line
-    read -a karg <"$conf"
-    for item in "${karg[@]}" ; do
-        case "$item" in
-            root=LABEL=*)
-                kuid="${item##*=}" ; part="${part##*/}"
-                if [ "$CEN_OPT_UUID" = 1 ] ; then
-                    confirm -y -a -f $"Change root PARTUUID from '%s' to '%s'" "$kuid" "$puid" || return
-                    item="root=PARTUUID=$puid"
-                elif [ "$kuid" = "$part" ] ; then
-                    message -a $"Root LABEL is current, no update" ; return
-                else
-                    confirm -y -a -f $"Change root LABEL from '%s' to '%s'" "$kuid" "$part" || return
-                    item="root=LABEL=$part"
-                fi
-                ;;
-            root=PARTUUID=*)
-                kuid="${item##*=}"
-                if [ "$kuid" = "$puid" ] ; then
-                    message -a $"Root PARTUUID is current, no update" ; return
-                else
-                    confirm -y -a -f $"Change root PARTUUID from '%s' to '%s'" "$kuid" "$puid" || return
-                    item="root=PARTUUID=$puid"
-                fi
-                ;;
-        esac
-        kcmd+=" $item"
+    karg=('')
+    for item in "${list[@]}" ; do
+        [ "${item::5}" = 'root=' ] && karg="$item" || karg+=("$item")
     done
-
-    if [ -z "$kuid" ] ; then
-        error $"Found no 'root=PARTUUID' or 'root=LABEL=...' in kernel command line"
-        return
+    if [ -z "$karg" ] ; then
+        error $"Invalid configuration:" "$conf" ; return
     fi
-    kcmd="${kcmd:1}"
-    create -t -v kcmd -- "$conf"
-    message -a "Updated:" "$conf" # (PWD=$PWD)"
+
+    ___root_puuid() {
+        if [ "$CEN_OPT_UUID" = 0 ] ; then
+            ___root_label ; return
+        fi
+        for item in "${CEN_OPT_HOST}_vol0" "${CEN_OPT_HOST}_root" 'rootfs' ; do
+            if [ -b "/dev/disk/by-label/$item" ] ; then
+                item="/dev/disk/by-label/$item"
+                for puid in '/dev/disk/by-partuuid/'* ; do
+                    if [ "$puid" -ef "$item" ] ; then
+                        puid="${puid##*/}"
+                        iden="PARTUUID=$puid" ; return 0
+                    fi
+                done
+            fi
+        done
+        invoke -e $"Could not auto-detect the root partition uuid" ; return 1
+    }
+
+    ___root_label() {
+        if [ "$CEN_OPT_UUID" = 1 ] ; then
+            ___root_puuid ; return
+        fi
+        for labl in "${CEN_OPT_HOST}_vol0" "${CEN_OPT_HOST}_root" 'rootfs' ; do
+            if [ -b "/dev/disk/by-label/$labl" ] ; then
+                iden="LABEL=$labl"
+                return 0
+            fi
+        done
+        invoke -e $"Could not auto-detect the root partition label" ; return 1
+    }
+
+    ___root_check() {
+        [ -n "$1" ] || return 0
+        [ -b "/dev/disk/by-$2/$1" ] && return 0
+        invoke -e "$3" "$1" ; return 1
+    }
+
+    case "$iden" in
+    .)          ___root_puuid || return ;;
+    -)          ___root_label || return ;;
+    /*)         ;;
+    LABEL=*)    labl="${iden#*=}" ;;
+    PARTUUID=*) puid="${iden#*=}" ;;
+    *_*)        labl="$iden" ; iden="LABEL=$iden" ;;
+    *)          if [ -n "${iden//[-a-fA-F0-9]/}" ] ; then
+                    invoke -e "Invalid boot parameter:" "$iden" ; return
+                fi
+                puid="$iden" ; iden="PARTUUID=$iden"
+    esac
+
+    if [ -z "$CEN_OPT_NOCHECK" ] ; then
+        ___root_check "$labl" 'label'    $"Label '%s' not found" || return
+        ___root_check "$puid" 'partuuid' $"Partition uuid '%s' not found" || return
+    fi
+
+    if [ "$karg" = "root=$iden" ] ; then
+        message -a -p $"Boot configuration '%s' not modified" "${karg#root=}"
+    elif confirm -n -f "Use '%s' as boot contfiguration" "$iden" ; then
+        karg="root=$iden"
+        echo create -t -v kcmd -- "$conf"
+        message -a "Updated:" "$conf"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -567,6 +553,8 @@ options() {
         optarg 'boot'        -   -d  ;;         # existing folder
     -D|--dev*)
         optarg 'device'      -   -t  ;;         # any text
+    -F|--ifn*)
+        optarg 'ifnames'     -   -o  ;;         # ternary
     -H|--hos*)
         optarg 'host'        -   -t  ;;         # any text
     -L|--leg*)
@@ -613,6 +601,7 @@ usage() {
     usageset -o - \
        -o '-B --boot    <fldr>' $"path of boot folder         (default: /boot)" \
        -o '-D --device  <name>' $"raspberry boot device" \
+       -o '-F --ifnames <nmod>' $"systemd interface naming    (default: auto)" \
        -o '-H --host    <host>' $"override host name" \
        -o '-L --legacy  <auto>' $"pre-bookworm boot layout    (default: auto)" \
        -o '-N --nocheck'        $"don't check boot partition" \
@@ -629,8 +618,9 @@ usage() {
        -a -                     $"default parameters and 'nosplash' to disable plymouth)" \
        -a 'initrd <event>'      $"(booted system) manage initrd file" \
        -a 'remove <config>'     $"remove the given configuration" \
-       -a 'root   [<config>|-|. [<label>|<host>|<uuid>|-]]' \
-       -a -                     $"set 'root=' in kernel command line" \
+       -a 'root   [<config>|-|. [<label>|<host>|<uuid>|-|.]]' \
+       -a -                     $"set 'root=' in kernel command line. Use '-' for default" \
+       -a -                     $"and '.' to keep current setting." \
        -a 'show'                $"Show current boot configuration"
 
     usageset \
@@ -641,6 +631,7 @@ usage() {
        -p '<event>'     $"'create', 'update' or 'remove' (uninstall hook)" \
        -p '<fldr>'      $"any existing folder (must contain 'overlays')" \
        -p '<host>'      $"target host name (default: $HOSTNAME)" \
+       -p '<nmod>'      $"systemd naming mode: 0|off 1|on 2|auto" \
        -p '<name>'      $"system name, label or blockdevice" \
        -p '<overlay>'   $"an overlay file name (for config-*.txt)" \
        -p '<root>'      $"parameter for root=... (use '-' to disable, '+' for default)"
@@ -668,12 +659,14 @@ usage() {
        -t "$CEN_NAME --device /dev/sda1 config hdmi # set config 'hdmi'" \
        -t "$CEN_NAME --boot /mnt/boot show          # explicit folder" \
        -t - \
-       -t "$CEN_NAME entry server worm3_vol0        # create a cmdline file" \
+       -t "$CEN_NAME entry -                        # create default cmdline files" \
+       -t "$CEN_NAME entry server worm3_vol0        # create specific cmdline file" \
        -t "$CEN_NAME config server                  # select 'server' config" \
        -t - \
        -t "$CEN_NAME root                           # boot from <host>_root" \
-       -t "$CEN_NAME root . raspi4                  # boot from raspi4_root" \
-       -t "$CEN_NAME root - 5d50dd2e-03             # set default PARTUUID" \
+       -t "$CEN_NAME root . raspi4                  # boot via label raspi4_root" \
+       -t "$CEN_NAME root - .                       # boot via current PARTUUID" \
+       -t "$CEN_NAME root - 5d50dd2e-03             # boot via specific PARTUUID" \
        -t "$CEN_NAME root sdcard /dev/sdb3          # set sdcard config" \
        -t - \
        -t "$CEN_NAME initrd                         # create/update, set hook"

@@ -220,6 +220,9 @@ actionSystem() {
     # level 2 - strict
     attributes -o root:wheel -m 770 "$CEN_ROOT" "$CEN_ROOT"/*
 
+    attributes -o clock:kiosk -m 770 "$CEN_ROOT/clock"
+    attributes -o kiosk:kiosk -m 770 "$CEN_ROOT/kiosk"
+
     local dbak
     shortpath -a dbak -n ignore -q "backup"
     if [ -n "$dbak" ] ; then
@@ -230,7 +233,7 @@ actionSystem() {
 
     # level 1 - repository (include repository)
     attributes -o root:wheel -m 770 "$CEN_ROOT/configs"/*/[a-zA-Z]*
-    attributes -o root:wheel -m 775 "$CEN_ROOT/admin" "$CEN_ROOT/configs" \
+    attributes -o root:wheel -m 775 "$CEN_ROOT/admin" "$CEN_ROOT/home" "$CEN_ROOT/configs" \
                                     "$CEN_ROOT/configs"/* "$CEN_ROOT/configs"/*/@admin
 
     # level 0 - default (no repository)

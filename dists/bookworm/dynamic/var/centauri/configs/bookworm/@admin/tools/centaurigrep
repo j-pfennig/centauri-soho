@@ -4,7 +4,7 @@ CEN_LEGAL=$"Dr. J. Pfennig (c) 2022-2024; BSD license"
 CEN_TITLE=$"Grep for (bash) source files"
 
 # Import the bash library, set mix/max arguments
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -t - '0.03:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -t - '0.04:2' || exit 2
 
 # Data
 CEN_OPT_COMMENT=                # see --comment
@@ -23,6 +23,7 @@ run() {
 
     if [ -n "$CEN_OPT_PATH" ] && [ -f "$CEN_OPT_PATH" ] ; then
         CEN_WALK_FILES=("$CEN_OPT_PATH")
+        [ $# = 0 ] && set -- '^..*$'                # show non-empty line only:
 
     # --- set current path and run walk ---
 

@@ -34,9 +34,12 @@ server      %V4% 255.255.255.0
 server-ipv6 %V6%
 keepalive   10 120
 
-push        "dns server 1 address %V4% %V6%
+# DNS quirk: samba-ad will not respond unless a query is sent via VPN sub-net...
+push        "dns server 1 address %V3%.1 %V9%01"
+push        "dns search-domains %D%"
 push        "route %D4% %N4%"
 push        "route-ipv6 %D6%"
+push        "explicit-exit-notify 3"
 
 # miscellaneous
 comp-lzo

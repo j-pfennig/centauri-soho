@@ -4,7 +4,7 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
 CEN_TITLE="Runs a backup program based on a configuration file"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m bat -m con - '0.50:1' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m bat -m con - '0.51:1' || exit 2
 
 # Data
 DAT_DEF_CONF="$CEN_ROOT/default/$CEN_NAME"
@@ -41,15 +41,15 @@ CEN_OPT_BASE='/'                # see --base
 CEN_OPT_PACK=                   # see --pack
 CEN_OPT_CONFIG=                 # see --config
 CEN_OPT_HOST="$HOSTNAME"        # see --host
-CEN_OPT_METH="tar"              # see --method
-CEN_OPT_OUTPUT="%H_%T_%D.%X"    # see --output
+CEN_OPT_METH='tar'              # see --method
+CEN_OPT_OUTPUT='%H_%T_%D.%X'    # see --output
 CEN_OPT_PRINT=                  # see --print
 CEN_OPT_SNAP=                   # see --snapshot
 CEN_OPT_STORAGE=                # see --storage
 CEN_OPT_TAG=                    # see --tag
 CEN_OPT_USER=                   # see --user
 
-DAT_BAK_DFMT="%Y-%m-%d"         # see --date
+DAT_BAK_DFMT='%Y-%m-%d'         # see --date
 
 # ------------------------------------------------------------------------------
 # helper to format list output
@@ -82,6 +82,7 @@ do_pack() {
     *.tgz|*.gz)     want='gzip' ; [ "$pack" = "pigz" ] && want="$pack" ;;
     *.xz|*.lzma)    want='xz'    ;;
     *.lzop|*.lzo)   want='lzop'  ;;
+    *.zstd)         want='zstd'  ;;
     *.%X)           [ -z "$pack" ] && want='gzip' ;;    # auto generated ext
     esac
 
@@ -133,8 +134,13 @@ do_pack() {
         _pack_run="xz -T0"
         _pack_ext=".xz"
         ;;
+    zstd)
+        _pack_tar="-I 'zstd -T0'"
+        _pack_run="zstd -T0"
+        _pack_ext=".zstd"
+        ;;
     *)
-        error "Supported packers are: none|bzip2|gzip|lzma|lzop|pigz|xz (got: '$pack')"
+        error "Supported packers are: none|bzip2|gzip|lzma|lzop|pigz|xz|zstd (got: '$pack')"
         ;;
     esac
 }
@@ -176,7 +182,7 @@ do_parse() {
 
     _chk_target() {
         [ -n "$1" ] && DAT_TARGET="$1" && DAT_GROUP= && DAT_MACRO=
-        [ "$filter" = "-" -o "$filter" = "$DAT_TARGET" ] && return 0
+        [ "$filter" = '-' -o "$filter" = "$DAT_TARGET" ] && return 0
         if [ -z "$1" ] ; then
             [ -z "$DAT_TARGET" ] && fatal "Unexpected command: $cmd (line $line)"
             return 1
@@ -188,7 +194,7 @@ do_parse() {
 
     _chk_group() {
         [ -n "$1" ] && DAT_TARGET= && DAT_GROUP="$1" && DAT_MACRO=
-        [ "$filter" = "-" -o "$filter" = "$DAT_GROUP" ] && return 0
+        [ "$filter" = '-' -o "$filter" = "$DAT_GROUP" ] && return 0
         [ -n "$1" ] || return 1
         [ "$filarg" = "${DAT_GROUP::$fillen}" ] || return 1
         filter="$DAT_GROUP"
@@ -214,16 +220,16 @@ do_parse() {
 
         # expand a macro
         [ "$2" = "expand" ] || return 1
-        [ "$filter" != "-" -a "$filter" != "$DAT_TARGET" ] && return 1
+        [ "$filter" != '-' -a "$filter" != "$DAT_TARGET" ] && return 1
         [ -z "${DAT_MACRO_MAP["$3"]}" ] && fatal "Undefined macro: $3 (line $line)"
         DAT_PREFIX="${4:-.}"
         splitjoin -s DAT_EXPAND "${DAT_MACRO_MAP[$3]}"
         return 1
     }
 
-    local htar="${2--}" ; [ "$htar" = "-" ] && htar=":"
-    local hinc="${3--}" ; [ "$hinc" = "-" ] && hinc=":"
-    local hexc="${4--}" ; [ "$hexc" = "-" ] && hexc=":"
+    local htar="${2--}" ; [ "$htar" = '-' ] && htar=":"
+    local hinc="${3--}" ; [ "$hinc" = '-' ] && hinc=":"
+    local hexc="${4--}" ; [ "$hexc" = '-' ] && hexc=":"
     [ -r "$CEN_OPT_CONFIG" ] || fatal "Cannot read: $CEN_OPT_CONFIG"
 
     DAT_INCLUDE=() ; DAT_EXCLUDE=() ; DAT_MACRO_MAP=() ; DAT_SKIP_TAG=
@@ -287,7 +293,7 @@ do_parse() {
                 ;;
         # other
 
-        def*)   [ "$filter" = "-" -o "$filter" = "$DAT_TARGET" -o \
+        def*)   [ "$filter" = '-' -o "$filter" = "$DAT_TARGET" -o \
                   "$filter" = "$DAT_GROUP" ] &&
                    $htar "default" "${arg1:--}" "${arg2:--}" "${arg3:--}"
                 ;;
@@ -422,7 +428,7 @@ _archive_opts=()
 _archive_file=
 _archive_part=
 do_archive() {
-    if [ "$CEN_OPT_METH" = "tar" ] ; then
+    if [ "$CEN_OPT_METH" = 'tar' ] ; then
         case "$1" in
 
         init)
@@ -436,7 +442,7 @@ do_archive() {
                     folder -c -f "$CEN_OPT_BASE/Root"
                 fi
             fi
-            message -c "Backup target" -- "$DAT_TARGET ($PWD)"
+            [ "$DAT_TARGET" = '-' ] || message -c "Backup target" -- "$DAT_TARGET ($PWD)"
             ;;
 
         file)
@@ -498,10 +504,10 @@ do_archive() {
 do_command() {
     local svar="$1" ; shift
     if [ -n "$DAT_REMOTE" ] ; then
-        [ "$svar" = "-" ] && svar="" || svar="-s $svar"
+        [ "$svar" = '-' ] && svar="" || svar="-s $svar"
         embed $svar -- centaurissh -H "$DAT_REMOTE" batch --- "$@"
     else
-        [ "$svar" = "-" ] && svar="-q" || svar="-e -s $svar"
+        [ "$svar" = '-' ] && svar="-q" || svar="-e -s $svar"
         system $svar -- "$@"
     fi
 }
@@ -645,7 +651,7 @@ actionList() {
             found="$1" ; tag="$2"
         elif [ "$found" = "target" -o "$found" = "group" ] ; then
             [ "$1" = "include" ] && DAT_INCLUDE+=("$2")
-            [ "$1" = "clone"   ] && DAT_INCLUDE+=("-")
+            [ "$1" = "clone"   ] && DAT_INCLUDE+=('-')
             [ "$1" = "member"  ] && DAT_INCLUDE+=("$2")
             do_print -i "%-8s %s %s %s %s" "$@"
         fi
@@ -687,11 +693,11 @@ actionRun() {
                     elif [ "$1" = "clone" ] ; then
                         found="$1"
                     elif [ "$1" = "default" ] ; then
-                        [ -z "$CEN_OPT_STORAGE" -a "$2" != "-" ] &&
+                        [ -z "$CEN_OPT_STORAGE" -a "$2" != '-' ] &&
                             embed -r -s CEN_OPT_STORAGE centauripaths -L -F "$2"
-                        [ -z "$CEN_OPT_PACK" -a "$3" != "-" ] &&
+                        [ -z "$CEN_OPT_PACK" -a "$3" != '-' ] &&
                             CEN_OPT_PACK="$3"
-                        [ -z "$CEN_OPT_TAG" -a "$4" != "-" ] &&
+                        [ -z "$CEN_OPT_TAG" -a "$4" != '-' ] &&
                             CEN_OPT_TAG="$4"
                     elif [ -n "$found" ] ; then
                         fatal "Ambiguous target given: $orig"
@@ -829,7 +835,7 @@ actionRun() {
 # Archive action: [<folder>] <tar-args>...
 # ------------------------------------------------------------------------------
 actionArchive() {
-    local odir="$PWD" opts
+    local opts
     DAT_SKIP_TAG=
     DAT_STORAGE="${CEN_OPT_STORAGE:-$PWD}"
     [ "$DAT_STORAGE" = '/' ] || DAT_STORAGE+='/'
@@ -840,13 +846,13 @@ actionArchive() {
     fi
 
     if [ -z "$CEN_OPT_TAG" ] ; then
-        local arg1="${1%/}"
-        if [ "${arg1/[.\/]/}" = "$arg1" ] && [ -d "$arg1" ] ; then
-            arg1="${arg1//[_ ]/-}"
-            CEN_OPT_TAG="${arg1,,}"
-        else
+   #     local arg1="${1%/}"
+   #     if [ "${arg1/[.\/]/}" = "$arg1" ] && [ -d "$arg1" ] ; then
+   #         arg1="${arg1//[_ ]/-}"
+   #         CEN_OPT_TAG="${arg1,,}"
+   #     else
             quit -e "Cannot guess tag, please use '--tag=<name>'"
-        fi
+   #     fi
     fi
     [ $# = 1 -o -n "$opts" ] && set -- "${DAT_TAR_OPTS[@]}" "$@"
 
@@ -855,7 +861,7 @@ actionArchive() {
 
     do_pack
     do_archive file
-    do_archive opts --directory "$odir" "$@"
+    do_archive opts "$@"
     do_archive done
 }
 
@@ -905,32 +911,33 @@ options() {
     case "$CEN_ACTION" in
 
     -A|--sna*)
-        optarg "snapshot"   CEN_OPT_SNAP   -o ;;            # off|on|auto
+        optarg 'snapshot'   CEN_OPT_SNAP   -o ;;            # off|on|auto
     -B|--bas*)
-        optarg "base"       CEN_OPT_BASE   -d ;;            # folder
+        optarg 'base'       CEN_OPT_BASE   -d ;;            # folder
     -C|--con*)
-        optarg "config"     CEN_OPT_CONFIG -t ;;            # any text
+        optarg 'config'     CEN_OPT_CONFIG -t ;;            # any text
     -E|--dat*)
-        optarg "date"       DAT_BAK_DFMT -t ;;              # any text
+        optarg 'date'       DAT_BAK_DFMT -t ;;              # any text
     -H|--hos*)
-        optarg "host"       CEN_OPT_HOST -t ;;              # any text
+        optarg 'host'       CEN_OPT_HOST -t ;;              # any text
     -M|--met*)
-        optarg "method"     CEN_OPT_METH "tar" ;;           # regular expression
+        optarg 'method'     CEN_OPT_METH 'tar' ;;           # regular expression
     -O|--out*)
-        optarg "output"     CEN_OPT_OUTPUT -t ;;            # any text
+        optarg 'output'     CEN_OPT_OUTPUT -t               # any text
+                            : "${CEN_OPT_TAG:=-}" ;;        # no tag required
     -P|--pac*)
-        optarg "pack"       CEN_OPT_PACK -t ;;              # any text
+        optarg 'pack'       CEN_OPT_PACK -t ;;              # any text
     -S|--sto*)
-        optarg "storage"    CEN_OPT_STORAGE -t ;;           # any text
+        optarg 'storage'    CEN_OPT_STORAGE -t ;;           # any text
     -T|--tag)
-        optarg "tag"        CEN_OPT_TAG -t ;;               # any text
+        optarg 'tag'        CEN_OPT_TAG -t ;;               # any text
     -U|--use*)
-        optarg "user"       CEN_OPT_USER  ;;                # a simple flag
+        optarg 'user'       CEN_OPT_USER  ;;                # a simple flag
     --print)
-        optarg "print"      CEN_OPT_PRINT -t ;;             # any text
+        optarg 'print'      CEN_OPT_PRINT -t ;;             # any text
 
     # options were parsed
-    "")
+    '')
         CEN_FEATURE_F="-f --force           allow to override existing output files"
         if [ -d "$CEN_OPT_BASE/Volumes/Root" ] ; then
             DAT_BTRFS=1 ; CEN_OPT_BASE+="/Volumes"
@@ -961,29 +968,29 @@ actions() {
     case "$CEN_ACTION" in
 
     # before 1st action ...
-    "")
+    '')
         [ "$EUID" != 0 -a -z "$CEN_OPT_USER" -a "${CEN_CMDARGS::3}" != 'arc' ] &&
             fatal "You must be root or add --user to run this program"
         ;;
 
     # real actions
     arc*)
-        invoke "archive" actionArchive 1 + ;;
+        invoke 'archive' actionArchive 1 + ;;
     clo*)
-        invoke "clone"   actionClone   1 ;;
+        invoke 'clone'   actionClone   1 ;;
     gro*)
-        invoke "groups"  actionGroups  0 ;;
+        invoke 'groups'  actionGroups  0 ;;
     lis*)
-        invoke "list"    actionList  1 + ;;
+        invoke 'list'    actionList  1 + ;;
     run*)
-        invoke "run"     actionRun   1 + ;;
+        invoke 'run'     actionRun   1 + ;;
     tar*)
-        invoke "targets" actionTargets 0 ;;
+        invoke 'targets' actionTargets 0 ;;
 
     # the run action is implied
     *)
         DAT_RUN_IMPLIED=1
-        invoke "run"     actionRun   - - "$@" ;;
+        invoke 'run'     actionRun   - - "$@" ;;
     esac
 }
 
@@ -1030,7 +1037,7 @@ arguments:
                                %D := <date>   %H := <host>        %% := %
                                %T := <tag>    %X := <extension>   %Z := %H_%T_%D
        <meth>               must be "tar"
-       <tool>               one of these packer tools: none bzip2 gzip lzop xz
+       <tool>               one of these packer tools: none bzip2 gzip lzop xz zstd
 
 examples:
        $CEN_NAME disk                                  # backup a target

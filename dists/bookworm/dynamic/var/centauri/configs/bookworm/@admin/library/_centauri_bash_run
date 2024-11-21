@@ -20,10 +20,10 @@
 #,          CEN_SHORTPATH   default result variable of [[shortpath()]]
 #,          CEN_TERMINAL    default result variable of [[terminal()]]
 #
-# Copyright Dr. J. Pfennig (c) 2022-2023
+# Copyright Dr. J. Pfennig (c) 2022-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES["_centauri_bash_run"]="0.11:2"
+CEN_MODULES['_centauri_bash_run']='0.12:4'
 
 embed -c '_centauri_bash_iom'           # reference declaration
 
@@ -118,7 +118,7 @@ CEN_TERMINAL_DAT=
 #.  °   kiosk:qml           @launcher_qmlweb  1000 800 1.2
 #.  °   httpd:lighttpd      @launcher_httpd 8080 /var/www
 #.
-#.  °   # command line args
+#.  °   # command line arguments for external applications
 #.  °   kiosk:firefox       --fullscreen --new-window
 #.  °   browser:firefox     --new-window
 #.
@@ -202,7 +202,7 @@ CEN_TERMINAL_DAT=
 #
 #+General:  The [[launcher()]] function reads the (cached) configuration statements
 #           from section **[launcher]** in file "centauri-bash-lib". The preferred
-#           location of this file in "$CEN_ROOT/default", see [[configfile()]] for
+#           location of this file is "$CEN_ROOT/default", see [[configfile()]] for
 #           more details.
 #
 #+Config:   Valid "centauri-bash-lib" configuration lines are:
@@ -211,7 +211,7 @@ CEN_TERMINAL_DAT=
 #           °°<what>             § <desk> @<func>|<tool>...
 #           # set options and arguments of a command to be run
 #           °°<what>**:**<tool>  § <arg>...
-#           # command is run by a function
+#           # command is run by a user defined function
 #           °°<what>**:**<tool>  § @<func> <arg>...
 #           # optional: command not found if sym-linked to <nogo>
 #           °°**-ignore:**<tool> § <nogo>
@@ -251,17 +251,17 @@ CEN_TERMINAL_DAT=
 #.  °           browser:qml         @launcher_qmlweb 1024 768 1.2
 #.  °           kiosk:qml           @launcher_qmlweb 1000 800 1.2
 #.
-#.  °           # command line args
+#.  °           # command line arguments for external applications
 #.  °           kiosk:firefox       --fullscreen --new-window
 #.  °           browser:firefox     --new-window
 #.  °           kiosk:falkon        --fullscreen --new-window --no-extensions
 #.  °           browser:falkon      --new-window --no-extensions
 #.
 #.  °           # info text for generic names (not commands)
-#.  °           info:editor         text editor
-#.  °           info:browser        web browser
-#.  °           info:kiosk          web browser in kiosk mode
-#.  °           info:terminal       terminal emulator
+#.  °           -info:editor        text editor
+#.  °           -info:browser       web browser
+#.  °           -info:kiosk         web browser in kiosk mode
+#.  °           -info:terminal      terminal emulator
 # ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
@@ -269,7 +269,11 @@ CEN_TERMINAL_DAT=
 #
 # Call:     <func> <option>.. -- <arg>...
 #
-# Options:  -f  error are fatal
+#           The purpose of the argument function <func> is to handle configuration
+#           options (see below) and to run a command. The command must be known
+#           by <func>. All <arg> arguments are user defined and optional.
+#
+# Options:  -f  errors are fatal
 #           -i  information string
 #           -m  lauch per exec or in background
 #           -o  override desktop status (force running emulator)
@@ -300,12 +304,12 @@ CEN_TERMINAL_DAT=
 #.                  esac ; shift
 #.              done
 #.
-#.              # option -x: check if executable and return status
+#.              # option -x: check if 'my-command' can be run and return status
 #.              if [ -n "$ochk" ] ; then
 #.                  sysfind -q -c -- 'my-command' || return 1
 #.              # run the command
 #.              else
-#.                  system $oeff $orun -- 'my-command' --tile "$otit" "$@" || return 1
+#.                  system $oeff $orun -- 'my-command' --title "$otit" "$@" || return 1
 #.              fi
 #.              return 0
 #.          }
@@ -322,6 +326,7 @@ CEN_TERMINAL_DAT=
 # Options:  -a  array of resulting command words (default is CEN_LAUNCHER)
 #           -f  errors are fatal
 #           -i  information string passed to callback
+#           -k  get configuration entry by key
 #           -l  [*] get application list
 #           -m  launch via exec or in background
 #           -n  [*] do not run, return command array
@@ -348,8 +353,8 @@ CEN_TERMINAL_DAT=
 # section "[launcher]", see [[launcher config]].
 #
 #+If the launcher configuration calls an argument function or a command function,
-# the final call passes options -f -i -m -q -r -t and -y to the function, see
-# [[launcher (callback)]].
+# the final call passes options -f -i -m -q -r -t and -y to that function, see
+# [[launcher°(callback)]].
 #
 # Form (1) searches a matching command and runs it. Form (2) does not run the
 # command, but returns the command (as an array of words). The configuration
@@ -385,8 +390,8 @@ CEN_TERMINAL_DAT=
 CEN_LAUNCHER=
 launcher() {
     $CEN_DEBUG -c -- "$*"
-    local _flst _oerr='-e' _ofun='-e' _onot _odsk _orun=() _temp
-    local _desk="${CEN_DESKTOP:-tty}" _warn="_cen_run_config -m launcher" _vnam='CEN_LAUNCHER'
+    local _flst _oerr='-e' _ofun='-e' _okey _onot _odsk _orun=() _temp
+    local _desk="${CEN_DESKTOP:-tty}" _warn='_cen_run_config -m launcher' _vnam='CEN_LAUNCHER'
 
     # do we have an -x option?
     for _temp in "$@" ; do
@@ -403,6 +408,7 @@ launcher() {
         -f)   _oerr='-f' ; _ofun='-f' ;;
         -i|-t)
               _orun+=("$1" "$2") ; shift ;;
+        -k)   shift ; _okey="${1:--}" ;;
         -l)   shift ; _flst="$1" ;;
         -m)   shift ; _orun+=('-m' "${1:-0}") ;;
         -n)   _onot=1  ;;
@@ -418,7 +424,7 @@ launcher() {
     # fetch configuration for [launcher]
     local _what="$1" _apps _line _larr _name _path _igno _fltr
     local -A _pard
-    $CEN_TRACE2 -c " parsing" -- "${_what:--} (mode=$_desk)"
+    $CEN_TRACE2 -c ' parsing' -- "${_what:--} (mode=$_desk)"
     _cen_run_config $_oerr 'launcher' || return 1
 
     # generic-name filtering if not listing
@@ -457,7 +463,11 @@ launcher() {
 
             -info:*)
                 [ -n "$_flst" ] && _pard["$_larr"]="${_larr[*]:1}" ;;
-            -flags:*|-ignore:*)
+            -flags:*)
+                _line="${_pard["$_larr"]}" ;
+                [ -n "$_line" ] && _pard["$_larr"]+=$'\n'
+                _pard["$_larr"]+="${_larr[*]:1}" ;;
+            -ignore:*)
                 _pard["$_larr"]="${_larr[*]:1}" ;;
 
             # In _cen_run_tools these strings are expanded by globbing. This can be
@@ -500,6 +510,13 @@ launcher() {
         esac
     done
 
+    # --- return a key ---
+
+    if [ -n "$_okey" ] ; then
+        splitjoin -s _vres -- "${_pard["$_okey"]}";
+        [ -n "$_vres" ] ; return                        # return status
+    fi
+
     # --- return a command list or find command ---
 
     local _fldr="$PWD" ; folder -c -f "${CEN_PATHS:-/}"
@@ -519,7 +536,7 @@ launcher() {
                     _vres+=("$_name"$'\a'"$_fltr"$'\a'"$_temp"$'\a'"${CEN_RUN_TOOLS[2]}")
             esac
         else
-            $CEN_TRACE2 -c -p " tool" "%-18s    NO MATCH" "$_line"
+            $CEN_TRACE2 -c -p ' tool' "%-18s    NO MATCH" "$_line"
             if [ -z "$_flst" ] ; then
                 folder -c -f "$_fldr"
                 return 1
@@ -532,7 +549,7 @@ launcher() {
     # --- run a command ---
 
     if [ -z "$_name" ] ; then
-        $CEN_TRACE -c " miss" -- "$_what" ; return 1
+        $CEN_TRACE -c ' miss' -- "$_what" ; return 1
     fi
 
     # split and unquote arguments via eval
@@ -541,21 +558,20 @@ launcher() {
         _vres=($_temp)
         $_warn $"Syntax error:" "$_temp"
     fi
-
     if [ "${_temp::1}" = '@' ] ; then           # argument function
         _vres=("${_temp%% *}" "${CEN_RUN_TOOLS[1]}" "${_vres[@]:1}" "${@:2}")
     else                                        # command or function
         _vres=("${CEN_RUN_TOOLS[1]}" "${_vres[@]}" "${@:2}")
     fi
 
-    $CEN_TRACE2 -c " exec" -- "$_name  =>  ${_vres[*]}"
+    $CEN_TRACE2 -c ' exec' -- "$_name  =>  ${_vres[*]}"
     [ -n "$_onot" ] && return 0
     _cen_run_command  $_oerr "${_orun[@]}" $_odsk -- "${_vres[@]}" || return $?
     return 0
 }
 
 # check if tool can be run: <list> <tool> <name>...    (using variable _pard)
-CEN_RUN_TOOLS=()                # (<tool> <path>)
+CEN_RUN_TOOLS=()                # (<tool> <path>|- ...)
 _cen_run_tools() {
     local _list="$1" _tool="$2" _name _path _igno _want _args _nice
     shift ; shift
@@ -579,7 +595,7 @@ _cen_run_tools() {
         [ "$_path" = '-' ] && return 1                      # negative cache entry
 
         if [ -n "$_path" ] ; then
-            $CEN_TRACE2 -a -c -p " CACHED" "%-18s => %s" "$_nice" "$_path"
+            $CEN_TRACE2 -a -c -p ' CACHED' '%-18s => %s' "$_nice" "$_path"
             CEN_RUN_TOOLS=("$_nice" "$_path" "$_args") ; return 0
         fi
 
@@ -593,7 +609,7 @@ _cen_run_tools() {
         if [ -n "$_igno" ] ; then                           # symlink ignore ...
             resolve -s _want -c -- "$_path"
             if [ "$_igno" = "${_want##*/}" ] ; then
-                $CEN_TRACE2 -c -p " IGNORE" "%-18s => %s" "$_nice" "$_path"
+                $CEN_TRACE2 -c -p ' IGNORE' '%-18s => %s' "$_nice" "$_path"
                 continue
             fi
         fi
@@ -603,11 +619,11 @@ _cen_run_tools() {
             for _want in $_want "" ; do
                 [ -e "$_want" ] && break
             done
-            $CEN_TRACE2 -c -p " WANTS" "%-18s => %s" "$_nice" "${_want:--miss-}"
+            $CEN_TRACE2 -c -p ' WANTS' '%-18s => %s' "$_nice" "${_want:--miss-}"
             [ -z "$_want" ] && continue
         fi
 
-        $CEN_TRACE2 -a -c -p " FOUND" "%-18s => %s" "$_nice" "$_path"
+        $CEN_TRACE2 -a -c -p ' FOUND' "%-18s => %s" "$_nice" "$_path"
         CEN_RUN_TOOLS=("$_nice" "$_path" "$_args")
         _pard[$_nice/]="$_path" ; return 0
     done
@@ -736,15 +752,15 @@ _cen_run_tools() {
 # ------------------------------------------------------------------------------
 CEN_SHORTPATH=
 shortpath() {
-    local _vres="CEN_SHORTPATH" _emsg='error -z' _stat=0 _fqui _ferr
+    local _vres='CEN_SHORTPATH' _emsg='error -z' _stat=0 _fqui _ferr
     local _pref _plen _fgra _fraw _item _name _ndir _isok _full _ndef
     local _oerr='-e' _warn='_cen_run_config -m shortpath'
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -a)   shift ; _vres="$1" ;;
         -e)   _ferr=1 ;;
-        -f)   _oerr='-f' ; _emsg="fatal" ;;
+        -f)   _oerr='-f' ; _emsg='fatal' ;;
         -g)   _fgra=1 ;;
         -m)   shift ; _pref="$1" ; _plen="${#_pref}" ;;
         -n)   shift ; _ndir="$1" ;;
@@ -758,20 +774,21 @@ shortpath() {
 
     # read configuration file on 1st call
     if [ -z "$CEN_SHORTPATH_DAT" ] ; then
-        sysversion                                          # get CEN_SYS_xxx vars
+        [ -z "$CEN_SYS_NICKNAME" ] && sysversion            # get CEN_SYS_xxx vars
+        embed -m _centauri_bash_net -n ; netconfig
         _cen_run_config $_oerr 'shortpath' || return 1
         local _line _sifs="$IFS" _atmp
         for _line in "${CEN_RUN_SHORTPATH[@]}" ; do
             #$CEN_TRACE2 -a -c " parse" -- "$_line"
             local _skey="${_line%% *}" _sval="${_line#* }"
             if [ "$_skey" != 'path' ] ; then
-                warning -i -- $"1st argument must be 'path':" "$_line"
+                _cen_run_config -m $"1st argument must be 'path'" "$_line"
                 _stat=1 ; continue
             fi
             # _line entries should already be correctly quoted
             eval _atmp="($_sval)"                           # replace variables
             if [ -z "${_atmp[0]}" -o -z "${_atmp[1]}" -o -z "${_atmp[2]}" ] ; then
-                warning -i  -- $"Empty fields are invalid:" "$_line"
+                _cen_run_config -m $"Empty fields are invalid" "$_line"
                 _stat=1 ; continue
             fi
             IFS=':' _sval="${_atmp[*]}" ; IFS="$_sifs"
@@ -782,7 +799,7 @@ shortpath() {
     fi
 
     # error handling
-    [ "$_stat" != 0 ] && warning -p $"Error(s) in [%s] configuration: %s" 'shortcut' "$CEN_RUN_CONFIG"
+    [ "$_stat" != 0 ] && warning -p $"Error(s) in [%s] configuration: %s" 'shortpath' "$CEN_RUN_CONFIG"
     [ -z "$_plen" -a "$#" = 0 ] && return 0                 # nothing to find
     _stat=0
 
@@ -1034,7 +1051,7 @@ terminal() {
     local _bash _ochk _oerr='-e' _onot _orun _otit _over _mode=0 _stat=0 \
            _desk="$CEN_DESKTOP" _vnam='CEN_TERMINAL'
     local _warn='_cen_run_config -m terminal'
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -a)   shift ; _vnam="$1" ;;
@@ -1301,7 +1318,7 @@ _cen_run_command() {
 CEN_RUN_CONFIG=
 _cen_run_config() {
     local _ferr _read _ropt _fcch _fpri _fqui _stat=0 _smsg _path='centauri-bash-lib'
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -a|-l|-r)
@@ -1335,15 +1352,16 @@ _cen_run_config() {
         configfile -i true $_fpri $_ropt $_read -n "$_path" "$@" || _stat=$?
     elif [ -z "$CEN_RUN_CONFIG" ] ; then
         if ! cachefile $_ferr -s -w "$_path.dat" "$_path" ; then
-            configfile $_fqui $_fpri -r CEN_RUN_LAUNCHER  -v -x -n "$CEN_CONFIGFILE" 'launcher'
-            configfile $_fqui $_fpri -r CEN_RUN_TERMINAL  -v -x -n "$CEN_CONFIGFILE" 'terminal'
-            configfile $_fqui $_fpri -r CEN_RUN_SHORTPATH -v -x -n "$CEN_CONFIGFILE" 'shortpath'
-            CEN_RUN_CONFIG="$CEN_CONFIGFILE"
             if [ -s "$CEN_CONFIGFILE" ] ; then
+                configfile $_fqui $_fpri -r CEN_RUN_LAUNCHER  -v -x -n "$CEN_CONFIGFILE" 'launcher'
+                configfile $_fqui $_fpri -r CEN_RUN_TERMINAL  -v -x -n "$CEN_CONFIGFILE" 'terminal'
+                configfile $_fqui $_fpri -r CEN_RUN_SHORTPATH -v -x -n "$CEN_CONFIGFILE" 'shortpath'
+                CEN_RUN_CONFIG="$CEN_CONFIGFILE"
                 serialize $_ferr -w -n "$CEN_CACHEFILE" -m 664 -- CEN_RUN_CONFIG \
                         CEN_RUN_LAUNCHER CEN_RUN_TERMINAL CEN_RUN_SHORTPATH
             else
                 $CEN_TRACE -c " no data" $"Not writing config cache"
+                _stat=2
             fi
         fi
     fi

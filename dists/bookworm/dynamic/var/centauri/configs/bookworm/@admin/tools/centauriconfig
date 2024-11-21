@@ -4,7 +4,7 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2018-2024; BSD License"
 CEN_TITLE="Repository Management and Synchronisation Tool"
 
 # ATTENTION: PATH is set non-standard to allow action 'setup' as described in help
-PATH="${0%/*}:$PATH" . _centauri_bash_lib -a -d -f -m sys -y - '0.32:2' || exit 2
+PATH="${0%/*}:$PATH" . _centauri_bash_lib -a -d -f -m sys -y - '0.33:3' || exit 2
 
 CEN_OPT_ALL=                    # see --all
 CEN_OPT_CONFIG=                 # see --config
@@ -109,23 +109,23 @@ do_orphans() {
 
 # setup paths (after option parsing): [-h|-r]
 do_setup() {
-    local anam hopt ropt
-    [ "$1" = "-h" ] && hopt=1
-    [ "$1" = "-r" ] && ropt=1
+    local hopt ropt
+    [ "$1" = '-h' ] && hopt=1
+    [ "$1" = '-r' ] && ropt=1
     if [ -z "$hopt" ] ; then
-        local vopt="-u"
+        local vopt='-u'
         # get distribution info
-        [ -n "$CEN_OPT_FORCE" ] && vopt="-w"    # always update
+        [ -n "$CEN_OPT_FORCE" ] && vopt='-w'    # always update
         sysversion $vopt                        # get/update system info
     fi
 
     DAT_DISTRO="${CEN_OPT_DISTRO:-$CEN_SYS_DISTRO}"
     case "${DAT_DISTRO,,}" in
-        ubu*)   DAT_KEYS=('u' 'u') ; DAT_FAMILY="debian" ; DAT_DISTRO="ubuntu" ;;
-        sus*)   DAT_KEYS=('s' 's') ; DAT_FAMILY="suse"   ; DAT_DISTRO="suse" ;;
-        ras*)   DAT_KEYS=('d' 'r') ; DAT_FAMILY="debian" ; DAT_DISTRO="raspbian" ;;
-        ter*)   DAT_KEYS=('d' 't') ; DAT_FAMILY="debian" ; DAT_DISTRO="termux" ;;
-        deb*)   DAT_KEYS=('d' 'd') ; DAT_FAMILY="debian" ; DAT_DISTRO="debian" ;;
+        ubu*)   DAT_KEYS=('u' 'u') ; DAT_FAMILY='debian' ; DAT_DISTRO='ubuntu' ;;
+        sus*)   DAT_KEYS=('s' 's') ; DAT_FAMILY='suse'   ; DAT_DISTRO='suse' ;;
+        ras*)   DAT_KEYS=('d' 'r') ; DAT_FAMILY='debian' ; DAT_DISTRO='raspbian' ;;
+        ter*)   DAT_KEYS=('d' 't') ; DAT_FAMILY='debian' ; DAT_DISTRO='termux' ;;
+        deb*)   DAT_KEYS=('d' 'd') ; DAT_FAMILY='debian' ; DAT_DISTRO='debian' ;;
         *)      fatal "Unknown linux distribution"": $DAT_DISTRO"
     esac
     DAT_FAMILY="${CEN_OPT_FAMILY:-$DAT_FAMILY}"
@@ -134,11 +134,11 @@ do_setup() {
         "Distribution '$DAT_DISTRO'  Family '$DAT_FAMILY'  Nick-name '$DAT_NICKNAME'"
 
     # get network info
-    embed -r -a anam centauriname --domain --nick --role --mode
-    DAT_NET_DOMAIN="${anam[0]}"
-    DAT_NET_NICK="${anam[1]}"
-    DAT_NET_ROLE="${anam[2]}"
-    DAT_NET_MODE="${anam[3]}"
+    netquery -s DAT_NET_DOMAIN 'domain'
+    netserver
+    DAT_NET_NICK="${CEN_NET_SERVER:-$CEN_NET_SERVER_GEN}"
+    DAT_NET_ROLE="$CEN_NET_ROLE"
+    DAT_NET_MODE="$CEN_NET_MODE"
 
     # set domain and host
     DAT_ROOT="$CEN_ROOT"
@@ -147,10 +147,8 @@ do_setup() {
     joinpath -s DAT_PRIVATE -- "$DAT_ROOT" "${CEN_OPT_PRIVATE:-private}"
     joinpath -s DAT_SHARED  -- "$DAT_ROOT" "${CEN_OPT_SHARED:-shared}"
 
-    # get configuration
-    DAT_CONFIG="$DAT_ROOT/default"
-    [ "$DAT_CONFIG" -ef "/etc/default" ] && DAT_CONFIG="/etc/default"
-    joinpath -s DAT_CONFIG -- "$DAT_CONFIG" "${CEN_OPT_CONFIG:-$CEN_NAME}"
+    # get configuration (/etc/default/...)
+    joinpath -s DAT_CONFIG -- "${CEN_PATHS[6]}" "${CEN_OPT_CONFIG:-$CEN_NAME}"
 
     if [ -n "$CEN_OPT_DOMAIN" ] ; then
         DAT_NET_DOMAIN="$CEN_OPT_DOMAIN" ; DAT_OVERRIDE=1
@@ -165,22 +163,22 @@ do_setup() {
     # get OPTION files
     local odom="$DAT_ROOT/configs/$DAT_NICKNAME/$DAT_NET_DOMAIN"
     if [ -r "$odom/@shared/OPTIONS" ] ; then
-        trace -a "Reading '$odom/@shared/OPTIONS'"
-        . "$odom/@shared/OPTIONS"
+        trace -a -c "Sourcing" "$odom/@shared/OPTIONS"
+        source "$odom/@shared/OPTIONS"
     fi
 
     if [ -z "$DAT_NET_HOST" ] ; then
         error "Please use '--host=' to specify this computer's name"
     elif [ -r "$odom/$DAT_NET_HOST/OPTIONS" ] ; then
-        trace -a "Reading '$odom/$DAT_NET_HOST/OPTIONS'"
-        . "$odom/$DAT_NET_HOST/OPTIONS"
+        trace -a -c "Sourcing" "$odom/$DAT_NET_HOST/OPTIONS"
+        source "$odom/$DAT_NET_HOST/OPTIONS"
     fi
 
     # set defaults
     if [ -n "$CEN_OPT_ROLE" ] ; then
         case "$CEN_OPT_ROLE,," in
-            pri*) DAT_NET_ROLE="PRIMARY" ;;
-            sec*) DAT_NET_ROLE="SECONDARY" ;;
+            pri*) DAT_NET_ROLE='PRIMARY' ;;
+            sec*) DAT_NET_ROLE='SECONDARY' ;;
             wor*) DAT_NET_ROLE='WORKSTATION' ;;
             *)    DAT_NET_ROLE=
         esac
@@ -189,7 +187,8 @@ do_setup() {
     fi
     case "$DAT_NET_ROLE" in
         PRIMARY|SECONDARY|WORKSTATION) ;;
-        *) error "Please use '--role=' to specify this computer's role"
+        *)  [ "$CEN_ACTION" = 'setup' ] ||
+                error "Please use '--role=' to specify this computer's role"
     esac
 
     [ "${DAT_NET_DOMAIN:-(none)}" = "(none)" ] &&
@@ -197,7 +196,7 @@ do_setup() {
     [ "${DAT_NET_NICK:--}" = '-' ] &&
         error "Please use '--repository=' to specify the server name"
 
-    error -t || return
+    error -t || return 1
     do_orphans ${ropt:+-r}                  # list/remove orphaned private folders
 
     # helper to check repository folder and symlink: <varname> <branch> <folder>
@@ -221,17 +220,18 @@ do_setup() {
     if [ -z "$CEN_OPT_MASTER" -a -r "$rcnf" ] ; then
         . "$rcnf" 2>/dev/null || error "Cannot read file:" "$rcnf"
     fi
-    [ -n "$CEN_RSYNC_MODULE" ] && trace -a "rsync module name  : $CEN_RSYNC_MODULE"
+    [ -n "$CEN_RSYNC_MODULE" ] && trace -a -c "Module of rsync" "$CEN_RSYNC_MODULE"
 
     DAT_REPOSIT="$DAT_ROOT/configs/$DAT_NICKNAME/$DAT_NET_DOMAIN"
     ___repo_folder DAT_SHARED  "$DAT_SHARED"  "@shared"
     ___repo_folder DAT_PRIVATE "$DAT_PRIVATE" "$DAT_NET_HOST"
-    trace -a "Shared  repository : $DAT_SHARED"
-    trace -a "Private repository : $DAT_PRIVATE"
+    trace -a -c "Shared  repo" "$DAT_SHARED"
+    trace -a -c "Private repo" "$DAT_PRIVATE"
 
     # check configuration
     [ -r "$DAT_CONFIG" -o -n "$CEN_OPT_FORCE" ] ||
         error "Configuration not found:" "$DAT_CONFIG"
+    return 0
 }
 
 # initialize local repository: -no args-
@@ -239,16 +239,20 @@ do_repository() {
     [ -z "$DAT_REPSTAT" ] && return
 
     ___repo_setup() {
-        trace -a "Creating symlink:" "$2 => $DAT_ROOT/$1"
+        trace -a -c "Create symlink" "$2 => $DAT_ROOT/$1"
         folder -f -m -- "$2"
-        symlink -m -f -r -- "$2" "$DAT_ROOT/$1"
+        symlink -m -f -r -s -- "$2" "$DAT_ROOT/$1"
     }
 
-    trace -a "Creating repository folders at:" "$DAT_REPOSIT"
-    folder -m "$DAT_REPOSIT"
-    folder -m "$DAT_ROOT/archived"
-    folder -m "$DAT_ROOT/remote"
-    folder -m "$DAT_ROOT/secrets"
+    trace -a -c "Check folders at" "$DAT_REPOSIT"
+    folder -m "${DAT_REPOSIT%/*}"                   775 'root:wheel'
+    folder -m "$DAT_REPOSIT"                        770 'root:wheel'
+    folder -m "$DAT_ROOT/archived/$DAT_NET_DOMAIN"  770 'root:wheel'
+    folder -m "$DAT_ROOT/backup/$DAT_NET_DOMAIN"    770 'root:wheel'
+    folder -m "$DAT_ROOT/html"                      775 'root:wheel'
+    folder -m "$DAT_ROOT/remote"                    751 'remote:nogroup'
+    folder -m "$DAT_ROOT/secrets"                   711 'root:root'
+    folder -m "$DAT_ROOT/secrets/local"             700 'root:root'
 
     ___repo_setup 'shared'  "$DAT_SHARED"
     ___repo_setup 'private' "$DAT_PRIVATE"
@@ -644,9 +648,9 @@ actionCleanup() {
     do_repository ; error -t || return
     confirm -a -y "Remove backups in '/etc' and '$DAT_ROOT'" || return
 
-    local fcmd="-exec" ; [ "$CEN_VERB" -gt 1 ] && fcmd="-ok"
+    local fcmd='-exec' ; [ "$CEN_VERB" -gt 1 ] && fcmd='-ok'
     local farr=( '(' -name '*~' -or -name '*.save?' -or -name '*-' ')' $fcmd rm '{}' ';' )
-    system -e -- find "/etc" "${farr[@]}"
+    system -e -- find '/etc' "${farr[@]}"
     system -e -- find "$DAT_ROOT/configs" "${farr[@]}"
     [ -d "$DAT_ROOT/machines" ] && system -e -- find "$DAT_ROOT/machines" "${farr[@]}"
     remove -d "$DAT_ROOT/backup"
@@ -841,11 +845,11 @@ actionLocal() {
         [ -n "$falt" -a ! -e "$fdes" ] && fdes="$falt"
         if ! [ -e "$fsrc" -a -e "$fdes" ] ; then
             warning -a "Cannot use 'diff' or 'kompare' here"
-        elif [ "$fcmp" = "-k" ] ; then
+        elif [ "$fcmp" = '-k' ] ; then
             [ -h ~/.cache -a ! -d ~/.cache ] && embed centauriencfs -q mount -
             embed -v -z centauridiff --kompare --fix "$fsrc" "$fdes"
         else
-            embed -v -z centauridiff --diff "$fsrc" "$fdes"
+            embed -v -z centauridiff -- "$fsrc" "$fdes"
         fi
     }
 
@@ -881,7 +885,7 @@ actionServer() {
 
         # protect server against rget/rput (using $HOSTNAME)
         if [ "$DAT_NET_ROLE" = "PRIMARY" -o "$DAT_NET_ROLE" = "SECONDARY" ] && \
-           [ "$DAT_NET_MODE" != "SLAVE" ] ; then
+           [ "$DAT_NET_MODE" != 'SLAVE' ] ; then
             if [ "$1" = "rget" ] ; then
                 if [ "$pnam" = "$HOSTNAME" -o "$pnam" = "$DAT_NET_NICK" ] ; then
                     message "Ignoring 'rget' on $DAT_NET_ROLE server of '$pmod'"
@@ -941,9 +945,9 @@ actionServer() {
     # setup the repository
     do_repository ; error -t || return
 
-    local cdir="configs"
-    local bdir="backup"
-    local adir="archived"
+    local cdir='configs'
+    local bdir='backup'
+    local adir='archived'
 
     # split repository string (module is optional)
     local rnam="${CEN_OPT_REPO%%:*}" rmod="${CEN_OPT_REPO#*:}" rcon="$DAT_NICKNAME"
@@ -956,9 +960,9 @@ actionServer() {
             dryrun "create package list: $dest" ||
                 system -e -p -z -- dpkg --get-selections > "$dest"
         fi
-        [ "$DAT_NET_MODE" = "SLAVE" -o "$DAT_NET_ROLE" = 'WORKSTATION' ] && ___run_rsync rput
+        [ "$DAT_NET_MODE" = 'SLAVE' -o "$DAT_NET_ROLE" = 'WORKSTATION' ] && ___run_rsync rput
     else
-        [ "$DAT_NET_MODE" = "SLAVE" -o "$DAT_NET_ROLE" = 'WORKSTATION' ] && ___run_rsync rget
+        [ "$DAT_NET_MODE" = 'SLAVE' -o "$DAT_NET_ROLE" = 'WORKSTATION' ] && ___run_rsync rget
         local dadm="$DAT_ROOT/$cdir/$rcon/@admin"
         [ -d "$dadm" ] && symlink -m -r "$dadm" "$DAT_ROOT/admin"
     fi
@@ -972,8 +976,8 @@ actionSync() {
     actionServer ; error -t || return
 
     local carg cyes="$CEN_YESNO"
-    if [ "$CEN_ACTION" = "cron" ] ; then
-        carg='@' ; CEN_YESNO="y"
+    if [ "$CEN_ACTION" = 'cron' ] ; then
+        carg='@' ; CEN_YESNO='y'
     fi
 
     CEN_ACTION='put'     ; actionLocal $carg
@@ -993,6 +997,7 @@ actionSync() {
 # "info" action
 # ------------------------------------------------------------------------------
 actionInfo() {
+    [ "$CEN_VERB" -lt 1 ] && return
     local tab=$'\t'
     echo "\
 
@@ -1294,7 +1299,7 @@ actionSetup() {
     ___run_rget() {
         local ofrc="$CEN_OPT_FORCE" ; CEN_OPT_FORCE=1
         CEN_OPT_ROOT="$DAT_ROOT" ; do_setup -h
-        [ "${DAT_NET_ROLE:-UNKNOWN}" = "UNKNOWN" ] && DAT_NET_ROLE='WORKSTATION'
+        [ "${DAT_NET_ROLE:-UNKNOWN}" = 'UNKNOWN' ] && DAT_NET_ROLE='WORKSTATION'
         actionServer
         CEN_OPT_FORCE="$ofrc"
         do_conf_updt
@@ -1314,6 +1319,7 @@ actionSetup() {
     [ -z "$DAT_ROOT" ] && fatal "Unknown installation root, needs '--root' option"
 
     case "${1:-ins}" in
+    rep*)   DAT_REPSTAT=1 ; do_setup && do_repository ;;
     ini*)   syssetup -p "$inst" && ___run_rget && syssetup -i ;;
     ins*)   syssetup -i "$inst" ;;
     upd*)   syssetup -s -u "$inst" ;;
@@ -1433,8 +1439,6 @@ actions() {
         ___invoke 'autorun' -          0 ;;
     che*)
         ___invoke 'check'   -          0 ;;
-    cle*)
-        invoke -r 'cleanup' -          0 ;;
     cron|sync)
         ___invoke  -     actionSync    0 ;;
     dif|diff)
@@ -1452,7 +1456,8 @@ actions() {
     rget|rput)
         ___invoke  -     actionServer  0 ;;
 
-    # action setup does not call do_setup ...
+    cle*)
+        invoke -r 'cleanup' -          0 ;;
     set*)
         invoke -r 'setup' -          0 2 ;;
     mer*)
@@ -1465,7 +1470,8 @@ actions() {
 # ------------------------------------------------------------------------------
 usage() {
     do_setup -h
-    local _repo="alpha:${CEN_ROOTDEF[3]:-$CEN_ROOT/admin}"
+    local _repo="$DAT_NET_NICK:${CEN_ROOTDEF[3]:-$CEN_ROOT/admin}"
+    local _repa="$DAT_NET_NICK:$DAT_NET_DOMAIN"
     usagecat << !EOF
 $CEN_USE_HEADER
 
@@ -1501,6 +1507,7 @@ actions:
        setup    [install|uninstall]
                             install or uninstall centauritools
        setup    init        download repository and install centauritools
+       setup    repository  update or initialize the repository folder tree
 
        check                check repository against filesystem
        cleanup              remove backups
@@ -1524,16 +1531,21 @@ arguments:
        <ovr>                0|off missing only, 1|on always, 2|auto newer
        <dir>|<file>         path of a folder or file
        <role>               computer role: primary|secodary|workstation
-       <repo>               [<server>[:<module>]  for example 'alpha:centauri'
+       <repo>               [<server>[:<module>]  for example '$_repa'
 
-setup: Use the following commands for an initial setup
+setup: Use the following commands for an initial setup:
 
        mkdir -p /tmp/xxx/library /tmp/xxx/tools
        scp -p $_repo/library/"*_???" /tmp/xxx/library
        scp -p $_repo/tools/"*centauri*" /tmp/xxx/tools
-       /tmp/xxx/tools/$CEN_NAME --yes --repos=alpha:centauri setup init
+       /tmp/xxx/tools/$CEN_NAME --yes --repos=$_repa setup init
 !EOF
 }
+
+# -I <zone>
+# -H <host>     computer name in repo (default $HOSTNAME)
+# <server>      ssh address of server
+# <module>      repository zone like worms/centauri
 
 # ------------------------------------------------------------------------------
 # Finally call the library to execute the script

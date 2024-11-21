@@ -2,6 +2,7 @@
 Description=Centauri Maintenance Mode + networking
 Documentation=man:systemd.special(7)
 Requires=basic.target
-Conflicts=rescue.service rescue.target multi-user.target centauri-network.service
+Conflicts=rescue.service rescue.target multi-user.target 
+#centauri-network.service
 After=basic.target
 AllowIsolate=yes

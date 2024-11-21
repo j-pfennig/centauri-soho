@@ -54,10 +54,10 @@
 #.          optarg "outfile" -   -w     # get output file, prompt for overwrite
 #.                                      # unless --force option was seen
 #
-# Copyright Dr. J. Pfennig (c) 2019-2023
+# Copyright Dr. J. Pfennig (c) 2019-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES["_centauri_bash_iom"]="0.04:2"
+CEN_MODULES['_centauri_bash_iom']='0.04:4'
 
 CEN_IOM_QUEUE=()        # see _cen_optarg_iom()
 
@@ -1074,7 +1074,7 @@ configfile() {
     # no worker, source file...
     else
         $_otra -a -c $" load" -- "$_file"
-        true ; . "$_file" ; _stat=$?
+        true ; source "$_file" ; _stat=$?
         [ "$_stat" = 0 ] || error $"Invalid data in configuration file:" "$_file"
     fi
 
@@ -1196,7 +1196,7 @@ serialize() {
     elif [ "$_fmod" = '-r' ] ; then
         if [ -r "$_ffil" ] ; then
             local _trap="$CEN_QUIT_TRAP" ; CEN_QUIT_TRAP=   # suspend trap
-            . $_ffil &>/dev/null
+            source "$_ffil" &>/dev/null
             CEN_QUIT_TRAP="$_trap"
             if [ $? = 0 ] ; then
                 $_otra -c $" read" -- "$_ffil"

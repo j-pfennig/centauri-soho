@@ -9,188 +9,246 @@ msgstr "Dr. Jürgen Pfennig (c) 2020-2024; BSD Lizenz"
 msgid "Network mode and GUI selection menu"
 msgstr "Auswahlmenü für Netzwerk Modus und Arbeitsfläche"
 
-#: /var/centauri/tools/centauristartup:44
+#: /var/centauri/tools/centauristartup:39
+msgid "Starting up, please wait..."
+msgstr ""
+
+#: /var/centauri/tools/centauristartup:63
 msgid " [current]"
 msgstr " [aktuell]"
 
-#: /var/centauri/tools/centauristartup:49
+#: /var/centauri/tools/centauristartup:68
 msgid "Please select an option..."
 msgstr "Bitte eine Option wählen..."
 
-#: /var/centauri/tools/centauristartup:78
+#: /var/centauri/tools/centauristartup:102
 msgid "show single-user Desktop"
 msgstr "Einzelbenutzer Arbeitsfläche"
 
-#: /var/centauri/tools/centauristartup:79
+#: /var/centauri/tools/centauristartup:103
 msgid "enter Kiosk mode"
 msgstr "Kiosk Modus starten"
 
-#: /var/centauri/tools/centauristartup:80
+#: /var/centauri/tools/centauristartup:104
+msgid "enter Digital-Clock mode"
+msgstr "Digitaluhr-Modus starten"
+
+#: /var/centauri/tools/centauristartup:105
+msgid "enter Homeassistant Web mode"
+msgstr "Homeassistant Oberfläche starten"
+
+#: /var/centauri/tools/centauristartup:106
 msgid "enter Multi-User mode"
 msgstr "Mehrbenutzermodus starten"
 
-#: /var/centauri/tools/centauristartup:81
+#: /var/centauri/tools/centauristartup:107
 msgid "enter Maintenance mode"
 msgstr "Wartungsmodus starten"
 
-#: /var/centauri/tools/centauristartup:82
+#: /var/centauri/tools/centauristartup:108
 msgid "change Network setup"
 msgstr "Netzwerkeinstellung ändern"
 
-#: /var/centauri/tools/centauristartup:100
+#: /var/centauri/tools/centauristartup:133
 msgid "no initializations"
 msgstr "Nichts einrichten"
 
-#: /var/centauri/tools/centauristartup:101
+#: /var/centauri/tools/centauristartup:134
 msgid "static network config"
 msgstr "Statische Netzwerkeinrichtung"
 
-#: /var/centauri/tools/centauristartup:102
+#: /var/centauri/tools/centauristartup:135
 msgid "single interface"
 msgstr "Einzelne Netzwerkschnittstelle"
 
-#: /var/centauri/tools/centauristartup:103
+#: /var/centauri/tools/centauristartup:136
 msgid "multiple interfaces"
 msgstr "Mehrere Netzwerkschnittstellen"
 
-#: /var/centauri/tools/centauristartup:104
+#: /var/centauri/tools/centauristartup:137
 msgid "brigde all interfaces"
 msgstr "Brücke der Netzwerkschnittstellen"
 
-#: /var/centauri/tools/centauristartup:105
+#: /var/centauri/tools/centauristartup:138
 msgid "udev dial-up, NAT"
 msgstr "Anwahl mittels 'udev' mit NAT"
 
-#: /var/centauri/tools/centauristartup:106
+#: /var/centauri/tools/centauristartup:139
 msgid "wlan extender, NAT"
 msgstr "WLAN Erweiterung mit NAT"
 
-#: /var/centauri/tools/centauristartup:107
+#: /var/centauri/tools/centauristartup:140
 msgid "wlan extender, arp-proxy"
 msgstr "WLAN Erweiterung, arp-proxy"
 
-#: /var/centauri/tools/centauristartup:113
+#: /var/centauri/tools/centauristartup:146
 msgid "Stop your graphical sessions?"
 msgstr "Alle Arbeitsflächen schließen?"
 
-#: /var/centauri/tools/centauristartup:119
+#: /var/centauri/tools/centauristartup:154
+msgid "Exit from this tool"
+msgstr "Dieses Programm beenden"
+
+#: /var/centauri/tools/centauristartup:156
 msgid "Run system shutdown?"
 msgstr "Den Rechner ausschalten?"
 
-#: /var/centauri/tools/centauristartup:120
+#: /var/centauri/tools/centauristartup:157
 msgid "reboot"
 msgstr "Neustart"
 
-#: /var/centauri/tools/centauristartup:165
+#: /var/centauri/tools/centauristartup:225
 msgid "Reboot in progress..."
 msgstr "Neustart läuft ..."
 
-#: /var/centauri/tools/centauristartup:167
+#: /var/centauri/tools/centauristartup:226
 msgid "Shutdown in progress..."
 msgstr "Herunterfahren läuft ..."
 
-#: /var/centauri/tools/centauristartup:168
-msgid "Setting network mode: "
+#: /var/centauri/tools/centauristartup:227
+msgid "Setting network mode:"
 msgstr "Netzwerkmodus setzen:"
 
-#: /var/centauri/tools/centauristartup:172
-msgid "Something went wrong. Show error output?"
-msgstr "Etwas ist schiefgegangen. Protokill anzeigen?"
+#: /var/centauri/tools/centauristartup:233
+msgid "Run as root user"
+msgstr ""
 
-#: /var/centauri/tools/centauristartup:229
+#: /var/centauri/tools/centauristartup:238
+msgid "Could not enter '%s' mode (status %s)"
+msgstr "Kann Modus '%s' nicht setzen (Status %s)"
+
+#: /var/centauri/tools/centauristartup:243
+msgid "Something went wrong. Show error output?"
+msgstr "Etwas ist schiefgegangen. Protokoll anzeigen?"
+
+#: /var/centauri/tools/centauristartup:258
+msgid "Override by '--kiosk=%s, using tty6'"
+msgstr "Überschrieben durch '--kiosk=%s', verwende tty6"
+
+#: /var/centauri/tools/centauristartup:284
+msgid "Unexpected error, press <return> to continue"
+msgstr ""
+
+#: /var/centauri/tools/centauristartup:309
+msgid "Please run 'centaurihass install' before this command"
+msgstr "Bitte vor dem Befehl 'centaurihass install' ausführen"
+
+#: /var/centauri/tools/centauristartup:317
+msgid "Install user"
+msgstr "Benutzer einrichten"
+
+#: /var/centauri/tools/centauristartup:352
 msgid "Enter 'root' password to login, logout to return to menu..."
 msgstr "Mit 'root' Passwort Anmelden, zurück zum Menü nach Abmeldung..."
 
-#: /var/centauri/tools/centauristartup:259
-msgid "Service 'centauriswitch' not running. Continue anyhow?"
-msgstr "Dienst 'centauriswitch' läuft nicht, dennoch weiter?"
+#: /var/centauri/tools/centauristartup:383
+msgid "Waiting for service '$wsvc' ..."
+msgstr "Warte auf '$wsvc' Dienst ..."
 
-#: /var/centauri/tools/centauristartup:429
-msgid "force kiosk mode (0=off  1=on  2=auto)"
-msgstr "Kiosk Modus erzwingen (0=aus  1=an  2=auto)"
+#: /var/centauri/tools/centauristartup:387
+msgid "Service '$wsvc' did not run. Continue anyhow?"
+msgstr "Dienst '$wsvc' läuft nicht, dennoch weiter?"
 
-#: /var/centauri/tools/centauristartup:432
+#: /var/centauri/tools/centauristartup:509
+msgid "This host is a server, needs option '--force'"
+msgstr "Dieser Rechner ist ein Server, brauche Option '--force'"
+
+#: /var/centauri/tools/centauristartup:551
+msgid "allow to exit from shutdown dialog"
+msgstr "Erlaube 'beenden' aus dem Herunterfahren-Dialog"
+
+#: /var/centauri/tools/centauristartup:552
+msgid "kiosk mode (0=menu  1=kiosk  2=clock)"
+msgstr "Kiosk Modus (0=menu  1=kiosk  2=clock)"
+
+#: /var/centauri/tools/centauristartup:555
 msgid "show network mode and gui selection menu; implied"
-msgstr "Zeige Netzwerkmodues und GUI Auswahlmenü; impliziert"
+msgstr "Zeige Netzwerkmodes und GUI Auswahlmenü; impliziert"
 
-#: /var/centauri/tools/centauristartup:433
-msgid "when '$CEN_NAME' is started as '.autologin'"
-msgstr "wenn '$CEN_NAME' über '.autologin' startet"
+#: /var/centauri/tools/centauristartup:556
+msgid "if '$CEN_NAME' is started as '$DAT_AUTOLOGIN'"
+msgstr "wenn '$CEN_NAME' über '$DAT_AUTOLOGIN' startet"
 
-#: /var/centauri/tools/centauristartup:435
+#: /var/centauri/tools/centauristartup:558
 msgid "actions that need root rights"
 msgstr "Aktionen die 'root' Rechte benötigen"
 
-#: /var/centauri/tools/centauristartup:437
+#: /var/centauri/tools/centauristartup:560
+msgid "start day-time-clock mode"
+msgstr "Starte Digitaluhr Modus"
+
+#: /var/centauri/tools/centauristartup:561
 msgid "start single-user gui session"
 msgstr "Einzelbenutzer Arbeitsfläche starten"
 
-#: /var/centauri/tools/centauristartup:438
-msgid "enable autologin, link .autologin for kiosk/local"
-msgstr "Autologin einrichten, .autologin für kiosk/local"
+#: /var/centauri/tools/centauristartup:562
+msgid "enable autologin, link $DAT_AUTOLOGIN for kiosk/local"
+msgstr "Autologin einrichten, $DAT_AUTOLOGIN für kiosk/local"
 
-#: /var/centauri/tools/centauristartup:439
+#: /var/centauri/tools/centauristartup:563
 msgid "start kiosk-mode gui"
 msgstr "Arbeitsfläche im Kioskmodus starten"
 
-#: /var/centauri/tools/centauristartup:440
+#: /var/centauri/tools/centauristartup:564
 msgid "switch to maintenance mode"
 msgstr "In Wartungsmodus umschalten"
 
-#: /var/centauri/tools/centauristartup:441
+#: /var/centauri/tools/centauristartup:565
 msgid "reboot the system"
 msgstr "Den Rechner neu starten"
 
-#: /var/centauri/tools/centauristartup:442
+#: /var/centauri/tools/centauristartup:566
 msgid "poweroff the system"
 msgstr "Den Rechner ausschalten"
 
-#: /var/centauri/tools/centauristartup:443
+#: /var/centauri/tools/centauristartup:567
 msgid "run 'centauriswitch' to change network mode"
 msgstr "Netzwerkeinstellung mit 'centauriswitch' ändern"
 
-#: /var/centauri/tools/centauristartup:444
-msgid "disable autologin, remove .autologin symlinks"
-msgstr "Autologin abstellen, kein .autologin für kiosk/local"
+#: /var/centauri/tools/centauristartup:568
+msgid "disable autologin, remove $DAT_AUTOLOGIN symlinks"
+msgstr "Autologin abstellen, kein $DAT_AUTOLOGIN für kiosk/local"
 
-#: /var/centauri/tools/centauristartup:445
+#: /var/centauri/tools/centauristartup:569
 msgid "activate virtual console"
 msgstr "Virtuelle Konsole umschalten"
 
-#: /var/centauri/tools/centauristartup:448
+#: /var/centauri/tools/centauristartup:572
 msgid "Remarks"
 msgstr "Hinweise"
 
-#: /var/centauri/tools/centauristartup:449
+#: /var/centauri/tools/centauristartup:573
 msgid ""
 "This tool provides a 2-level boot menu (network mode and gui mode) when "
 "started"
 msgstr ""
-"Mit Aktion 'menu' oder wenn ~local/.autologin ein Symlink ist, zeigt das "
-"Skript"
+"Mit Aktion 'menu' oder wenn ~local/$DAT_AUTOLOGIN ein Symlink ist, zeigt das"
 
-#: /var/centauri/tools/centauristartup:450
+#: /var/centauri/tools/centauristartup:574
 msgid ""
-"with action \\\"menu\\\" or if symlinked to \\\"~local/.autologin\\\", see "
-"action \\\"install\\\"."
+"with action \\\"menu\\\" or if symlinked to \\\"~local/$DAT_AUTOLOGIN\\\", "
+"see action"
 msgstr ""
-"ein 2-stufiges Boot-Menü an (für Netzwerk und GUI). Siehe Aktion 'install'. "
-"Das"
+"Skript ein 2-stufiges Boot-Menü an (für Netzwerk und GUI). Siehe Aktion "
+"'install'."
 
-#: /var/centauri/tools/centauristartup:451
+#: /var/centauri/tools/centauristartup:575
 msgid ""
-"This can be combined with autologin, see service \\\"centauriautologin\\\" "
-"and kernel"
+"\\\"install\\\". This can be combined with autologin, see service \\"
+"\"centauriautologin\\\""
 msgstr ""
-"geht auch zusammen mit Autologin, siehe Service 'centauriautologin' und "
+"Das geht auch zusammen mit Autologin, siehe Service 'centauriautologin' und "
 "Kernel"
 
-#: /var/centauri/tools/centauristartup:452
+#: /var/centauri/tools/centauristartup:576
 msgid ""
-"boot parameters like \\\"... centauriswitch=router centaurilogin=local ...\\"
-"\"."
+"and kernel boot parameters like \\\"centauriswitch=router "
+"centaurilogin=local\\\"."
 msgstr ""
 "Boot-Parametern wie '... centauriswitch=router centaurilogin=local ...'."
 
-#~ msgid "Press any key to continue..."
-#~ msgstr "Weiter nach Drücken einer Taste..."
+#~ msgid "start HomeAssistant"
+#~ msgstr "HomeAssistant starten"
+
+#~ msgid "Uninstall user"
+#~ msgstr "Benutzer entfernen"

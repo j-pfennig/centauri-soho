@@ -9,124 +9,124 @@ msgstr "Dr. J. Pfennig (c) 2022-2024; BSD Lizenz"
 msgid "Grep for (bash) source files"
 msgstr "Grep für (bash) Quellentexte"
 
-#: /var/centauri/tools/centaurigrep:72
+#: /var/centauri/tools/centaurigrep:73
 msgid "Option '--comment' should look like a regular expression or"
 msgstr "Option '--comment' muß wie ein regulärer Ausdruck aussehen"
 
-#: /var/centauri/tools/centaurigrep:73
+#: /var/centauri/tools/centaurigrep:74
 msgid "must be a keyword like:"
 msgstr "oder ein Schlüsselwort sein:"
 
-#: /var/centauri/tools/centaurigrep:135
+#: /var/centauri/tools/centaurigrep:136
 msgid "Form (1) passes all non-option arguments"
 msgstr "Form (1) gibt die nicht-Option Argumente"
 
-#: /var/centauri/tools/centaurigrep:136
+#: /var/centauri/tools/centaurigrep:137
 msgid "to grep. Form (2) mangles all non-option arguments into a perl regular"
 msgstr "an 'grep' weiter. Form (2) baut alle nicht-Option Argumente in einen"
 
-#: /var/centauri/tools/centaurigrep:137
+#: /var/centauri/tools/centaurigrep:138
 msgid "expression that excludes comments. Form (2) also adds the grep options"
 msgstr ""
 "'perl' regulären Ausdruck ein und exkludiert Kommentare. Form (2) setzt"
 
-#: /var/centauri/tools/centaurigrep:138
+#: /var/centauri/tools/centaurigrep:139
 msgid "'-n' and '--color'."
 msgstr "auch die 'grep' Optionen '-n' und '--color'."
 
-#: /var/centauri/tools/centaurigrep:140
+#: /var/centauri/tools/centaurigrep:141
 msgid "If the working folder is \\$CEN_TOOLS and no '-i/-x' options are used,"
 msgstr "Wenn das Arbeitsverzeichnis \\$CEN_TOOLS ist und die Optionen '-i/-x'"
 
-#: /var/centauri/tools/centaurigrep:141
+#: /var/centauri/tools/centaurigrep:142
 msgid ""
 "'-i°centauri*' is implied. Similarly for folder \\$CEN_LIBRARY '-i°*_???'"
 msgstr "fehlen wird '-i°centauri*' eingesetzt. Genauso wird für Verzeichnis"
 
-#: /var/centauri/tools/centaurigrep:142
+#: /var/centauri/tools/centaurigrep:143
 msgid "is implied."
 msgstr "\\$CEN_LIBRARY 'i°*_???' eingesetzt."
 
-#: /var/centauri/tools/centaurigrep:145
+#: /var/centauri/tools/centaurigrep:146
 msgid "expression to match comments"
 msgstr "Regulärer Ausdruck zum Finden von Kommentaren"
 
-#: /var/centauri/tools/centaurigrep:146
+#: /var/centauri/tools/centaurigrep:147
 msgid "pass all options to grep"
 msgstr "Alle Optionen an 'grep' übergeben"
 
-#: /var/centauri/tools/centaurigrep:147
+#: /var/centauri/tools/centaurigrep:148
 msgid "[*] use \\$CEN_LIBRARY as path"
 msgstr "[*] Verwende \\$CEN_LIBRARY als Pfad"
 
-#: /var/centauri/tools/centaurigrep:148
+#: /var/centauri/tools/centaurigrep:149
 msgid "[*] path to use (can be a shortpath)"
 msgstr "[*] Zu verwendender Pfad (darf Kurzbezeichnung sein)"
 
-#: /var/centauri/tools/centaurigrep:149
+#: /var/centauri/tools/centaurigrep:150
 msgid "recurse folder"
 msgstr "Verzeichnis rekursiv durchsuchen"
 
-#: /var/centauri/tools/centaurigrep:150
+#: /var/centauri/tools/centaurigrep:151
 msgid "[*] use \\$CEN_TOOLS as path"
 msgstr "[*] Verwende \\$CEN_TOOLS als Pfad"
 
-#: /var/centauri/tools/centaurigrep:151
+#: /var/centauri/tools/centaurigrep:152
 msgid "match only whole words"
 msgstr "Nur ganze Worte finden"
 
-#: /var/centauri/tools/centaurigrep:155
+#: /var/centauri/tools/centaurigrep:156
 msgid "regular expression or keyword, leading spaces skipped"
 msgstr "Reg. Ausdruck, vorangehende Leezeichen übersprungen"
 
-#: /var/centauri/tools/centaurigrep:156
+#: /var/centauri/tools/centaurigrep:157
 msgid "any argument to be passed to grep"
 msgstr "Alle Argumente die an 'grep' übergeben werden"
 
-#: /var/centauri/tools/centaurigrep:157
+#: /var/centauri/tools/centaurigrep:158
 msgid "a perl regular expression"
 msgstr "Ein 'perl' regulärer Ausdruck"
 
-#: /var/centauri/tools/centaurigrep:158
+#: /var/centauri/tools/centaurigrep:159
 msgid "a configured shortpath or a path (or ./<path>); this"
 msgstr "Konfigurierte Kurzbezeichnung oder Pfad (oder ./<path>);"
 
-#: /var/centauri/tools/centaurigrep:159
+#: /var/centauri/tools/centaurigrep:160
 msgid "parameter can specify a folder or a single file"
 msgstr "das Ziel kann ein Verzeichnis oder eine Datei sein"
 
-#: /var/centauri/tools/centaurigrep:161
+#: /var/centauri/tools/centaurigrep:162
 msgid "By default '--comment=bash' and search for '[![:space]]+' apply."
 msgstr "Vorgaben sind '--comment=bash' und Suchen nach '[![:space]]+'"
 
-#: /var/centauri/tools/centaurigrep:162
+#: /var/centauri/tools/centaurigrep:163
 msgid "Use '--comment=none' and search for '.?' to see all text lines."
 msgstr "Mit '--comment=none' und Suche '.?' alle Textzeilen angezeigen."
 
-#: /var/centauri/tools/centaurigrep:163
+#: /var/centauri/tools/centaurigrep:164
 msgid "The following keywords add predefined <cexp> expressions:"
 msgstr "Diese Schlüsselworte sind vordefinierte <cexp> Ausdrücke:"
 
-#: /var/centauri/tools/centaurigrep:166
+#: /var/centauri/tools/centaurigrep:167
 msgid "examples"
 msgstr "Beispiele"
 
-#: /var/centauri/tools/centaurigrep:167
+#: /var/centauri/tools/centaurigrep:168
 msgid "# search for 'black' or 'white' in \\$CEN_TOOLS"
 msgstr "# In \\$CEN_TOOLS nach 'black' oder 'white' suchen"
 
-#: /var/centauri/tools/centaurigrep:170
+#: /var/centauri/tools/centaurigrep:171
 msgid "# pass non-option arguments to grep"
 msgstr "# Nicht-Option Argumente an 'grep' übergeben"
 
-#: /var/centauri/tools/centaurigrep:173
+#: /var/centauri/tools/centaurigrep:174
 msgid "# search samba configuration for 'path'"
 msgstr "# 'samba' Konfiguration nach 'path' durchsuchen"
 
-#: /var/centauri/tools/centaurigrep:176
+#: /var/centauri/tools/centaurigrep:177
 msgid "# list samba/smb.conf without comments"
 msgstr "# Liste 'samba/smb.conf' ohne Kommentare"
 
-#: /var/centauri/tools/centaurigrep:179
+#: /var/centauri/tools/centaurigrep:180
 msgid "# list all text of etc/fstab"
 msgstr "# Liste allen Text in etc/fstab"

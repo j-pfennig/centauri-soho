@@ -4,7 +4,7 @@ CEN_TITLE="Tool to run Centauri Cron Jobs"
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.32:1' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.34:4' || exit 2
 
 # Data
 DAT_LOGDIR="/var/log"
@@ -307,7 +307,7 @@ logger_init() {
         : 2>/dev/null >"$CEN_OPT_OUTPUT" ||
             fatal "Cannot create output file: $CEN_OPT_OUTPUT"
     fi
-    {   message -- "$(date +"%F %T") [${CEN_CMDARGS[@]}]"
+    {   message -p -- '%(%F %T)T [%s]' -1 "${CEN_CMDARGS[@]}"
         echo
     } >>"$CEN_OPT_OUTPUT" 2>&1
 }

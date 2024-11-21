@@ -27,7 +27,7 @@ get_switch() {
 
 out_qual() {
     case "$1" in
-    ""|-)       echo "-"  ;;
+    ''|-)       echo '-'  ;;
     *.*)        echo "$1" ;;
     *)          echo "$1$DAT_QNAME"
     esac
@@ -40,27 +40,27 @@ do_server() {
 
     # known status
     if [ -n "$nout" ] ; then                    # have server...
-        [ "$1" = "n" ] && nout="$nsvr"          # server nick name
+        [ "$1" = 'n' ] && nout="$nsvr"          # server nick name
         out_qual "$nout"
 
     # want active server
-    elif [ "$1" = "a" ] ; then
-        echo "-"                                # no active server
+    elif [ "$1" = 'a' ] ; then
+        echo '-'                                # no active server
     # want server nick name
-    elif [ "$1" = "n" ] ; then
+    elif [ "$1" = 'n' ] ; then
         do_names n
     # want any server (guest or master)
     elif [ -n "$nsvr" ] ; then
         out_qual "$nsvr"                        # guest server
     else
-        do_homedns q || do_names n
+        do_homedns 'q' || do_names 'n'
     fi
 }
 
 do_names() {
     if ! get_config ; then
-        echo "-"
-    elif [ "$1" = "n" ] ; then
+        echo '-'
+    elif [ "$1" = 'n' ] ; then
         echo "${CEN_NET_SERVER_GEN}$DAT_QNAME"
     else
         local name nout stab=$'\t'
@@ -72,16 +72,16 @@ do_names() {
     fi
 }
 
+do_config() {
+    get_config
+    echo "${CEN_NET_CONFIG:--}"
+}
+
 do_domain() {
     get_config
     [ -n "$CEN_NET_DOMAIN" ] || CEN_NET_DOMAIN=$(hostname --domain)
     [ -n "$CEN_NET_DOMAIN" ] || CEN_NET_DOMAIN=$(domainname)
     echo "${CEN_NET_DOMAIN:--}"
-}
-
-do_config() {
-    get_config
-    echo "${CEN_NET_ADDR_METHOD:-manual}"
 }
 
 do_iplist() {
@@ -93,9 +93,14 @@ do_iplist() {
     nout="${nout:1}" ; echo "${nout:--}"
 }
 
+do_method() {
+    get_config
+    echo "${CEN_NET_ADDR_METHOD:-<unknown>}"
+}
+
 do_stat() {
     get_status
-    if [ "$1" = "m" ] ; then
+    if [ "$1" = 'm' ] ; then
         echo "${CEN_NET_MODE:-UNKNOWN}"
     else
         echo "${CEN_NET_ROLE:-UNKNOWN}"
@@ -109,24 +114,24 @@ do_homedns() {
     # am I a server?
     for key in "${CEN_NET_SERVERS[@]}" ; do
         [ "$HOSTNAME" = "$key" ] || continue
-        [ "$arg1" != "q" ] && echo "${CEN_NET_SERVER_GEN}$DAT_QNAME"
+        [ "$arg1" != 'q' ] && echo "${CEN_NET_SERVER_GEN}$DAT_QNAME"
         return 0
     done
 
     # parse resolv.conf, get domain and 1st nameserver
     if [ -r /etc/resolv.conf ] ; then
         while read key val vign ; do
-            if [ "$key" = "search" -o "$key" = "domain" ] ; then
+            if [ "$key" = 'search' -o "$key" = 'domain' ] ; then
                 ndom="$val"
-            elif [ "$key" = "nameserver" ] ; then
+            elif [ "$key" = 'nameserver' ] ; then
                 # is this a local address?
                 for vign in '127.0.0.1' '::1' "${CEN_NET_ADDR_IPLIST[@]}" - ; do
                     [ "$val" = "$vign" ] && break
                 done
                 # must be in router mode to be guest of this host ...
-                if [ "$vign" != "-" ] ; then
+                if [ "$vign" != '-' ] ; then
                     get_switch
-                    [ "$DAT_SWITCH_MODE" = "router" ] || continue
+                    [ "$DAT_SWITCH_MODE" = 'router' ] || continue
                     val="$CEN_NET_ADDR_IPLIST"          # use 1st local address
                 fi
                 nnam="$val" ; break
@@ -134,19 +139,19 @@ do_homedns() {
         done </etc/resolv.conf
     fi
     if [ -z "$ndom$nnam" ] ; then
-        [ "$arg1" = "q" ] && return 1
+        [ "$arg1" = 'q' ] && return 1
         echo "local" ; return 0
     fi
 
     # loop over homedns entries in config
     for val in "${CEN_NET_HOMEDNS[@]}" ; do
         set -f ; set -- $val ; set +f
-        [ "$1" != "-" -a "$1" != "$ndom" ] && continue  # filter by domain
-        [ "$2" != "-" -a "$2" != "$nnam" ] && continue  # filter by ns ip-address
+        [ "$1" != '-' -a "$1" != "$ndom" ] && continue  # filter by domain
+        [ "$2" != '-' -a "$2" != "$nnam" ] && continue  # filter by ns ip-address
         key="$3" ; [ -z "$DAT_QNAME" ] && key="${3%%.*}"
         echo "$key" ; return 0
     done
-    [ "$arg1" != "q" ] && echo "-" ; return 1
+    [ "$arg1" != 'q' ] && echo '-' ; return 1
 }
 
 do_help() {
@@ -156,8 +161,9 @@ echo "usage: ${0##*/} <option>...
 
 options:
        -A --active   active server name (can be guest server)
-       -C --config   iface config method (dhcp, nm, static, manual)
+       -C --config   network configuration name
        -D --domain   configured domain name
+       -E --method   iface config method (dhcp, nm, static, manual)
        -H --homedns  get home/guest server from dns configuration
        -I --iplist   list of configured ip addresses
        -M --mode     current mode (MASTER, SLAVE, GUEST, CLIENT, SINGLE, UNKNOWN)
@@ -178,6 +184,7 @@ for DAT_OPTION in "$@" ; do
     -A|--act*)	do_server a ;;
     -C|--con*)  do_config ;;
     -D|--dom*)  do_domain ;;
+    -E|--met*)  do_method ;;
     -H|--hom*)  do_homedns ;;
     -I|--ipl*)  do_iplist ;;
     -M|--mod*)  do_stat m ;;

@@ -4,15 +4,14 @@ CEN_LEGAL="Dr. J. Pfennig (c) 2020-2024; "$"BSD License"
 CEN_TITLE=$"Tool to wipe, partition, format and label storage media"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t -y - '0.30:3' || exit 2
-
-### TODO --base --label 'mount' 'shell'
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t -y - '0.40:3' || exit 2
 
 # Data
-CEN_OPT_BASE=           # see --base
+CEN_OPT_BASE='/tmp'     # see --base
 CEN_OPT_DEVICE=         # see --device
 CEN_OPT_FSTAB=          # see --fstab
 CEN_OPT_LABEL=          # see --label
+CEN_OPT_SIZE=           # see --size
 
 DAT_PARTITION=
 DAT_PARTPREF=
@@ -153,7 +152,8 @@ run_discard() {
 # copy: [<from>|-] <dest>|- [<comp>]
 # ------------------------------------------------------------------------------
 actionCopy() {
-    local from dest stat
+    system -c -f -- dd
+    local from dest
     if [ $# -gt 1 ] ; then
         if [ -b "$1" -o -c "$1" ] ; then
             from="$1"
@@ -163,7 +163,7 @@ actionCopy() {
         if [ -b "$2" ] ; then
             dest="$2"
         else
-            outfile -f -l -s dest -- "$2" || return
+            outfile -f -l -r -s dest -- "$2" || return
         fi
      else
         [ -z "$CEN_OPT_DEVICE" ] && fatal $"Missing '--device' option"
@@ -184,9 +184,43 @@ actionCopy() {
         invoke -e $"Input and output are equal" ; return 1
      fi
 
-     [ "$CEN_VERB" -ge 1 ] && stat='status=progress'
      message $"Copy data"$" '$from  ->  $dest'"
-     system -- dd if="$from" of="$dest" bs=1M $stat
+     if [ "$CEN_VERB" != 1 ] || dryrun ; then
+        if [ "$CEN_VERB" = 0 ] ; then
+            system -e -q -- dd if="$from" of="$dest" bs=1M
+        else
+            system -e -- dd if="$from" of="$dest" bs=1M status=progress
+        fi
+        return
+     fi
+
+     ___copy_dest() {
+        local poll last stat=0 list eflg
+        while IFS= read -d $'\r' -e poll ; do
+            splitjoin -s list -i poll
+            for poll in "${list[@]}" ; do
+                case "$poll" in
+                    STAT=0) ;;
+                    STAT=?) [ -n "$eflg" ] && continue ; eflg=1
+                            error -p $"Running 'dd' failed (status %s)" "${poll#*=}" ;;
+                    [0-9]*+[0-9]*)
+                            ;;
+                    [0-9]*) progress -a -l -- "$poll" ;;
+                    *dd:*)  if [ "$from" = '/dev/zero' ] ; then
+                                eflg=0 ; continue
+                            fi
+                            eflg=1 ; error -- "${poll#* }" ;;
+                    *)      message -a -- "$poll"
+                esac
+            done
+        done
+        [ "$eflg" != 1 ] && message -a $"Done."
+        return 0
+     }
+     ___copy_orig() {
+         "$@" 2>&1 ; echo -e -n "STAT=$?\r"
+     }
+     syspipe -b ___copy_orig -d ___copy_dest -- dd if="$from" of="$dest" bs=1M status=progress
 }
 
 # ------------------------------------------------------------------------------
@@ -257,35 +291,38 @@ actionFormat() {
     [ -n "$labl" ] && ftab=("LABEL=$labl") || ftab=("$DAT_PARTITION")
 
     case "$1" in
-        sys*)       ftyp="btrfs" ; fvol=2 ; args=("-K" "-f")
-                    [ -n "$labl" ] && args+=("-L" "$labl") ;;
-        vol*)       ftyp="btrfs" ; fvol=1 ; args=("-K" "-f")
-                    [ -n "$labl" ] && args+=("-L" "$labl") ;;
-        btrfs)      ftyp="btrfs" ; args=("-K" "-f")
-                    [ -n "$labl" ] && args+=("-L" "$labl") ;;
+        sys*)       ftyp='btrfs' ; fvol=2 ; args=('-K' '-f')
+                    [ -n "$CEN_OPT_SIZE" ] && args+=('-s' "$CEN_OPT_SIZE")
+                    [ -n "$labl" ] && args+=('-L' "$labl") ;;
+        vol*)       ftyp='btrfs' ; fvol=1 ; args=('-K' '-f')
+                    [ -n "$CEN_OPT_SIZE" ] && args+=('-s' "$CEN_OPT_SIZE")
+                    [ -n "$labl" ] && args+=('-L' "$labl") ;;
+        btrfs)      ftyp='btrfs' ; args=('-K' '-f')
+                    [ -n "$CEN_OPT_SIZE" ] && args+=('-s' "$CEN_OPT_SIZE")
+                    [ -n "$labl" ] && args+=('-L' "$labl") ;;
 
         f2fs)       ftyp="f2fs" ; args=("-f")
                     [ -n "$labl" ] && args+=("-l" "$labl") ;;
 
         exfat)      ftyp="exfat"
-                    [ -n "$labl" ] && args=("-n" "$labl") ;;
+                    [ -n "$labl" ] && args=('-n' "$labl") ;;
 
-        ext4)       ftyp="ext4" ; args=("-E" "nodiscard" "-m" "0")
-                    [ -n "$labl" ] && args+=("-L" "$labl")
-                    post=("tune2fs" "-c" "0" "$DAT_PARTITION") ;;
+        ext4)       ftyp="ext4" ; args=("-E" "nodiscard" "-m" 0)
+                    [ -n "$labl" ] && args+=('-L' "$labl")
+                    post=("tune2fs" "-c" 0 "$DAT_PARTITION") ;;
 
         ntfs*)      ftyp="ntfs" ; args=("-f")
-                    [ -n "$labl" ] && args+=("-L" "$labl") ;;
+                    [ -n "$labl" ] && args+=('-L' "$labl") ;;
 
         fat*|vfat)  ftyp='vfat'
-                    [ -n "$labl" ] && args+=("-n" "$labl")
+                    [ -n "$labl" ] && args+=('-n' "$labl")
                     ftab[3]='nofail' ;;
         [lr]fat)    ftyp='vfat'                             # raspi special case
-                    [ -n "$labl" ] && args+=("-n" "$labl")
+                    [ -n "$labl" ] && args+=('-n' "$labl")
                     ftab[1]='/boot' ; ftab[3]='nofail'
                     [ "$1" = 'rfat' ] && ftab[1]+='/firmware' ;;
         swap)       ftyp='swap' ; ftab[1]='none' ; ftab[3]='nofail'
-                    [ -n "$labl" ] && args+=("-L" "$labl") ;;
+                    [ -n "$labl" ] && args+=('-L' "$labl") ;;
 
         "")         invoke -e $"No filesystem type specified"
                     return ;;
@@ -320,9 +357,9 @@ actionFormat() {
     info_device "$DAT_PARTITION" || return
     ask_if_ok
     if [ -n "$labl" ] ; then
-        message -p $"Creating '%s' filesystem on '%s', label '%s'" "$ftyp" "$DAT_PARTITION" "$labl"
+        message -a -p $"Creating '%s' filesystem on '%s', label '%s'" "$ftyp" "$DAT_PARTITION" "$labl"
     else
-        message -p $"Creating '%s' filesystem on '%s', no label" "$ftyp" "$DAT_PARTITION"
+        message -a -p $"Creating '%s' filesystem on '%s', no label" "$ftyp" "$DAT_PARTITION"
     fi
 
     # remove fs signatures
@@ -431,7 +468,7 @@ actionLabel() {
 }
 
 # ------------------------------------------------------------------------------
-# list partions: -no args-
+# list partitions: -no args-
 # ------------------------------------------------------------------------------
 actionList() {
     if [ -n "$CEN_OPT_DEVICE" ] ; then
@@ -441,7 +478,57 @@ actionList() {
 }
 
 # ------------------------------------------------------------------------------
-# partion: [<kind>] <size>...
+# action mount: -no args-
+# ------------------------------------------------------------------------------
+actionMount() {
+    ___mount_part() {
+        local mopt svol
+        case "$1" in
+        *_swap) warning "Not mounting:" "$1" ; return 1 ;;
+        *_vol0) mopt='-o subvol=/' ;;
+    #   *_*)    mpnt+="/${1##*_}"
+        esac
+        message -a -p "Mount '%s' at '%s'" "$1" "$mpnt/$1"
+        folder -f -m -r -- "$mpnt/$1"
+        if findmount -l "$1" ; then
+            warning -a "Already mounted:" "$1" ; return 1
+        fi
+        system -f -p mount -L "$1" "$mpnt/$1" $mopt
+    }
+
+    local name="${CEN_OPT_LABEL%_*}" list mpnt
+    folder -f -m -s mpnt -- "$CEN_OPT_BASE/$name"
+    if [ "$name" = "$CEN_OPT_LABEL" ] ; then
+        list=("${name}_boot" "${name}_root" "${name}_vol0")
+    else
+        list=("$CEN_OPT_LABEL")
+    fi
+    for part in "${list[@]}" ; do
+        [ -b "/dev/disk/by-label/$part" ] && ___mount_part "$part"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# action shell: -no args-
+# ------------------------------------------------------------------------------
+actionShell() {
+    local name="${CEN_OPT_LABEL%_*}" mpnt moun
+    if [ "$name" = "$CEN_OPT_LABEL" ] ; then
+        mpnt="$CEN_OPT_BASE/$CEN_OPT_LABEL"
+    else
+        mpnt="$CEN_OPT_BASE/$name/$CEN_OPT_LABEL"
+    fi
+    if [ ! -d "$mpnt" ] ; then
+        actionMount ; error -t || return
+        moun=1
+    fi
+    folder -c -f -- "$mpnt"
+    system -r -- bash -i
+    [ -n "$moun" ] && confirm -y -f "Unmount '%s'" "$mpnt" && actionUmount
+}
+
+# ------------------------------------------------------------------------------
+# partition: [<kind>] <size>...
 # ------------------------------------------------------------------------------
 actionPartition() {
     system -e -c 'parted' || return
@@ -453,22 +540,22 @@ actionPartition() {
     local kind numi item size=()
     case "$1" in
         msdos|dos)  kind='msdos' ; shift ;;
-        gpt)        kind="gpt"   ; shift ;;
+        gpt)        kind='gpt'   ; shift ;;
         [0-9]*|+)   ;;
-        "")         ;;
+        '')         ;;
         *)          invoke -e $"Partition table type must be 'msdos' or 'gpt': %s" "$1"
                     return
     esac
 
     if [ $# = 0 ] ; then
-        invoke -e $"Need at least one partion size (use '+' for whole device)"
+        invoke -e $"Need at least one partition size (use '+' for whole device)"
         return
     fi
 
     while [ $# -gt 0 ] ; do
-        if [ "$1" = "+" ] ; then
+        if [ "$1" = '+' ] ; then
             if [ $# = 1 ] ; then
-                size+=("0") ; break
+                size+=(0) ; break
             else
                 invoke -e $"'+' can be used for the last partition only" ; return
             fi
@@ -518,7 +605,7 @@ actionPartition() {
     system -e -p -- parted --script -a optimal "$DAT_PARTITION" mklabel "$kind" $parts
     error -t || return
 
-    message -p $"Created partition table"
+    message -a -p $"Created partition table"
     sleep 0.5
     [ -b "$DAT_PARTITION" ] || sleep 0.5
     [ -b "$DAT_PARTITION" ] || sleep 1
@@ -572,14 +659,36 @@ actionSystem() {
 # umount: -no args-
 # ------------------------------------------------------------------------------
 actionUmount() {
-    check_device -m || return
+    local part coun=0
+    folder -c -f '/'
 
-    local item coun=0
-    findmount -t - -d -- "$CEN_OPT_DEVICE"
-    for item in "${CEN_MOUNT_ARR[@]}" ; do
-        system -e -p -- umount "$item" && ((coun += 1))
-    done
-    pluralize -g -z -p $"Unmounted %s %s" "$coun" $"partion" $"partitions"
+    if [ -n "$CEN_OPT_LABEL" ] ; then
+        local name="${CEN_OPT_LABEL%_*}" list
+        local mpnt="$CEN_OPT_BASE/$name"
+        if [ ! -d "$mpnt" ] ; then
+            invoke -e "Mountpoint '%s' not found" "$mpnt" ; return
+        fi
+        if [ "$name" = "$CEN_OPT_LABEL" ] ; then
+            list=("${name}_boot" "${name}_root" "${name}_vol0")
+        else
+            list=("$CEN_OPT_LABEL")
+        fi
+        for part in "${list[@]}" ; do
+            [ -d "$mpnt/$part" ] || continue
+            trace -a -p "Unmount '%s'" "$mpnt/$part"
+            system -e -p -- umount "$mpnt/$part" && ((coun += 1))
+            remove -q "$mpnt/$part"
+        done
+        remove "$mpnt"
+
+    else
+        check_device -m || return
+        findmount -t - -d -- "$CEN_OPT_DEVICE"
+        for part in "${CEN_MOUNT_ARR[@]}" ; do
+            system -e -p -- umount "$part" && ((coun += 1))
+        done
+    fi
+    pluralize -g -z -p $"Unmounted %s %s" "$coun" $"partition" $"partitions"
 }
 
 # ------------------------------------------------------------------------------
@@ -598,17 +707,17 @@ actionZerofill() {
 # run: [run] <type>
 # ------------------------------------------------------------------------------
 actionRun() {
-    [ "$1" = "run" ] && shift
+    [ "$1" = 'run' ] && shift
     case "$1" in
-        vol*)       ftyp="volume" ;;
-        btrfs)      ftyp="btrfs" ;;
-        f2fs)       ftyp="f2fs" ;;
-        exfat)      ftyp="exfat" ;;
-        ext4)       ftyp="ext4" ;;
-        ntfs*)      ftyp="ntfs" ;;
-        fat*|vfat)  ftyp="vfat" ;;
+        vol*)       ftyp='volume' ;;
+        btrfs)      ftyp='btrfs' ;;
+        f2fs)       ftyp='f2fs' ;;
+        exfat)      ftyp='exfat' ;;
+        ext4)       ftyp='ext4' ;;
+        ntfs*)      ftyp='ntfs' ;;
+        fat*|vfat)  ftyp='vfat' ;;
 
-        "")         invoke -e $"No filesystem type specified"
+        '')         invoke -e $"No filesystem type specified"
                     return ;;
         *)          invoke -e $"Unsupported filesystem: %s" "$1"
                     return
@@ -633,13 +742,15 @@ options() {
             optarg - - -m '--device --label'
         ;;
     -B|--base)
-        optarg 'base'       -   -t  ;;          # text argument
+        optarg 'base'       -   -d  ;;          # text argument
     -D|--dev*)
         optarg 'device'     -   -t  ;;          # any text
     -F|--fst*)
         optarg 'fstab'      -   -t  ;;          # any text
     -L|--lab*)
         optarg 'label'      -   -t  ;;          # any text
+    -S|--sec*)
+        optarg 'size'       -   -n  ;;          # a number
     esac
 }
 
@@ -649,13 +760,18 @@ options() {
 actions() {
     case "$1" in
 
-    # insist in '--device' option unless the only verb is 'copy' or 'inhibit'
-    '') if [ -z "$CEN_OPT_DEVICE" ] ; then
-            listsearch -- '--' "${CEN_CMDARGS[@]//---/--}" &&
-                fatal $"Missing '--device' option"
+    # insist in '--label' or '--device' option
+    '') if [ -n "$CEN_OPT_LABEL" ] ; then
+            listsearch -- '--' "${CEN_CMDARGS[@]//---/--}" && CEN_CMDARGS=
             case "${CEN_CMDARGS::3}" in
-            cop|inh|lis|pro)    ;;
-            *)              fatal $"Missing '--device' option"
+            mou|she|umo|unm) ;;
+            *)      fatal $"Bad use of '--label' option"
+            esac
+        elif [ -z "$CEN_OPT_DEVICE" ] ; then
+            listsearch -- '--' "${CEN_CMDARGS[@]//---/--}" && CEN_CMDARGS=
+            case "${CEN_CMDARGS::3}" in
+            cop|inh|lis|pro) ;;
+            *)      fatal $"Missing '--device' option"
             esac
         else
             case "$CEN_OPT_DEVICE" in
@@ -715,21 +831,22 @@ usage() {
              -u $"Form"" (4) "$"run a shell that avoids the udisks automount problem." \
 
     usageset -o - \
-             -o '-B --base    <fldr>' $"mount base folder for form (2) actions" \
+             -o '-B --base    <fldr>' $"form (2) actions mount folder (default: $CEN_OPT_BASE)" \
              -o '-D --device  <dev>'  $"[*] block device to use" \
              -o '-L --label   <dlab>' $"[*] volume or partition label" \
              -o '-F --fstab   <file>' $"append fstab entry to file, use '-' for stdout" \
+             -o '-S --sector  <sect>' $"set sector size (used for brtfs only)" \
              -o - \
              -o $"[*] ohne of these is required by form (1) or (2) actions" \
 
     usageset -a $"••• media setup •••" \
              -a 'discard'             $"discard all data via 'blkdiscard'" \
-             -a 'zero      [<part>]'  $"zerofill device or partion" \
+             -a 'zero      [<part>]'  $"zerofill device or partition" \
              -a - \
              -a 'partition [<kind>] <size>...' \
-             -a -                     $"create a new partion table" \
+             -a -                     $"create a new partition table" \
              -a 'flag      [<part>] <flag>...' \
-             -a -                     $"set partion flags" \
+             -a -                     $"set partition flags" \
              -a 'format    [<part>] <type> [<label>]' \
              -a -                     $"format device or partition" \
              -a 'label     [<part>] <label>' \
@@ -742,9 +859,9 @@ usage() {
              -a -                     $"and format the entire medium" \
              -a - \
              -a $"••• (un-)mounting media •••" \
-             -a 'mount'               $"mount partions of the given device" \
+             -a 'mount'               $"mount partitions of the given device" \
              -a 'shell'               $"mount, run a shell and unmount" \
-             -a 'umount'              $"unmount all partions of the given device" \
+             -a 'umount'              $"unmount all partitions of the given device" \
              -a - \
              -a $"••• other/helpers •••" \
              -a 'copy      [<from>|-] <dest>|- [<cmpr>]' \
@@ -758,8 +875,9 @@ usage() {
              -p '<flag>'     $"'efi' 'boot' 'bios_grub'" \
              -p '<kind>'     $"kind of partition table: msdos|gpt" \
              -p '<label>'    $"label text" \
-             -p '<part>'     $"a partion number" \
-             -p '<size>'     $"size of partion: <number><M|G|T>" \
+             -p '<part>'     $"a partition number" \
+             -p '<sect>'     $"sector size in bytes" \
+             -p '<size>'     $"size of partition: <number><M|G|T>" \
              -p -            $"the last size can be '+' to use all space" \
              -p '<type>'     $"file system type: swap,fat,ext4,exfat,ntfs,fs2fs, btrfs or" \
              -p -            $"'volume' or 'system' to create btrfs with subvolume tree" \

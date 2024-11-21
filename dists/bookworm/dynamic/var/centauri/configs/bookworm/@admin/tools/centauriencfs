@@ -210,7 +210,8 @@ do_password() {
 # ------------------------------------------------------------------------------
 do_desktop() {
     local suff=".desktop" data
-    local prog="/admin/$CEN_NAME"  # work-around kde header parse limit
+    local tlnk="${CEN_INSTALL#*:*:}" ; tlnk="${tlnk%%:*}"
+    local prog="$tlnk/$CEN_NAME"    # work-around kde header parse limit
     [ -e "$prog" ] || prog="$CEN_TOOLS/$CEN_NAME"
     if [ -n "$1" ] ; then
         create -t -c -- "$1/$TXT_MOUNT$suff" 775 <<!EOF

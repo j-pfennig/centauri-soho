@@ -1,12 +1,11 @@
 #!/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2022; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
 CEN_TITLE="Helper to process ACPI events"
 
 # Import the bash library, set name and version
-PATH+=":/usr/local/bin:${0%/*}" . _centauri_bash_lib -d -f -m svc -s "$0" "0.39:1" || exit 2
+PATH+=":/usr/local/bin:${0%/*}" . _centauri_bash_lib -d -f -m svc -s - '0.40:4' || exit 2
 
-# /usr/bin/logger -t centauripower "$0 $*"
 
 # used by links from /etc/acpi and /lib/systemd/system-sleep - see setup
 case "$CEN_NAME" in
@@ -17,7 +16,7 @@ case "$CEN_NAME" in
     powerbtn-acpi-support.sh)
         set "powerbutton" ; CEN_NAME="centauripower" ;;
     brightness-acpi-support.sh)
-        set "brightness" "$1" -v ; CEN_NAME="centauripower" ;;
+        set "brightness" "$@" ; CEN_NAME="centauripower" ;;
     centauri-sleep)
         set "systemsleep" "$1" ; CEN_NAME="centauripower" ;;
 esac
@@ -402,35 +401,39 @@ DISABLE_USBWAKEUP=""
 # ------------------------------------------------------------------------------
 actionBrightness() {
     if [ -z "$CEN_OPT_FORCE" ] && ___gui_console ; then
-       message "ignoring" "$CEN_ACTION" "$1"
+       message -p "Ignore '%s' in GUI mode (try option '--force')" "$CEN_ACTION $1"
        return
     fi
-    message "running" "$CEN_ACTION" "$1"
+    trace -c "Running" "$CEN_ACTION" "$1"
 
-    local bdev bbas='/sys/class/backlight/'
-    for bdev in 'intel_backlight' 'amdgpu_bl0' 'acpi_video0' 'rpi_backlight' ; do
-        bdev="$bbas$bdev"
-        [ -d "$bdev" ] && break
-    done
-    if [ ! -e "$bdev/brightness" ] ; then
+    local bcur bmax binc bdev
+    if ! matchpath -f -r -s bdev -o '/sys/class/backlight'/*/brightness ; then
         trace -a "No backlight device found" ; return
     fi
+    if [ ! -w "$bdev" ] ; then
+        message "Trying to fix permissions:" "$bdev"
+        system -e -p -u - -- "$BASH" -c "chgrp video $bdev ; chmod 664 $bdev"
+    fi
 
-    local bcur bmax binc
-    [ -r "$bdev/actual_brightness" ] && read bcur < "$bdev/actual_brightness"
-    [ -z "$bcur" -a -r "$bdev/brightness" ] && read bcur < "$bdev/brightness"
-    [ -r "$bdev/max_brightness" ] && read bmax < "$bdev/max_brightness"
-    if [ -z "$bcur" -o -z "$bmax" ] || [ ! -w "$bdev/brightness" ] ; then
-        trace -a "Backlight device not usable" ; return
+    bdev="${bdev%/*}"
+    if [ -w "$bdev/brightness" ] ; then
+        [ -r "$bdev/actual_brightness" ] && read bcur < "$bdev/actual_brightness"
+        [ -z "$bcur" -a -r "$bdev/brightness" ] && read bcur < "$bdev/brightness"
+        read bmax < "$bdev/max_brightness"
+    fi
+    if [ -z "$bcur" -o -z "$bmax" ] ; then
+        trace -a -c "Backlight device" "Cannot use" "$bdev" ; return
+    else
+        trace -a -c "Backlight device" "$bdev"
     fi
 
     binc=$(((bmax + 11) / 12))
-    if [ "$1" = "++" ] ; then
+    if [ "$1" = '++' ] ; then
         bcur="$bmax"
-    elif [ "$1" = "+" ] ; then
+    elif [ "$1" = '+' ] ; then
         bcur=$((bcur + binc)) ; [ "$bcur" -gt "$bmax" ] && bcur="$bmax"
-    elif [ "$1" = "-" ] ; then
-        bcur=$((bcur - binc)) ; [ "$bcur" -lt "0" ] && bcur="0"
+    elif [ "$1" = '-' ] ; then
+        bcur=$((bcur - binc)) ; [ "$bcur" -lt 0 ] && bcur=0
     elif [ -z "${1//[0-9]/}" ] ; then
         if [ "$1" -lt 0 -o "$1" -gt 100 ] ; then
             invoke -e "Value out of range: %s" "$1" ; return
@@ -443,8 +446,27 @@ actionBrightness() {
     echo "$bcur" > "$bdev/brightness"
 }
 
+# ------------------------------------------------------------------------------
+# action
+# ------------------------------------------------------------------------------
 actionDbus() {
     ___all_users "$@"
+}
+
+# ------------------------------------------------------------------------------
+# Set dpms: on|off
+# ------------------------------------------------------------------------------
+actionDpms() {
+    case "$1" in
+    on)     sysrun -e xset s on
+            sysrun -e xset +dpms
+            ;;
+    off)    sysrun -e xset s off
+            sysrun -e xset -dpms
+            sysrun -e xset s noblank
+            ;;
+    *)      invoke -a 'on|off'
+    esac
 }
 
 # ------------------------------------------------------------------------------
@@ -594,27 +616,29 @@ actions() {
     case "$CEN_ACTION" in
 
     bri*)
-        invoke -s "brightness"  -              1 ;;
+        invoke    'brightness'  -              1 ;;
     dbu|dbus)
-        invoke -s "dbus"        -            3 + ;;
+        invoke -s 'dbus'        -            3 + ;;
+    dpm|dpms)
+        invoke    'dpms'        -              1 ;;
     hib*)
-        invoke    "hibernate"   actionSuspend  0 ;;
+        invoke    'hibernate'   actionSuspend  0 ;;
     log*)
-        invoke    "logout"      actionShutdown 0 ;;
+        invoke    'logout'      actionShutdown 0 ;;
     pow*)
-        invoke    "powerbutton" actionPower    0 ;;
+        invoke    'powerbutton' actionPower    0 ;;
     reb*)
-        invoke -s "reboot"      actionShutdown 0 ;;
+        invoke -s 'reboot'      actionShutdown 0 ;;
     set*)
-        invoke -r "setup"       -            0 1 ;;
+        invoke -r 'setup'       -            0 1 ;;
     shu*)
-        invoke -s "shutdown"    -              0 ;;
+        invoke -s 'shutdown'    -              0 ;;
     sus*)
-        invoke -s "suspend"     -              0 ;;
+        invoke -s 'suspend'     -              0 ;;
     sys*)
-        invoke -r "systemsleep" -              1 ;;
+        invoke -r 'systemsleep' -              1 ;;
     wak*)
-        invoke -r "wakeup"      -            0 1 ;;
+        invoke -r 'wakeup'      -            0 1 ;;
 
     esac
 }
@@ -637,7 +661,7 @@ actions:
        systemsleep  <evnt>  (internal) process systemd-sleep events
 
        brightness   <bval>  process ACPI brightness events
-
+       dpms         on|off  turn DPMS mode on or off
        logout               terminate kde session
        reboot               reboot the system
 

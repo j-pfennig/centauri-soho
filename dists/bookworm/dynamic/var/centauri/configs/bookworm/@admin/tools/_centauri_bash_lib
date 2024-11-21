@@ -28,9 +28,9 @@ CEN_PATH_REXP=([0]=$'-n\a/data/%2/%3%4\a/data/%2/.mount/%2_%3%4\a/data/%2/.mount
 
 # load real lib, use packed version if newer
 if [ "$CEN_LIBRARY/_centauri_bash_lib.p" -nt "$CEN_LIBRARY/_centauri_bash_lib" ] ; then
-    . "$CEN_LIBRARY/_centauri_bash_lib.p" "$@" || exit 2
+    source "$CEN_LIBRARY/_centauri_bash_lib.p" "$@" || exit 2
 else
-    . "$CEN_LIBRARY/_centauri_bash_lib" "$@" || exit 2
+    source "$CEN_LIBRARY/_centauri_bash_lib" "$@" || exit 2
 fi
 
 # init transient folder after boot (root only)

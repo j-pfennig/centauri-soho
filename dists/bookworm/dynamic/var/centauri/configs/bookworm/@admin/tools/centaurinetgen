@@ -4,7 +4,7 @@ CEN_LEGAL="Dr. J. Pfennig (c) 2023-2024; BSD License"
 CEN_TITLE=$"Generate interface, wlan, dhcp and dnsmasq configurations"
 
 # Import the bash library
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f - '0.12:3' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.12:4' || exit 2
 
 # Data
 CEN_OPT_APOINT=                 # see --host
@@ -12,6 +12,8 @@ CEN_OPT_HOST=                   # see --host
 CEN_OPT_KEEP=                   # see --keep
 CEN_OPT_NMAN=                   # see --nman
 CEN_OPT_OUTPUT=                 # see --output
+CEN_OPT_PLAIN=                  # see --plain
+CEN_OPT_SILENT=                 # see --silent
 CEN_OPT_WLAN=                   # see --wlan
 
 DAT_CREATED=                    # used by actionInterface, do_interface
@@ -66,12 +68,11 @@ do_dnsmasq() {
     message -c "generating" -- "$base.$name"
     folder -m -- "$base.$name" || return
 
-    local drng dexc offs=0 netw=-1                  # use local dhcp
+    local drng dexc offs=0 netw
     case "$name" in
-    repeater)   netw=1; offs=8 ;;
-    #router)     netw=1; offs=64 ;;
+    repeater)   netindex -f -s netw 'repeater'; offs=8 ;;
+    *)          netindex -f -s netw 'dynamic'       # use local dhcp
     esac
-    netw="${CEN_NET_NETWORKS[netw]}"
     if ! do_dhcp_range "$netw" "$offs" drng ; then  # range for dnsmasq
         error "cannot get dhcp config" ; return
     fi
@@ -193,7 +194,7 @@ do_interface() {
             trace -a -c "create list" "${DAT_CREATED[*]}"
             for name in "${@##*.}" ; do
                 listsearch -c -i DAT_CREATED -- "$name" && continue
-                [ -e "$base.$name" ] && do_interface_file -d "$name"
+                [ -f "$base.$name" ] && do_interface_file -d "$name"
             done
         fi
 
@@ -224,16 +225,19 @@ do_interface() {
     # --- fill generator table: smart/eth0/wlan0/eth1/wlan1 ---
 
     CEN_AUTOIND= ; indx=-1
-    local feth fodd addr agen=(- - - - -) aidx=0
+    local feth fodd addr agen=(- - - - -) aidx=0 ipok
     for name in '' -0 -1 -2 -3  ; do
         ((indx += 1)) ; name="$CEN_OPT_HOST$name"
         addr="${atab[indx]:--}"
         if [ "$addr" != '-' ] ; then
-            feth="$fodd"
-            if [ "$fodd" = 0 ] ; then               # default WLAN
-                netoption 'ether' "$name" && feth=1
+            if [ -n "$CEN_NET_EXTERNAL" -a "$aidx" != 0 ] &&
+                netmask "$CEN_NET_EXTERNAL" "$addr" ; then
+                feth=                               # skip external
+                $CEN_TRACE2 -a -p "Host: %-15s external  addr: %s" "$name" "$addr"
+            elif [ "$fodd" = 0 ] ; then             # default WLAN
+                netoption 'ether' "$name" && feth=1 || feth=0
             else                                    # default eth
-                netoption 'wlan' "$name" && feth=0
+                netoption 'wlan' "$name" && feth=0 || feth=1
             fi
             $CEN_TRACE2 -a -p "Host: %-15s feth: %1s  addr: %s" "$name" "$feth" "$addr"
 
@@ -261,7 +265,9 @@ do_interface() {
     for addr in "${agen[@]}" ; do
         ((indx += 1))
         $CEN_TRACE2 -a "indx: $indx   address: $addr"
+        [ "${addr:--}" != '-' ] && ipok=1
     done
+    [ -z "$ipok" ] && warning -a "No interface has a fixed IPv4 address"
 
     # --- set generator flags ----
 
@@ -301,6 +307,10 @@ do_interface() {
        fi
     fi
 
+    if [ "${ife0:--}" = '-' ] ; then
+    # simple
+        hth0='#' ; ife0='XXX'
+    fi
     if [ "${ife1:--}" = '-' ] ; then
         hth1='#' ; ife1='XXX'
     fi
@@ -433,7 +443,8 @@ ${hlan}   wpa-conf $fwpa
         # ----------------------------------------------------------------------
 
     elif [ "$1" = 'repeater' ] ; then
-        netparse -a -b "${CEN_NET_NETWORKS[1]}"
+        netindex -f -s addr 'repeater'
+        netparse -a -b "$addr"
         mask="$_netparse_mask"
         addr="${_netparse_addr%.*}"
         ade1="$addr.4" ; adw0="$addr.3" ; ade0="$addr.2" ; adb0="$addr.1"
@@ -529,6 +540,7 @@ ${owol}
 ### wlan0:
 
 ${hlan}iface $ifw0 inet static
+${hlan}   wpa-conf $fwpa
 ${hlan}   address $adw0
 ${hlan}   netmask $mask
 
@@ -625,7 +637,10 @@ ${hoga}   netmask $mask
                 case "$CEN_OPT_NMAN" in
                     0)  flgn=0 ;;
                     1)  flgn=1 ;;
-                    *)  [ "$meth" = 'nm' ] && flgn=1
+                    *)  if [ "$meth" = 'nm' ] ; then flgn=1
+                        elif netquery 'nm' ;    then flgn=1
+                        else                         flgn=0
+                        fi
                 esac
 
                 # for the current host we can check if nm is installed as service
@@ -645,7 +660,7 @@ ${hoga}   netmask $mask
                         flgn=0
                     fi
                 fi
-                # message an setup
+                # message at setup
                 if [ "$flgn" = 1 ] ; then
                     suff='smart'; hth0='#' ; hlan='#'
                 else
@@ -737,7 +752,6 @@ $head
 
         # --------------------------------------------------------------- STATIC
         elif [ "$suff" = 'static' ] ; then
-hoga='#'
             do_interface_file "$suff" <<!EOF
 $head
 ### Static mode is for simple servers or appliances: 'CENTAURISWITCH=static'.
@@ -837,14 +851,26 @@ do_interface_file() {
     fi
 
     if [ -n "$fdel" ] ; then                    # delete
-#        message -a -c "deleting" "interfaces.$1"
         message -a -c "deleting" "$_netpath"
         remove -s -- "$_netpath"
     else
-#        message -a -c "writing" "interfaces.$1"
         message -a -c "writing" "$file"
         netfile -h -- "$file" && DAT_CREATED+=("$1")
     fi
+}
+
+# ------------------------------------------------------------------------------
+# link a config file: <conf> <target>
+# ------------------------------------------------------------------------------
+do_linkconf() {
+    if [ ! -h "$1" ] && [ -e "$1" ] ; then
+        if [ -z "$CEN_OPT_FORCE" ] ; then
+            error -m "Config is not a symlink, consider using option '--force':" "$1"
+            return 1
+        fi
+        rename -f -b '' -- "$1"                 # append .bak suffix
+    fi
+    symlink -n -r -- "$2" "$1" ; return         # returns status
 }
 
 # ------------------------------------------------------------------------------
@@ -859,14 +885,16 @@ do_metric() {
     printf -v "$1" $(($3 * 100 + 400))
 }
 
+# ------------------------------------------------------------------------------
 # create connection: <name> <ifce> <host> [<ssid> <pasw>]
+# ------------------------------------------------------------------------------
 do_nmconnect() {
-    local name="$1" ifce="$2" host="$3" ssid="${4:--}" pasw="${5:--}"
+    local name="$1" ifce host="$3" ssid="${4:--}" pasw="${5:--}"
+    netiface -k -s ifce "$2"
 
-    if [ "$CEN_OPT_NMAN" = 0 ] ; then
+    if [ -n "$CEN_OPT_OUTPUT" -o "$CEN_OPT_NMAN" = 0 ] ; then
         trace -a "Not using 'nmcli' to create connection"
     elif runservice status 'NetworkManager' ; then
-        message -a -p "Create NetworkManager connection: %s (using 'nmcli')" "$1"
         system -q -- nmcli con del "$name"
 
         local opts=(con add save yes con-name "$name")
@@ -887,9 +915,10 @@ do_nmconnect() {
     # --------------------------------------------------------------------------
 
     local uuid base="$DAT_ETCDIR/NetworkManager/system-connections"
-    message -a -p "Create NetworkManager connection: %s" "$1"
-    folder -m "$base"
-    create -c "${base%/*}/NetworkManager.conf" 644 <<!EOF
+    message -a "Create NetworkManager connection:" "$1"
+    netpath -d "$base"
+    folder -m "$_netpath"
+    create -c "${_netpath%/*}/NetworkManager.conf" 644 <<!EOF
 [main]
 plugins=ifupdown,keyfile
 dhcp=dhclient
@@ -971,7 +1000,11 @@ do_passphrase() {
         printf -v _spsk "%4.4x-%4.4x" "$RANDOM" "$RANDOM"
         message -a -c "Random psk" -- "$_spsk"
     fi
-    system -e -p -s _pass -- wpa_passphrase "$2" "$_spsk" || return 1
+    if [ -n "$CEN_OPT_PLAIN" ] ; then
+        _pass="\"$_spsk\""
+    else
+        system -e -p -r -s _pass -- wpa_passphrase "$2" "$_spsk" || return 1
+    fi
     _pass="${_pass##*[[:space:]]psk=}"
     printf -v "$1" "%s" "${_pass%%[[:space:]]*}" ; return 0
 }
@@ -995,9 +1028,8 @@ do_wpa_check() {
     else
         conf="$dwpa/$DAT_WLAN_SSID.conf"
     fi
-    if [ -z "$fgen" ] ; then
-        [ -f "$conf" ] || invoke -e "No such WLAN config:" "$DAT_WLAN_SSID"
-    fi
+    [ -z "$CEN_OPT_SILENT" -a -z "$fgen" ] && [ ! -f "$conf" ] &&
+        invoke -w "No such WLAN config:" "$conf"
     printf -v "$1" "%s" "$conf"
 }
 
@@ -1005,24 +1037,27 @@ do_wpa_check() {
 # create all configs
 # ------------------------------------------------------------------------------
 actionCreate() {
-### TODO move checks to wpa, hostapd and nmconn
     netconfig -f                                    # load config or die
-    invoke 'naming' - - - 'default'
-    [ "${CEN_OPT_WLAN:--}" != '-' ] && [ -d "$DAT_ETCDIR/wpa_supplicant" ] \
-                                        && invoke 'wpa' - -
-    [ "${CEN_OPT_APOINT:--}" != '-' ] && [ -d "$DAT_ETCDIR/hostapd" ] \
-                                        && invoke 'hostapd' - -
-    [ -e "$DAT_ETCDIR/dnsmasq.conf" ]   && invoke 'dnsmasq' - -
-    [ "${CEN_OPT_WLAN:--}" != '-' ] && netoption 'nm' "$CEN_OPT_HOST" \
-                                        && invoke 'nmconn' - -
-    nethost -s "$CEN_OPT_HOST"          && invoke 'radvd' - -
-    [ -z "$CEN_OPT_KEEP" ]              && invoke 'interface' - -
+    local osil="$CEN_OPT_SILENT" ; CEN_OPT_SILENT=1
+                                         invoke 'naming' - - - 'create'
+    [ "${CEN_OPT_WLAN:--}" != '-' ]   && invoke 'wpa' - -
+    [ "${CEN_OPT_APOINT:--}" != '-' ] && invoke 'hostapd' - -
+                                         invoke 'dnsmasq' - -
+    [ "$CEN_NET_ADDR_METHOD" = 'nm' ] && invoke 'nmconn' - -
+    nethost -s "$CEN_OPT_HOST"        && invoke 'radvd' - -
+    [ -z "$CEN_OPT_KEEP" ]            && invoke 'interface' - -
+    CEN_OPT_SILENT="$osil"
 }
 
 # ------------------------------------------------------------------------------
 # create dnsmasq configuration: local|slave|router|repeater
 # ------------------------------------------------------------------------------
 actionDnsmasq() {
+    if [ ! -f "$DAT_ETCDIR/dnsmasq.conf" ] ; then
+        [ -n "$CEN_OPT_SILENT" ] && return
+        invoke -w "Missing config:" "$DAT_ETCDIR/dnsmasq.conf"
+        return
+    fi
     netconfig -f                                    # load config or die
     local list=() item spri ssec
     DAT_CREATED=()                                  # filled by do_dnsmasq
@@ -1068,6 +1103,7 @@ actionDnsmasq() {
 # ------------------------------------------------------------------------------
 actionHostapd() {
     if [ ! -d "$DAT_ETCDIR/hostapd" ] ; then
+        [ -n "$CEN_OPT_SILENT" ] && return
         invoke -w "Missing folder:" "$DAT_ETCDIR/hostapd"
         return
     fi
@@ -1100,8 +1136,8 @@ actionHostapd() {
         message -c "hostapd file" "keep current:" "$file"
         return
     fi
-    do_passphrase spsk "$ssid" "$spsk"
-    trace -a -c "hostapd file" "$file (SSID='$ssid' PSK='$spsk')"
+    do_passphrase spsk "$ssid" "$spsk" || return 1
+    trace -a -c "hostapd file" "$file (SSID=\"$ssid\" PSK=$spsk)"
 
     # build array with defaults
     local ifw0 ; netiface -s ifw0 -k 'wlan0'
@@ -1171,14 +1207,13 @@ actionHostapd() {
 
     message -a -c "hostapd writing" "$file ($mod5 GHz)"
     netfile -v data -- "$file" 600
-    link="${file%/*}/hostapd.conf"
-    if [ -h "$link" ] || [ ! -e "$link" ] ; then
-        symlink -n "${ssid,,}.conf" "$link"
-    fi
+    do_linkconf "${file%/*}/hostapd.conf" "$file"
 }
 
 # ------------------------------------------------------------------------------
-# Create interface file: <item>...
+# Create interface files:  [-m <mode>] <item>...
+#
+#   Option -m is for internal use only, see actionNaming
 #
 #   Without argument the defaults are
 #       for a server:   static -
@@ -1208,8 +1243,11 @@ actionHostapd() {
 # file.
 # ------------------------------------------------------------------------------
 actionInterface() {
-    netconfig -f                                    # load config or die
     local list=() dlis item mode conf delb
+    if [ "$1" = '-m' ] ; then
+        shift ; mode="$1" ; shift
+    fi
+    netconfig -f                                    # load config or die
     DAT_CREATED=()                                  # filled by do_interface
 
     # set defaults
@@ -1228,16 +1266,23 @@ actionInterface() {
         list=("$@") ; dlis=()
     fi
 
-    # generate interface files
-    if [ "$CEN_OPT_HOST" != "$HOSTNAME" ] &&
+    # get iface naming moe
+    if [ -n "$mode" ] ; then
+        :
+    elif [ "$CEN_OPT_HOST" != "$HOSTNAME" ] &&
         netoption 'sysdnames' "$CEN_OPT_HOST" ; then
-        invoke -w "No systemd naming for:" "$CEN_OPT_HOST"
+        invoke -w "No 'option sysdnames', using 'bios' naming:" "$CEN_OPT_HOST"
         mode='bios'
     else
         netiface -k && mode='systemd' || mode='bios'
     fi
-    netfile -v mode "$DAT_ETCDIR/network/.$CEN_NAME"
 
+    # write status file
+    netquery -s item 'connect' "$CEN_OPT_HOST"
+    netpath -- "$CEN_ROOT/persistent/$CEN_NAME"
+    writeline -e -o "$_netpath" -t -- "$CEN_OPT_HOST" "$item" "$mode"
+
+    # generate interface files
     for item in "${list[@]}" ; do
         mode="${item%%:*}"
         case "$mode" in
@@ -1265,62 +1310,132 @@ actionInterface() {
 # For any other host:   - always use the configured mode
 # ------------------------------------------------------------------------------
 actionNaming() {
-    if [ "$CEN_OPT_HOST" != "$HOSTNAME" ] ; then
-        invoke -e "works only on current host" ; return
+    local stal stak stao stas stag atag want='bios'
+    local mode mini mmen mfil=1 mupd=1
+
+    # --- collect status information ---
+                                                # current library mode
+    netiface -k && stal='systemd' || stal='bios'
+                                                # disabled in local fs?
+    [ "$DAT_ETCDIR/systemd/network/99-default.link" -ef '/dev/null' ] && stas='bios'
+                                                # configuration option
+    if netoption 'sysdnames' "$CEN_OPT_HOST" ; then
+        stao='systemd' ; want='systemd'
+    else
+        stao='bios'
+    fi
+                                                # generated iface files status
+    netpath -- "$CEN_ROOT/persistent/$CEN_NAME"
+    readline -a atag -i "$_netpath"
+    if [ "${atag:-$HOSTNAME}" != "$HOSTNAME" ] ; then
+        warning -a "generated interfaces don't match host name:" "$atag"
+    else
+        stag="${atag[2]}"
     fi
 
-    local stal stak stao stas stag
-    netiface -n
+    netiface -n                                 # kernel param 'net.ifnames' set?
     case "$?" in
     0)  stak='bios' ;;
-    1)  stak='systemd'
+    1)  stak='systemd' ; want='systemd' ;;
+    *)  [ "$stal" = "$stag" ] && want="$stal"
     esac
-    if [ "$DAT_ETCDIR/systemd/network/99-default.link" -ef '/dev/null' ] ; then
-        stal='bios' ; stas='bios'
-    else
-        stal="${stak:-systemd}" ; stas='systemd'
-    fi
-    netoption 'sysdnames' "$CEN_OPT_HOST" && stao="systemd" || stao='bios'
-    readline -s stag -i "${CEN_PATHS[2]}/network/.centaurinetgen"
 
-    if [ -z "$1" ] ; then
-        message "Interface naming status:"
-        message -a -- "- kernel 'net.ifnames':" "${stak:-<not set>}"
-        message -a -- "- /etc/systemd/network:" "$stas"
-        message -a -- "- option sysdnames=...:" "$stao"
-        message -a -- "- generated interfaces:" "${stag:-<unknown>}"
-        message -a -- "- current library mode:" "$stal"
+    # --- action to be taken ---
 
-        [ -n "$stak" ] && [ "$stao" != "$stak" -o  "$stas" != "$stak" ] &&
-            warning -a "Kernel 'net.ifnames' overrides other configuration settings"
-        [ "$stag" != "$stal" ] &&
-            warning -a "Mode changed, please run" "'$CEN_NAME --keep interfaces'"
-        return
-    fi
-
-    local mode
-    case "$1" in
+    case "${1:-sta}" in
+    aut*)       mode="$want" ;;
     bio|bios)   mode='bios' ;;
     sys*)       mode='systemd' ;;
-    def*)       mode="$stao" ;;
-    *)          invoke -e "Argument must be one of:" 'bios systemd default'
 
+    cre*)       mode="$stao" ; mini=1 ; mmen=1 ; mupd= ;;
+    def*)       mode="$stao" ; mini=1 ; mmen=1 ;;
+
+    sta*)       message "Interface naming status:"
+                message -a -- "- kernel 'net.ifnames':" "${stak:-<not set>}"
+                message -a -- "- /etc/systemd/network:" "${stas:-<not set>}"
+                message -a -- "- option sysdnames=...:" "$stao"
+                message -a -- "- mode used by 'auto' :" "$want"
+                message -a -- "- generated interfaces:" "${stag:-<unknown>}"
+                message -a -- "- current library mode:" "$stal"
+                return ;;
+
+    ini*)       mini=1 ; mfil= ;;
+    men|menu)   mmen=1 ; mfil= ;;
+    *)          invoke -e '%s\n            %s' "Argument must be one of:" \
+                          'status bios systemd default auto initrd menu'
+                return
     esac
+
+    # --- update mode ---
 
     if [ "$mode" = 'bios' ] ; then
         symlink -n '/dev/null' "$DAT_ETCDIR/systemd/network/99-default.link"
-    else
+        mini=2 ; mmen=2
+    elif [ "$mode" = 'systemd' ] ; then
         remove -- "$DAT_ETCDIR/systemd/network/99-default.link"
+        mini=2 ; mmen=2
     fi
 
-    if [ -n "$stak" ] && [ "$mode" != "$stak" ] ; then
-        warning -a "Kernel 'net.ifnames' overrides this setting"
-        return
-    elif [ "$mode" != "$stao" ] ; then
-        warning -a "Config 'option sysnames' does not conform to this setting"
-        return
-    elif [ "$stag" != "$stal" ] ; then
-        warning -a "Mode changed, please run" "'$CEN_NAME --keep interfaces'"
+    if [ -n "$mini" -a "$CEN_OPT_HOST" != "$HOSTNAME" ] ; then
+        invoke -w "Can update initrd only for current host"
+        mini=
+    elif [ "$stal" != "${mode:-$stal}" ] ; then
+        warning -a -p "Naming mode change to '%s' needs reboot to become effective" "$mode"
+        mini=1 ; mmen=1
+    fi
+
+    case "$mini" in
+    1)  confirm -y "Update initrd/UKI " || mini= ;;
+    2)  [ -z "$CEN_OPT_SILENT" ] && warning "Initrd may need to be updated" ;;
+    esac
+
+    case "$mmen" in
+    1)  confirm -y "Update boot config" || mmen= ;;
+    2)  [ -z "$CEN_OPT_SILENT" ] && warning "Boot config may need to be updated" ;;
+    esac
+
+    # --- re-create infterface files ---
+
+    if [ -n "$mupd" -a -n "$mfil" -a "$stag" != "$mode" ] &&
+        confirm -y "Update network interface config" ; then
+            CEN_OPT_KEEP=1 ; actionInterface -m "$mode"
+    fi
+
+    # --- update/create initrd ---
+
+    if [ "$mini" = 1 ] ; then
+        local fini
+        system -e -p -r -s fini -- uname --kernel-release || return
+        fini="/boot/initrd.img-$fini"
+        if [ -e "$fini" ] ; then
+            message -a -c "Updating initrd" "$fini"
+            if system -e -p mkinitramfs -o "$fini.tmp" ; then
+                move -x "$fini.tmp" "$fini" || return
+            else
+                remove "$fini.tmp" ; dryrun || return
+            fi
+        else
+            message -a -c "Creating initrd" "$fini"
+            if ! system -e -p mkinitramfs -o "$fini" ; then
+                remove "$fini" ; dryrun || return
+            fi
+        fi
+        # update uki for efi boot
+        [ -e '/boot/package' ] && embed -v centauriefilinux --yes create
+    fi
+
+    # --- update boot entries ---
+
+    if [ "$mmen" = 1 ] ; then
+        if [ -e '/boot/firmware' ] ; then
+            message -a "Updating firmware boot menu"
+            embed -v centauriraspi --yes entry -
+        elif [ -e '/boot/efi/loader' ] ; then
+            message -a "Updating systemd boot menu"
+            embed -v centauriefilinux --yes menu
+        elif [ "$nmen" = 1 ] ; then
+            warning -a "No systemd-boot configuration found"
+        fi
     fi
 }
 
@@ -1345,32 +1460,52 @@ actionList() {
 }
 
 # ------------------------------------------------------------------------------
-# add NM system connections
+# add NM system connections: [<ifce>]
 # ------------------------------------------------------------------------------
 actionNmconn() {
-    local enet host="${CEN_OPT_HOST:--}" ssid="${DAT_WLAN_SSID:--}"
+    if ! netquery 'nm' ; then
+        [ -z "$CEN_OPT_SILENT" ] && invoke -w "NetworkManager is not installed"
+        return
+    fi
+    local mesg enet='eth0' wnet='wlan0' \
+          host="${CEN_OPT_HOST:--}" ssid="${DAT_WLAN_SSID:--}"
     [ "$host" = '-' ] && host="$HOSTNAME"
 
-    # create connection: <name> <ifce> <host> [<ssid> <pasw>]
-    if [ "${1:--}" = '-' ] ; then
-        if nethost "$host-1" ; then                 # has two interfaces ...
+    # which interface(s)
+    case "${1:--}" in
+    -)  if nethost "$host-1" ; then                 # has two interfaces ...
             :
         elif nethost "$host-0" ; then               # ethernet only
             ssid='-'
         elif [ "$ssid" != '-' ] ; then              # wlan only
             enet='-'
-        fi
+        fi ;;
+    eth0)
+        ssid='-' ;;
+    wlan0)
+        enet='-' ; [ "$ssid" = '-' ] && invoke -e "Needs option '--ssdi=<ssid>'"
+        ;;
+    *)  invoke -a - 'eth0|wlan' ; return
+    esac
+
+    if [ "$enet" != '-' ] ; then
+        netiface -s enet -k "$enet" ; mesg="Ethernet=$enet "
     fi
+    if [ "$ssid" != '-' ] ; then
+        netiface -s wnet -k "$wnet" ; mesg+="WLAN=$wnet"
+    fi
+    message "Generating nm connections:" "${mesg% }"
 
-    [ "$enet" = '-' ] || do_nmconnect 'Ethernet' eth0 "$host-0"
-
+    # create connection: <name> <ifce> <host> [<ssid> <pasw>]
+    [ "$enet" = '-' ] || do_nmconnect 'Ethernet' "$enet" "$host-0"
     [ "$ssid" = '-' ] && return
+
     if [ -z "$DAT_WLAN_PASW" ] ; then               # generate random pwd
         printf -v DAT_WLAN_PASW "%4.4x-%4.4x" "$RANDOM" "$RANDOM"
     elif [ "${#DAT_WLAN_PASW}" -lt 8 ] ; then
         invoke -e "Minimum password length is 8" ; return
     fi
-    do_nmconnect "$ssid" wlan0 "$host-1" "$ssid" "$DAT_WLAN_PASW"
+    do_nmconnect "$ssid" "$wnet" "$host-1" "$ssid" "$DAT_WLAN_PASW"
 }
 
 # ------------------------------------------------------------------------------
@@ -1423,6 +1558,7 @@ interface $_netiface
 # ------------------------------------------------------------------------------
 actionWpa() {
     if [ ! -d "$DAT_ETCDIR/wpa_supplicant" ] ; then
+        [ -n "$CEN_OPT_SILENT" ] && return
         invoke -w "Missing folder:" "$DAT_ETCDIR/wpa_supplicant"
         return
     fi
@@ -1440,9 +1576,9 @@ actionWpa() {
     [ "$ssid" = '-' ] && ssid="${DAT_WLAN_SSID:--}"
     [ "$spsk" = '-' ] && spsk="${DAT_WLAN_PASW:--}"
 
-    # do we need a country code?
+    # do we need a country code? Assume yes on a Raspberry Pi
     local cntr='#country=XX'
-    if netoption 'country' "$CEN_OPT_HOST" ; then
+    if netoption 'country' "$CEN_OPT_HOST" || system -c raspi-config ; then
         local line zone ftab='/usr/share/zoneinfo/zone.tab'
         if [ -r "$ftab" ] && resolve -l '/etc/localtime' ; then
             zone="${CEN_RESOLVE##*zoneinfo/}"
@@ -1455,19 +1591,15 @@ actionWpa() {
     do_wpa_check -g file "${ssid,,}"
     if [ "$spsk" = '-' -a -z "$CEN_OPT_FORCE" ] && [ -e "$file" ] ; then
         message -c "WPA file" "keep current:" "$file"
-        if [ "${ssid:--}" != '-' ] ; then
-            link="${file%/*}/wpa_supplicant.conf"
-            if [ -h "$link" ] || [ ! -e "$link" ] ; then
-                symlink -n "${ssid,,}.conf" "$link"
-            fi
-        fi
+        [ "${ssid:--}" = '-' ] ||
+            do_linkconf "${file%/*}/wpa_supplicant.conf" "$file"
         return
     fi
 
     sopt="${file##*/}" ; sopt="${sopt%.*}" ; sopt="${sopt^}"
     [ "${ssid:--}" = '-' ] && ssid="$sopt"
-    do_passphrase spsk "$ssid" "$spsk"
-    trace -a -c "WPA file" "$file (SSID='$ssid' PSK='$spsk')"
+    do_passphrase spsk "$ssid" "$spsk" || return 1
+    trace -a -c "WPA file" "$file (SSID=\"$ssid\" PSK=$spsk)"
 
     # build array with defaults
     data=('ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev'
@@ -1496,10 +1628,7 @@ actionWpa() {
     done
     message -a -c "WPA writing" "$file"
     netfile -v data -- "$file" 600
-    link="${file%/*}/wpa_supplicant.conf"
-    if [ -h "$link" ] || [ ! -e "$link" ] ; then
-        symlink -n "${ssid,,}.conf" "$link"
-    fi
+    do_linkconf "${file%/*}/wpa_supplicant.conf" "$file"
 }
 
 # ------------------------------------------------------------------------------
@@ -1530,10 +1659,12 @@ options() {
         optarg 'host'      -    -t ;;           # text argument
     -K|--kee|--keep)
         optarg 'keep'      -    -f ;;           # flag
-    -O|--out*)
-        optarg 'output'    -    -t ;;           # text argument
     -N|--nm*)
         optarg 'nman'      -    -o ;;           # ternary value
+    -O|--out*)
+        optarg 'output'    -    -t ;;           # text argument
+    -P|--pla*)
+        optarg 'plain'     -    -f ;;           # flag
     -W|--wla|--wlan)
         optarg 'wlan'      -    -t ;;           # text argument
 
@@ -1559,7 +1690,7 @@ actions() {
     nam*)
         invoke -r 'naming'    -        0 1 ;;
     nmc*)
-        invoke -r 'nmconn'    -        0   ;;
+        invoke -r 'nmconn'    -        0 1 ;;
     rad*)
         invoke -r 'radvd'     -        0   ;;
     rem*)
@@ -1578,14 +1709,15 @@ usage() {
         -o - \
         -o '-N --nm     <nman>'   $"use NetworkManager (0:=off  1:=on  2:=auto)" \
         -o '-K --keep'            $"do not auto-delete anything" \
+        -o '-P --plain'           $"use plain-text passwords in WLAN configuration" \
         -o - \
         -o '-O --output <fldr>'   '[*] '$"modify output locations (default: /)" \
         -o '-A --apoint <acfg>'   '[*] '$"WLAN Access Point configuration" \
         -o '-H --host   <name>'   '[*] '$"host to generate for (default: $HOSTNAME)" \
-        -o '-W --wlan   <wcfg>'   '[*] '$"WLAN cient configuration" \
+        -o '-W --wlan   <wcfg>'   '[*] '$"WLAN client configuration" \
         -o - \
         -o '[*] '$"These options are used by 'centaurinetcfg' and 'centaurisoho' to pass" \
-        -o '    '$"parameters to action 'create'. The options get overriden by explicit" \
+        -o '    '$"parameters to action 'create'. The options get overridden by explicit" \
         -o '    '$"action arguments." \
 
     usageset \
@@ -1598,7 +1730,7 @@ usage() {
         -a 'list      [<glob>]'   $"list interface/dnsmasq/hostap/wpa file(s)" \
         -a 'naming    [bios|systemd|default]' \
         -a -                      $"switch between interface naming modes" \
-        -a 'nmconn'               $"generate a NetworkManager system-connections" \
+        -a 'nmconn    [<ifce>]'   $"generate NetworkManager system-connections" \
         -a 'radv'                 $"router advertisment daemon: /etc/radv.conf" \
         -a 'remove    <name>...'  $"remove interface/dnsmasq/hostap/wpa file(s)" \
         -a 'wpa       [<ssid>|- [<psk>|-]] <opt=val>...' \

@@ -10,6 +10,10 @@
 #           the  tools **centaurinetcfg**, **centauriswitch**, **centauriroute** and
 #           **centaurisecrets**.
 #
+#+          The implementation tries to avoid loading other centauri-bash-lib modules,
+#           see [[netfile()]], [[netlink()]] and [[nettemp()]]. These functions also
+#           handle the settings of CEN_NET_OUTPUT for output redirection.
+#
 # Storage:  CEN_NET_DIR_LIB="$CEN_ROOT/persistent"      # for cached things
 #           CEN_NET_FILE_CONF="$CEN_NET_DIR_LIB/centaurinetcfg"
 #           CEN_NET_FILE_FILT="$CEN_NET_DIR_LIB/centaurifilter"
@@ -27,7 +31,7 @@
 # Copyright Dr. J. Pfennig (c) 2013-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_net']='0.29:2'
+CEN_MODULES['_centauri_bash_net']='0.41:4'
 
 # IMPORTED: CEN_NET_OUTPUT                              # see netfile()
 
@@ -39,11 +43,16 @@ CEN_NET_DIR_RUN="$CEN_ROOT/transient"                   # for temporary things
 CEN_NET_FILE_STAT="$CEN_NET_DIR_RUN/network_status"
 CEN_NET_FILE_PROX="$CEN_NET_DIR_RUN/network_proxy"
 
-CEN_NET_PREFIX_IP6_DFLT='fc01::/72'
+CEN_NET_PREFIX_IP6_DFLT='fc01::/96'
+
+# data for netiface ...
 
 CEN_NET_IFNAMES=                # 0:=no mapping  1:=systemd names
 CEN_NET_IFMAP=                  # list of interface mappings
 CEN_NET_IFKCMD=                 # flag for net.ifnames
+CEN_NET_IFIEN=0                 # ethernet index
+CEN_NET_IFIWL=0                 # wlan ...
+CEN_NET_IFIUS=0                 # usb ...
 
 # ------------------------------------------------------------------------------
 # Interface Naming + About BIOS, systemd and internal interface names
@@ -82,11 +91,12 @@ CEN_NET_IFKCMD=                 # flag for net.ifnames
 # ------------------------------------------------------------------------------
 # netconfig - Load network configuration from status file
 #
-# Call:     netconfig [-e|-f] [-r] [<file>]
+# Call:     netconfig [-e|-f] [-r|-u] [<file>]
 #
 # Options:  -e  error if config file not found
 #           -f  fatal error if config file not found
-#           -r  re-read even if CEN_NET_DOMAIN is set
+#           -r  re-read even if CEN_NET_HOSTS is set
+#           -u  unset configuration variables
 #
 # Return:   **false** if configuration cannot be read
 #
@@ -103,12 +113,14 @@ netconfig() {
       -e)   _oerr=error ;;
       -f)   _oerr=fatal ;;
       -r)   _frea=1 ;;
+      -u)   _frea=0 ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done
     [ -n "$CEN_NET_HOSTS" -a -z "$_frea" ] && return 0
     local _file="${1:-$CEN_NET_FILE_CONF}"
 
+    CEN_NET_CONFIG=             # configuration name
     CEN_NET_DOMAIN=             # domain name of the network
     CEN_NET_WIRELESS=           # client and AP WLAN ssids
     CEN_NET_PUBLIC=             # our public dns name
@@ -129,6 +141,7 @@ netconfig() {
     CEN_NET_ADDR_METHOD=        # method to configure IFs: nm dhcp static
 
     CEN_NET_NETWORKS=()         # allowed networks firewall/host.allow
+    CEN_NET_EXTERNAL=           # set to CEN_NET_NETWORKS[7] if external
 
     CEN_NET_FILTERS=()          # ... in samba syntax
 
@@ -145,15 +158,14 @@ netconfig() {
     CEN_NET_PORT_HTTP=          # port for http proxy
     CEN_NET_PORT_HTTPS=         # port for https proxy
 
-    if [ "$CEN_NET_OUTPUT" = '.' ] && [ -r ".$CEN_NET_FILE_CONF" ] ; then
-        _file="./$CEN_NET_FILE_CONF"
-    elif [ -r "$_file" ] ; then
-        _file="$CEN_NET_FILE_CONF"
-    else
-        $_oerr $"No network config:" "$_file" ; return 1
+    [ "$_frea" = 0 ] && return 0
+
+    if [ "$CEN_NET_OUTPUT" = '.' ] && _cen_source ".$CEN_NET_FILE_CONF" ] ; then
+        return 0
+    elif _cen_source "$_file" ; then
+        return 0
     fi
-    $CEN_TRACE2 -c -a ' file' "$_file"
-    source "$_file" ; return 0
+    $_oerr $"No network config:" "$_file" ; return 1
 }
 
 # ------------------------------------------------------------------------------
@@ -226,7 +238,7 @@ netconv() {
             local _pre6="${CEN_NET_PREFIX_IP6:-$CEN_NET_PREFIX_IP6_DFLT}"
             printf -v _netconv '%s::%x:%x' "${_pre6%%:*}" "$_vhig" "$_vlow"
             if [ "$_bits" != "$_addr" ] ; then
-                _bits=$((128 - (32 - _bits)))
+                _bits=$((96 + _bits))
                 _netconv+="/$_bits"
             fi
         else
@@ -408,7 +420,7 @@ nethost() {
 #           -d  return a device path (like "/dev/eth0")
 #           -e  generate error messages
 #           -i  return an internal device name (like "wlan0" or "eth0")
-#           -k  return a systemd/kernel device name
+#           -k  return a systemd/kernel device name or check/init mode
 #           -n  get kernel 'net.ifnames', no init
 #           -p  persist current mappings in a temporary file
 #           -s  save to variable (default is _netiface)
@@ -424,15 +436,15 @@ nethost() {
 # Return:   Form (3) returns **false** with option -k for BIOS naming.
 #
 #.Examples: # check naming mode
-#.          netiface -k
+#.          netiface -k && message "Using systemd names"
+#
+#.          # get kernel 'net.ifnames' status
+#.          netiface -n
 #.          case $? in
 #.          0)  message "Found net.ifnames=0" ;;
 #.          1)  message "Found net.ifnames=1" ;;
 #.          *)  message "No net.ifnames"
 #.          esac
-#
-#.          # get kernel 'net.ifnames' status
-#.          netiface -n  message "kernel has net.ifnames=0"
 #
 #.          # map internal name to kernel name and vice versa
 #.          netiface -k "wlan0"  -e && message "Kernel   name:" "$_netiface"
@@ -505,12 +517,16 @@ netiface() {
     done
 
     if [ -n "$_ncmd" ] ; then               # get cmdline status only
-        _cen_net_map_kcmd ; return
+        _cen_net_getkcmd ; return
     fi
-    [ -z "$CEN_NET_IFNAMES" ] && _cen_net_mapinit
-
+    if [ -z "$CEN_NET_IFNAMES" ] ; then
+        _cen_net_mappers -r
+        if [ -z "$CEN_NET_IFNAMES" ] ; then
+            _cen_net_mapinit ; _pers=1
+        fi
+    fi
     if [ -n "$_pers" ] ; then               # create mapping file
-        _cen_abort - $"option -p not implemented"
+        _cen_net_mappers -w || return 1
     fi
 
     # only ethernet and wlan names are mapped
@@ -549,13 +565,13 @@ netiface() {
     [ "$_mapm" = 'k' ] && _rslt="$_path$_cen_netiface_kern" || _rslt="$_path$_cen_netiface_name"
     [ -z "$_vnam" ] && _netiface="$_rslt" || printf -v "$_vnam" "%s" "$_rslt"
     [ -z "$_exst" ] && return 0
-    [ -e "/sys/class/net/$_cen_netiface_kern" ] && return 0
+    [ -n "$_cen_netiface_kern" ] && [ -e "/sys/class/net/$_cen_netiface_kern" ] && return 0
     $_oerr $"No such interface:" "$_cen_netiface_name ($_cen_netiface_kern)"
     return 1
 }
 
 # get net.ifnames status from kernel cmd line
-_cen_net_map_kcmd() {
+_cen_net_getkcmd() {
     [ -n "$CEN_NET_IFKCMD" ] && return "$CEN_NET_IFKCMD"
     local _wrds _item
     read -r -a _wrds < '/proc/cmdline'
@@ -567,25 +583,85 @@ _cen_net_map_kcmd() {
     return "$CEN_NET_IFKCMD"
 }
 
+_cen_net_maptest() {
+    local _vote=1 _name
+    while [ $# -gt 0 ] ; do
+        _name="$1" ; shift
+        [ -e "$_name" ] || continue
+        case "${_name##*/}" in
+        en?p?)  ((_vote += 1)) ;;
+        wl?p?)  ((_vote += 1)) ;;
+        end?)   ((_vote += 1)) ;;
+        eth?)   ((_vote -= 1)) ;;
+        wlan?)  ((_vote -= 1)) ;;
+        esac
+    done
+    $CEN_TRACE2 -a -c "interface votes" "$_vote"
+    [ "$_vote" -le 0 ]                              # return status
+}
+
 # get current map mode, set CEN_NET_IFNAMES, load rules
 _cen_net_mapinit()  {
     [ -z "$CEN_NET_DOMAIN" ] && { netconfig || return 1 ; }
+    [ -n "$CEN_NET_IFNAMES" ] && return
 
-    # get mapping mode from /etc/systemd/network or kernel cmdline
-    if [ -n "$CEN_NET_IFNAMES" ] ; then
-        :
-    elif [ '/etc/systemd/network/99-default.link' -ef '/dev/null' ] ; then
+    # check for kernel net.ifnames, then try some heuristics
+    if _cen_net_getkcmd ; then                      # this is mandatory
+        CEN_NET_IFNAMES=0
+    elif _cen_net_maptest "/sys/class/net/"[ew]* ; then
         CEN_NET_IFNAMES=0
     else
-        _cen_net_map_kcmd && CEN_NET_IFNAMES=0 || CEN_NET_IFNAMES=1
-        local _item
-        if [ "$CEN_NET_IFNAMES" = 0 ] ; then
-            _item='bios'
-        else
-            [ -n "$CEN_NET_IFACES" ] && _cen_net_maprule    # iface rules
-            _item='systemd'
+        CEN_NET_IFNAMES=1
+    fi
+    if [ "$CEN_NET_IFNAMES" = 0 ] ; then
+        $CEN_TRACE -a -c "interface names" 'bios'
+    else
+        [ -n "$CEN_NET_IFACES" ] && _cen_net_maprule    # iface rules
+        $CEN_TRACE -a -c "interface names" 'systemd'
+
+        local _item _more=()
+        for _item in /sys/class/net/en* ; do
+            case "${_item##*/}" in
+            *u?)    [ -e "$_item" ] && _cen_net_mapiadd 'usb' "${_item##*/}" ;;
+            end?)   [ -e "$_item" ] && _cen_net_mapiadd 'eth' "${_item##*/}" ;;
+            *)      [ -e "$_item" ] && _more+=("$_item")
+            esac
+        done
+        for _item in "${_more[@]}" ; do
+            case "${_item##*/}" in
+            enp?s?) _cen_net_mapiadd 'eth' "${_item##*/}"
+            esac
+        done
+        for _item in "${_more[@]}" ; do
+            case "${_item##*/}" in
+            enp?s?) ;;
+            *)      _cen_net_mapiadd 'eth' "${_item##*/}"
+            esac
+        done
+        for _item in /sys/class/net/wlp* /sys/class/net/wl[!p]* ; do
+            [ -e "$_item" ] && _cen_net_mapiadd 'wlan' "${_item##*/}"
+        done
+    fi
+}
+
+# handle persistancy: -r|-w
+_cen_net_mappers()  {
+    if [ "$1" = '-w' ] ; then
+        if [ "$EUID" != 0 ] ; then
+            CEN_TRACE2 "ifnames not persisted for non-root user"
+            return 0
         fi
-        trace -a -c "interface names" -- "$_item"
+        local _imap="${CEN_NET_IFMAP[@]@A}" ; _imap="${_imap#declare -* }"
+        nettemp -w 'network_ifnames' <<!EOF
+${CEN_NET_IFKCMD@A}
+${CEN_NET_IFNAMES@A}
+$_imap
+${CEN_NET_IFIEN@A}
+${CEN_NET_IFIWL@A}
+${CEN_NET_IFIUS@A}
+!EOF
+    else
+        _cen_source "$CEN_NET_DIR_RUN/network_ifnames" ; return
     fi
 }
 
@@ -615,15 +691,17 @@ _cen_net_mapping() {
         case "$_mapn" in
         enx*)   _cen_net_mapbios "$_mapn" /sys/class/net/enx* ;;
         end*)   _cen_net_mapbios "$_mapn" /sys/class/net/end* ;;
+        enp*u?) _cen_net_mapbios "$_mapn" /sys/class/net/enp*u? ;;
         en*)    _cen_net_mapbios "$_mapn" /sys/class/net/enp* /sys/class/net/en[!p]* ;;
         wl*)    _cen_net_mapbios "$_mapn" /sys/class/net/wlp* /sys/class/net/wl[!p]* ;;
         esac
     elif [ "$1" = '-s' ] ; then             # map to systemd
         case "$_mapn" in
-        eth*)   _cen_net_mapsysd "$_mapn" /sys/class/net/enp* /sys/class/net/en[!p]* ;;
-        usb*)   _cen_net_mapsysd "$_mapn" /sys/class/net/enx* ;;
         wlan*)  _cen_net_mapsysd "$_mapn" /sys/class/net/wlp* /sys/class/net/wl[!p]* ;;
+        usb*)   _cen_net_mapsysd "$_mapn" /sys/class/net/enp*u? ;;
+        *)      _cen_net_mapsysd "$_mapn" /sys/class/net/enp* /sys/class/net/en[!p]* ;;
         esac
+        _cen_net_mapsysd "$_mapn"
     fi
     printf -v "$_vnam" '%s' "$_netiface_mapname" ; return 0
 }
@@ -640,58 +718,74 @@ _cen_net_maprule() {
             warning -c $"not implemented" -- "iface $_item"
             continue
         fi
-        _cen_net_mapiadd "$1=$3" ; _cen_net_mapiadd "$3=$1"
+        _cen_net_mapiadd "$1" "$3"
     done ; set +f
     $CEN_TRACE -a -c "mapping iface" -- "${#CEN_NET_IFMAP[@]} rule(s)"
 }
 
-# map to bios name
+# map to bios name: <sysd> <candidate>...
 _netiface_mapname=
 _cen_net_mapbios() {
     local _mapn="$1" _item _bios _indx=0 _kern _kind='eth'
     [ "${_mapn::2}" = 'wl' ] && _kind='wlan'
     $CEN_TRACE2 -a -c "mapping bios" -- "$*"
 
-    # loop over interface and add bios name to cache
+    # loop over interfaces and add bios name to cache
     while [ $# -gt 1 ] ; do
         shift
         [ -e "$1" ] || continue
         _kern="${1##*/}"
-        _bios="$_kind$_indx" ; ((_indx += 1))   # make bios name
-        _cen_net_mapiadd "$_kern=$_bios"
-        if [ "$_kern" = "$_mapn" ] ; then       # stop on name match
-            _netiface_mapname="$_bios" ; return
-        fi
+        _cen_net_mapiadd "$_mapn" "$_kern" _netiface_mapname && return
     done
+    _netiface_mapname=
 }
 
-# map to systemd name
+# map to systemd name: <bios> <candidate>...
 _cen_net_mapsysd() {
     $CEN_TRACE2 -a -c "mapping systemd" -- "$*"
     local _mapn="$1" _item _kern
+
     while [ $# -gt 1 ] ; do
         shift
         [ -e "$1" ] || continue
         _kern="${1##*/}"
-
-        # skip interfaces that are already registered
-        for _item in "${CEN_NET_IFMAP[@]}" ; do
-            [ "${_item#*=}" = "$_kern" ] || continue
-            $CEN_TRACE2 -a -c "mapping skipped" -- "$_item" ; _kern= ; break
-        done
-        [ -z "$_kern" ] && continue
-        _netiface_mapname="${1##*/}"
-        _cen_net_mapiadd "$_mapn=$_netiface_mapname" ; return
+        if _cen_net_mapiadd "$_mapn" "$_kern" ; then
+            _netiface_mapname="$_kern" ; return
+        fi
     done
+
+    # interface not registered
+    [ -e "/sys/class/net/$_mapn" ] && _netiface_mapname="$_mapn" : _netiface_mapname=
 }
 
-# add to list of known interfaces: <item>
+# Add to list of known interfaces: <bios> <sysd> [<vbio>]
+# This function always makes two entries:  <bios>=<sysd>  and  <sysd>=<bios>
 _cen_net_mapiadd() {
-    for _item in "${CEN_NET_IFMAP[@]}" ; do
-        [ "$_item" = "$1" ] && return
+    local _bios="$1" _sysd="$2" _entr _incr
+    case "$_bios" in
+    eth)    _bios+="$CEN_NET_IFIEN" ; _incr=1 ;;
+    wlan)   _bios+="$CEN_NET_IFIWL" ; _incr=2 ;;
+    en*)    _bios="eth$CEN_NET_IFIEN" ; _incr=1 ;;
+    wl*)    _bios="wlan$CEN_NET_IFIWL" ; _incr=2 ;;
+    us*)    _bios="usb$CEN_NET_IFIUS" ; _incr=3 ;;
+    esac
+    [ -n "$3" ] && printf -v "$3" '%s' "$_bios"
+
+    for _entr in "${CEN_NET_IFMAP[@]}" ; do
+        _entr="${_entr%=*}"
+        [ "$_entr" = "$_bios" ] && return 1
+        [ "$_entr" = "$_sysd" ] && return 1
     done
-    $CEN_TRACE -a -c "mapping added" -- "$1"
-    CEN_NET_IFMAP+=("$1")
+
+    if [ "$_incr" = 1 ] ; then                  # increment next index
+        ((CEN_NET_IFIEN += 1))
+    elif [ "$_incr" = 2 ] ; then
+        ((CEN_NET_IFIWL += 1))
+    elif [ "$_incr" = 3 ] ; then
+        ((CEN_NET_IFIUSS += 1))
+    fi
+    $CEN_TRACE -a -c "mappings added" -- "$_bios" "$_sysd"
+    CEN_NET_IFMAP+=("$_bios=$_sysd" "$_sysd=$_bios") ; return 0
 }
 
 # ------------------------------------------------------------------------------
@@ -699,6 +793,7 @@ _cen_net_mapiadd() {
 #
 # Call:    (1) netindex [-e|-f] [-s <vnet>] <name>      # get by name
 #          (2) netindex [-e|-f] [-s <vnet>] <indx>      # get by index
+#          (3) netindex [-e|-f] [-s <vnet>] <ipv4>      # get index from address
 #
 # Options:  -e  error if network not found
 #           -f  fatal error if network not found
@@ -713,13 +808,17 @@ _cen_net_mapiadd() {
 #          The **_netindex** variable is set on success or cleared on failure.
 #          If present <vnet> is set to the corresponding CEN_NET_NETWORKS entry.
 #
-# Networks:domain   whole IPv4 address range (all subnets)
-#          repeater used by repeater NAT subnet
-#          vpn      used by VPN
-#          iot      non-trusted address range for gadgets
-#          trusted  trusted address range
-#          guest    less-trusted address range
-#          dynamic  addresses assigned by DHCP to unknown MAC addresses
+# Networks: This function handles the domain network and 7 sub-nets. Names and
+#          indexes are hard-coded in the function but nowhere else.
+#
+#          domain   0: whole IPv4 address range (all subnets)
+#          repeater 1: used by repeater NAT subnet
+#          vpn      2: used by VPN
+#          iot      3: non-trusted address range for gadgets
+#          trusted  4: trusted address range
+#          guest    5: less-trusted address range
+#          dynamic  6: addresses assigned by DHCP to unknown MAC addresses
+#          other    7: not used by centauri, user defined
 #
 #+CEN_NET_NETWORKS and so this function use IPv4 addresses. IPv6 addressing is
 # handled by dynamically generating local ULA IPv6 addresses, see [[netconv()]].
@@ -739,18 +838,88 @@ netindex() {
 
     case "$1" in
     dom*)   _netindex=0 ;;
-    rep*)   _netindex=1 ;;
-    vpn)    _netindex=2 ;;
-    iot)    _netindex=3 ;;
-    tru*)   _netindex=4 ;;
-    gue*)   _netindex=5 ;;
-    dyn*)   _netindex=6 ;;
-    [0-6])  _netindex="$1" ;;
+    iot)    _netindex=1 ;;
+    tru*)   _netindex=2 ;;
+    gue*)   _netindex=3 ;;
+    dyn*)   _netindex=4 ;;
+    rep*)   _netindex=5 ;;
+    vpn)    _netindex=6 ;;
+    oth*)   _netindex=7 ;;
+
+    [0-7])  _netindex="$1" ;;
+
+    [0-9]*.[0-9]*.[0-9]*.[0-9]*)
+            _netindex=7
+            while ! netmask "${CEN_NET_NETWORKS[_netindex]}" "$1" ; do
+                ((_netindex -= 1))
+                [ "$_netindex" -ge 0 ] && continue
+                _netindex= ; $_ferr $"Address not in a valid sub-net:" "$1" ; return 1
+            done
+            ;;
+
     *)      [ -n "$_ssav" ] && printf -v "$_ssav" ''
             _netindex= ; $_ferr $"No corresponding network:" "$1" ; return 1
     esac
+
     [ -n "$_ssav" ] && printf -v "$_ssav" '%s' "${CEN_NET_NETWORKS[_netindex]}"
     return 0
+}
+
+# ------------------------------------------------------------------------------
+# netmask - check if address is part of a sub-net
+#
+# Call:    (1) netmask [-e|-f] <base>/<bits>        # is base address valid?
+#          (2) netmask [-e|-f] <base>/<bits> <addr> # is <addr> in base net?
+#
+# Options:  -e  report syntax errors
+#           -f  make syntax errors fatal
+#
+# Arguments:<base>  sub-net base address
+#           <bits>  mask bits of sub-net
+#           <addr>  address to be checked
+#
+# Return:  **0**   success
+#          **1**   general synstax failure
+#          **2**   invalid network mask
+#
+#+This function internally calls [[netparse()]] and [[netconv()]].
+# ------------------------------------------------------------------------------
+_netmask_addr=                          # current binary address
+_netmask_curr=                          # current argument
+_netmask_mask=                          # mask high bits
+netmask() {
+    local _oerr
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)       shift ; break ;;
+      -e|-f)    _oerr="$1" ;;
+      *)        _cen_abort - "$1"
+      esac ; shift
+    done
+    [ "${1:--}" = '-' ] && return 1
+
+    if [ "$1" != "$_netmask_curr" ] ; then      # update cache
+        _netmask_curr="$1" ; _netmask_addr=
+        netparse -a -b $_oerr -n "$1" || return 1
+        _netmask_mask="$((-1 << (32 - _netparse_bits)))"
+        netconv -b "$_netparse_addr" || return 1
+        _netmask_addr="$_netconv"
+        $CEN_TRACE2 -a -c -p " cache" "%-14s -> %x %x" "$1" "$_netmask_addr" "$_netmask_mask"
+    elif [ -z "$_netmask_addr" ] ; then
+        return 1                                # not a valid address
+    fi
+
+    if [ "${2:--}" = '-' ] ; then               # check for valid subnet
+        [ $((_netmask_addr & ~_netmask_mask)) = 0 ] && return 0
+        [ -n "$_oerr" ] && error $_oerr $"Invalid sub-net specification:" "$1"
+        return 2
+    fi
+
+    netparse -a $_oerr -n "$2" || return 1
+    netconv -b "$_netparse_addr" || return 1
+    $CEN_TRACE2 -a -c -p " check" "%-14s -> %x" "$2" "$_netconv"
+    [ $((_netconv & _netmask_mask)) = "$_netmask_addr" ]
+    return                                       # return status
 }
 
 # ------------------------------------------------------------------------------
@@ -818,13 +987,14 @@ netoption() {
 # ------------------------------------------------------------------------------
 # netparse - Parse an IPv4 address and/or netmask
 #
-# Call:     netparse [-a] [-b] [-e|-f] [<ipaddr>][/<maskbits>]
-#           netparse [-b] [-e|-f] <maskbits>
+# Call:     netparse [-a] [-b] [-e|-f] [-n] [<ipaddr>][/<maskbits>]
+#           netparse [-b] [-e|-f] [-n] <maskbits>
 #
 # Options:  -a  address must be present
 #           -b  netmask bits must be present
 #           -e  report errors
 #           -f  make errors fatal
+#           -n  do not fill _netparse_mask, just clear it
 #
 # Arguments:<ipaddr>   a dotted 4-part IPv4 address -or- a network reference
 #           <maskbits> number of maskbit as decimal number
@@ -859,7 +1029,7 @@ _netparse_addr=
 _netparse_bits=
 _netparse_mask=
 netparse() {
-    local _oadr _obit _aadd _oerr=':'
+    local _oadr _obit _aadd _oerr=':' _onom
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -867,6 +1037,7 @@ netparse() {
       -b)   _obit=1 ;;
       -e)   _oerr='error' ;;
       -f)   _oerr='fatal' ;;
+      -n)   _onom=1 ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done
@@ -876,7 +1047,7 @@ netparse() {
         if [[ "$1" =~ (.*<)([a-z].*)(>.*) ]] ; then
             if ! netindex "${BASH_REMATCH[2]}" ; then
                 $_oerr $"Invalid network name:" "$1"
-                _netparse_addr= ; return 2
+                _netparse_addr= ; _netparse_bits= ; return 2
             fi
             set -- "${BASH_REMATCH[1]}$_netindex${BASH_REMATCH[3]}"
         fi
@@ -886,7 +1057,7 @@ netparse() {
     _aadd="${1#<[0-9]>}"
     if [ -n "${_aadd//[0-9.\/]/}" ] ; then
         $_oerr $"Address contains invalid characters:" "$1"
-        _netparse_addr= ; return 3
+        _netparse_addr= ; _netparse_bits= ; return 3
     fi
 
     # argument variants ...
@@ -897,16 +1068,19 @@ netparse() {
     fi
 
     # make netmask
-    if netconv -d $((((1 << 32) - 1) & ~((1 << (32 - _netparse_bits)) - 1))) ; then
-        _netparse_mask="$_netconv" ; return 0
+    if [ -n "$_onom" ] ; then
+        _netparse_mask=
+    elif netconv -d $((((1 << 32) - 1) & ~((1 << (32 - _netparse_bits)) - 1))) ; then
+        _netparse_mask="$_netconv"
     else
-        _netparse_mask=0.0.0.0 ; return 1
+        _netparse_mask='0.0.0.0' ; return 1
     fi
+    return 0
 }
 
 # add ip addr fields (no overflow): <bhig> <blow>
 _cen_net_addradd() {
-    [ -z "$_netparse_addr" ] && return 1
+    [ "${_netparse_addr:-/}" = '/' ] && return 1
     local bhig="${1:-0}" blow="${2:-0}"
     set -- ${_netparse_addr//[.\/]/ }
     ((bhig += $3)) ; [ "$bhig" -gt 255 ] && return 1
@@ -984,7 +1158,10 @@ _nettemp=
 nettemp() {
     # create/check temp dir
     _nettemp="$CEN_NET_DIR_RUN"
-    [ -d "$_nettemp" ] || folder -m -f "$_nettemp"
+    if [ ! -d "$_nettemp" ] ; then
+        [ -h "$_nettemp" ] && system -f -p -b -s _nettemp realpath "$_nettemp"
+        folder -m -f "$_nettemp"
+    fi
 
     # option and arguments
     local lopt
@@ -1009,8 +1186,7 @@ nettemp() {
                 _cen_net_remove "$_nettemp/$arg1" ;;
     -s)                                         # source file
                 _nettemp+="/$arg1"
-                [ -r "$_nettemp" ] || return 1
-                . "$_nettemp" ;;
+                _cen_source "$_nettemp" ;;
     -w)                                         # write file
                 _nettemp+="/$arg1" ; netfile -h "$_nettemp" ;;
     *)                                          # error
@@ -1147,21 +1323,18 @@ netfile() {
     done
     _opts+="$_cflg"
 
-    local hout hmod="${2:-664}"
     if ! netpath "$1" ; then                    # write to /dev/stdout
         create $_opts -o -w -- "$1" ; return
     fi
 
     # we must have a valid base folder to create a file
-    hout="$_netpath"
-    if [ "${hout/\//}" != "$hout" ] && [ ! -d "${hout%/*}" ] ; then
-        $CEN_TRACE -c $"No base folder" -- "$hout"
+    local _hout="$_netpath" _hmod="${2:-664}"
+    if [ "${_hout/\//}" != "$_hout" ] && [ ! -d "${_hout%/*}" ] ; then
+        $CEN_TRACE -c $"No base folder" -- "$_hout"
         return 1
     fi
 
-    # make absolute paths
-    # [ "${hout::2}" = './' ] && resolve -m -s hout -- "$hout"
-    create $_opts -t -w -- "$hout" "$hmod"      # create, warning on failure
+    create $_opts -t -w -- "$_hout" "$_hmod"    # create, warning on failure
 }
 
 # ------------------------------------------------------------------------------
@@ -1169,6 +1342,8 @@ netfile() {
 #
 # Call:     (1) netpath [--] <path>                 # get file path
 #           (2) netpath -d [--] <base> [<suffix>]   # get folder path
+#
+# Options:  -d       check if <base> exists
 #
 # Arguments:<path>   (relative) file path, see below
 #           <base>   (relative) folder path, see below
@@ -1278,8 +1453,7 @@ netproxy() {
 
     # read the file
     if [ -z "$_owrt$_otes" ] ; then
-        [ -r "$CEN_NET_FILE_PROX" ] || return 1
-        . "$CEN_NET_FILE_PROX"
+        _cen_source "$CEN_NET_FILE_PROX" || return 1
         [ -z "$_opad" ] && return
     fi
 
@@ -1289,8 +1463,7 @@ netproxy() {
     if [ -n "$_otes" ] ; then
         #if echo 2>/dev/null >"/dev/tcp/$qual/$port" ; then
         if [ -z "$http_proxy" ] ; then
-            [ -r "$CEN_NET_FILE_PROX" ] || return 1
-            . "$CEN_NET_FILE_PROX"
+            _cen_source "$CEN_NET_FILE_PROX" || return 1
         fi
          [ -z "$http_proxy" ] && return 1
         _otes="${http_proxy#http:/}" ; _otes="${_otes//:/\/}"
@@ -1384,7 +1557,7 @@ export no_proxy
     [ "$_opad" = '-' ] && _opad='/var/www/html/wpad.dat'
     if [ -n "$_opad" ] && [ -d "${_opad%/*}" ] ; then
         [ -z "$serv" ] && serv="$HOSTNAME"
-        trace -c 'PAC Script' "$_opad" "$serv"
+        $CEN_TRACE -c "PAC Script" "$_opad" "$serv"
         local _wpad=(
             'function FindProxyForURL(url, host) {'
             '    if ( url.substring(0, 5) != "http:" )'
@@ -1405,14 +1578,42 @@ export no_proxy
 }
 
 # ------------------------------------------------------------------------------
+# get trusted dns server: <vnam>
+# ------------------------------------------------------------------------------
+_cen_net_homedns() {
+    # are we server?
+    if [ "$HOSTNAME" = "${CEN_NET_SERVERS[0]}" ] ; then
+        printf -v "$1" '%s' "${CEN_NET_SERVERS[0]}" ; return 0
+    elif [ "$HOSTNAME" = "${CEN_NET_SERVERS[1]}" ] ; then
+        printf -v "$1" '%s' "${CEN_NET_SERVERS[1]}" ; return 0
+    fi
+
+    netresolv -r                        # read resolv.conf into netresolv
+    if [ -z "$_netresolv" -o -z "${_netresolv[1]}" ] ; then
+        printf -v "$1" 'localhost' ; return 0
+    fi
+
+    # loop over homedns entries in config
+    local _item _hkey _vnam="$1"
+    for _item in "${CEN_NET_HOMEDNS[@]}" ; do
+        set -- $_item ; set +f
+        [ "$1" != '-' -a "$1" != "$_netresolv" ] && continue        # filter by domain
+        [ "$2" != '-' -a "$2" != "${_netresolv[1]}" ] && continue   # filter by ip
+        printf -v "$_vnam" '%s' "$3" ; return 0
+    done
+    return 1
+}
+
+# ------------------------------------------------------------------------------
 # netquery - Get selected network information
 #
-# Call:     (1) netquery [-e|-f] [-q] [-s <vnam>] <keyword>
-#           (2) netquery [-e|-f] [-q] [-s <vnam>] <keyword> [<host>]
+# Call:     (1) netquery [-e|-f] [-q] [-r] [-s <vnam>] <keyword>
+#           (2) netquery [-e|-f] [-q] [-r] [-s <vnam>] <keyword> [<host>]
 #
 # Options:  -e  error if config file not found
 #           -f  fatal error if config file not found
-#           -q  return qualifed names
+#           -q  return qualifed names (or nm|simple for 'connect')
+#           -r  discard cache, reload data
 #           -s  save result to named variable
 #
 # Arguments:<keyword>     select information to be returned, see below
@@ -1434,6 +1635,9 @@ export no_proxy
 #           primary       get primary server name
 #           secondary     get secondary server name
 #           current       get current server name
+#           homedns       get trusted dns server name
+#
+#           nm            get NetworkManager config folder, return true if installed
 #
 #           connect       [*] get connection management mechanics
 #           class         [*] get device class
@@ -1441,16 +1645,28 @@ export no_proxy
 #
 #           [*] Form (2) calls can have a <host> argement. If missing HOSTNAME is used.
 #
+#+The result for uppercase keywords is based on the dynamic CEN_NET_ROLE, and
+# **NOT** the static configuration data. Lowercase keywords return static data.
+#
+#+The function calls [[netserver()]] if CEN_NET_ROLE is not yet set. To refresh
+# the loaded information, [[netserver()]] must be called explicitly. It always
+# calls [[netconfig()]]. So after a call to [[netquery()]] all CEN_NET_XXX state
+# and configuration variables are set.
+#
 #+connect:  depending on centaurinetcfg option settings one of the following is returned:
 #
+#           auto          uses 'smart' if nm is installed or 'simple' otherwise
 #           manual        not managed by centaurinetcfg/centauriswitch
-#           auto          uses NetworkManager if installed or 'simple' otherwise
-#           static        no NetworkManager, no DHCP
-#           simple        uses DHCP
-#           smart         NetworkManager with generic address switching
 #           nm            uses NetworkManager
+#           simple        uses DHCP
+#           static        uses neither NetworkManager, nor DHCP
 #
-##           without option -s the CEN_NET_ADDR_METHOD variable is set.
+#           without option -s the CEN_NET_ADDR_METHOD variable is set:
+#
+#           dhcp          for 'simple' -or- for 'auto'|'nm' without nm installed
+#           manual        for 'manual'
+#           nm            for 'auto'|'nm' with nm installed
+#           static        for 'static'
 #
 #+class:    depending on centaurinet option settings one of the following is returned.
 #           Option checks are made in the listed order, 1st match winns:
@@ -1481,14 +1697,6 @@ export no_proxy
 #.          else
 #.              message "Stand alone, server:" "${snam:-<none>}"
 #.          fi
-#
-#+The result for uppercase keywords is based on the dynamic CEN_NET_ROLE, and
-# **NOT** the static configuration data. Lowercase keywords return static data.
-#
-#+The function calls [[netserver()]] if CEN_NET_ROLE is not yet set. To refresh
-# the loaded information, [[netserver()]] must be called explicitly. It always
-# calls [[netconfig()]]. So after a call to [[netquery()]] all CEN_NET_XXX state
-# and configuration variables are set.
 # ------------------------------------------------------------------------------
 netquery() {
     local _ferr _ssav _valu _stat=1 _qual
@@ -1497,12 +1705,13 @@ netquery() {
       --)    shift ; break ;;
       -e|-f) _ferr="$1" ;;
       -q)    _qual='.' ;;
-      -s)    shift ; _ssav="$1" ; printf -v "$_ssav" "" ;;
+      -r)    CEN_NET_HOSTS= ; CEN_NET_ROLE= ;;
+      -s)    shift ; _ssav="$1" ; printf -v "$_ssav" '' ;;
       *)     _cen_abort - "$1"
       esac ; shift
     done
 
-    [ -z "$CEN_NET_DOMAIN" ] && { netconfig $_ferr || return 1 ; }
+    [ -z "$CEN_NET_HOSTS" ] && { netconfig $_ferr || return 1 ; }
     if [ -z "$CEN_NET_ROLE" ] ; then
         netserver || _qual=
     fi
@@ -1544,6 +1753,23 @@ netquery() {
                         _valu="${CEN_NET_SERVERS[1]}" ; _stat=0
                     fi ;;
 
+    homedns)        if _cen_net_homedns _valu ; then
+                        _stat=0
+                        # (1) remove our own domain name (2) never qualify localhost
+                        [ "${_valu#*.}" = "$CEN_NET_DOMAIN" ] && _valu="${_valu%%.*}"
+                        [ "$_valu" = 'localhost' ] && _qual=
+                    fi ;;
+
+    nm)             _stat=1 ; _valu='/etc/NetworkManager'
+                    [ "$CEN_NET_OUTPUT" = '.' ] && _valu=".$_valu"
+                    if [ -d "$_valu" ] ; then
+                        _stat='/usr/sbin/NetworkManager'
+                        [ "$CEN_NET_OUTPUT" = '.' ] && _stat=".$_stat"
+                        if [ -x "$_stat" ] || [ -x "${_stat/sbin/bin}" ] ; then
+                            _stat=0
+                        fi
+                    fi ; _qual= ;;
+
     connect)        # explicit host given, ignore '*'
                     [ "${2:--}" = '-' ] && set -- "$1" "$HOSTNAME"
                     if   netoption -x 'manual' "$2" ; then  _valu='manual'
@@ -1557,24 +1783,29 @@ netquery() {
                     # nothing at all, same as 'manual'
                     else                                    _valu='manual'
                     fi
-                    _stat=0 # ; [ -n "$_ssav" ] || CEN_NET_ADDR_METHOD="$_valu"
+                    if [ -z "$_ssav" ] ; then
+                        if [ "$_valu" = 'nm' -o "$_valu" = 'auto' ] ; then
+                            netquery 'nm' && _valu='nm' || _valu='dhcp'
+                        fi
+                        _ssav='CEN_NET_ADDR_METHOD'
+                    fi
+                    _qual= ; _stat=0
                     ;;
     class)          [ "${2:--}" = '-' ] && set -- "$1" "$HOSTNAME"
                     if [ "$2" = "${CEN_NET_SERVERS[0]}" -o \
                          "$2" = "${CEN_NET_SERVERS[1]}" -o \
-                         "$2" = "$CEN_NET_SERVER_GEN" ] ; then
-                        _valu='server'
-                    elif netoption 'mobile' "$2" ; then
-                        _valu='mobile'
-                    elif netoption 'phone' "$2" ; then
-                        _valu='phone'
-                    elif netoption 'generic' "$2" ; then
-                        _valu='generic'
-                    elif nethost "$2" ; then
-                        _valu='client'
-                    else
-                        _valu='generic'
+                         "$2" = "$CEN_NET_SERVER_GEN" ]
+                    then                                    _valu='server'
+                    elif netoption 'mobile'  "$2" ; then    _valu='mobile'
+                    elif netoption 'phone'   "$2" ; then    _valu='phone'
+                    elif netoption 'generic' "$2" ; then    _valu='generic'
+                    elif nethost "$2" ; then                _valu='client'
+                    else                                    _valu='generic'
                     fi
+                    _qual= ; _stat=0
+                    ;;
+    config)         _valu="${CEN_NET_CONFIG:-${CEN_NET_DOMAIN%%.*}}"
+                    _qual= ; _stat=0
                     ;;
     *)              _cen_abort - "$*"
     esac
@@ -1624,7 +1855,7 @@ netresolv() {
 
     # default host
     local ssvr dflt
-    if [ "$1" = "-d" ] ; then
+    if [ "$1" = '-d' ] ; then
         shift ; dflt="$1" ; shift
     fi
 
@@ -1684,9 +1915,8 @@ $sdom$ssvr
 # ------------------------------------------------------------------------------
 netserver() {
     # read the file
-    if [ "$1" != "-w" ] ; then
-        [ -r "$CEN_NET_FILE_STAT" ] || return 1
-        . "$CEN_NET_FILE_STAT"
+    if [ "$1" != '-w' ] ; then
+        _cen_source "$CEN_NET_FILE_STAT"
         return                      # return status
     fi
 
@@ -1700,12 +1930,12 @@ netserver() {
     # role (imply WORKSTATION for CLIENT)
     local role="$1"
     if [ "${1:--}" = '-' ] ; then
-        role="UNKNOWN" ; [ "$2" = 'CLIENT' ] && role="WORKSTATION"
+        role='UNKNOWN' ; [ "$2" = 'CLIENT' ] && role="WORKSTATION"
     fi
 
     # find name of server
     local sgen smas
-    if [ "$2" = "GUEST" ] ; then
+    if [ "$2" = 'GUEST' ] ; then
         sgen="$3"
     else
         netconfig
@@ -1724,14 +1954,14 @@ netserver() {
 
     netfile -h <<!EOF "${CEN_NET_FILE_STAT}"
 # The computer's role (PRIMARY, SECONDARY, WORKSTATION, UNKNOWN):
-CEN_NET_ROLE="$CEN_NET_ROLE"
+CEN_NET_ROLE='$CEN_NET_ROLE'
 
 # The current mode (MASTER, SLAVE, CLIENT, GUEST, SINGLE, UNKNOWN):
-CEN_NET_MODE="$CEN_NET_MODE"
+CEN_NET_MODE='$CEN_NET_MODE'
 
 # The domain server (empty if not connected to server):
-CEN_NET_SERVER="$CEN_NET_SERVER"
-CEN_NET_MASTER="$CEN_NET_MASTER"
+CEN_NET_SERVER='$CEN_NET_SERVER'
+CEN_NET_MASTER='$CEN_NET_MASTER'
 !EOF
 }
 
@@ -1799,8 +2029,8 @@ nettool() {
         -c)     _carr=1 ;;
         -d)     shift ; _ifce="$1" ;;
         -f)     _ferr='-f -p' ; _oerr=fatal ;;
-        -i)     shift ; _tool=ip ; _what="$1" ;;
-        -o)     _tool=ip ; _what='route' ;;
+        -i)     shift ; _tool='ip' ; _what="$1" ;;
+        -o)     _tool='ip' ; _what='route' ;;
         -q)     _ferr='-q' ; _oerr=: ;;
         -r)     _orun='-r' ;;
         -t)     shift ; _tool="$1" ;;
@@ -1809,7 +2039,7 @@ nettool() {
         esac ; shift
     done
 
-    # do we need a device label (ifonfig compatibility)
+    # do we need a device label (ifconfig compatibility)
     if [ "$_ifce" != "${_ifce%:*}" ] ; then
         _labl="${_ifce##*:}" ; _ifce="${_ifce%:*}"
     fi
@@ -1882,7 +2112,11 @@ nettool() {
                 [ "$_cmnd" = 'isu' ] && return 1
                 [ "$_cmnd" = 'dow' ] && return 0
                 [ "$_cmnd" = 'exi' ] && return 0
-                _tool='ifup' ; set -- '--force' "$_ifce"
+                if sysrun -q ifquery "/dev/$_ifce" ; then       # managed by ifup ...
+                    _tool='ifup' ; set -- '--force' "$_ifce"
+                else
+                    _tool='ip' ; set -- link set up "$_ifce"
+                fi
             fi
         fi
     fi

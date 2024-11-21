@@ -4,7 +4,7 @@ CEN_LEGAL="Dr. Jürgen Pfennig (c) 2023-2024; BSD License"
 CEN_TITLE=$"Manage X509 certificates and centificate-authorities"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -y - '0.10:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -y - '0.11:2' || exit 2
 
 # Data
 CEN_OPT_BASE=                   # see --base (set to pki base folder
@@ -303,26 +303,30 @@ actionList() {
 }
 
 # ------------------------------------------------------------------------------
-# revoke a centificate: <file>|<name>
+# revoke a centificate: [<file>|<name>]
 # ------------------------------------------------------------------------------
 actionRevoke() {
     find_base || return
-    local file name
-    if [ "${1/\//}" = "$1" ] ; then
-        file="pki/issued/$1.crt"
+    if [ $# != 0 ] ; then
+        local file name
+        if [ "${1/\//}" = "$1" ] ; then
+            file="pki/issued/$1.crt"
+        else
+            inpfile -s "$file" -- "$1" || return
+        fi
+        name="${file##*/}" ; name="${name%%.*}"
+
+        if [ ! -e "pki/issued/$name.crt" ] ; then
+            invoke -e "Certificate unknown by this CA:" "$name" ; return
+        fi
+
+        message -a -c "Revoke certificate" "$name"
+        [ "$CEN_ACTION" = 'create' ] || remove -q -- "certs/$name.crt"
+        remove -q -- "keys/$name.key"
+        run_easyrsa -p revoke "$name"
     else
-        inpfile -s "$file" -- "$1" || return
+        message -a -c "Revokation list" "Create 'crl.pem'"
     fi
-    name="${file##*/}" ; name="${name%%.*}"
-
-    if [ ! -e "pki/issued/$name.crt" ] ; then
-        invoke -e "Certificate unknown by this CA:" "$name" ; return
-    fi
-
-    message -a -c "Revoke certificate" "$name"
-    [ "$CEN_ACTION" = 'create' ] || remove -q -- "certs/$name.crt"
-    remove -q -- "keys/$name.key"
-    run_easyrsa -p revoke "$name"
     run_easyrsa -p gen-crl
     symlink -q 'pki/crl.pem' 'crl.pem'
 }
@@ -412,9 +416,9 @@ actions() {
     inf|info)
         invoke    'info'    -       1   ;;                  # 1 arg
     lis|list)
-        invoke -r 'list'    -       0 1 ;;                  # no args
+        invoke -r 'list'    -       0 1 ;;                  # 1 optional arg
     rev*)
-        invoke    'revoke'  -       1   ;;                  # 1 arg
+        invoke    'revoke'  -       0 1 ;;                  # 1 optional arg
     set*)
         invoke -r 'setup'   -       0   ;;                  # no args
 
@@ -449,7 +453,7 @@ usage() {
         -a -                      $"export certificate as tar file" \
         -a 'info   <cert>'        $"show certificate information" \
         -a 'list   [<glob>]'      $"list certificate status" \
-        -a 'revoke <cert>'        $"show certificate information" \
+        -a 'revoke [<cert>]'      $"revoke certificate, generate crl.pem" \
 
    usageset \
         -p '<cert>'               $"name or path of a certificate or certificate" \

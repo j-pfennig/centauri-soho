@@ -10,6 +10,7 @@ Wants=centauriissue.service
 [Service]
 Type=oneshot
 ExecStart=/var/centauri/tools/centaurisysinit --daemon=0 start
+RemainAfterExit=yes
 
 [Install]
 WantedBy=sysinit.target

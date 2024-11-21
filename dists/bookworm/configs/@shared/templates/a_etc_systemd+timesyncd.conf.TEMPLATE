@@ -14,9 +14,8 @@
 [Time]
 
 # our server should provide ntp service...
-NTP=%P% %S%
-
-FallbackNTP=0.debian.pool.ntp.org 1.debian.pool.ntp.org 2.debian.pool.ntp.org 3.debian.pool.ntp.org
+NTP=
+FallbackNTP=%P% %S% 0.debian.pool.ntp.org 1.debian.pool.ntp.org 2.debian.pool.ntp.org 3.debian.pool.ntp.org
 
 #RootDistanceMaxSec=5
 #PollIntervalMinSec=32

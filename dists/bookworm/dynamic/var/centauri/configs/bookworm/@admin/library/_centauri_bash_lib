@@ -16,12 +16,13 @@
 #           -f  enable --force option
 #           -g  enable --gui option (windows or console extension)
 #           -i  enable --include --exclude options
+#           -l  enable syslog output
 #           -m  load an extension module (next argument is <name>)
 #           -o  source $CEN_ROOT/defaults/$CEN_NAME on startup
 #           -r  do not dispatch action verbs, just call [[run()]]
 #           -s  enable --silent option
 #           -t  enable text translations
-#           -v  enable --syslog option (optionally run as service)
+#           -v  make this script a service
 #           -y  enable --yes --no options
 #
 # Arguments:<opt>   any option
@@ -44,7 +45,7 @@
 # Copyright Dr. J. Pfennig (c) 2007-2024
 # ------------------------------------------------------------------------------
 
-declare -g -A CEN_MODULES['_centauri_bash_lib']='1.31:3:1'
+declare -g -A CEN_MODULES['_centauri_bash_lib']='1.34:4:1'
 
 CEN_ACTARR=             # action argument array
 CEN_ACTION=             # action name, see invoke()
@@ -115,6 +116,7 @@ CEN_FEATURE_E=          # quit on errors
 CEN_FEATURE_F=          # enable --force
 CEN_FEATURE_G=          # enable --gui
 CEN_FEATURE_I=          # enable --include|--exclude
+CEN_FEATURE_L=          # enable --syslog
 CEN_FEATURE_O=          # read defaults at start
 CEN_FEATURE_R=          # enable simple run()
 CEN_FEATURE_S=          # enable --silent
@@ -149,6 +151,7 @@ while [ "${1::1}" = '-' ] ; do
     -f)   CEN_FEATURE_F=1 ;;
     -g)   CEN_FEATURE_G=1 ;;
     -i)   CEN_FEATURE_I=1 ;;
+    -l)   CEN_FEATURE_L=1 ; CEN_MODULES['_centauri_bash_svc']= ;;
     -m)   shift ; CEN_MODULES["_centauri_bash_$1"]= ;;
     -o)   CEN_FEATURE_O=1 ;;
     -r)   CEN_FEATURE_R=1 ; CEN_RUN_MIN_ARGS='+' ;;
@@ -272,18 +275,23 @@ warning()   {   $CEN_NOTRACE return 0 ; $CEN_HOOK_MESSAGE -w "$@" || : ; }
 #           error -s <exit>
 #           error [-c|-t|-x]
 #           error -q [-a|-i] [[-] <msg>...]
+#           error -e|-f|-w ...
 #
 # Options:  ... most [[message()]] options (the implementation calls **message -e**)
 #           -c  clear error state (resets CEN_EXIT and CEN_DONE from 2 to 1)
-#           -f  make error fatal - same as calling [[fatal()]]
+#           -e  [*] ignored
+#           -f  [*] make error fatal - same as calling [[fatal()]]
 #           -q  call [[quit()]] if a previous ''error'' has occurred
 #           -s  set exit code, saved as variable CEN_EXIT. The minimum value is 2,
 #               lower values are stored as 2. Updates CEN_DONE from 1 to 2.
 #           -t  silently check for pending error termination. Returns **false** for
 #               **CEN_DONE == 2** and **true** for all other cases.
+#           -w  [*] make error a warning, same as calling [[warning()]]
 #           -x  don't modify CEN_DONE on errors (sets **CEN_DONE=0**). This disables
 #               error testing (-t and -q) and error termination by [[main()]].
 #           -z  return 0 status
+#
+#           [*] used to simplify the handling of -e|-f|-w options in library functions
 #
 # Return:   The value of CEN_EXIT (unless -t or -z are used)
 #
@@ -322,17 +330,20 @@ error() {
       -a|-i|-n|-m|-p|-r)
             _popt+=("$1") ;;
       -c)   CEN_EXIT=0 ; [ "$CEN_DONE" = 2 ] && CEN_DONE=1 ; return 0 ;;
-      -f)   _fopt=1 ;;
+      -e)   ;;
+      -f)   _fopt='fatal' ;;
       -s)   CEN_EXIT="$2" ; _isok=1 ; shift ;;
       -t)   [ "$CEN_DONE" != 2 ] ; return ;;
       -q)   [ "$CEN_DONE" != 2 ] && return ; _fqui=1 ;;
+      -w)   _fopt='warning' ;;
       -x)   CEN_DONE=0 ; return $CEN_EXIT ;;
       -z)   _zero=0 ;;
        *)   _cen_abort - "$1"
       esac ; shift
     done
 
-    [ -n "$_fopt" ] && fatal ${_popt[@]} -- "$@"
+    CEN_AUTOIND=
+    [ -n "$_fopt" ] && { $_fopt ${_popt[@]} -- "$@" ; return 1 ; }
     [ -n "$_fqui" ] && quit ${_popt[@]} ${1:+-e} -- "$@"
     [ -n "$CEN_NOTRACE" ] && [ -z "$_isok" -a -n "$*" ] && message -e ${_popt[@]} -- "$@"
     [ "$CEN_DONE" = 1 ] && CEN_DONE=2
@@ -543,10 +554,10 @@ _cen_trap() {
     quit -t - $"caught signal" "$1"
 }
 
-# fatal error with stack trace: [-n] [-<indx>] <mesg>|-|+|=|@ <arg>...
+# fatal error with stack trace: [-n|-r] [-<indx>] <mesg>|-|+|=|@ <arg>...
 _cen_abort() {
     set +xeE ; IFS=$' \n\t' ; exec 1>&$CEN_STDOUT 2>&$CEN_STDERR
-    local _fnot _indx=1 _idnt="| " _mesg _temp
+    local _fnot _indx=1 _idnt='| ' _mesg _temp
 
     while [ "${1::1}" = '-' -o "${#1}" = 1 ] ; do
       case "$1" in
@@ -555,7 +566,8 @@ _cen_abort() {
       +)  shift ; _mesg=$"Missing argument" ; break ;;
       =)  shift ; _mesg=$"Missing option" ; break ;;
       ?)  shift ; _mesg=$"Invalid argument" ; break ;;
-      -n) [ "$CEN_VERB" -le 2 ] && _fnot=1 ;;
+      -n) [ "$CEN_VERB" -le 2 ] && _fnot=1 ;;       # no function trace
+      -r) _fnot=2 ;;                                # return after trace
       -[0-9]) _indx=${1:1} ;
       esac ; shift
     done
@@ -563,11 +575,13 @@ _cen_abort() {
     if [ -z "$_mesg" ] ; then
         _mesg="$*"
     elif [ $# -gt 0 ] ; then
-        _mesg+=" '$*'"
+        _mesg+=" '$*'. "
+    else
+        _mesg+='. '
     fi
 
     CEN_AUTOIND=
-    if [ -n "$_fnot" ] ; then
+    if [ "$_fnot" = 1 ] ; then
         _idnt="${BASH_SOURCE[_indx]##*/}.${FUNCNAME[_indx]}"
         case "${_idnt##_centauri_bash_lib*.}" in
         invoke|options)
@@ -578,13 +592,16 @@ _cen_abort() {
         _cen_message -l -r $"***ABORT***" "$_mesg" ; _cen_exit 4
     fi
 
-    _mesg+=". "$"Function call stack..."$'\n'
+    _mesg+=$"Function call stack..."$'\n'
     while [ -n "${FUNCNAME[_indx]}" ] ; do
         _mesg+="$_idnt${BASH_SOURCE[_indx]}.${FUNCNAME[_indx]}() ${BASH_LINENO[_indx-1]}"$'\n'
-        ((_indx += 1)) ; _idnt+="   "
+        ((_indx += 1)) ; _idnt+='   '
     done
     _temp="$CEN_NAME ${CEN_CMDOPTS[*]} ${CEN_CMDARGS[*]}" ; _temp="${_temp% }"
     _cen_compactify _temp ; _mesg+="$_temp"
+    if [ "$_fnot" = 2 ] ; then
+        _cen_message -l -n -r "$_mesg" ; return 0
+    fi
     _cen_message -l -n -r $"***ABORT***" "$_mesg" ; _cen_exit 4
 }
 
@@ -739,7 +756,7 @@ apicheck() {
     # init CEN_VERSION array
     local _vers="$1" _varr
     if [ -z "${CEN_VERSION[1]}" ] ; then
-        local _varg="${CEN_MODULES["_centauri_bash_lib"]}"
+        local _varg="${CEN_MODULES['_centauri_bash_lib']}"
         _varg="${_varg//[^.:0-9]/}" ; _varr=( ${_varg//:/ } )
         CEN_VERSION=("$CEN_VERSION" "${_varr[@]}") ; _varr=()
     fi
@@ -748,7 +765,7 @@ apicheck() {
     if [ -n "$_fmod" ] ; then
         _scal="$_vers" ; _vers="${CEN_MODULES["$_vers"]}"
     elif [ -z "$_vers" ] ; then
-        _vers="${CEN_MODULES["_centauri_bash_lib"]}"
+        _vers="${CEN_MODULES['_centauri_bash_lib']}"
     fi
     _vers="${_vers//[^.:0-9]/}" ; _varr=( ${_vers//:/ } )
     [ -n "$_vnam" ] && _vvar=("${_varr[@]}")
@@ -909,7 +926,7 @@ arguments() {
 # ------------------------------------------------------------------------------
 confirm() {
     local _imod=0 _ifmt _ipro _idef _iqui _ival=$"yes no"
-    local _sind=2 _snam _smul _uppc _yeno _cncl _dflt _prom _vala _vali _warn _fset="CEN_CONFIRM"
+    local _sind=2 _snam _smul _uppc _yeno _cncl _dflt _prom _vala _vali _warn _fset='CEN_CONFIRM'
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -1094,7 +1111,7 @@ _cen_getline() {
 #           -n  don't add --wait for console
 #           -q  [*] check if caller is running in a console
 #           -r  raise a fatal error if the caller is not root
-#           -s  rerun via **sudo** if necessary
+#           -s  rerun as user root via **sudo** if necessary
 #           -t  trap signals (**+**:incr  **-**:decr  <name>:callback)
 #           -v  set verbosity (0:=quiet 1:=normal 2:=verbose 3:=trace)
 #           -x  [*] execute command in console
@@ -1184,7 +1201,7 @@ _cen_getline() {
 #.          }
 # ------------------------------------------------------------------------------
 context() {
-    local _aerr _cons _hooc _hoov _hoof _mgui _root _sudo _text _trap _verb _wait="--wait --wait"
+    local _aerr _cons _hooc _hoov _hoof _mgui _root _sudo _text _trap _verb _wait='--wait --wait'
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -1195,7 +1212,7 @@ context() {
       -n)   _wait=  ;;
       -q)   _cons=0 ;;
       -r)   _root=1 ;;
-      -s)   _sudo="sudo" ;;
+      -s)   [ "$EUID" = 0 ] || _sudo='sudo' ;;
       -t)   shift ; _trap="${1:-+}" ;;
       -v)   shift ; _verb="$1" ;;
       -x)   _cons=2 ;;
@@ -1317,7 +1334,6 @@ context() {
     fi
 
     [ "$_cons" = 1 -a "$CEN_IS_DESKTOP" = 0 ] && _cons=
-    [ -n "$_sudo" -a "$EUID" = 0 ] && _sudo=
     [ -z "$_cons" -a -z "$_sudo" ] && return 0
 
     # re-run as sudo but not in console
@@ -1585,7 +1601,7 @@ _cen_compactify() {
 #           -t  do not run <script> after previous error
 #           -u  run as <user> via sudo (use "-u -" for **root**)
 #           -v  pass --verbose|--quiet options to <script>
-#           -x  [*] invoke <script> via **exec**. Does not return
+#           -x  [*] invoke via **exec**, no return, do not run quit hooks
 #           -y  pass --yes|--no options to <script>
 #           -z  pass --dryrun option to <script>
 #           [*] these options are mutually exclusive
@@ -1620,12 +1636,12 @@ embed() {
       --)   shift ; break ;;
       -a)   shift ; _vset="$1" ; local -n _vsar="$1" ; _vsar=() ;;
       -c)   _modu=3 ;;
-      -d)   shift ; [ "$1" = '--' ] && _vdel=(-n) || _vdel=("-d" "$1") ;;
+      -d)   shift ; [ "$1" = '--' ] && _vdel=(-n) || _vdel=('-d' "$1") ;;
       -g)   if   windows ; then _verb+=' --gui=1'
             elif console ; then _verb+=' --gui=2'
             else                _verb+=' --gui=0'
             fi ;;
-      -i)   [ -n "$CEN_AUTOIND" ] && _oind=":a" ; CEN_AUTOIND=1 ;;
+      -i)   [ -n "$CEN_AUTOIND" ] && _oind=':a' ; CEN_AUTOIND=1 ;;
       -m)   _modu=1 ; _rdry='-r' ;;
       -n)   _terr=1 ;;
       -q)   _modu=2 ; _rdry='-r' ;;
@@ -1644,7 +1660,7 @@ embed() {
       esac ; shift
     done
     local _sexi=0 _enam="${CEN_EMBED:-$CEN_NAME}" _snam="${1##*/}" _srun="$1" ; shift
-    if ! [ "${_srun::1}" = "/" -o "${_srun::2}" = "./" ] ; then
+    if ! [ "${_srun::1}" = '/' -o "${_srun::2}" = './' ] ; then
         [ -n "$_modu" ] && _srun="$CEN_LIBRARY/$_srun" || _srun="$CEN_TOOLS/$_srun"
     fi
 
@@ -1663,9 +1679,9 @@ embed() {
             $CEN_TRACE2 -a -c $" module" "$_snam" "$@"
             [ -n "$TEXTDOMAIN" ] && TEXTDOMAIN="$_snam"
             if [ "$_srun.p" -nt "$_srun" ] ; then
-                . "$_srun.p" "$@" || _sexi=$?
+                source "$_srun.p" "$@" || _sexi=$?
             else
-                . "$_srun" "$@" && apicheck -f -m -- "$_snam" || _sexi=$?
+                source "$_srun" "$@" && apicheck -f -m -- "$_snam" || _sexi=$?
             fi
         else
             _sexi=1
@@ -1813,11 +1829,11 @@ filter() {
 #.          create -t -v "$data" -h - "$CEN_FOLDER"
 # ------------------------------------------------------------------------------
 folder() {
-    local _oftl="error -z" _ocwd=":" _ogen _onor _omak _oopt _tdir _tsuf _rdry _adir _vnam="CEN_FOLDER"
+    local _oftl='error -z' _ocwd=':' _ogen _onor _omak _oopt _tdir _tsuf _rdry _adir _vnam="CEN_FOLDER"
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
-      -b)   shift ; _tsuf="/"
+      -b)   shift ; _tsuf='/'
             case "$1" in
                 prefix)     _tdir="${CEN_PATHS[0]}" ; shift ; continue ;;
                 corebin)    _tdir="${CEN_PATHS[1]}" ; shift ; continue ;;
@@ -1833,16 +1849,16 @@ folder() {
             esac
             # the final result is _tdir, _adir overrides _tdir
             [ "$_adir" -ef "$_tdir" ] && _adir=() || _adir+=("$_tdir") ;;
-      -c)   _ocwd="cd" ;;
-      -f)   _oftl="fatal" ; _oopt='-f' ;;
+      -c)   _ocwd='cd' ;;
+      -f)   _oftl='fatal' ; _oopt='-f' ;;
       -g)   _ogen=1 ;;
       -m)   _omak=1 ;;
       -n)   _onor=1 ;;
-      -p)   _ocwd="cd -P" ;;
-      -q)   _oftl=":" ;;
-      -r)   _rdry="-r" ;;
+      -p)   _ocwd='cd -P' ;;
+      -q)   _oftl=':' ; _oopt='-q' ;;
+      -r)   _rdry='-r' ;;
       -s)   shift ; _vnam="$1" ;;
-      -t)   local _name="${LOGNAME:-$USER}" ; [ "$EUID" = 0 ] && _name="root"
+      -t)   local _name="${LOGNAME:-$USER}" ; [ "$EUID" = 0 ] && _name='root'
             [ -n "$XDG_RUNTIME_DIR" ] && _tdir="$XDG_RUNTIME_DIR/" \
                 || _tdir="${CEN_PATHS[4]}/centauri-${_name:-$EUID}/"
             if [ ! -d "$_tdir" ] ; then             # create private temp dir
@@ -1913,13 +1929,18 @@ folder() {
 #
 # Call:     (1) invoke [-c|-r|-s] <name> <action> [<minarg>|**-** [<maxarg>|-|**+** [<arg>...]]]
 #           (2) invoke [-e|-w] [<frmt>] <text>...
-#           (3) invoke -t
+#           (3) invoke -a [<anum>|-] <text>
+#           (4) invoke -i <text>...
+#           (5) invoke -t
 #
-#+          Form (1) calls a function, form (2) outputs a warning or an error
-#           message. Form (3) trims previous actions from CEN_CMDARGS.
+#+Form (1) calls a function, form (2) outputs a warning or an error message.
+# Form (3) prints a '1st argument must be' error message and form (4) prints
+# 'Not yet implemented'. Form (5) trims any previous actions from CEN_CMDARGS.
 #
-# Options:  -c  rerun script in a console if necessary, see [[context()]]
+# Options:  -a  report '1st argument must be:', see option -e
+#           -c  rerun script in a console if necessary, see [[context()]]
 #           -e  error message for action (like message -e -p ...)
+#           -i  report 'Not yet implemented', see option -e
 #           -r  check for root privilege
 #           -s  rerun via "sudo" if necessary, see [[context()]]
 #           -t  trim CEN_CMDARGS (implied before -c|-s re-run the script)
@@ -1931,6 +1952,7 @@ folder() {
 #           <maxarg>   max arg count, **-**:use <minarg>, **+**:no limit
 #           <arg>...   arguments passed to the action routine
 #
+#           <anum>     argument number to be printed
 #           <frmt>     a printf format string (containing one or more "%s")
 #           <text>     error message text or arguments for printf)
 #
@@ -1975,7 +1997,7 @@ folder() {
 #.          invoke other -                  # current args, CEN_ACTION='other'
 #.          invoke other - - - my args      # sets CEN_ACTARR, passing args
 #
-#           (2) call a function like an action
+#           (3) call a function like an action
 #.          worker() {
 #.              message "$CEN_ACTION:" "$@"
 #.          }
@@ -1990,13 +2012,20 @@ invoke() {
       case "$1" in
       -)    break ;;
       --)   shift ; break ;;
+
+      -a)   local _anum ; shift
+            [ "$1" = '-' ] && shift
+            [ $# != 1 ] && { _anum=" #$1" ; shift ; }
+            set x -e $"Argument%s must be: %s" "$_anum" "$@" ;;
+      -e|-w)
+            local _eflg _pmsg=$"Action '%s': "
+            [ "$1" = '-w' ] && _eflg='warning' || _eflg='error'
+            shift ; _pmsg+="$1" ; [ "${1/\%s/}" = "$1" ] && _pmsg+=' %s'; shift
+            $_eflg -p "$_pmsg" "$CEN_ACTION" "$@" ; CEN_ARGS='X' ; return 0 ;;
+      -i)   shift ; set x -e $"Not yet implemented""${1:+:}" "$@" ;;
+
       -c|-r|-s)
             _copt+=("$1") ;;
-      -e|-w)
-            local _pmsg=$"Action '%s': " _eflg='error -z'
-            [ "$1" = "-w" ] && _eflg='warning'
-            shift ; _pmsg+="$1" ; [ "${1/\%s/}" = "$1" ] && _pmsg+=' %s'; shift
-            $_eflg -p "$_pmsg" "$CEN_ACTION" "$@" ; CEN_ARGS="X" ; return 0 ;;
       -t)   CEN_CMDARGS=("${CEN_CMDARGS[@]:CEN_CMDCURR}")
             ((CEN_CMDINDX -= CEN_CMDCURR)) ; CEN_CMDCURR=0
             [ $# -le 1 ] && return 0 ;;
@@ -2015,7 +2044,7 @@ invoke() {
 
     [ "$nact" = '-' ] && nact="action${CEN_ACTION^}"
     if ! isfunction "$nact" ; then
-        error -z $"Not yet implemented:" "$CEN_ACTION"
+        error -z $"Not yet implemented"':' "$CEN_ACTION"
     elif [ -n "$CEN_OPT_TRACE" ] ; then
         $CEN_TRACE2 -r -c " '$CEN_ACTION'" "$nact"
         # must catch ERR trap in _cen_abort
@@ -2104,6 +2133,7 @@ isfunction() {
 #           -n  value must be a positive integer
 #           -o  ternary value, <val>:=off|0|on|1|auto|2
 #           -t  allow any text as value
+#           -v  value must be a variable name ([a-zA-Z._-]*)
 #
 #           -a  [*] value must be a file path for writing or appending
 #           -d  [*] value is an output directory path, normalize, must exist
@@ -2166,7 +2196,7 @@ isfunction() {
 # ------------------------------------------------------------------------------
 optarg() {
     [ $# -lt 2 ] && _cen_abort '+'
-    local _acnt=2 _emsg  _vnam _varr _expr="${3:--}"
+    local _acnt=2 _emsg _vnam _varr _expr="${3:--}"
     if [ -z "$CEN_ARGOPT" ] ; then
         [ $# -gt 3 ] && CEN_ACTARR="$4"
     else
@@ -2214,6 +2244,8 @@ optarg() {
             *)      _emsg=$"value must be 'off|on|auto' or '0|1|2'"
         esac ;;
     -t) ;;
+    -v) _expr="${CEN_ACTARR//[0-9a-zA-Z._-]/}"
+        [ -n "$_expr" -o -z "${CEN_ACTARR##[0-9.-]*}" ] && _emsg=$"not a valid name" ;;
     *)
         [[ $CEN_ACTARR =~ ^($_expr)$ ]] || _emsg=$"has an invalid value" ;;
     esac
@@ -2529,12 +2561,12 @@ sysfind() {
 #           -m  message for all output (implies -s and -q)
 #           -n  do not check command (implied if <cmd> is **eval**), allow script calls
 #           -p  [*] pretty print errors (implies -s and -q)
-#           -q  redirect **/dev/stderr** and **/dev/stdout** (to **/dev/null** without -s)
+#           -q  redirect **/dev/stderr** and **/dev/stdout** (to **/dev/null** without -a or -s)
 #           -r  ignore option --dryrun
 #           -s  [*] set <var> from **/dev/stdout**
 #           -t  do not run <cmd> after previous error
-#           -u  run as <user> via **sudo** (use "-u -" for **root**),
-#               use "bash -c" if <cmd> is **eval**
+#           -u  run as <user> via **sudo** and use "bash -c" if <cmd> is **eval**'. Shorthand for
+#               "-u root" is "-u -". Uses "sudo -n ..." if **stdin** is not tty (non-interactive)
 #           -v  show <show> arguments in warning/error message
 #           -w  call [[warning()]] on error
 #           -x  [*] call via **exec**, no return, does not run quit hooks
@@ -2610,10 +2642,11 @@ sysfind() {
 
 # generate a sudo command: <vnam> <user>|-
 _cen_sudo() {
-    local _sexe _user="$2" ; [ "$_user" = '-' ] && _user='root'
+    local _opts _sexe _user="$2" ; [ "$_user" = '-' ] && _user='root'
     [ -z "$_user" -o "${USER:-$LOGNAME}" = "$_user" ] && return 0
     sysfind -c -e -s _sexe -- sudo || return 1
-    local -n _vsdo="$1" ; _vsdo=("$_sexe" -u "$_user" -H) ; return 0
+    [ -t 1 ] && _opts='-H' || _opts='-n -H'
+    local -n _vsdo="$1" ; _vsdo=("$_sexe" -u "$_user" $_opts) ; return 0
 }
 
 system() {
@@ -2728,7 +2761,7 @@ system() {
     elif [ -n "$_ferr" ] ; then
         $_ecmd -p -- $"Running '%s' failed (status %s)" "$_earg" "$_stat"
     fi
-    [ -n "$_ferr" ] && CEN_AUTOIND=
+   ### [ -n "$_ferr" ] && CEN_AUTOIND=
     $CEN_NOTRACE set -x ; return $_stat
 }
 
@@ -2736,13 +2769,23 @@ system() {
 # Return free file handle(s) in range 10..99: <vnam>...
 # ------------------------------------------------------------------------------
 _cen_handle() {
-    local _ihan
-    for ((_ihan=10; _ihan < 100; _ihan++)) ; do
-     [ "$#" = 0 ] && return
-     [ -e "/dev/fd/$_ihan" ] && continue
-     printf -v "$1" "$_ihan" ; shift
+    local _ihan=9
+    while ((++_ihan < 100)) ; do
+        [ "$#" = 0 ] && return
+        [ -e "/dev/fd/$_ihan" ] && continue
+        printf -v "$1" "$_ihan" ; shift
     done
     _cen_abort $"No free file handle"
+}
+
+# ------------------------------------------------------------------------------
+# Source a file: [--] <file>
+# ------------------------------------------------------------------------------
+_cen_source() {
+    [ "$1" = '--' ] && shift
+    [ -r "$1" ] || return 1
+    $CEN_TRACE2 -c -a 'sourcing file' "$1"
+    source "$1" && return 0
 }
 
 # ------------------------------------------------------------------------------
@@ -2789,6 +2832,9 @@ main() {
     apicheck -f -- "$CEN_VERSION"               # check script version
     isfunction -y 'options'                     # create dummy if needed
 
+    # source the defaults file (override options and other stuff)
+    [ -n "$CEN_DEFAULTS" ] && _cen_source "$CEN_DEFAULTS"
+
     # command line parsing (via CEN_HOOK_MAIN arguments can be overriden)
     local _cont=2 _isok _help _oinf
     [ -n "$CEN_CMDARGS" ] && { set -- "${CEN_CMDARGS[@]}" ; CEN_CMDARGS=() ; }
@@ -2830,36 +2876,36 @@ main() {
         case "$CEN_ACTION" in
         -|---)
             CEN_CMDARGS+=("$1") ;;
-        --|"")
+        --|'')
             [ -n "$CEN_CMDARGS" ] && CEN_CMDARGS+=("$1") ;;
         -d|--dry*)
-            _isok="$CEN_FEATURE_D" ; optarg "dryrun" - ;;
+            _isok="$CEN_FEATURE_D" ; optarg 'dryrun' - ;;
         -f|--force)
-            _isok="$CEN_FEATURE_F" ; optarg "force" - ;;
+            _isok="$CEN_FEATURE_F" ; optarg 'force' - ;;
         -g|--gui)
-            _isok="$CEN_FEATURE_G" ; [ -n "$_isok" ] && optarg "gui" - -o ;;
+            _isok="$CEN_FEATURE_G" ; [ -n "$_isok" ] && optarg 'gui' - -o ;;
         -h|--help)
-            _help="-h" ;;
+            _help='-h' ;;
         -q|--quie*)
-            [ "$CEN_VERB" = 1 ] && optarg "quiet" CEN_VERB -f 0 ;;
+            [ "$CEN_VERB" = 1 ] && optarg 'quiet' CEN_VERB -f 0 ;;
         -s|--sil*)
-            _isok="$CEN_FEATURE_S" ; optarg "silent" - ;;
+            _isok="$CEN_FEATURE_S" ; optarg 'silent' - ;;
         -v|--verb*)
             context -v + || :
             optarg "verbose" CEN_VERB -f "$CEN_VERB" ;;
         -n|--no)
-            _isok="$CEN_FEATURE_Y" ; [ -n "$_isok" ] && optarg "no"  CEN_YESNO -f "n" ;;
+            _isok="$CEN_FEATURE_Y" ; [ -n "$_isok" ] && optarg 'no'  CEN_YESNO -f 'n' ;;
         -y|--yes)
-            _isok="$CEN_FEATURE_Y" ; [ -n "$_isok" ] && optarg "yes" CEN_YESNO -f "y" ;;
+            _isok="$CEN_FEATURE_Y" ; [ -n "$_isok" ] && optarg 'yes' CEN_YESNO -f 'y' ;;
         -i|--incl*)
-            _isok="$CEN_FEATURE_I" ; [ -n "$_isok" ] && optarg "include" - -i ;;
+            _isok="$CEN_FEATURE_I" ; [ -n "$_isok" ] && optarg 'include' - -i ;;
         -x|--excl*)
-            _isok="$CEN_FEATURE_I" ; [ -n "$_isok" ] && optarg "exclude" - -x ;;
+            _isok="$CEN_FEATURE_I" ; [ -n "$_isok" ] && optarg 'exclude' - -x ;;
         -z|--zomb*)
-            _cont=3 ; optarg "zombie" - ;;
+            _cont=3 ; optarg 'zombie' - ;;
         --embed)
-            optarg "embed" CEN_EMBED -t ; CEN_FEATURE_D=1 ; CEN_FEATURE_Y=1
-            [ "${CEN_EMBED/*:/:}" = ":a" ] && CEN_AUTOIND=2
+            optarg 'embed' CEN_EMBED -t ; CEN_FEATURE_D=1 ; CEN_FEATURE_Y=1
+            [ "${CEN_EMBED/*:/:}" = ':a' ] && CEN_AUTOIND=2
             CEN_EMBED="${CEN_EMBED%:*}"
             [ "$CEN_EMBED" = "$CEN_NAME" ] && CEN_EMBED= ;;
         --info)
@@ -2886,8 +2932,8 @@ main() {
         embed -m '_centauri_bash_use' "$_help"
     elif [ -n "$_oinf" ] ; then
         [ -n "$CEN_PACKAGE" ] && _cen_bash_info
-        # using -r option to hide from uglify ...
-        embed -m '_centauri_bash_sys' && sysinfo "${CEN_CMDARGS[@]}"
+        # using -r option to hide this line from uglify ...
+        embed -r -m '_centauri_bash_sys' && sysinfo "${CEN_CMDARGS[@]}"
     elif [ "$CEN_EXIT" != 0 ] ; then
         CEN_EXIT=1 ; quit
     fi
@@ -2904,12 +2950,6 @@ main() {
         embed -r -q '_centauri_bash_pip' && syspager -y -d -c ''
     [ -n "$CEN_FEATURE_G" ] && context -g "$CEN_OPT_GUI"
     $CEN_HOOK_OPTIONS
-
-    # source the defaults file (override options and other stuff)
-    if [ -n "$CEN_DEFAULTS" ] && [ -r "$CEN_DEFAULTS" ] ; then
-        trace -a -c 'Sourcing' "$CEN_DEFAULTS"
-        . "$CEN_DEFAULTS"
-    fi
 
     if [ "$CEN_DONE" = 2 ] ; then                           # stop (after error)
         CEN_STAGE= ; return 0
@@ -2943,8 +2983,8 @@ main() {
         # loop over actions
         while [ $CEN_CMDINDX -lt $_imax -a "$CEN_DONE" -lt "$_cont" ] ; do
             CEN_ACTION="${CEN_CMDARGS[CEN_CMDINDX++]}"
-            [ "${CEN_ACTION:---}" = "--" ] && continue                 # command end
-            [ "$CEN_ACTION" = "---" ] && { _olit=1 ; continue ; }      # literal mode
+            [ "${CEN_ACTION:---}" = '--' ] && continue                 # command end
+            [ "$CEN_ACTION" = '---' ] && { _olit=1 ; continue ; }      # literal mode
 
             # get the arguments for this action
             _imax="${#CEN_CMDARGS[@]}"
@@ -2952,8 +2992,8 @@ main() {
             while [  $CEN_CMDINDX -lt $_imax ] ; do
                 _curr="${CEN_CMDARGS[CEN_CMDINDX++]}"
                 if [ -z "$_olit" ] ; then
-                    [ "$_curr" = "--" ] && break                       # command end
-                    [ "$_curr" = "---" ] && { _olit=1 ; continue ; }   # literal mode
+                    [ "$_curr" = '--' ] && break                       # command end
+                    [ "$_curr" = '---' ] && { _olit=1 ; continue ; }   # literal mode
                 fi
                 CEN_ACTARR+=("$_curr")
             done
@@ -2983,7 +3023,7 @@ main() {
 # fix system paths (set by proxy) using the $BASH variable
 if [ ! -x "${CEN_PATHS[1]}/bash" ] ; then
     # bash should be installed in the core binaries path
-    CEN_PATHS[1]="${BASH%/bash}" ; [ -d "${CEN_PATHS[1]}" ] || CEN_PATHS[1]="/usr/bin"
+    CEN_PATHS[1]="${BASH%/bash}" ; [ -d "${CEN_PATHS[1]}" ] || CEN_PATHS[1]='/usr/bin'
     # core binaries should be in <prefix>/usr/bin or <prefix>/bin
     CEN_PATHS[0]="${CEN_PATHS[1]%/usr/bin}"
     CEN_PATHS[0]="${CEN_PATHS%/bin}"
@@ -3000,6 +3040,9 @@ if [ -z "${CEN_PATHS[6]}" ] ; then
     if [ -n "$CEN_PACKAGE" ] ; then
         CEN_PATHS[6]="${CEN_PATHS[2]}/default"
     elif [ "${CEN_PATHS[6]}" -ef "${CEN_PATHS[2]}/default" ] ; then
+        CEN_PATHS[6]="${CEN_PATHS[2]}/default"
+    elif [ ! -d "${CEN_PATHS[6]}" ] ; then
+        warning $"Invalid symlink:" "${CEN_PATHS[6]}"
         CEN_PATHS[6]="${CEN_PATHS[2]}/default"
     fi
 fi

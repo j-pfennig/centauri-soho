@@ -17,7 +17,7 @@
 #           _cen_ins_findsvc    § find service/file or unit
 #           _cen_ins_install    § (un)install SysV or systemd service(s)
 #           _cen_ins_isshared   § do we have a shared installation?
-#           _cen_ins_library    § library installation/update remove
+#           _cen_ins_library    § library installation/update remov
 #           _cen_ins_paths      § for _cen_ins_library, paths setup
 #           _cen_ins_proxy      § create library proxy
 #           _cen_ins_rootdefs   § fill CEN_ROOTDEFS from CEN_INSTALL
@@ -29,11 +29,11 @@
 #           _cen_ins_tools      § get list of (centauri)tools
 #           _cen_ins_version    § get OS and KDE versions
 #
-# Copyright Dr. J. Pfennig (c) 2019-2023
+# Copyright Dr. J. Pfennig (c) 2019-2024
 # ------------------------------------------------------------------------------
 
 # do not demand an api-version, we get loaded by centauriconfig
-CEN_MODULES["_centauri_bash_ins"]="0.10:2"
+CEN_MODULES['_centauri_bash_ins']='0.13:4'
 
 embed -c '_centauri_bash_ext'               # dependency
 
@@ -59,7 +59,7 @@ CEN_INS_SYSDDIR=                            # custom systemd folder
 # ------------------------------------------------------------------------------
 _cen_ins_canrun() {
     local _fout=error _fsdm
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -f)   _fout=fatal ;;
@@ -71,29 +71,29 @@ _cen_ins_canrun() {
 
     # check for systemd support
     if [ -n "$_fsdm" ] ; then
-        [ "$CEN_INS_SYSTEMD" = "yes" ] && return 0
-        [ "$CEN_INS_SYSTEMD" = "no"  ] && return 1
+        [ "$CEN_INS_SYSTEMD" = 'yes' ] && return 0
+        [ "$CEN_INS_SYSTEMD" = 'no'  ] && return 1
         if [ -d "$CEN_INS_SOURCES" ] ; then
-            CEN_INS_SYSTEMD="yes" ; return 0
+            CEN_INS_SYSTEMD='yes' ; return 0
         else
             $_fout $"No 'systemd' support on this machine"
-            CEN_INS_SYSTEMD="no" ; return 1
+            CEN_INS_SYSTEMD='no' ; return 1
         fi
     fi
 
     # check for sysv support
-    [ "$CEN_INS_SYSVOK" = "yes" ] && return 0
-    [ "$CEN_INS_SYSVOK" = "no"  ] && return 1
+    [ "$CEN_INS_SYSVOK" = 'yes' ] && return 0
+    [ "$CEN_INS_SYSVOK" = 'no'  ] && return 1
     if ! [ -d "$CEN_INS_SYSVINI" ] ; then
         $_fout -p $"No 'SysV' support, missing '%s' folder" "init.d"
-    elif [ "$CEN_INS_SYSVOK" = "yes" ] ; then
+    elif [ "$CEN_INS_SYSVOK" = 'yes' ] ; then
         :                                           # using systemd sysv compat.
     elif ! system -c "insserv" ; then
         $_fout $"No 'SysV' support, please install 'insserv'"
     else
-        CEN_INS_SYSVOK="yes" ; return 0
+        CEN_INS_SYSVOK='yes' ; return 0
     fi
-    CEN_INS_SYSVOK="no" ; return 1
+    CEN_INS_SYSVOK='no' ; return 1
 }
 
 # ------------------------------------------------------------------------------
@@ -286,6 +286,8 @@ _cen_ins_files() {
             _fcur="$_fldr" ; _full=
             if [ -d "$_dest/$_fldr" ] ; then
                 _copy=1
+            elif [ -z "$CEN_OPT_FORCE" ] ; then
+                _copy=
             elif folder -m -- "$_dest/$_fldr" 775 ; then
                 _copy=2
             else
@@ -418,7 +420,7 @@ _cen_ins_saferm() {
 # ------------------------------------------------------------------------------
 _cen_ins_install() {
     local _remove _iopt _sysv _verb='install'
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -i|-s)
@@ -841,7 +843,7 @@ _cen_ins_systemd() {
 
             # create wants folder/file
             fdir="$dest/${farg%.*}.wants"
-            trace -c "Processing" "$farg  =>  $fdir"
+            $CEN_TRACE -c "Processing" "$farg  =>  $fdir"
             if [ -z "$_remove" ] ; then
                 create -d -- "$fdir" 755 || return
             fi
@@ -849,15 +851,15 @@ _cen_ins_systemd() {
             local skey snam pref
             while read skey snam ; do                   # loop over .wants file
                 case "$skey" in
-                -)  trace -a -c "... remove" -- "$snam"
+                -)  $CEN_TRACE -a -c "... remove" -- "$snam"
                     remove -- "$fdir/$snam" ;;
                 +)  [ "${snam::1}" = "/" ] && pref="${snam%/*}" || pref="$orig"
                     snam="${snam##*/}"
                     if [ -z "$_remove" ] ; then
-                        trace -a -c "... symlink" -- "$pref/${snam/@*./@.} => $snam"
+                        $CEN_TRACE -a -c "... symlink" -- "$pref/${snam/@*./@.} => $snam"
                         symlink -i -s -- "$pref/${snam/@*./@.}" "$fdir/$snam"
                     else
-                        trace -a -c "... remove" -- "$snam"
+                        $CEN_TRACE -a -c "... remove" -- "$snam"
                         remove -- "$fdir/$snam"
                     fi ;;
                 esac
@@ -910,7 +912,7 @@ _cen_ins_library() {
     local _tlink="${CEN_ROOTDEFS[2]:--}" ; [ "$_tlink" = '-' ] || _tlink="$CEN_PATHS$_tlink"
     local _owner="${CEN_ROOTDEFS[4]:--}"
 
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -p)   _update="-p" ;;
@@ -945,12 +947,12 @@ _cen_ins_library() {
     # Link Service Menues
     ___cen_libr_desktop() {
         local farg fdes dest
-        for dest in 'kservices6' 'kservices5' 'kde4' '' ; do
+        for dest in 'kservices6' 'kservices5' '' ; do
             [ -z "$dest" ] && return
             dest="$CEN_PATHS/usr/share/$dest/services/ServiceMenus"
             [ -w "$dest" ] && break
         done
-        for farg in "$CEN_TOOLS/kde/Services"/*.desktop ; do
+        for farg in "$CEN_TOOLS/Desktop/Services"/*.desktop ; do
             fdes="$dest/${farg##*/}"
             if [ -n "$_remove" ] ; then
                 [ "$farg" -ef "$fdes" ] && remove -- "$fdes"
@@ -991,7 +993,7 @@ _cen_ins_library() {
         confirm -a -y $"Install 'centauritools' to"": $CEN_TOOLS" || return 128
         _cen_ins_paths -f -i || return 1
         local _lbas="${_tlink%/*}"
-        if [ "$_tlink" != "-" -a -w "${_lbas:-/}" ] &&
+        if [ "$_tlink" != '-' -a -w "${_lbas:-/}" ] &&
            [ ! "$CEN_TOOLS" -ef "$_tlink" ] ; then
             confirm -a -y $"Symlink 'centauritools' to"": $_tlink" &&
                 symlink -- "$CEN_TOOLS" "$_tlink"
@@ -1059,7 +1061,7 @@ _cen_ins_paths() {
     local _repo="${CEN_ROOTDEFS[3]:--}"         # optional repository
     local _sgrp="${CEN_ROOTDEFS[4]:--}"         # optional group owner
     local _ffrc _frem
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -f)   _ffrc="-f" ;;
@@ -1100,7 +1102,7 @@ _cen_ins_paths() {
 
     # make links to repository
 
-    if [ "$_repo" != "-" ] ; then
+    if [ "$_repo" != '-' ] ; then
         if [ -n "$_frem" ] ; then
             remove -- "$CEN_TOOLS" "$CEN_ROOT/admin" "$CEN_ROOT/locale" "$CEN_LIBRARY"
         elif [ -e "$_repo" ] ; then
@@ -1125,7 +1127,7 @@ _cen_ins_paths() {
     # cleanup CEN_ROOT (don't destroy repository data)
 
     if [ -n "$_frem" ] ; then
-        [ "$_repo" = "-" ] &&
+        [ "$_repo" = '-' ] &&
             remove -q -d -- "$CEN_ROOT/locale" "$CEN_ROOT/library"
         remove -q -- "$CEN_ROOT/html/CACHEDIR.TAG"
         remove -q -- "$CEN_ROOT/html"               # rm empty folder
@@ -1183,9 +1185,9 @@ $_rexp$_prox
 
 # load real lib, use packed version if newer
 if [ "\$CEN_LIBRARY/_centauri_bash_lib.p" -nt "\$CEN_LIBRARY/_centauri_bash_lib" ] ; then
-    . "\$CEN_LIBRARY/_centauri_bash_lib.p" "\$@" || exit 2
+    source "\$CEN_LIBRARY/_centauri_bash_lib.p" "\$@" || exit 2
 else
-    . "\$CEN_LIBRARY/_centauri_bash_lib" "\$@" || exit 2
+    source "\$CEN_LIBRARY/_centauri_bash_lib" "\$@" || exit 2
 fi
 
 # init transient folder after boot (root only)
@@ -1263,7 +1265,7 @@ _cen_ins_rootdefs() {
 # ------------------------------------------------------------------------------
 _cen_ins_rootpath() {
     local _fpar _fwrt _ovar _path _ppar
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -b)   _fpar=1 ;;
@@ -1339,6 +1341,8 @@ _cen_ins_version() {
     # debian version number from nickname: <varname> <nick>
     ___cen_vers_deb() {
         case "$2" in
+            forky)      ___cen_vers_set "$1" 14 ;;
+            trixie)     ___cen_vers_set "$1" 13 ;;
             bookworm)   ___cen_vers_set "$1" 12 ;;
             bullseye)   ___cen_vers_set "$1" 11 ;;
             buster)     ___cen_vers_set "$1" 10 ;;
@@ -1358,21 +1362,19 @@ _cen_ins_version() {
         CEN_SYS_VERSION='000.000.000'
 
         if [ -n "$TERMUX_VERSION" ] ; then
-            CEN_SYS_DISTRO="termux"
-            CEN_SYS_FAMILY="debian"
+            CEN_SYS_DISTRO='termux'
+            CEN_SYS_FAMILY='debian'
             _vers="$TERMUX_VERSION"
         elif [ -d "$CEN_INS_ETCPATH/default" ] ; then  # is debian?
             CEN_SYS_CONFIG="$CEN_INS_ETCPATH/default"
-            CEN_SYS_FAMILY="debian"
+            CEN_SYS_FAMILY='debian'
         fi
 
-        if [ -r "$CEN_INS_ETCPATH/lsb-release" ] ; then
-            . "$CEN_INS_ETCPATH/lsb-release"
+        if _cen_source "$CEN_INS_ETCPATH/lsb-release" ; then
             CEN_SYS_DISTRO="${DISTRIB_ID,,}"
         elif [ -f "$CEN_INS_ETCPATH/SuSE-release" ] ; then
-            CEN_SYS_DISTRO="suse"
-        elif [ -f "$CEN_INS_ETCPATH/os-release" ] ; then
-            . "$CEN_INS_ETCPATH/os-release"
+            CEN_SYS_DISTRO='suse'
+        elif _cen_source "$CEN_INS_ETCPATH/os-release" ; then
             CEN_SYS_DISTRO="${ID,,}"
             [ ! -f "$CEN_INS_ETCPATH/debian_version" ] && _vers="$VERSION_ID"
         fi
@@ -1380,7 +1382,7 @@ _cen_ins_version() {
         # fallbacks for unknown version (use kernel)
         if [ -z "$_vers" ] ; then
             if [ -f "$CEN_INS_ETCPATH/debian_version" ] ; then
-                [ "$CEN_SYS_DISTRO" = "unknown" ] && CEN_SYS_DISTRO="debian"
+                [ "$CEN_SYS_DISTRO" = "unknown" ] && CEN_SYS_DISTRO='debian'
                 _vers=$(<"$CEN_INS_ETCPATH/debian_version")         # should be n.m or nickname
                 [ -n "${_vers//[0-9.]}" ] && _vers="${_vers%%/*}"   # version is nickname
             else                                                    # fallback to kernel version...
@@ -1393,34 +1395,35 @@ _cen_ins_version() {
         # get family
         case "$CEN_SYS_DISTRO" in
         arch*)
-            CEN_SYS_DISTRO="arch" ; CEN_SYS_FAMILY="arch" ;;
+            CEN_SYS_DISTRO='arch' ; CEN_SYS_FAMILY='arch' ;;
         *suse*)
-            CEN_SYS_DISTRO="suse" ; CEN_SYS_FAMILY="suse" ;;
+            CEN_SYS_DISTRO='suse' ; CEN_SYS_FAMILY='suse' ;;
         raspbian|termux|ubuntu)
             ;;
         *)
-            CEN_SYS_DISTRO="debian"
+            CEN_SYS_DISTRO='debian'
             # for backward compatibility: say raspbian on raspberry hardware
-            if [ -r "/sys/firmware/devicetree/base/model" ] ; then
-                read _temp < "/sys/firmware/devicetree/base/model"
+            if [ -r '/sys/firmware/devicetree/base/model' ] ; then
+                read _temp < '/sys/firmware/devicetree/base/model'
                 _temp="${_temp%% *}"
-                [ "${_temp,,}" = "raspberry" ] && CEN_SYS_DISTRO="raspbian"
+                [ "${_temp,,}" = 'raspberry' ] && CEN_SYS_DISTRO='raspbian'
             fi
         esac
-        [ "$CEN_SYS_FAMILY" = "debian" ] && CEN_SYS_ALIAS=
+        [ "$CEN_SYS_FAMILY" = 'debian' ] && CEN_SYS_ALIAS=
 
         # get a nickname
         case "$CEN_SYS_FAMILY ${_vers%%.*}" in
-            "debian 5")   CEN_SYS_NICKNAME="lenny"      ;;
-            "debian 6")   CEN_SYS_NICKNAME="squeeze"    ;;
-            "debian 7")   CEN_SYS_NICKNAME="wheezy"     ;;
-            "debian 8")   CEN_SYS_NICKNAME="jessie"     ;;
-            "debian 9")   CEN_SYS_NICKNAME="stretch"    ;;
-            "debian 10")  CEN_SYS_NICKNAME="buster"     ;;
-            "debian 11")  CEN_SYS_NICKNAME="bullseye"   ;;
-            "debian 12")  CEN_SYS_NICKNAME="bookworm"   ;;
-            "debian 13")  CEN_SYS_NICKNAME="trixy"      ;;
-            "debian "[a-z]*)
+            'debian 5')   CEN_SYS_NICKNAME='lenny'      ;;
+            'debian 6')   CEN_SYS_NICKNAME='squeeze'    ;;
+            'debian 7')   CEN_SYS_NICKNAME='wheezy'     ;;
+            'debian 8')   CEN_SYS_NICKNAME='jessie'     ;;
+            'debian 9')   CEN_SYS_NICKNAME='stretch'    ;;
+            'debian 10')  CEN_SYS_NICKNAME='buster'     ;;
+            'debian 11')  CEN_SYS_NICKNAME='bullseye'   ;;
+            'debian 12')  CEN_SYS_NICKNAME='bookworm'   ;;
+            'debian 13')  CEN_SYS_NICKNAME='trixy'      ;;
+            'debian 14')  CEN_SYS_NICKNAME='forky'      ;;
+            'debian '[a-z]*)
                           CEN_SYS_NICKNAME="${_vers%%/*}"
                           ___cen_vers_deb CEN_SYS_VERSION "$CEN_SYS_NICKNAME" ;;
         esac
@@ -1429,48 +1432,40 @@ _cen_ins_version() {
 
     ___cen_vers_kde() {
         local _kini
-        if ! sysfind -c -o -s _kini -- kdeinit6 kdeinit5 kdeinit4 ; then
-            CEN_SYS_KDEVERS='-' ; CEN_SYS_PLASMA= ; CEN_SYS_QTVERS=
-            return
+        if ! sysfind -c -o -s _kini -- kdeinit6 kdeinit5 ; then
+            CEN_SYS_KDEVERS='-' ; CEN_SYS_PLASMA='-' ; CEN_SYS_QTVERS=
+            return 0
         fi
-        # only try kde checks for wayland or local X11 display
-        [ "${CEN_SYS_KDEVERS:-000.000.000}" = '000.000.000' ] && CEN_SYS_KDEVERS='000.000.000'
-        [ -n "$SUDO_USER" ] && return
-        [ "$CEN_DISPLAY" != 'wayland' -a "${DISPLAY/:[0-9]/-}" != '-' ] && return
         CEN_SYS_KDEVERS= ; CEN_SYS_PLASMA= ; CEN_SYS_QTVERS=
 
         # since kde5 (plasmashell crashes for missing display and sudo)
-        ___cen_vers_try "plasmashell"
-
-        # Qt: 4.8.6
-        # KDE Development Platform: 4.14.2
-        # Plasma Desktop Shell: 4.11.13
-        [ -z "$CEN_SYS_PLASMA" ] && ___cen_vers_try "plasma-desktop"
-
-        # Qt: 5.11.3
-        # KDE: 5.54.0
+        if [ "${CEN_DISPLAY:-tty}" != 'tty' ] ; then
+            sysfind -c -- plasmashell || CEN_SYS_PLASMA='-'
+            [ "$CEN_SYS_PLASMA" = '-' ] || ___cen_vers_try 'plasmashell'
+        fi
         [ -z "$CEN_SYS_KDEVERS" ] && ___cen_vers_try "$_kini"
 
         [ -z "$CEN_SYS_QTVERS"  ] && CEN_SYS_QTVERS='000.000.000'
         [ -z "$CEN_SYS_PLASMA"  ] && CEN_SYS_PLASMA='000.000.000'
+        return 0
     }
 
     ___cen_vers_wrt() {
-        create -h "centauritools" -t -s -w "$CEN_SYS_STATE_FILE" 664 <<!EOF
-CEN_SYS_CONFIG="$CEN_SYS_CONFIG"
-CEN_SYS_DISTRO="$CEN_SYS_DISTRO"
-CEN_SYS_FAMILY="$CEN_SYS_FAMILY"
-CEN_SYS_NICKNAME="$CEN_SYS_NICKNAME"
-CEN_SYS_ALIAS="$CEN_SYS_ALIAS"
-CEN_SYS_VERSION="$CEN_SYS_VERSION"
+        create -h 'centauritools' -t -s -w "$CEN_SYS_STATE_FILE" 664 <<!EOF
+${CEN_SYS_CONFIG@A}
+${CEN_SYS_DISTRO@A}
+${CEN_SYS_FAMILY@A}
+${CEN_SYS_NICKNAME@A}
+${CEN_SYS_ALIAS@A}
+${CEN_SYS_VERSION@A}
 
-CEN_SYS_KDEVERS="$CEN_SYS_KDEVERS"
-CEN_SYS_PLASMA="$CEN_SYS_PLASMA"
-CEN_SYS_QTVERS="$CEN_SYS_QTVERS"
+${CEN_SYS_KDEVERS@A}
+${CEN_SYS_PLASMA@A}
+${CEN_SYS_QTVERS@A}
 !EOF
     }
 
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -k)   _orun='kde' ;;

@@ -42,70 +42,109 @@ At boot time 'centaurisysinit' runs as a service and starts configured appliance
 ============
 
 A machine that boots into a state were it fullfills some special purpose, usually without
-human interaction is called an appliance. Centauri-Soho supports the following:
+human interaction is called a 'network appliance'. In contrast for a machine with a display
+a 'kiosk appliance' can run a special purpose GUI. Both appliance modes can be combined.
+Appliances are started at boot time, controlled by kernel command line parameters. The
+runlevels 2 and 3 are used to run appliances, e.g. multi-user mode or graphics mode will
+not be started.
 
-    Networking Boot Menu: runlevel 2 - autologin
-    --------------------------------------------
+    Network Appliances
+    ------------------
+    ──────────────────
 
-        Allows to switch between Network modes at boot time. Can start a desktop session.
-        Nice for testing.
+    The 'centauriswitch=<mode>:<conf>' kernel command line parameter causes the 'centauriroute'
+    tool to set-up special network modes. The configuration file '/etc/default/centauriswitch'
+    contains the details for <mode> and <conf>. The availlable <mode>s are hard-coded. But user
+    defined <conf>s can be added locally.
 
-    Router: runlvel 3 - centauriswitch
-    ----------------------------------
+        Router: systemd.unit=runlevel3.target centauriswitch=router
+        -----------------------------------------------------------
 
         Connects two Networks using NAT. Provides DNS and DHCP services. The default
         configuration joins ethernet and wireless into an internal network and uses
         mobile phone tethering via USB (or a modem) to connect to the internet.
 
-    Repeater: runlevel 2 - centauriswitch
-    -------------------------------------
+        The dial-up mechanism allow cold-plug and hot-plug and is implemente in
+        'centauriroute'. Thethering (or modems) depend on udev. Please add your devices
+        to the appropriate rules files: /etc/udev/rules.d/??-centauriroute.rules
+
+        Repeater: systemd.unit=runlevel2.target centauriswitch=router:repeater
+        ----------------------------------------------------------------------
 
         A router configuration where an external net is connected via wireless and an
         internal net is provided by ethernet. This uses NAT, so from the internal net
         a machine can reach the external net but not the other way round.
 
-    Switch: runlevel 2 - centauriswitch
-    -----------------------------------
+        Switch: systemd.unit=runlevel3.target centauriswitch=switch
+        -----------------------------------------------------------
 
         This wants to be an IP layer 2 bridge (using a Linux bridge interface). But
-        unfortunately most Wlan hardware won't work with a bridge as a hardware
+        unfortunately most WLAN hardware won't work with a bridge as a hardware
         feature called 'WDS' (also '4addr mode') is not implemented. Try 'extender'
         instead.
 
-    Extender: runlevel 2 - centauriswitch
-    -------------------------------------
+        Extender: systemd.unit=runlevel2.target centauriswitch=switch:extender
+        ----------------------------------------------------------------------
 
         Simulates an IP layer 2 bridge running ARP routing and DNS relay (IPv4 only).
-        The default configuration lets the Wlan interface connect to the local net
+        The default configuration lets the WLAN interface connect to the local net
         and provides a network extension via ethernet. Use this to connect hardware
-        that has ethernet only via Wlan to your local net.
+        that has ethernet only via WLAN to your local net.
 
-    Kiosk: runlevel 2 - autologin
-    -----------------------------
+
+    Kiosk Appliances
+    ----------------
+    ────────────────
+
+    The 'centaurilogin=<user>' kernel commmand line parameter causes the 'centausisyinit'
+    service to set-up kiosk modes. The configuration for is are 'Appliance' statements
+    in '/etc/default/centaurisysinit'. The 'centaurisysinit' service is a replacement for
+    the obsolete SysV 'rc.local' script. The <user> names are hard-coded and can only be
+    one of: clock|kiosk|homeassistant|local.
+
+        Networking Boot Menu: systemd.unit=runlevel2.target centaurilogin=local
+        -----------------------------------------------------------------------
+
+        Allows to switch between Network modes at boot time. Can start a desktop session.
+        Nice for testing or to be combined with 'centauriswitch=router'.
+
+        Clock: systemd.unit=runlevel2.target centaurilogin=clock
+        --------------------------------------------------------
+
+        Start a browser-based digital clock after boot. This is implemented using the
+        'centauriclock' tool which in turn runs 'centaurilauncher' to run a browser
+        without user interface.
+
+        Kiosk: systemd.unit=runlevel3.target centaurilogin=kiosk
+        --------------------------------------------------------
 
         Start a browser-only GUI after boot. Nothing but the browser will be run by
-        this GUI.
+        this GUI. This is implemented in 'centaurilauncher'.
 
-    HomeAssistant: runlevel 2 - autologin
-    -------------------------------------
+        HomeAssistant: systemd.unit=runlevel3.target centaurilogin=homeassistant
+        ------------------------------------------------------------------------
 
-        Runs HomeAssistant on a computer. Although the autologin parameter is needed
-        the HomeAssistant engine runs as a service. Additionally a browser-only GUI
-        gets started that shows the dashboard.
+        The HomeAssistant web page is show by a browser without user interface. This
+        is implemented by 'centaurilauncher'. This appliance mode starts a locally
+        installed HomeAssistant.
+
+Summary
+-------
 
 For an appliance mode to start the kernel command line must contain special parameters.
 These can be:
 
-    centaurilogin=local             # enter 'boot menu' via autologin of user 'local'
+    centaurilogin=clock             # digital clock via autologin of user 'clock'
     centaurilogin=kiosk             # enter 'kiosk mode' via autologin of user 'kiosk'
-    centaurautologin=homeassistant  # run HomeAssistant (as a service, see below)
+    centaurilogin=local             # enter 'boot menu' via autologin of user 'local'
+    centaurilogin=homeassistant     # run HomeAssistant, show HA web interface
 
-While autologin is optional and runs appliances that may show a GUI, the 'centauriswitch'
-parameter is required and some of its settings run the computer as an appliance:
+While 'centaurilogin' is optional and runs appliances that may show a GUI, the 'centauriswitch'
+parameter is required and some of its settings run the computer as a network appliance:
 
     centauriswitch=router           # router network config (with NAT)
     centauriswitch=router:repeater  # repeater              (with NAT)
-    centauriswitch=switch           # bridge mode (needs WDS Wlan hardware)
+    centauriswitch=switch           # bridge mode (needs WDS WLAN hardware)
     centauriswitch=switch:extender  # simulated bridge mode
 
 By default the automatically generated configurations add an appropriate runlevel. But it
@@ -221,8 +260,8 @@ And for an extender it may look like:
         always=inetd
 
 
-. Network Boot Menu and Kiosk
-=============================
+. Network Boot Menu
+===================
 
 This mode shows a network mode selection dialog, similar to a boot menu after boot.
 A call to 'centauriswitch enter <mode>' is then made to activate the selected mode.
@@ -231,7 +270,40 @@ workstation mode. As the dialogues have timeouts, the simple desktop mode is act
 without interaction.
 
 Use this mode to configure a system that is not a workstation but occasionally needs
-a graphical desktop, for example a router with mobile network dialup.
+a graphical desktop, for example a router with mobile network dialup. Example:
+
+    systemd.unit=runlevel3.target centauriswitch=router centaurilogin=local
+
+Use 'centaurisysinit enable' to add ...
+
+The 'centaurilogin=<user>' lets 'centaurisysinit' start a 'centauriautologinq@<user>'
+service instance at boot time. The autologin causes the default bash .profile to run
+'centaurisession'. The later checks for a '.centauriautologin' symlink and runs it.
+In this configuration the symlink points to 'centauristartup' which will run the bash
+scriplet '.centauristartup':
+
+    centaurisysinit                                         # runs at boot time
+        centauriautologin@<user>                            # login <user>
+            centaurisession (via bash .profile)             # run via bash
+                centauristartup                             # configure things
+                    centauridisplay ... -u <user>           # start a display
+                        centauristartup menu                # show menu
+
+. Clock and Kiosk
+=================
+
+The 'centaurilogin=<user>' lets 'centaurisysinit' start a sequence that is similar
+to 'Menu Mode':
+
+    centaurisysinit                                         # runs at boot time
+        centauriautologin@<user>                            # login <user>
+            centaurisession (via bash .profile)             # run via bash
+                centauristartup                             # configure things
+                    centauridisplay ... -u <user>           # start a display
+                        centauristartup menu                # what to start?
+                            centaurilauncher <user>
+                                <web-browser>
+
 
 . HomeAssistant - Setup and GUI
 ===============================

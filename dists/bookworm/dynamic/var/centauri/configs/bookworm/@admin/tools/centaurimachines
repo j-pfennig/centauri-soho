@@ -1,9 +1,9 @@
-#!/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. J. Pfennig (c) 2020-2023; BSD License"
+CEN_LEGAL="Dr. J. Pfennig (c) 2020-2024; BSD License"
 CEN_TITLE=$"Manage repository staging and samba-ad/ntfs integration"
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -r -s "$0" "0.14:1" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -r -s -y - '0.17:4' || exit 2
 
 # Data
 CEN_OPT_DOMAIN=                 # see --domain
@@ -21,7 +21,7 @@ CEN_OPT_UPDATE=                 # see --update
 
 DAT_BASE="$CEN_ROOT/machines"
 DAT_MAND=                       # updated in run() ...
-DAT_DIST="bookworm"
+DAT_DIST=
 DAT_MESSAGE=message
 DAT_SINGLE_MACHINE=
 
@@ -85,7 +85,7 @@ do_update() {
 }
 
 do_merge() {
-    do_update "$@"
+    embed -t -v -y centauridiff ${CEN_OPT_SILENT:+-s} --merge "$2/$1" "$3/$1"
 }
 
 # ------------------------------------------------------------------------------
@@ -126,21 +126,21 @@ run_add() {
     else
         [ -n "$CEN_OPT_FORCE" -a -e "$repo" ] && remove -d "$repo"
 
-        folder -m "$repo" 755 root:wheel
-        folder -m "$repo/archived" 750 root:wheel
-        folder -m "$repo/backup"   750 root:wheel
-        folder -m "$repo/configs"  755 root:wheel
+        folder -m "$repo"           775 'root:wheel'
+        folder -m "$repo/archived/$DAT_MAND" 770 'root:wheel'
+        folder -m "$repo/backup/$DAT_MAND"   770 'root:wheel'
 
+        folder -m "$repo/configs"   775 'root:wheel'
         local dest="$repo/configs/$DAT_DIST"
-        folder -m "$dest" 755 root:wheel
-        folder -m "$dest/$DAT_MAND" 755 root:wheel
+        folder -m "$dest"           775 'root:wheel'
+        folder -m "$dest/$DAT_MAND" 775 'root:wheel'
         error -t || return
         [ -z "$CEN_OPT_UPDATE" ] && run_update "$host"
     fi
 
     # create repository.conf
     create -c -t "$repo.conf" 600 <<!EOF
-CEN_RSYNC_MODULE=centauri-$host
+CEN_RSYNC_MODULE=$DAT_MAND-$host
 CEN_RSYNC_PASSWD=$pasw
 !EOF
 
@@ -294,6 +294,7 @@ run_merge() {
     [ -d "$dest" ] || return
     $DAT_MESSAGE "Merge machine: $host (${dest##*/})"
 
+    # option --change
     if [ -n "$CEN_OPT_DRYRUN" -o -n "$CEN_OPT_CHANGES" ] ; then
         embed -r -i centauricopy --dry update "$dest" "$CEN_ROOT/configs/$DAT_DIST" \
                                 -x _centauri_bash_completion -x _centauri_bash_lib -s
@@ -302,11 +303,12 @@ run_merge() {
         return
     fi
 
+    # option --merge
     [ "$darc" -nt "$CEN_ROOT/archived/$DAT_MAND/$host" ] &&
         copy -a "$darc" "$CEN_ROOT/archived/$DAT_MAND/$host"
-    do_merge "$dest/@admin"            "$CEN_ROOT/configs/$DAT_DIST"
-    do_merge "$dest/$DAT_MAND/@shared" "$CEN_ROOT/configs/$DAT_DIST/$DAT_MAND"
-    do_merge "$dest/$DAT_MAND/$host"   "$CEN_ROOT/configs/$DAT_DIST/$DAT_MAND"
+    do_merge '@admin'  "$dest"           "$CEN_ROOT/configs/$DAT_DIST"
+    do_merge '@shared' "$dest/$DAT_MAND" "$CEN_ROOT/configs/$DAT_DIST/$DAT_MAND"
+    do_merge "$host"   "$dest/$DAT_MAND" "$CEN_ROOT/configs/$DAT_DIST/$DAT_MAND"
 }
 
 # ------------------------------------------------------------------------------
@@ -324,6 +326,11 @@ run_update() {
         [ -z "$dest" ] && return                    # end of list
         [ -d "$dest/$DAT_MAND" ] || continue        # no repository
         dist="${dest##*/}"
+
+        # copy 'archived' to repository
+        local darc="$host/repository/archived/$DAT_MAND/$host"
+        [ "$darc" -nt "$CEN_ROOT/archived/$DAT_MAND/$host" ] &&
+            copy -a -- "$darc" "$CEN_ROOT/archived/$DAT_MAND/$host"
 
         # check if repository was changed since last full run
         if dryrun || [ -n "$DAT_SINGLE_MACHINE" -o -n "$CEN_OPT_FORCE" ] ; then
@@ -360,15 +367,14 @@ run_update() {
         fi
 
         # create an empty backup list
-        local darc="$host/repository/archived/$DAT_MAND"
-        if [ ! -e "$darc/$host" ] ; then
-            folder -m -- "$darc" && create -- "$darc/$host"
-            message -a "Created:" "$darc/$host"
+        if [ ! -e "$darc" ] ; then
+            folder -m -- "${darc%/*}" && create -- "$darc"
+            message -a "Created:" "$darc"
         fi
 
         # merge back config updates of this host but only if PACKAGES exists ...
         [ -e "$dest/$DAT_MAND/$host/PACKAGES" ] &&
-            do_merge "$dest/$DAT_MAND/$host" "$CEN_ROOT/configs/$dist/$DAT_MAND"
+            do_update "$dest/$DAT_MAND/$host" "$CEN_ROOT/configs/$dist/$DAT_MAND"
 
         do_update "$CEN_ROOT/configs/$dist/@admin"            "$dest"
         do_update "$CEN_ROOT/configs/$dist/$DAT_MAND/@shared" "$dest/$DAT_MAND"
@@ -395,8 +401,8 @@ run() {
     if [ -n "$CEN_OPT_NICK" ] ; then
         DAT_DIST="$CEN_OPT_NICK"
     else
-        sysversion
-        [ "${CEN_SYS_NICKNAME:--}" = "-" ] || DAT_DIST="$CEN_SYS_NICKNAME"
+        sysversion -f
+        DAT_DIST="$CEN_SYS_NICKNAME"
     fi
     DAT_MAND="${DAT_MAND%%.*}"
     temp="$CEN_ROOT/configs/$DAT_DIST/${DAT_MAND:--}"
@@ -406,7 +412,7 @@ run() {
     # setup staging folder
 
     if [ -n "$CEN_OPT_SETUP" ] ; then
-        [ -e "rsyncd.conf" ] || do_config "rsyncd.conf"
+        [ -e 'rsyncd.conf' ] || do_config 'rsyncd.conf'
     fi
 
     # get list of machines
@@ -456,7 +462,7 @@ run() {
     error -t || return
 
     # generate rsyncd.conf
-    [ -e "rsyncd.conf" ] || quit -e "Missing static config file:" "rsyncd.conf"
+    [ -e 'rsyncd.conf' ] || quit -e "Missing static config file:" 'rsyncd.conf'
     if ! dryrun "Create /etc/rsyncd.conf" ; then
         cat rsyncd.conf */repository.rsyncd > /etc/rsyncd.conf || quit -e
     fi
@@ -575,7 +581,7 @@ $CEN_USE_OPTIONS
        that this will not create a AD/DC machine account. To add a new machine
        to a domain run 'centaurikerberos client' on the new machine.
 
-The script generates /etc/rsyncd.conf to allow registered clients to access
+The script generates '/etc/rsyncd.conf' to allow registered clients to access
 the staging repository. So centauriconfig will not alter the main repository.
 To sync staging from main centauricron calls "$CEN_NAME -U" hourly.
 Updating main from staging must be done manually, see "$CEN_NAME -M".

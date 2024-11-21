@@ -4,13 +4,13 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2024; BSD License"
 CEN_TITLE="Session configuration script"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t -m sys -y - '0.16:2' 2 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t -m sys -y - '0.18:4' 2 || exit 2
 
 # Data
 # context -v 2      ##### DEBUG
 
 # KDE paths (_centauri_bash_sys loaded via '-m sys' sets version)
-if [ "$CEN_SYS_KDEVERS" '<' '005.000.000' ] ; then
+if [ "${CEN_SYS_KDEVERS::3}" = '004' ] ; then
     DAT_KDE_APPS='.kde/share/apps'
     DAT_KDE_KWAL='kwallet'
 else
@@ -28,6 +28,8 @@ DAT_ENCFS=('Private'   $"Private"   'Privat')
 
 # folder for issue data
 DAT_ISSUE_DIR="$CEN_ROOT/persistent/issue.d"
+
+DAT_AUTOLOGIN='.centauriautologin'
 
 # ------------------------------------------------------------------------------
 # Helpers for translated folder names
@@ -82,26 +84,32 @@ actionAutologin() {
 
     sysfind -c -e -p "$PATH:/usr/bin:/usr/sbin" chvt agetty || return
     sysrun -e    -- chvt "$ntty"
-    system -e -x -- agetty --autologin "$user" --noclear "tty$ntty" linux
+    system -e -x -- agetty --autologin "$user" --skip-login --noclear "tty$ntty" linux
 }
 
 # ------------------------------------------------------------------------------
-# Bash login: -no arg-
+# Bash login at tty[3-6]: -no arg-
 # ------------------------------------------------------------------------------
 actionBashrc() {
-    if [ "$XDG_VTNR" = "6" -a -x "$HOME/.autologin" ] ; then
+    local auto="$HOME/$DAT_AUTOLOGIN"
+
+    # tty6 is used via centauriautologin service
+    if [ "$XDG_VTNR" = 6 ] && [ -x "$auto" ] ; then
         system -e -- chvt 6
-        system -e -- $HOME/.autologin
-        error -s 127 ; return       # used by /etc/bash.centauri: no logout
-    elif ! [ "$HOME/.autologin" -ef "/dev/null" ] ; then
-        embed centauristartx -C0
+        system -e -x -- "$auto"
+        error -s 127 ; return           # used by /etc/bash.centauri: no logout
+
+    # /dev/null can be used to disable starting a display server
+    elif ! [ "$auto" -ef '/dev/null' ] ; then
+        embed -x centauridisplay -q -C0
         if [ $? = 127 ] ; then
-            error -s 127 ; return   # used by /etc/bash.centauri: no logout
+            error -s 127 ; return       # used by /etc/bash.centauri: no logout
         fi
     else
-        error -s 127 ; return       # used by /etc/bash.centauri: no logout
+        error -s 127 ; return           # used by /etc/bash.centauri: no logout
     fi
-    error -t || sleep 5             # pause after error
+
+    error -t || timer -w 5              # pause after error
 }
 
 # ------------------------------------------------------------------------------
@@ -113,7 +121,7 @@ actionEncrypt() {
     # check if we have an encfs mounted: <xlat-list>
     ___is_encfs() {
         ___xlat_find emnt -d $1 || return 1    # no mount point
-        findmount "encfs" "$HOME/$emnt" && return 0
+        findmount 'encfs' "$HOME/$emnt" && return 0
         emnt= ; return 1
     }
 
@@ -249,7 +257,7 @@ actionLocal() {
     fi
 
     # create Shared and Public and subfolders of Roaming
-    local repo="$CEN_TOOLS/kde/Roaming"
+    local repo="$CEN_TOOLS/Roaming"
     local mask icon list
     list=("$dsha:07:directory_data" \
           "$dpub:02:directory_publ" \
@@ -263,20 +271,19 @@ actionLocal() {
           "$lroa/Profiles/win:077:" \
           "$ldoc::directory_docs" )
 
-    local umsk=$(umask) ; umask 077                         # make all private
+    _cen_umask -s 077                                       # make all private
     for item in "${list[@]}" ; do
         icon="${item##*:}" item="${item%:*}"
         mask="${item##*:}" item="${item%:*}"
         umask ${mask:-02}
         if [ ! -d "$item" ] ; then
-            #[ -z "$mask" ] && continue
             dryrun "folder -m '$item'" && continue
             folder -m -- "$item" || continue
         fi
         [ -n "$icon" -a -e "$repo/$icon" ] || continue
         [ -e "$item/.directory" ] || copy -q -- "$repo/$icon" "$item/.directory"
     done
-    umask "$umsk"                                           # restore settings
+    _cen_umask -r                                           # restore settings
 
     # create warning for local documents
     if [ -d "$ldoc" ] ; then
@@ -352,7 +359,7 @@ actionRoaming() {
             done
         fi
         if [ -z "$item" ] ; then
-            message -a $"This user is not roaming" "($mwhy)"
+            trace -a $"This user is not roaming" "($mwhy)"
             return
         fi
     fi
@@ -467,20 +474,23 @@ actionRoaming() {
 # The action will and install .kde/.mozilla if needed and setup roaming folders.
 # ------------------------------------------------------------------------------
 actionLogin() {
+    if [ "$HOME" = '/' ] ; then
+        invoke -e $"User has no home folder" ; return
+    fi
     folder -f -c "$HOME"
 
     # check/create .centaurisession status file
-    local RUN_AT_LOGIN="yes"
+    local RUN_AT_LOGIN='yes'
     if [ -z "$CEN_OPT_FORCE" ] ; then
         if [ -r "$HOME/.$CEN_NAME" ] ; then
-            . "$HOME/.$CEN_NAME"
+            source "$HOME/.$CEN_NAME"
             [ "$CEN_VERB" = 1 ] && context -v 0
         elif [ -z "$CEN_OPT_DRYRUN" ] ; then
             local mesg=( "# "$"Set to 'no' to disable runnig $CEN_NAME at login/logout"
                          "RUN_AT_LOGIN=yes" "RUN_AT_LOGOUT=yes")
             create -v mesg "$HOME/.$CEN_NAME"
         fi
-        if [ "$RUN_AT_LOGIN" = "no" ] ; then
+        if [ "$RUN_AT_LOGIN" = 'no' ] ; then
             trace -a -p $"Action '%s' disabled: via '%s'" $CEN_ACTION ".$CEN_NAME"
             return
         fi
@@ -488,33 +498,47 @@ actionLogin() {
 
     # extract kde profile
     export CEN_SYS_VERSION CEN_SYS_KDEVERS
-    if [ -d ".kde" -o -e ".config/kwinrc" -a -z "$CEN_OPT_FORCE" ] ; then
+    if ! sysfind -o -q 'kdeinit5' 'kdeinit6' ; then
+        trace -a -c "Not installed" 'KDE desktop'
+    elif [ -z "$CEN_OPT_FORCE" ] && [ -d '.kde' -o -e '.config/kwinrc' ] ; then
         message -a $"Existing KDE configuration not changed"
     else
         embed -i -v -y -z -- centauriprofile -S1 -y apply +
     fi
 
-    # extract mozilla profile
-    if [ -d ".mozilla" -a -z "$CEN_OPT_FORCE" ] ; then
-        message -a $"Existing Mozilla configuration not changed"
+    # extract lxqt profile
+    if ! sysfind -o -q 'lxqt-session' ; then
+        trace -a -c "Not installed" 'LxQt desktop'
+    elif [ -z "$CEN_OPT_FORCE" ] && [ -d '.config/lxqt' ] ; then
+        message -a $"Existing LxQt configuration not changed"
     else
+        embed -i -v -y -z -- centauriprofile -S4 -y apply +
+    fi
+
+    # extract mozilla profile
+    if ! sysfind -o -q 'firefox' ; then
+        trace -a -c "Not installed" 'firefox browser'
+    elif [ -z "$CEN_OPT_FORCE" ] && [ -d '.mozilla' ] ; then
+        message -a $"Existing firefox configuration not changed"
+    else
+    # check firefox
         embed -i -v -y -z -- centauriprofile -S2 -y apply +
     fi
 
     # setting security
-    if [ -f ".centaurisecurity" -a -z "$CEN_OPT_FORCE" ] ; then
+    if [ -z "$CEN_OPT_FORCE" ] && [ -f '.centaurisecurity' ] ; then
        message -a $"Existing '.centaurisecurity' not changed"
     else
-        embed -r -s item -- centauriprofile info "dot_security"
-        if [ "${item:--}" != "-" ] ; then
+        embed -r -s item -- centauriprofile info 'dot_security'
+        if [ "${item:--}" != '-' ] ; then
             message -a -p $"Installing '.centaurisecurity' from '%s'" "$item"
-            copy "$item" ".centaurisecurity"
+            copy "$item" '.centaurisecurity'
         fi
     fi
 
     # renew .xsession-errors
-    if [ -s ".xsession-errors" ] ; then
-        rename -o ".xsession-errors" ".xsession-errors.old"
+    if [ -s '.xsession-errors' ] ; then
+        rename -o '.xsession-errors' '.xsession-errors.old'
         message -a $"Moved '.xsession-errors' to '.xsession-errors.old'"
     fi
 
@@ -524,7 +548,7 @@ actionLogin() {
         folder -m '.config/pulse' && symlink -m '/etc/pulse/cookie' '.config/pulse/cookie'
     fi
 
-    # setup folders
+    # setup folders, get kerberos ticket
     actionRoaming
 
     # pending issue?
@@ -535,8 +559,9 @@ actionLogin() {
     fi
 
     # get kerberos ticket
-    [ -x "$CEN_TOOLS/centaurikerberos" -a -e "/etc/krb5.conf" ] &&
-                                         embed -v centaurikerberos -q ticket -
+    if [ -x "$CEN_TOOLS/centaurikerberos" -a -e '/etc/krb5.conf' ] ; then
+        netquery CLIENT && embed -v centaurikerberos -q ticket -
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -732,13 +757,13 @@ actions:
        roaming [<mode>]     Switch to roaming profile and documents
        local                Switch to local profile and documents
        ••• called via .bashrc and .profile •••
-       bashrc               called by bash after login
+       bashrc               called by /etc/bash.centauri after login on tty[3-6]
        login                setup folder links, install profiles, kerberos ticket
        logout               unmount encfs, destroy kerberos ticket
        profile              setup XDG_RUNTIME_DIR and encrypted .cache
        ••• for administrators •••
        autologin [<user> [<ntty>]]
-                            Backend for centaurilogin@.service
+                            Backend for centauriautologin@.service
        network              Configure network folder for master/slave server
 
 arguments:
@@ -751,14 +776,14 @@ This happens up to four times to handle the following cases:
 
         (1) any shell calls '$CEN_NAME profile' to sanitize \$TMP and centauriencfs
         (2) A login shell starts '$CEN_NAME login' the initialize the environment
-        (3) A bash shell runs '$CEN_NAME profile', checks ~/.autologin (see below)
+        (3) A bash shell runs '$CEN_NAME profile' and checks autologin (see below)
         (4) At logout bash calls '$CEN_NAME logout' to run 'centauriencfs umount'
 
 The kernel command line argument 'centaurilogin=<user>' will cause case (3) to:
 
-        (3.1) do nothing if ~/.autologin is a symlink to /dev/null
-        (3.2) run centauristartx if ~/.autologin is missing (only for tty >= 3)
-        (3.3) exececute ~/.autologin for all other cases.
+        (3.1) do nothing if ~/$DAT_AUTOLOGIN is a symlink to /dev/null
+        (3.2) run centauridisplay if ~/$DAT_AUTOLOGIN is missing (only for tty >= 3)
+        (3.3) exececute ~/$DAT_AUTOLOGIN for all other cases.
 
 See 'centaurikiosk --help' for some additional information on autologin.
 !EOF

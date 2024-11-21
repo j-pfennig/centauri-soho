@@ -1,19 +1,39 @@
 [Unit]
 Description=Autologin user %I at tty6
+
+# --------------------------------------------------------------------------
+# This unit must not be installed for a real user - it is intended for being
+# used by 'centauristartup' only. To make it work use:
+#
+#   ln -s $CEN_ROOT/systemd/system/centauriautologin \
+#     /etc/systemd/system/getty.target.wants/centauriautologin@local.service
+#
+# Creating the symlink is implemented by:
+#
+#   centauristartup install
+# --------------------------------------------------------------------------
+
 After=systemd-user-sessions.service plymouth-quit-wait.service
-After=centaurisysinit.service console-setup.service
+After=centaurisysinit.service centauriissue.service console-setup.service
 Before=getty.target
+# uses may be in extrausers, which needs sssd to run
 Wants=console-setup.service sssd.service
 IgnoreOnIsolate=yes
 
-ConditionKernelCommandLine=centaurilogin
+ConditionKernelCommandLine=centaurilogin=%I
 ConditionPathExists=/var/centauri/tools/centaurisession
+ConditionPathExists=|/home/%I/.centauriautologin
+ConditionPathExists=|/var/centauri/%I/.centauriautologin
+ConditionPathExists=|/var/centauri/home/%I/.centauriautologin
+
+StartLimitIntervalSec=120
+StartLimitBurst=4
 
 [Service]
 ExecStart=/var/centauri/tools/centaurisession autologin %I 6
 Type=idle
 Restart=always
-RestartSec=1
+RestartSec=0
 UtmpIdentifier=tty6
 TTYPath=/dev/tty6
 TTYReset=yes
@@ -22,7 +42,9 @@ TTYVTDisallocate=yes
 KillMode=process
 IgnoreSIGPIPE=no
 SendSIGHUP=yes
+TimeoutStopSec=10
 
 [Install]
-WantedBy=getty.target
-DefaultInstance=root
+Alias=centaurilogin@
+#WantedBy=getty.target
+#DefaultInstance=nobody

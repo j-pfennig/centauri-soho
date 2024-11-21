@@ -1,13 +1,12 @@
-#!/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2015-2023; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2015-2024; BSD License"
 CEN_TITLE="Tool to manage sets of backup files grouped by tags"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -f -m bat -i -y - "0.39:2" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m bat -i -y - '0.40:4' || exit 2
 
 # data definitions
-CEN_OPT_DRYRUN=         # see --dryrun
 CEN_OPT_EXEC=           # see --exec
 CEN_OPT_FOLDER=         # see --folder
 CEN_OPT_HOST=
@@ -57,7 +56,7 @@ APP_DAT_VALAGE="[0-9]+|[12][0-9][0-9][0-9]-[012][0-9]-[0-3][0-9]"
 
 # get index output path: <host|id> [<root>]
 check_output() {
-    if [ "${1:--}" = "-" ] ; then
+    if [ "${1:--}" = '-' ] ; then
         error "Empty <host> or <id> not allowed"
         return 1
     fi
@@ -557,15 +556,15 @@ call_worker() {
 
     if [ -n "${ltag[1]}" ] ; then
         disp="_{${ltag[*]}}" ; disp="${disp// /|}"
-    elif [ "$ltag" = "-" ] ; then
+    elif [ "$ltag" = '-' ] ; then
         disp=
     else
         disp="_$ltag"
     fi
 
     date="${year}"
-    [ "${month}" != "-" ] && date+="-${month}"
-    [ "${day}"   != "-" ] && date+="-${day}"
+    [ "${month}" != '-' ] && date+="-${month}"
+    [ "${day}"   != '-' ] && date+="-${day}"
 
     # call run_xxx worker ...
     if [ "$CEN_ACTION" = "list" ] ; then
@@ -708,7 +707,7 @@ actionRun()
 
     case "$CEN_ACTION" in
     delete)
-        if [ "$CEN_OPT_OUTPUT" = "-" ] ; then
+        if [ "$CEN_OPT_OUTPUT" = '-' ] ; then
             APP_DIR_DELETED=
         elif [ -n "$CEN_OPT_OUTPUT" ] ; then
             APP_DIR_DELETED="$CEN_OPT_OUTPUT"
@@ -725,17 +724,14 @@ actionRun()
     upload)
         check_server
         local fdes="${CEN_OPT_OUTPUT:-$CEN_OPT_FOLDER}"
-        local farr
-        splitpath -a farr -p -- "$fdes"             # get base and folder
-        farr="/root/${farr[0]##*/}/${farr[1]}"      # simple path
-        if [ "$fdes" -ef "$farr" ] ; then           # use simple path
-            CEN_OPT_OUTPUT="$farr"
-        else
-            embed -s CEN_OPT_OUTPUT -- centauripaths --logical "$fdes"
-            [ -z "$CEN_OPT_OUTPUT" ] && CEN_OPT_OUTPUT="$fdes"
+        if [ "$fdes" = "${fdes/\//}" ] ; then
+            embed -s CEN_OPT_OUTPUT \
+                  centauripaths --remote "$CEN_OPT_HOST" -- "$fdes" || return
+        elif [ -z "$CEN_OPT_OUTPUT" ] ; then
+            CEN_OPT_OUTPUT="$fdes"
         fi
-        [ -z "$CEN_OPT_DRYRUN" -a -u "$CEN_OPT_SILENT" ] &&
-            message -i "Upload destination : $CEN_OPT_HOST:$CEN_OPT_OUTPUT"
+        [ -z "$CEN_OPT_DRYRUN" -a -z "$CEN_OPT_SILENT" ] &&
+            message -a -c "Upload destination " "$CEN_OPT_HOST:$CEN_OPT_OUTPUT"
         ;;
     exec|show|list)
         ;;
@@ -814,17 +810,15 @@ options() {
         ;;
 
     -B|--min*)
-        optarg "minage" CEN_OPT_MINAGE    "$APP_DAT_VALAGE" ;;
+        optarg 'minage' -                 "$APP_DAT_VALAGE" ;;
     -C|--con*)
-        optarg "cond"   CEN_OPT_COND      "wee(k)?|mon[a-z]*|qua[a-z]*|hal(f)?|yea(r)?" ;;
-    -D|-d|--dry*)
-        optarg "dryrun" CEN_OPT_DRYRUN     ;;
+        optarg 'cond'   -                 'wee(k)?|mon[a-z]*|qua[a-z]*|hal(f)?|yea(r)?' ;;
     -E|--max*)
-        optarg "maxage" CEN_OPT_MAXAGE    "$APP_DAT_VALAGE" ;;
+        optarg 'maxage' CEN_OPT_MAXAGE    "$APP_DAT_VALAGE" ;;
     -F|--fol*)
         optarg "folder" CEN_OPT_FOLDER  -t ;;
     -H|--hos*)
-        optarg "host"   CEN_OPT_HOST    -t ;;
+        optarg "host"   CEN_OPT_HOST    -v ;;
     -L|--loc*)
         optarg "local"  CEN_OPT_LOCAL   - "$HOSTNAME" ;;
     -N|--not)
@@ -856,7 +850,7 @@ options() {
 actions() {
     case "$CEN_ACTION" in
 
-    "") [ -n "$CEN_OPT_MINAGE" ] && convert_age CEN_OPT_MINAGE
+    '') [ -n "$CEN_OPT_MINAGE" ] && convert_age CEN_OPT_MINAGE
         if [ -n "$CEN_OPT_MAXAGE" ] ; then
             convert_age CEN_OPT_MAXAGE
             if [ -n "$CEN_OPT_MINAGE" ] ; then
@@ -866,32 +860,32 @@ actions() {
         fi
 
         if [ -z "$CEN_OPT_REVERSE" ] ; then
-            CEN_OPT_REVERSE="-r"
+            CEN_OPT_REVERSE='-r'
         else
             CEN_OPT_REVERSE=
         fi
         ;;
 
     cop*)
-        invoke "copy"   actionRun 0 + ;;
+        invoke 'copy'   actionRun 0 + ;;
     del*|rem*)
-        invoke "delete" actionRun 0 + ;;
+        invoke 'delete' actionRun 0 + ;;
     dri*)
-        invoke "drive"  actionDrive 2 ;;
+        invoke 'drive'  -         2   ;;
     exe*)
-        invoke "exec"   actionRun 0 + ;;
+        invoke 'exec'   actionRun 0 + ;;
     ind*)
-        invoke "index"  actionIndex 1 + ;;
+        invoke 'index'  -         1 + ;;
     lin*)
-        invoke "link"   actionRun 0 + ;;
+        invoke 'link'   actionRun 0 + ;;
     lis*)
-        invoke "list"   actionRun 0 + ;;
+        invoke 'list'   actionRun 0 + ;;
     mov*)
-        invoke "move"   actionRun 0 + ;;
+        invoke 'move'   actionRun 0 + ;;
     sho*)
-        invoke "show"   actionRun 0 + ;;
+        invoke 'show'   actionRun 0 + ;;
     up*)
-        invoke "upload" actionRun 0 + ;;
+        invoke 'upload' actionRun 0 + ;;
 
     esac
 }

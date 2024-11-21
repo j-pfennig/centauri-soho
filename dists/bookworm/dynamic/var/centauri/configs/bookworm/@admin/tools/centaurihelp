@@ -1,10 +1,10 @@
 #!/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2022; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2024; BSD License"
 CEN_TITLE=$"Documentation generator for centauri-bash-lib and centauritools"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -i -r -t -y "$0" "0.20:1" 0 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -i -r -t -y - '0.21:2' 0 || exit 2
 
 # Data
 CEN_OPT_ALL=                    # see --all
@@ -23,11 +23,11 @@ CEN_OPT_REFERENCE=              # see --refence
 CEN_OPT_TOOLS=                  # see --tools
 CEN_OPT_USE=                    # see --use
 
-DAT_DOCO="-5 -i 0"              # xml_document options
+DAT_DOCO='-5 -i 0'              # xml_document options
 
 DAT_FMT_MODE=                   # 0: text  1: deco  2:html
-DAT_FMT_TYPE=plain              # call suffix 'plain' or 'html'
-DAT_FMT_PARSE=full              # call suffix 'full' or 'mini' (parser)
+DAT_FMT_TYPE='plain'            # call suffix 'plain' or 'html'
+DAT_FMT_PARSE='full'            # call suffix 'full' or 'mini' (parser)
 
 DAT_FMT_ULIN=                   # ANSI underline
 DAT_FMT_BOLD=                   # ANSI bold

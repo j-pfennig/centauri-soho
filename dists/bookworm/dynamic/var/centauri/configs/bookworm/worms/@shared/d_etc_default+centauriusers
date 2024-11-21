@@ -10,7 +10,7 @@
 # or 'domain' mechanisms. So each user/group belongs at least one of these
 # mandatory mechanisms. It makes sense to have 'domain' and 'extra' set at
 # the same time to provide a default for the case that the 'domain' mech
-# is not availlable (workin offline). So libnss should be configured to
+# is not availlable (working offline). So libnss should be configured to
 # seach in the order: passwd domain extrausers.
 #
 # Each user/group can have additional mechanism just like tags (can be used
@@ -29,21 +29,19 @@
 # 'range' statement. The later automatically assigns mechanics by user-id
 # or group-id.
 #
-# Gruppen
-#   local       1000                (machines im ad)
-#   centauri    1001
-#   public      1002
-#   roaming     1004
-#   usershare   1005
-#
-# User
-#   local       1000
-#   vbox        1001
-#   spare       1004
-#   remote      1005
-#   kiosk       1006
-#
 # Plugins   samba domain mailbox
+#
+# ------------------------------------------------------------------------------
+# Using systemd-sysusers
+# ------------------------------------------------------------------------------
+#
+# This part of systemd is used to create users and groups at boot time. Currently
+# the drop-in '/usr/lib/sysusers.d/centauri.conf' contains a lot if things that
+# should be managed by centauriusers via 'mech sysusers'. Example:
+#
+#   group   pulse-access
+#           unix    602
+#           mechs   sysusers
 #
 # ------------------------------------------------------------------------------
 # defaults
@@ -66,20 +64,22 @@ file    group-pam       "/etc/security/group.conf"
 #file    timestamp       "/etc/shadow.timestamp"
 #file    timestamp       -
 
+file     shell           /usr/sbin/nologin
+
 # automatically assign mech by uid or gid
-range   group-extra     400  4999
+range   group-extra     500  999
 #range   group-ldap    10000 29999
 range   group-samba-ad 2000  9999
 
-range   user-extra      400   699
+range   user-extra      500   999
 #range   user-domain   30000 65533  # default is: 10000 65533
 #range   user-ldap     10000 29999
 #range   user-kerberos 30000 49999
 range   user-samba-ad 30000 49999
 
 # example of a mech that can be used for filtering reports (has no mech plugin)
-range   user-system   1 399
-range   group-system  1 399
+range   user-system     1 499
+range   group-system    1 499
 
 # Valid triggers are: all unix update delete password plugin
 # Default triggers  : all delete password plugin 
@@ -131,10 +131,10 @@ plugin  samba       +
         condition   smbpasswd pdbedit @bookworm*
         condition   smbpasswd pdbedit @raspi*
 
-        user-list   pdbedit -s /etc/samba/smbpass.conf -L
-        create      pdbedit -s /etc/samba/smbpass.conf -a -u %USER% -f %INFO% -t
-        delete      pdbedit -s /etc/samba/smbpass.conf -x -u %USER%
-        password    pdbedit -s /etc/samba/smbpass.conf -a -u %USER% -t 
+        user-list   pdbedit -s /etc/samba/smbpass.conf.local -L
+        create      pdbedit -s /etc/samba/smbpass.conf.local -a -u %USER% -f %INFO% -t
+        delete      pdbedit -s /etc/samba/smbpass.conf.local -x -u %USER%
+        password    pdbedit -s /etc/samba/smbpass.conf.local -a -u %USER% -t 
 
 plugin  samba-ad    +
         info        "update Samba-AD (must not be in passwd/ldap/kerberos/samba)"
@@ -205,67 +205,150 @@ role    admin
         info    "system administrators"
         users   root local 
 
+# required minimum -------------------------------------------------------------
+
+group   root
+        unix        0
+
+group   shadow
+        users       local
+        unix        42
+
+# toxic user ids (wan't work via pam) ------------------------------------------
+
+user    _apt
+        unix        42 nogroup
+
+user    _flatpac
+        info        "Flatpak system-wide installation helper"
+        unix        200 +
+
+user    _rpc
+        home        /run/rpcbind
+        unix        201 +
+
+group   _ssh
+        unix        202
+        mechs       passwd
+
+user    fetchmail   
+        home        /var/lib/fetchmail
+        unix        203 +
+        mechs       passwd
+
 # groups -----------------------------------------------------------------------
+
+group   daemon
+        users       vboxadd
 
 group   sudo
         users       @admin
 group   wheel       sudo
-group   shadow      sudo
 group   staff       sudo
 
 group   local      
         info        "user local's primary group"
         unix        1000
         users       @admin
-        mech        extra
 
 group   centauri
         info        "power users of domain 'centauri'"
         unix        1001
         users       @power
-        mech        extra
+       
 group   disk        centauri
-group   vboxusers   centauri
 group   vboxsf      centauri
+
+group   vboxusers
+        info        'user allowed to use virtualbox'
+        unix        1009
+        users       vbox @power
 
 group   roaming
         info        'users with a roaming profile'
         unix        1004
         users       work1
-        mech        extra
+
+group   kiosk
+        info        'users for kiosk and clock mode'
+        unix        1007
+        users       local clock homeassistant
 
         # medium access permissions
 
 group   lpadmin 
         users       @medium
 group   sambashare  lpadmin
+        users       @medium
 
         # normal device access
 
 group   users
-        users       @normal
+        users       @normal kiosk clock homeassistant
 group   cdrom       users
 group   floppy      users
 group   netdev      users
 group   plugdev     users
-group   dialout     users
 group   scanner     users
         users       saned
         
         # access to multi-media devices
 
 group   video   
-        users       @normal
+        users       @normal clock kiosk
 group   audio       video
 group   pulse-access  video
 
         # miscellaneous
+
+group   dialout     users
+        users       homeassistant
+
+group   bluetooth
+        users       homeassistant
         
 group   sasl
         users       cyrus Debian-exim
 
 group   ssl-cert
         users       openldap cyrus Debian-exim www-data
+
+group   vboxfs      vboxusers
+        users       vbox
+
+# groups -----------------------------------------------------------------------
+
+group   crontab 
+        unix    600
+
+group   plocate
+        unix    601
+
+group   render 
+        unix    603
+
+group   rdma 
+        unix    604
+
+group   sgx 
+        unix    605
+
+group   winbindd_priv
+        unix    606
+
+group   nm-openvpn
+        unix    607
+
+# groups (raspberry) -----------------------------------------------------------
+
+group   gpio
+        unix    391
+
+group   i2c
+        unix    392
+
+group   spi
+        unix    393
 
 # groups (ad) ------------------------------------------------------------------
 
@@ -300,185 +383,226 @@ group   linux-roaming
 
 # users (extrausers) -----------------------------------------------------------
 
-user    dnsmasq     
-        info        dnsmasq
-        home        /var/lib/misc
-        shell       /bin/false
+user    _flatpak
+        info        Flatpak system-wide installation helper
+        home        /nonexistent
         unix        500 +
 
-user    sshd        
-        home        /run/sshd
-        shell       /usr/sbin/nologin
-        unix        501 +
-
-user    ntp         
-        shell       /bin/false
-        unix        502 +
-
-user    ftp         
-        info        ftp daemon
-        home        /srv/ftp
-        shell       /bin/false
-        unix        503 +
-
-user    davfs2      
-        home        /var/cache/davfs2
-        shell       /bin/false
-        unix        504 +
-
-user    pulse
-        info        PulseAudio daemon
-        home        /run
-        shell       /usr/sbin/nologin
-        unix        505 +
+#user    _rpc
+#        home        /run/rpcbind
+#        unix        + +
 
 user    avahi
         info        Avahi mDNS daemon
         home        /run
-        shell       /usr/sbin/nologin
-        unix        506 +
+        unix        + +
 
-user    sddm
-        info        Simple Desktop Display Manager
-        home        /var/lib/sddm
-        shell       /bin/false
-        unix        507 +
-
-user    lightdm
-        info        Light Display Manager
-        home        /var/lib/lightdm
-        shell       /bin/false
-        unix        508 +
-
-user    fwupd-refresh
-        info        fwupd-refresh user
-        home        /run/systemd
-        shell       /usr/sbin/nologin
-        unix        509 +
+user    avahi-autoipd
+        info        "Avahi autoip daemon"
+        home        /run
+        unix        + +
 
 user    colord
         info        colord colour management daemon
         home        /var/lib/colord
-        shell       /usr/sbin/nologin
-        unix        510 +
-
-#user    avahi-autoipd
-#        info        "Avahi autoip daemon"
-#        home        /run
-#        shell       /usr/sbin/nologin
-#        unix        511 +
-
-user    tinyproxy
-        info        Tinyproxy daemon
-        home        /run/tinyproxy
-        shell       /usr/sbin/nologin
-        unix        512 +
-
-user    polkitd
-        info        polkit
-        home        /var/lib/polkit-1
-        shell       /usr/sbin/nologin
-        unix        513 +
-
-user    ntpsec
-        home        /nonexistent
-        shell       /usr/sbin/nologin                 
-        unix        514 +
-
-user    radvd
-        info        "IPv6 router advertisment"
-        home        /run/radvd
-        shell       /usr/sbin/nologin                
-        unix        515 nogroup
-
-user    hplip
-        info        "HPLIB system user"
-        home        /run  
-        shell       /usr/sbin/nologin
-        unix        516 +
-
-user    nm-openvpn
-        info        "NetworkManager OpenVPN"  
-        home        /var/lib/openvpn/chroot 
-        shell       /usr/sbin/nologin
-        unix        517 nogroup
-
-user    Debian-exim 
-        home        /var/spool/exim4
-        shell       /usr/sbin/nologin
-        unix        521 +
-
-user    fetchmail   
-        home        /var/lib/fetchmail
-        shell       /bin/false
-        unix        522 +
-      #  condition   fetchmail
+        unix        + +
 
 user    cyrus       
         info        Cyrus Mailsystem User
         home        /var/spool/cyrus
-        shell       /bin/bash
-        unix        523 +
+        shell       /usr/bin/bash
+        unix        + +
      #   condition   cyrus
+        mechs       shared
 
-user    _flatpak
-        info        Flatpak system-wide installation helper
-        home        /nonexistent
-        shell       /usr/sbin/nologin
-        unix        524 +
+user    davfs2      
+        home        /var/cache/davfs2
+        unix        + +
+
+user    Debian-exim 
+        home        /var/spool/exim4
+        unix        + +
+
+user    dnsmasq     
+        info        dnsmasq
+        home        /var/lib/misc
+        unix        + +
+
+user    fetchmail-dummy
+        info        "hack for debian bug"
+        unix        + +
+
+user    ftp         
+        info        ftp daemon
+        home        /srv/ftp
+        unix        + +
+
+user    fwupd-refresh
+        info        fwupd-refresh user
+        home        /run/systemd
+        unix        + +
 
 user    geoclue  
         home        /var/lib/geoclue
-        shell       /usr/sbin/nologin
-        unix        525 +
+        unix        + +
+ 
+user    hplip
+        info        "HPLIB system user"
+        home        /run  
+        unix        + +
 
-user    openldap    
-        info        OpenLDAP Server Account
-        home        /var/lib/ldap
-        shell       /bin/false
-        unix        540 +
+user    lightdm
+        info        Light Display Manager
+        home        /var/lib/lightdm
+        unix        + +
 
-user    sssd        
-        info        SSSD system user
-        home        /var/lib/sss
-        shell       /usr/sbin/nologin
-        unix        541 +
-
-user    saned       
-        home        /var/lib/saned
-        shell       /usr/sbin/nologin
-        unix        560 +
+user    messagebus
+        info        "System Message Bus"
+        home        /
+        unix        + +
 
 user    minidlna    
         info        MiniDLNA server
         home        /var/lib/minidlna
-        shell       /usr/sbin/nologin
-        unix        561 +
+        unix        + +
+
+user    nm-openvpn
+        info        "NetworkManager OpenVPN"  
+        home        /var/lib/openvpn/chroot 
+        unix        + nogroup
+
+user    ntp         
+        unix        + +
+
+user    ntpsec
+        home        /nonexistent
+        unix        + +
+
+user    openldap    
+        info        OpenLDAP Server Account
+        home        /var/lib/ldap
+        unix        + +
 
 user    pcscd
         info        pcscd does not add cyberjack udev group
         home        /run
-        shell       /usr/sbin/nologin
-        unix        562 +
+        unix        + +
+
+user    polkitd
+        info        polkit
+        home        /var/lib/polkit-1
+        unix        + +
+
+user    pulse
+        info        PulseAudio daemon
+        home        /run
+        unix        + +
+
+user    radvd
+        info        "IPv6 router advertisment"
+        home        /run/radvd
+        unix        + nogroup
+
+user    rtkit
+        info        "ReaktimeKit"
+        home        /proc
+        unix        + +
+
+user    saned       
+        home        /var/lib/saned
+        unix        + +
+
+user    sddm
+        info        Simple Desktop Display Manager
+        home        /var/lib/sddm
+        unix        + +
+
+user    sshd        
+        home        /run/sshd
+        unix        + +
+
+# TODO fixed id
+user    sssd        
+        info        SSSD system user
+        home        /var/lib/sss
+        unix        + +
+
+user    statd       
+        home        /var/lib/nfs
+        unix        + nogroup
+
+user    tcpdump
+        home        /run
+        unix        + +
+
+user    tinyproxy
+        info        Tinyproxy daemon
+        home        /run/tinyproxy
+        unix        + +
+
+user    tss
+        info        "TPM2 software stack"
+        home        /var/lib/tmp
+        unix        + +
+
+user    usbmux
+        info        "usbmux daemon"
+        home        /run
+        unix        + +
+
+user    vboxadd
+        info        "Virtualbox Host Addons"
+        home        /run/nobody
+        unix        + +
+
+user    weewx
+        info        "Weewx Weather Station"
+        home        /etc/weewx
+        unix        + +
 
 # users ------------------------------------------------------------------------
 
-user    root        
-        info        "System Admininstrator"
-        home        /root
-        unix        0 root
-        mechs       passwd shared
-
 user    local       
         info        "Local User"
+        shell       /usr/bin/bash
         unix        1000 local
         mechs       passwd shared samba
 
 user    vbox        
         info        "Virtualbox User"
         home        /var/centauri/vbox
-        unix        1001 vboxusers
+        shell       /usr/bin/bash
+        unix        1009 vboxusers
         mechs       passwd shared 
+
+user    remote
+        info        'Remote proxy user'
+        home        /var/centauri/home/remote
+        shell       /usr/bin/rbash
+        unix        1005 nogroup
+        mechs       passwd shared 
+  
+user    clock
+        info        'clock appliance user'
+        home        /var/centauri/home/clock
+        shell       /usr/bin/bash
+        unix        1006 +
+        mechs       passwd shared
+
+user    kiosk
+        info        'kiosk appliance user'
+        home        /var/centauri/home/kiosk
+        shell       /usr/bin/bash
+        unix        1007 +
+        mechs       passwd shared
+   
+user    homeassistant
+        info        'homeassistant  user'
+        home        /opt/HomeAssistant/home
+        shell       /usr/bin/bash
+        unix        1008 +
+# BUG: group created in extra
+        mechs       passwd shared
 
 #user    emil
 #        info        Emil zum Testen
@@ -490,17 +614,20 @@ user    vbox
 #[deleted]
 user    surf
         info        Gast ohne Rechte        
+        shell       /usr/bin/bash
         unix        10020 public
         mechs       samba-ad
 #[active]
 
 user    work1
         info        "Benutzer für Projekt \\#1"
+        shell       /usr/bin/bash
         unix        30021 projekt
         mechs       samba-ad mailbox
 
 user    work2
         info        "Benutzer für Projekt \\#2"
+        shell       /usr/bin/bash
         unix        30022 projekt
         mechs       samba-ad mailbox
 
@@ -543,3 +670,15 @@ user    archiv
 
 # end
 
+group   systemd-journal
+        unix    999
+
+user    systemd-network
+        info    "systemd Network Management"
+        home    /
+        unix    998 +
+
+user    systemd-timesync
+        info    "systemd Time Synchronization"
+        home    /
+        unix    997 +

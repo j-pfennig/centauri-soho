@@ -4,12 +4,12 @@ CEN_LEGAL="Dr. J. Pfennig (c) 2021-2024; BSD License"
 CEN_TITLE="User identity management tool"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -d -f -i -s -y - "0.21:1" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -i -s -y - '0.22:4' || exit 2
 
-# modules (not using autoload to help uglify to build stand-alone version)
-embed -m _centauri_bash_ext
-embed -m _centauri_bash_iom
-embed -m _centauri_bash_txt
+# modules referenced for stand-alone version
+embed -c _centauri_bash_ext
+embed -c _centauri_bash_iom
+embed -c _centauri_bash_txt
 
 # Data
 CEN_OPT_CONFIG=         # see --config
@@ -23,6 +23,8 @@ CEN_OPT_GID=            # see --gid
 CEN_OPT_VALIDATE=       # see --validate
 
 DAT_SEED_LIST=          # see seed_passw
+
+# TODO default für shell, home
 
 # TODO rename operation
 # TODO implement rename
@@ -77,6 +79,9 @@ DAT_PASSWD_RNDM=                    # see random_passw()
 DAT_TRIGGER="all unix update modify delete password plugin"
 DAT_DEF_TRIGGER="all modify delete password plugin"
 
+DAT_LAST_UID=1000
+DAT_LAST_GID=1000
+
 # data that can be overridden from [] config section
 
 DAT_FILE_MAP=(
@@ -85,6 +90,7 @@ DAT_FILE_MAP=(
     [group]='/etc/group'
     [homedir]='/home'
     [shadow]='/etc/shadow'
+    [gshadow]='/etc/gshadow'
     [passwd-extra]='/var/lib/extrausers/passwd'
     [group-extra]='/var/lib/extrausers/group'
     [shadow-extra]='/var/lib/extrausers/shadow'
@@ -126,7 +132,7 @@ auto_range() {
 }
 
 # ------------------------------------------------------------------------------
-# add to mechs list by uid/gid range: [-g] <vent>|- <vmec> [<uid>|<gid>]
+# add to mechs list by uid/gid range: [-g] <vent> <vmec> [<uid>|<gid>]
 # ------------------------------------------------------------------------------
 auto_mechs() {
     local fgrp irun lfld _mech ugid
@@ -168,7 +174,7 @@ auto_mechs() {
        _vmec+='passwd '                             # add password mech
     fi
     _vmec="${_vmec:1}" ; _vmec="${_vmec% }" ; _vmec="${_vmec// /$DAT_FIELD}"
-    _vent="${entr%$DAT_SEPARATOR*}$DAT_SEPARATOR$_vmec"
+    _vent="${_vent%$DAT_SEPARATOR*}$DAT_SEPARATOR$_vmec"
 }
 
 # ------------------------------------------------------------------------------
@@ -229,7 +235,7 @@ delete_kind() {
 # ------------------------------------------------------------------------------
 exec_operation() {
     local frun opts swrt
-    [ "$CEN_VERB" -gt "1" ] || opts='-q'
+    [ "$CEN_VERB" -gt 1 ] || opts='-q'
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -620,7 +626,7 @@ load_defaults() {
         esac
 
         local name="${plug%%$DAT_FIELD*}" entr trig
-        if [ "$cond" = "1" ] ; then
+        if [ "$cond" = 1 ] ; then
             [ "$eopt" = "-e" ] && [ -z "$CEN_OPT_SILENT" ] &&
                 message -a "Plugin '$name' does not match any condition"
             trig="${plug#*$DAT_FIELD}"
@@ -632,7 +638,7 @@ load_defaults() {
         [ -n "$pgrp" ] && trig+="${DAT_FIELD}group"
         record_join entr '' "$name" "$trig" "${pinf:-$DAT_FIELD}"
         DAT_PLUGIN_DEF["$name"]="$entr$pcon"
-        [ "$cond" = "1" ] || trace -a "Plugin '$name' triggers:" "${trig//$DAT_FIELD/ }"
+        [ "$cond" = 1 ] || trace -a "Plugin '$name' triggers:" "${trig//$DAT_FIELD/ }"
         plug= ; pinf= ; pusr= ; pgrp= ; pcon= ; cond=
         ___def_mechs "$name" ; return 1
     }
@@ -710,14 +716,14 @@ load_defaults() {
     DAT_FILE_CONFIG="${CEN_CONFIGFILE:--}"
     DAT_FILE_SHARED="${DAT_FILE_MAP["shadow-shared"]:--}"
 
-    [ "${DAT_FILE_MAP["passwd"]:--}" = '-' ] && DAT_FILE_SHARED='-'
+    [ "${DAT_FILE_MAP['passwd']:--}" = '-' ] && DAT_FILE_SHARED='-'
     [ "${DAT_FILE_MAP["shadow"]:--}" = '-' ] && DAT_FILE_SHARED='-'
     [ "${DAT_FILE_MAP["group"]:--}"  = '-' ] && DAT_FILE_SHARED='-'
 
     DAT_FOLDER_EXTRA="${DAT_FILE_MAP["passwd-extra"]:--}"
     DAT_FOLDER_EXTRA="${DAT_FOLDER_EXTRA%/*}"
     DAT_FOLDER_HOME="${DAT_FILE_MAP["homedir"]:-/home}"
-    DAT_DEF_SHELL="${DAT_FILE_MAP["shell"]:-${CEN_PATHS[1]}/false}"
+    DAT_DEF_SHELL="${DAT_FILE_MAP['shell']:-${CEN_PATHS[1]}/false}"
 
     # add defaults for 'domain' mech
     local mech=" ${DAT_GRANGE_NAME[*]} "
@@ -779,7 +785,7 @@ load_config() {
             local data
 
             # auto-generate group for user
-            if [ "${uusr#*:}" = "+" ] ; then
+            if [ "${uusr#*:}" = '+' ] ; then
                 musr+="${DAT_FIELD}auto" ; musr="${musr#$DAT_FIELD}"
                 local entr uuid="${uusr%%:*}" ; uusr="$uuid:$nusr"
                 if [ -z "${DAT_GROUP_TO_GID["$nusr"]}" ] ; then # not yet known...
@@ -799,7 +805,7 @@ load_config() {
             # element order: <name> <info> <home> <shell> <unix> <mechs>
             record_join data '' "$nusr" "${iusr:-$DAT_FIELD}" \
                                 "$home" "$shel" "${uusr:--}" "${musr:--}"
-            if [ "$cond" = "1" ] ; then
+            if [ "$cond" = 1 ] ; then
                 DAT_USER_DELETED["$nusr"]="$data"
                 trace "User '$nusr' does not match any condition"
             elif [ -n "$xdel" ] ; then
@@ -817,7 +823,7 @@ load_config() {
     }
 
     ___parse_flush_group() {
-        if [ "$cond" = "1" ] ; then
+        if [ "$cond" = 1 ] ; then
             [ -n "$nusr" ] && trace -a "Group '$ngrp' does not match any condition"
         elif [ -n "$ngrp" ] ; then
             local data
@@ -877,9 +883,9 @@ load_config() {
 
         if [ "$sman" = 'role' ] ; then
             ___parse_section_role "$@"
-        elif [ "$sman" = "group" ] ; then
+        elif [ "$sman" = 'group' ] ; then
             ___parse_section_group "$@"
-        elif [ "$sman" = "user" ] ; then
+        elif [ "$sman" = 'user' ] ; then
             ___parse_section_user "$@"
         else
             configfile -e - "Expected keyword 'role' 'group' or 'user':" "$*" ; return 1
@@ -904,8 +910,18 @@ load_config() {
             info)   configfile -e - 1 + $# ; iusr="$*" ;;
             home)   configfile -e - 1 1 $# ; husr="$1" ;;
             shell)  configfile -e - 1 1 $# ; susr="$1" ;;
-            unix)   configfile -e - 1 2 $# ; uusr="${1:--}:$2"
-                    [ -n "${1//[0-9]}" -a "${1:--}" != '-' ] && configfile -e - "Unix uid must be numeric:" "$1"
+            unix)   configfile -e - 1 2 $#
+                    #[ "$1" = '+' ] && set -- "$((++DAT_LAST_UID))" "$2"
+                    #[ "$2" = '+' ] && set -- "$1" "$((++DAT_LAST_GUID))"
+                    if [ "$1" = '+' ] ; then
+                        set -- "$((++DAT_LAST_UID))" "$2"
+                        uusr="$1:$2"
+                    elif [ -n "${1//[0-9]}" -a "${1:--}" != '-' ] ; then
+                        configfile -e - "Unix uid must be numeric:" "$1"
+                        uusr="-:$2"
+                    else
+                        DAT_LAST_UID="$1" ; uusr="$1:$2"
+                    fi
                     ;;
             mech*)  configfile -e - 1 + $#
                     for item in "$@" ; do
@@ -942,8 +958,15 @@ load_config() {
                     done
                     mgrp+="${DAT_FIELD}managed" ; mgrp="${mgrp:1}"
                     ;;
-            unix)   configfile -e - 1 1 $# ; ugrp="$1"
-                    [ -z "${1//[0-9]}" ] || configfile -e - "Unix gid must be numeric:" "$1"
+            unix)   configfile -e - 1 1 $#
+                    if [ "$1" = '+' ] ; then
+                        ugrp="$((++DAT_LAST_GID))"
+                    elif [ -n "${1//[0-9]}" -a "${1:--}" != '-' ] ; then
+                        configfile -e - "Unix gid must be numeric:" "$1"
+                        ugrp='-'
+                    else
+                        DAT_LAST_GID="$1" ; ugrp="$1"
+                    fi
                     ;;
             user*)  if [ $# = 1 -a "$1" = '-' ] ; then          # override with empty list
                         lgrp="$DAT_FIELD"
@@ -1030,7 +1053,7 @@ load_passwd() {
         DAT_GROUP_TO_GID["$flds"]="$ugid"
         DAT_GID_TO_GROUP["$ugid"]="$flds"
         # element order: <name> <prnt> <info> <unix> <mechs>
-        record_join data '' "$flds" '-' "$DAT_FIELD" "${flds[2]:--}" "imported"
+        record_join data '' "$flds" '-' "$DAT_FIELD" "${flds[2]:--}" 'imported'
         DAT_GROUP_PASSWD["$flds"]="$data"
         DAT_MEMBER_MAP["$flds"]="${flds[3]//,/$DAT_FIELD}"
     done
@@ -1056,14 +1079,14 @@ load_passwd() {
         [ -z  "${DAT_USER_TO_UNIX["$flds"]}" ] && DAT_USER_TO_UNIX["$flds"]="$unix"
         # element order: <name> <info> <home> <shell> <unix> <mechs>
         record_join data '' "$flds" "${flds[4]:-$DAT_FIELD}" "${flds[5]:-$DAT_FOLDER_HOME/$flds}" \
-                            "${flds[6]:-$DAT_DEF_SHELL}" "$unix" "imported"
+                            "${flds[6]:-$DAT_DEF_SHELL}" "$unix" 'imported'
         DAT_USER_PASSWD["$flds"]="$data"
     done
 
     # parse shadow entries
     for entr in "${lsha[@]}" ; do
         data="${entr//:/$DAT_SEPARATOR}" ; entr="${entr%%:*}"
-        [ -z "${DAT_USER_SHADOW["$flds"]}" ] && DAT_USER_SHADOW["$entr"]="$data"
+        [ -z "${DAT_USER_SHADOW["$entr"]}" ] && DAT_USER_SHADOW["$entr"]="$data"
     done
 }
 
@@ -1376,7 +1399,7 @@ unix_entry() {
     }
 
     local fgrp fpwd item lfld unix uuid ugid entr orig ifld=4
-    if [ "$1" = "-g" ] ; then
+    if [ "$1" = '-g' ] ; then
         fgrp=1 ; shift ; ifld=3             # index in lfld
     fi
     local -n vman="$1" vpwd                 # managed and passwd lists
@@ -1441,7 +1464,7 @@ unix_entry() {
 write_passwd() {
     dryrun "write_passwd $1 $2 ${3:+...}" && return
 
-    local path fhan fgrp fsha foly mech="passwd" ecnt nsuf spam
+    local path fhan fgrp fsha foly mech='passwd' ecnt nsuf spam
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -1450,7 +1473,7 @@ write_passwd() {
       -g)   fgrp=1 ;;                           # group
       -o)   foly=1 ;;                           # shadow only
       -s)   fsha=1 ;;                           # shadow-shared
-      -x)   mech="extra" ; nsuf="-extra" ;;
+      -x)   mech='extra' ; nsuf='-extra' ;;
       *)    fatal -t - "$1"
       esac ; shift
     done
@@ -1459,7 +1482,7 @@ write_passwd() {
     ecnt=$#                                     # for header
 
     # extrausers folder does not exist - skip output
-    if [ "$mech" = "extra" -a -z "$CEN_OPT_OUTPUT" ] ; then
+    if [ "$mech" = 'extra' -a -z "$CEN_OPT_OUTPUT" ] ; then
         path="$DAT_FOLDER_EXTRA"
         if [ "$path" = '-' ] || [ ! -d "$path" ] ; then
             if [ -z "$fgrp$fsha" ] ; then       # warn once only
@@ -1570,7 +1593,7 @@ write_passwd() {
 
     else
         if [ -z "$foly" ] ; then
-            ___passwd_redir "passwd"                # set 'fhan' for output
+            ___passwd_redir 'passwd'                # set 'fhan' for output
 
             for entr in "$@" ; do
                 # element order: <name> <info> <home> <shell> <unix> <mechs>
@@ -1593,6 +1616,7 @@ write_passwd() {
             entr="${DAT_USER_SHADOW[$name]}"
             [ -z "$entr" ] && entr="$name:*:1:0:99999:7:::"
             echo "${entr//$DAT_SEPARATOR/:}"
+###   message "SHADOW ${entr//$DAT_SEPARATOR/:}"
         done >&$fhan
 
         umask=2
@@ -1623,6 +1647,49 @@ actionExpire() {
         invoke -w "'sssctl' not installed" ; return
     fi
     system -e -p -- sssctl cache-expire -E
+}
+
+# ------------------------------------------------------------------------------
+# Setup passwd/group from scratch: -no args-
+# ------------------------------------------------------------------------------
+actionInit() {
+    # stop sssd service
+    local dsss='/var/lib/sss'
+    if [ -d "$dsss" ] ; then
+        system -c 'sssctl' && system -e -p -- sssctl cache-expire -E
+        runservice stop sssd
+    fi
+
+    # save passwords of root and local
+    local item seed list
+    if [ ! -f '/etc/shadow.shared' ] && [ -f '/etc/shadow' ] ; then
+        txtgrep -s list -i - -x '^root:|^local:' <'/etc/shadow'
+        create -t -v list '/etc/shadow.shared' 640 root:shadow
+    fi
+
+    # reset file contents to minimum
+    for item in 'group' 'passwd' 'group-extra' 'passwd-extra' ; do
+        case "$item" in
+        group)  seed='root:x:0:'$'\n''shadow:x:42:' ;;
+        passwd) seed='root:x:0:0:System Administrator:/root:/usr/bin/bash' ;;
+        *)      seed=
+        esac
+        create -t -v seed -- "${DAT_FILE_MAP[$item]}" 644 0:0
+        seed=
+    done
+    for item in 'shadow' 'shadow-extra' 'gshadow' ; do
+        create -t -- "${DAT_FILE_MAP[$item]}" 640 0:42
+    done
+    system -e -p systemd-sysusers /usr/lib/sysusers.d/basic.conf
+
+    actionUnix
+    system -e -p systemd-sysusers
+    system -e -p grpck -s                       # sort /etc/group
+
+    if [ -d "$dsss" ] ; then
+        system -e -p chown -R sssd /var/lib/sss
+        runservice start sssd
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -1697,6 +1764,13 @@ actionList() {
             prnt="${lfld[1]}" ; [ "$prnt" = '-' ] && prnt=
             memb="${DAT_MEMBER_MAP["$lfld"]}" ; [ "$memb" = "$DAT_FIELD" ] && memb='-'
             mech=" ${lfld[4]//$DAT_FIELD/ } " ; mech="${mech/ auto / }"
+#            if [ "$mech" = ' passwd ' ] ; then
+#                entr="${entr%$DAT_FIELD*}"
+#                auto_mechs -g entr "${lfld[3]}"
+#                record_split lfld '' "$entr"
+#            mech=" ${lfld[4]//$DAT_FIELD/ } " ; mech="${mech/ auto / }"
+#                debug entr
+#            fi
             mech="${mech/ imported / }" ; mech="${mech/ managed / }" ; mech="${mech% }"
 
             printf -v head "%-8s%-11s %s" 'group' "$lfld" "${prnt//$DAT_FIELD/ }"
@@ -1735,7 +1809,7 @@ actionList() {
             printf -v head "%-8s%-12s%s" "user" "$lfld"
             ___print_element 'info'  "'$DAT_FIELD'"   "'${lfld[1]}'"
             ___print_element "home"  "$DAT_FOLDER_HOME/$lfld"    "${lfld[2]}"
-            ___print_element "shell" "$DAT_DEF_SHELL" "${lfld[3]}"
+            ___print_element 'shell' "$DAT_DEF_SHELL" "${lfld[3]}"
             ___print_element 'unix'  '- nogroup'      "$uuid $ugid"
             ___print_element 'mechs' ''               "${mech:1}"
             ___print_custom  "$lfld" ${vars:--}
@@ -1873,8 +1947,8 @@ actionPasswd() {
     fi
 
     # unix password change
-    if [ "$CEN_ACTION" = "passwd" ] ; then
-        if ! have_mech "$uent" "extra" "imported" "passwd" ; then
+    if [ "$CEN_ACTION" = 'passwd' ] ; then
+        if ! have_mech "$uent" 'extra' 'imported' 'passwd' ; then
             trace -a "No unix or domain password to change"
             CEN_ACTION="plugin"
         fi
@@ -1899,9 +1973,9 @@ actionPasswd() {
         x|"*")  cryp="$pasw" ;;
         !)      cryp="$pasw" ;;
         ?|??|???)
-                invoke -e "Invalid password: %s" "$pasw" ; return ;;
+                invoke -e "Invalid password:" "$pasw" ; return ;;
         *)      # run encryption only for unix
-                if [ "$CEN_ACTION" = "passwd" ] ; then
+                if [ "$CEN_ACTION" = 'passwd' ] ; then
                     cryp=$(echo "$pasw" | openssl passwd -stdin -6 2>/dev/null)
                     if [ -z "$cryp" ] ; then
                         error "Password encryption failed" ; return
@@ -1910,16 +1984,19 @@ actionPasswd() {
     esac
 
     if [ -z "$DAT_PASSWD_DATE" ] ; then     # get passwd change date
-        system -e -p -r -s DAT_PASSWD_DATE -- date +%s || return
-        ((DAT_PASSWD_DATE = DAT_PASSWD_DATE / 3600 / 24))
+        ((DAT_PASSWD_DATE = EPOCHSECONDS / 3600 / 24))
     fi
 
     # unix password change
-    if [ "$CEN_ACTION" = "passwd" ] ; then
+    if [ "$CEN_ACTION" = 'passwd' ] ; then
         # field order: <name> <passwd> <date> ...
         entr="${DAT_USER_SHADOW["$user"]}"      # validate user
-        record_split lfld '' "$entr"
-        lfld[1]="$cryp" ; lfld[2]="$DAT_PASSWD_DATE"
+        if [ -z "$entr" ] ; then
+            lfld=("$user" "$cryp" "$DAT_PASSWD_DATE" 0 99999 7 '' '' '')
+        else
+            record_split lfld '' "$entr"
+            lfld[1]="$cryp" ; lfld[2]="$DAT_PASSWD_DATE"
+        fi
         [ "${#lfld[@]}" -lt 9 ] && lfld+=('')   # HACK empty field lost
         record_join entr '' "${lfld[@]}"
         DAT_USER_SHADOW["$user"]="$entr"
@@ -1930,9 +2007,9 @@ actionPasswd() {
 
         for entr in "${plis[@]}" ; do
             # use <mech> (last field) to determine destination
-            if   have_mech "$entr" "extra" ; then
+            if   have_mech "$entr" 'extra' ; then
                 xlis+=("$entr")
-            elif have_mech "$entr" "imported" "passwd" ; then
+            elif have_mech "$entr" 'imported' 'passwd' ; then
                 ulis+=("$entr")
             fi
         done
@@ -2128,10 +2205,18 @@ actionUnix() {
         fi
 
         # use <mech> (last field) to determine destination
-        if   have_mech "$entr" "extra" ; then
+        if   have_mech "$entr" 'extra' ; then
             xlis+=("$entr")
         elif have_mech "$entr" 'passwd' ; then
-            ulis+=("$entr")
+            name="${entr##*$DAT_SEPARATOR}"     # get mech field
+            if [ "${name//$DAT_FIELD/ }" = 'auto passwd' ] ; then
+                # was added automatically, get default mechs ...
+                entr="${entr%DAT_SEPARATOR}"
+                auto_mechs -g entr
+                xlis+=("$entr")
+            else
+                ulis+=("$entr")
+            fi
         elif have_mech "$entr" 'imported' ; then
             have_mech "$entr" 'domain' || ulis+=("$entr")
         fi
@@ -2269,6 +2354,8 @@ actions() {
         invoke    'dump'   actionList    - ;;
     exp*)
         invoke -r 'expire' -             0 ;;               # no args
+    ini*)
+        invoke -r 'init'   -             0 ;;               # no args
     lis|list)
         invoke    'list'   -             - ;;
     pas*)
@@ -2301,7 +2388,7 @@ usage() {
         txtsort -a plis -- "${!DAT_PLUGIN_DEF[@]}"
         for item in "${plis[@]}" ; do
             line="${DAT_PLUGIN_DEF["$item"]}"
-            [ "${line:--}" = '-' -o "${line:--}" = "+" ] && continue
+            [ "${line:--}" = '-' -o "${line:--}" = '+' ] && continue
             record_split flds '' "$line"
             printf -v line "%7s%-22s%s\n" '' "$item" "${flds[2]}"
             plug+="$line"
@@ -2346,20 +2433,21 @@ usage() {
         -o "-U --uid     <rang>  user id filter" \
         -o "-V --validate        extra validations"
     usageset \
-        -a "all                  run 'delete', update 'unix' and run 'plugin'" \
-        -a "check                check cofiguration for error, change nothing" \
-        -a "delete               delete 'unix' and run 'plugin delete'" \
-        -a "expire               expire (sssd) cache" \
-        -a "list    [<kind>...]  list in config file format" \
-        -a "dump    [<kind>...]  list in raw format" \
-        -a "passwd  [<user>]     update password(s) of a given user for" \
-        -a "                     'unix' and all selected profiles" \
-        -a "plugin  [<what>|- [<plug>...]]" \
-        -a "                     execute selected listed plugin(s) or all selected" \
-        -a "unix                 update password and pam files and only" \
-        -a "update               update on change 'unix' and all selected plugins" \
-        -a "<plug>  [<what>|-] [<user>]" \
-        -a "                     run a single plugin even if not selected"
+        -a 'all'                 $"run 'delete', update 'unix' and run 'plugin'" \
+        -a 'check'               $"check cofiguration for error, change nothing" \
+        -a 'delete'              $"delete 'unix' and run 'plugin delete'" \
+        -a 'expire'              $"expire (sssd) cache" \
+        -a 'initialize'          $"rebuild passwd/group from defaults" \
+        -a 'list    [<kind>...]' $"list in config file format" \
+        -a 'dump    [<kind>...]' $"list in raw format" \
+        -a 'passwd  [<user>]'    $"update password(s) of a given user for" \
+        -a -                     $"'unix' and all selected profiles" \
+        -a 'plugin  [<what>|- [<plug>...]]' \
+        -a -                     $"execute selected listed plugin(s) or all selected" \
+        -a 'unix'                $"update password and pam files and only" \
+        -a 'update'              $"update on change 'unix' and all selected plugins" \
+        -a '<plug>  [<what>|-] [<user>]' \
+        -a -                     $"run a single plugin even if not selected"
 
     usagecat << !EOF
 $CEN_USE_HEADER

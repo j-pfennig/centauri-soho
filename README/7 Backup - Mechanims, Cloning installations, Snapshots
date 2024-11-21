@@ -4,19 +4,57 @@
 .title
 .content
 
-. Backup and Restore
---------------------
+
+. Keep your Data safe using Snapshots, Mirrors, Backups and Archives
+--------------------------------------------------------------------
+
+Centauri-Soho has integrated support for multiple objectives of data protection.
+The main idea is to have data-less clients, e.g. to keep data and backups/archives
+on the primary server and to mirror the primary server to external disk or an
+optional secondary (fallback) server. It is also supported to use external backup
+disks to mirror (and deduplicate) data from multiple computers.
+
+Also must be automatic.
+
+    Snapshots - Protect against software or human errors
+    ----------------------------------------------------
+
+Using the 'Btrfs' filesystem enables automatic daily/weekly/monthly snapshots. The
+tool 'centaurisnapshot' optionally creates and deletes snapshots. Snapshots also
+enable backups of an active system, see below. 'centaurisnapshot' can launch a gui
+file-manager to let you browse the version history of folders or files. Some integration
+with KDE gui services is implemented, see: /admin/Desktop/Services/service-installer.
+
+    Mirrors - To recover from hardware failures
+    -------------------------------------------
+
+Mirroring data to redundant disks allows to recover from disk crashes or lost hardware.
+
+
+    Backup and Restore - for system recovery or cloning
+    ---------------------------------------------------
+
+Traditional backup/restore is used (1) for system recovery or cloning (2) to create data
+archives.
+
+    Archives - to build and manage a time-line of your data
+    -------------------------------------------------------
+
+When automatically creating backups and archives it needs a mechanism to arrange data in a
+timeline to automatically reduce ...
 
 Besides BTRFS snapshots (which are not a choice for backup or archiving)
-centaurisoho provides integrated backup and restore. The main idea is to
+centaurisoho provides integrated mirroring, as well as traditional backup and restore.
+The main idea is to
 have data-less clients, e.g. to keep backup/archive data on the primary
 server and to mirror the primary server to external disk or a secondary
 server. It is also supported to use extarnal backup disk to mirror (and
 deduplicate) data from multiple computers.
 
 
+
 . Disks and Partitioning
-------------------------  
+------------------------
 
 centaurisoho prefers BTRFS but does not depend on it. For example 32bit
 Raspberry Pis will use ext4. With BTRFS comes the concept of subvolumes
@@ -25,7 +63,7 @@ reliability and detects bit-rot. Data deduplication is another goodie.
 
 [[Partions]] are used by [[label]], not by [[device]] paths or UIDS. Labels are made
 of hostname and volume id:
-        
+
         <hostname>_<volume>
 
 Default volumes or partitions:
@@ -34,7 +72,7 @@ Default volumes or partitions:
         swap        1st disk, swap space (optional)
         vol0        1st disk BTRFS volume
         vol1        2nd disk BTRFS volume
-        root        non BTRFS system only: root file system 
+        root        non BTRFS system only: root file system
         windows
         mirror      server only: (external disk) mirrored volumes
 
@@ -50,7 +88,7 @@ BTRFS sub volumes:
         history     server only: backup archive
 
 The tools centaurimedia and centauridisk are used to create ...
-        
+
 
 . Hierarchie, Mount points
 --------------------------
@@ -60,7 +98,7 @@ The tools centaurimedia and centauridisk are used to create ...
         /export
         /network
         /shared
-    
+
         /mnt/backup
         /mnt/boot
         /mnt/vbox
@@ -84,7 +122,7 @@ way to mount volumes is centaurimounter.
     archive         backups that are designed to be kept in a timeline
                     for long time storage.
 
-    timeline        all snapshots/backups and archives can be orginized 
+    timeline        all snapshots/backups and archives can be orginized
                     by day/week/month/quarter/year to build a history of
                     data. This is implemented in centauriarchive and is
                     used by centauridata and centaurisnapshot.
@@ -101,7 +139,7 @@ way to mount volumes is centaurimounter.
                     completely part of system backups, see centauribackup.
 
     shared data     Data that does not belong  to the system or particular
-                    users.    
+                    users.
 
 
 . physical backups (system data)

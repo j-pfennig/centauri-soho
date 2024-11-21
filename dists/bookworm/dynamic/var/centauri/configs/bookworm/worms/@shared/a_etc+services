@@ -355,22 +355,24 @@ asp		27374/tcp			# Address Search Protocol
 asp		27374/udp
 csync2		30865/tcp			# cluster synchronization tool
 dircproxy	57000/tcp			# Detachable IRC Proxy
-tfido           60177/tcp                       # fidonet EMSI over telnet
-fido            60179/tcp                       # fidonet EMSI over TCP
+tfido		60177/tcp			# fidonet EMSI over telnet
+fido		60179/tcp			# fidonet EMSI over TCP
 
 # jpf@centauri     Local services      2023-11-13
 
-remotessh               4911/tcp        # restricted ssh access
-remoteimap      4912/tcp        # restricted imap access
+remotessh		4911/tcp     	# restricted ssh access
+remoteimap      4912/tcp     	# restricted imap access
 remotesmtp      4913/tcp     	# restricted smtp access
 centaurimail	50/tcp
 centaurisecrets	95/tcp
-centauriadns    5354/tcp            # alternate dns port samba4
-centauriadns    5354/udp        
+centaurihttp    3128/tcp        # http proxy
+centaurihttps   3128/tcp        # https proxy
+centauriadns	5354/tcp	    # alternate dns port samba4
+centauriadns	5354/udp	
 centauriweewx   8081/tcp        # weatherstation interceptor
 centaurihass    8123/tcp        # home assistant
 
-sieve           2000/tcp                        # CENTAURI legacy
+sieve		2000/tcp			# CENTAURI legacy
 
 vnc1		5901/tcp			# vnc 1024x768
 vnc2		5902/tcp			# jpf@centauri

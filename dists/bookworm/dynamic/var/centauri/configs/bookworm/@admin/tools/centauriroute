@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2015-2024; BSD License"
 CEN_TITLE="Interface/Route Configuration Tool and Service"
@@ -15,7 +15,7 @@ CEN_SVC_SHORT="Interface/Route Configuration"
 ### END INIT INFO
 
 # Import the bash library, set name and version
-PATH+=":/usr/local/bin:${0%/*}" . _centauri_bash_lib -a -d -f -v - '0.43:2' || exit 2
+PATH+=":/usr/local/bin:${0%/*}" . _centauri_bash_lib -a -d -f -v - '0.44:4' || exit 2
 
 # don't run as a service if centauriswitch is active
 inhibit "Inhibited by centauriswitch"
@@ -28,7 +28,7 @@ DAT_OPEN_PPP_DEF='ppp0'
 
 # Data from centauriswitch config file
 DAT_OPEN_BRIDGE=()      # bridge device
-DAT_OPEN_PROXY=()      # software bridge
+DAT_OPEN_PROXY=()       # software bridge
 DAT_OPEN_HOME=          # home server
 DAT_OPEN_WLAN=          # wlan for hostapd
 DAT_OPEN_SERVICE=       # services to start
@@ -76,7 +76,7 @@ DAT_IFMETRIC=           # path of ifmetric
 DAT_NOMETRIC=
                         # pid file prefix, see do_hangup
 DAT_PID="/run/${CEN_NAME}-"
-                        # override file
+                        # override file for network mode
 DAT_OVERRIDE="$CEN_ROOT/persistent/centauriswitch-override"
 
 # set umask to give all created files 0644 protection
@@ -178,7 +178,8 @@ do_address() {
         fi
         neti="$_nethost_ip" ; netm="$_nethost_mac"
     fi
-    message -p "%s address '%s' interface '%s' %s" "${1^}" "$neti" "$ifac" "$ipvx"
+    [ "$neti" = "${neti%/*}" ] && neti+="/${CEN_NET_NETBITS:-16}"
+    message -a -p "%s address '%s' interface '%s' %s" "${1^}" "$neti" "$ifac" "$ipvx"
 
     local iopt flag
     case "$1" in
@@ -188,7 +189,7 @@ do_address() {
     esac
 
     if [ "$ipvx" != 6 ] ; then                          # ipv4 address
-        nettool -q -a -4 -d "$ifac:0" "$iopt" "$neti/${CEN_NET_NETBITS:-16}" $flag
+        nettool -q -a -4 -d "$ifac:0" "$iopt" "$neti" $flag
     fi
 
     [ "$ipvx" = 4 ] && return
@@ -196,8 +197,8 @@ do_address() {
 
     netconv -m -- "$netm" &&
         nettool -q -a -6 -d "$ifac" "$iopt" "$_netconv/64" $flag
-    netconv -u -- "$_nethost_ip" &&
-        nettool -q -a -6 -d "$ifac" "$iopt" "$_netconv/${CEN_NET_PREFIX_IP6#*/}" $flag
+    netconv -u -- "$neti" &&
+        nettool -q -a -6 -d "$ifac" "$iopt" "$_netconv" $flag
     return
 }
 
@@ -240,7 +241,7 @@ do_cmdline() {
 
     # check mode
     case "$DAT_SWITCH_MODE" in
-    '')         message "Network mode not set (see CENTAURISWITCH=<mode>)" ; return 1 ;;
+    '')         message -a "Network mode not set, see 'centauiswitch=<mode>'" ; return 1 ;;
     dis*)       DAT_SWITCH_MODE='disabled' ;;
     sta*)       DAT_SWITCH_MODE='static'   ; conf=0 ;;
     sim*)       DAT_SWITCH_MODE='simple'   ; conf=0 ;;
@@ -410,7 +411,7 @@ do_config() {
 
     # convert interface names
     if netiface -k ; then               # using systemd ...
-        message "Using systemd interface names"
+        message -a "Using systemd interface names"
         local list
         ___ifce_names() {
             list=()
@@ -468,22 +469,46 @@ do_country() {
     fi
 }
 
+# ------------------------------------------------------------------------------
+# Add external network route to interface: <host> <ifce>
+# ------------------------------------------------------------------------------
+do_external() {
+    message -a -p "External route to '%s' for '%s' at '%s'" "$CEN_NET_EXTERNAL" "$1" "$2"
+    # hostindex  0 : try 1 then 2 (default)
+    #            1 : try 3 then 2
+    local indx="${1#*-}" name="${1%-*}"
+    [ "$indx" = 0 ] && indx=1 || indx=2
+    # do not add an address if external is a subnet of the inner net ...
+    if nethost "$name-$indx" && ! netmask "$CEN_NET_EXTERNAL" "$_nethost_ip" ; then
+        $CEN_TRACE2 -a -c "External addr" "$1 -> $_nethost_ip [$indx]"
+    elif nethost "$name-2" && ! netmask "$CEN_NET_EXTERNAL" "$_nethost_ip" ; then
+        $CEN_TRACE2 -a -c "External addr" "$1  =>  $_nethost_ip [2]"
+    else
+        $CEN_TRACE2 -a -c "External addr" "$1  =>  <is subnet>"
+        return 1
+    fi
+    nettool -d "$2" -w -o add "$CEN_NET_EXTERNAL"
+}
+
 # -----------------------------------------------------------------------------
 # start/stop hostapd: <ifce> [<conf>]
 # -----------------------------------------------------------------------------
 do_hostapd() {
     if pidfile -c "hostapd-$1" ; then               # is running
         if [ -n "$2" ] ; then
-            message "Hostapd already running: $1"
+            message -a "Hostapd already running: $1"
         else
-            message "Stopping hostapd: $1"
+            message -a "Stopping hostapd: $1"
             pidfile -k 15 "hostapd-$1"
         fi
      else                                           # not running
          [ -z "$2" ] && return 0
-         message "Starting hostapd: $1 ($2)"
+         if ! netiface -k -x wlan0 ; then
+            warning "Not starting hostad: no interface (wlan0)" ; return
+         fi
+         message -a "Starting hostapd: $1 ($2)"
          pidfile -n "hostapd-$1"
-         sysrun -e -p -- 'hostapd' -B -P "$CEN_PIDFILE" "$2"
+         sysrun -w -p -- 'hostapd' -B -P "$CEN_PIDFILE" "$2"
      fi
 }
 
@@ -495,7 +520,7 @@ do_ifexists() {
     if nettool -d "$ifce" exists ; then
         printf -v "$1" '%s' "$ifce" ; return 0
     fi
-    printf -v "$1"
+    printf -v "$1" ''
     invoke -e "Unknown interface:" "$ifce" ; return 1
 }
 
@@ -547,7 +572,7 @@ do_ifswitch() {
         esac
     fi
     if [ "$stat" = 0 ] ; then
-        [ -n "$_netlink" ] && message "Changed interface config to:" "$_netlink_suff"
+        [ -n "$_netlink" ] && message -a "Changed interface config to:" "$_netlink_suff"
     else
         error "No valid interface config for:" "$base.${2:-$1}"
     fi
@@ -598,7 +623,8 @@ do_iffind() {
         _iffind+=("$item")
     done
     folder -c -f -- "$curr"
-    message -a -c "found ifaces" "${_iffind[*]}"
+    item="${_iffind[*]}"
+    message -a -c "Interfaces found" "${item:--none-}"
     [ -n "$_iffind" ]                           # return status
 }
 
@@ -620,17 +646,33 @@ do_gateway() {
     do_addrchk -d -h -- "$1" "$2" "$3" || return 1
     trace -a -c "gateway host" "${_nethost_name:--unknown-}  $_nethost_ip  $_nethost_mac"
 
+    # for an ipv6 route we need the router's mac to generate a link local IPv6 address
     if [ "$_addrchk_ipvx" != 4 ] ; then
-        if [ "${_nethost_mac:--}" = '-' ] ; then
-            netconv -u "$_nethost_ip"
+        if [ "${_nethost_mac:--}" = '-' ] ; then    # try to get mac via arp ...
+            local list item
+            for item in 0.2 0.3 1 1 1.5 ; do        # wait to get ready, get mac
+                if system -q ping -c1 -W0.5 "$_nethost_ip" ; then
+                    system -a list arp -n "$_nethost_ip" ; break
+                fi
+                timer -w "$item"
+            done
+            _netconv=
+            for item in "${list[@]}" ; do           # seach in arp output ...
+                set -f ; set -- $item ; set +f
+                [ "$2" = 'ether' ] || continue
+                [ "$1" = "$_nethost_ip" ] || continue
+                netconv -m -- "$3" ; break          # mac link local address
+            done
         else
             netconv -m "$_nethost_mac"
         fi
         if [ -z "$_netconv" ] ; then
+            local mesg="Got no mac address for ipv6 route, please add in configuration:"
             if [ "$_addrchk_ipvx" = 6 ] ; then
-                error "Gateway: got no ipv6 address" ; return 1
+                invoke -e "$mesg" "$1" ; return 1
             fi
-            _addrchk_ipvx=4
+            invoke -w "$mesg" "$1" ; _addrchk_ipvx=4
+            nettool -6 -w && message "Disabled Iov6 due to unreachable gateway"
         fi
     fi
 
@@ -682,20 +724,20 @@ do_metric() {
     wlan0)  _indx=2 ;;
     eth1)   _indx=1 ; _cchk="$4"  ;;
     wlan1)  _indx=3 ;;
-    *)      printf -v "$1" 800 ; return
+    *)      printf -v "$1" '%s' 800 ; return
     esac
 
     if [ -n "$_cchk" ] ; then                   # check carrier ...
         if ! nettool -c -d "$_cchk" isup ; then
-            printf -v "$1" 900 ; return
+            printf -v "$1" '%s' 900 ; return
         fi
     fi
 
     for _levl in 0 1 2 3 ; do
         netoption -x "metric$_levl" "$2-$_indx" || continue
-        printf -v "$1" $((_levl * 100 + 400)) ; return
+        printf -v "$1" '%s' $((_levl * 100 + 400)) ; return
     done
-    printf -v "$1" $((_indx * 100 + 400))
+    printf -v "$1" '%s' $((_indx * 100 + 400))
 }
 
 # ------------------------------------------------------------------------------
@@ -847,7 +889,7 @@ do_smart() {
 
     # no args: initialize (drop all xxx:0 and find preferred iface)
     if [ -z "$2" ] ; then
-        message -c "smart initialize" "$*"
+        message -a -c "Smart initialize" "$*"
         do_iffind -l
         for curr in "${_iffind[@]}" ; do        # loop over configured ifaces
             do_address 'del' - - - "$curr"
@@ -860,9 +902,9 @@ do_smart() {
     elif [ "$2" = 'drop' ] ; then
         curr="${3:-$DAT_SMART_IFACE}"
         if [ -z "$curr" ] ; then
-            trace -c "smart drop" "no current interface"
+            trace -a -c "Smart drop" "no current interface"
         else
-            message -c "smart interface" "$curr [dropped]"
+            message -a -c "Smart interface" "$curr [dropped]"
             do_address 'del' - - - "$curr"
             DAT_SMART_IFACE=
         fi
@@ -908,7 +950,7 @@ do_smart() {
     # attach logical address
     DAT_SMART_IFACE="$pref"
     if [ -n "$pref" ] ; then
-        message -c "smart interface" "$pref" "$1"
+        message -a -c "Smart interface" "$pref" "$1"
         mlow="$pref"
         do_address 'smart' - - - "$pref"
     fi
@@ -1125,12 +1167,12 @@ do_open() {
     local ibri="${DAT_OPEN_BRIDGE:-none}" ilis=(${DAT_OPEN_BRIDGE[@]:1})
     local iprx=("${DAT_OPEN_PROXY[@]}") ; [ -z "$iprx" ] && iprx=('none')
     [ "$ibri" = 'none' ] && ilis=('none')
-    message -p "Opening %s mode: bridge='%s'  switch='%s'" "$DAT_SWITCH_MODE" "${ilis[*]}" "${iprx[*]}"
+    message -a -p "Opening %s mode: bridge='%s'  switch='%s'" "$DAT_SWITCH_MODE" "${ilis[*]}" "${iprx[*]}"
     if [ "$DAT_SWITCH_MODE" = 'router' ] ; then
         netoption 'dns'  || error "Mode 'router' depends on 'option dns'"
         netoption 'dhcp' || error "Mode 'router' depends on 'option dhcp'"
         if netoption 'ipv6' ; then
-            message "Mode 'router' disables ipv6 to allow NAT"
+            message -a "Mode 'router' disables ipv6 to allow NAT"
             nettool -6 off ; DAT_IPV6_NOWARN=1
         fi
     fi
@@ -1144,17 +1186,18 @@ do_open() {
         if ! nettool -d "$ibri" -q up ; then
             error "Failed to bring up '$ibri', ignore bridge"
             ibri='none'
-       fi
-    fi
+        else
+            # get active interfaces, bring them down (to allow add to bridge)
+            for ifce in "${ilis[@]}" ; do
+                nettool -d "$ifce" exists || continue
+                iuse+=("$ifce")
+                nettool -q -d "$ifce" down
+            done
+            message -i -c "Active interfaces" "${iuse[*]}"
 
-    if [ "$ibri" != 'none' ] ; then
-        # get active interfaces, bring them down (to allow add to bridge)
-        for ifce in "${ilis[@]}" ; do
-            nettool -d "$ifce" exists || continue
-            iuse+=("$ifce")
-            nettool -q -d "$ifce" down
-        done
-        message -i -c "Active interfaces" "${iuse[*]}"
+            [ -n "$CEN_NET_EXTERNAL" ] &&
+                netoption 'other' "$HOSTNAME" && do_external "$HOSTNAME" "$ibri"
+        fi
     fi
     DAT_ROUTE_OPEN="$DAT_SWITCH_MODE"
     do_status -w
@@ -1162,7 +1205,8 @@ do_open() {
     # set '4addr' mode of wlan client in bridge
     local wdev="${DAT_OPEN_WLAN%% *}" wcfg="${DAT_OPEN_WLAN#* }"
     [ "$wcfg" = "$wdev" ] && wcfg="$CEN_NAME"
-    netiface -k -s wdev -- "$wdev"
+    netiface -k -s wdev -x -- "$wdev"
+    [ -z "$wdev" ] && wdev='none'
 
     # client wlan in bridge must be in '4addr' mode
     if [ "$ibri" = 'none' ] ; then
@@ -1185,7 +1229,7 @@ do_open() {
             wcfg="$DAT_ETC_DIR/hostapd/${wcfg,,}.conf"      # file name always lower case
             [ -f "$wcfg" ] || wcfg="$DAT_ETC_DIR/hostapd/hostapd.conf"
             if [ -f "$wcfg" ] ; then
-                message "WLAN config for '$wdev' is: $wcfg"
+                message -a "WLAN config for '$wdev' is: $wcfg"
                 # need synchronous start, not using systemd service here
                 do_hostapd "$wdev" "$wcfg"
                 do_address add "${HOSTNAME}-1" - - "$wdev"
@@ -1214,7 +1258,7 @@ do_open() {
         done
 
         for ifce in "${iuse[@]}" ; do
-            nettool -d "$ifce" up
+            nettool -w -d "$ifce" up
             actionMetric "$ifce"
         done
 
@@ -1257,7 +1301,7 @@ do_open() {
                 fi
             done
             # set bridge mac
-            message -p "Bridge '%s' mac address: %s" "$ifce" "${imac:--unknown-}"
+            message -a -p "Bridge '%s' mac address: %s" "$ifce" "${imac:--unknown-}"
             [ -n "$imac" ] && nettool -d "$ifce" -i link set address "$imac"
         fi
     else
@@ -1285,7 +1329,7 @@ do_close() {
     local ifce ibri="${DAT_OPEN_BRIDGE:-none}" ilis=(${DAT_OPEN_BRIDGE[@]:1})
     local iprx=("${DAT_OPEN_PROXY[@]}") ; [ -z "$iprx" ] && iprx=('none')
     [ "$ibri" = 'none' ] && ilis=('none')
-    message -p "Closing %s mode: bridge='%s'  switch='%s'" "$DAT_SWITCH_MODE" "${ilis[*]}" "${iprx[*]}"
+    message -a -p "Closing %s mode: bridge='%s'  switch='%s'" "$DAT_SWITCH_MODE" "${ilis[*]}" "${iprx[*]}"
 
     # stop services
     local wdev="${DAT_OPEN_WLAN%% *}"
@@ -1332,19 +1376,19 @@ do_dial() {
     # --------------------------------------------------------------------------
     ___run_wvdial() {
         sysrun -e -p touch "${DAT_PID}wvdial"
-        message "$(date '+%x %X') - Waiting 10s for modem init"
+        message -a "Waiting 10s for modem init"
         timer -w 10
-        message "$(date '+%x %X') - Starting 'wvdial $1'"
+        message -a "Starting 'wvdial $1'"
         wvdial "$1"
         local stat=$?
-        message "$(date '+%x %X') - Terminated (status $stat)"
+        message -a "Terminated (status $stat)"
         remove -- "${DAT_PID}wvdial"
 
         # cleanup after wvdial died
         CEN_OPT_SYSLOG=2 ; timer -w 3
         DAT_SWITCH_MODE= ; do_status                    # reload status
         [ -z "$DAT_ROUTE_DIAL" ] && exit 0              # after hangup
-        message "Cleaning up - wvdial terminated (status $stat)"
+        message -a "Cleaning up - wvdial terminated (status $stat)"
         embed -v centaurifilter --zombie auto -- noroute "$DAT_OPEN_PPP" "$devb" # all
         DAT_ROUTE_DIAL= ; do_udev enable
     }
@@ -1367,7 +1411,7 @@ do_dial() {
     }
 
     ___dial_gsm() {
-        message "Dialing '$dcfg' interface: $DAT_OPEN_PPP"
+        message -a "Dialing '$dcfg' interface: $DAT_OPEN_PPP"
 
         ___dev_wait "/dev/$ddev"
         [ -e "/dev/$ddev" ] || return 2
@@ -1386,7 +1430,7 @@ do_dial() {
     }
 
     ___dial_router() {
-        message "Dialing '$ddev' gateway: ${dcfg[0]}  host-ip: ${dcfg[1]}  mtu: ${dcfg[2]}"
+        message -a "Dialing '$ddev' gateway: ${dcfg[0]}  host-ip: ${dcfg[1]}  mtu: ${dcfg[2]}"
 
         # fixed ip: ifdown to reset
         [ "${dcfg[0]}" = '-' ] || nettool -q -d "$ddev" down
@@ -1407,7 +1451,7 @@ do_dial() {
             if ! ___dial_droute "$ddev" dcfg[0] ; then
                 dial='-no gateway-' ; return 5
             fi
-            message "Found gateway:" "${dcfg[0]} ($ddev)"
+            message -a "Found gateway:" "${dcfg[0]} ($ddev)"
         fi
 
         # configure router interface
@@ -1427,7 +1471,7 @@ do_dial() {
     ___dial_wlan() {
         local conf
         if [ "${dcfg:--}" = '-' ] ; then
-            message "No config, not starting wpa_supplicant"
+            message -a "No config, not starting wpa_supplicant"
             nettool -d "$ddev" up || return 2
         else
             conf="$DAT_ETC_DIR/wpa_supplicant/$dcfg.conf"
@@ -1488,6 +1532,9 @@ do_dial() {
             [ -e "$_wdev" ] || continue                 # must have device
                                                         # get kernel interface name
             netiface -k -s ddev -- "${_args[1]:-${_defs[0]}}"
+            if [ -z "$ddev" ] ; then
+                ddev="${_args[1]:-${_defs[0]}}" ; return 5
+            fi
             dcfg[0]="${_args[2]:-${_defs[1]:--}}"       # config or gateway
             dcfg[1]="${_args[3]:-${_defs[2]:--}}"       # host ip
             dcfg[2]="${_args[4]:-${_defs[3]:--}}"       # mtu
@@ -1542,8 +1589,8 @@ do_dial() {
                 ;;
     [a-z]*)     kind="Router" ; ___dial_router ; stat=$?
                 ;;
-    "")         stat=4 ;;
-    *)          stat=5 ;;
+    '')         stat=4 ;;
+    *)          stat=6 ;;
     esac
 
     case "$stat" in
@@ -1553,6 +1600,7 @@ do_dial() {
     2)          warning "$kind interface '$ddev' not found, cannot dial" ;;
     3)          warning "Dialing failed. Use 'dial' action to retry" ;;
     4)          warning "No dialup device found, cannot dial" ;;
+    5)          error "Cannot map interface '$ddev' to systemd name" ;;
     *)          error "Invalid dial configuration:" "$dial" ;;
     esac
 
@@ -1572,15 +1620,15 @@ do_hangup() {
     local ddev="${DAT_ROUTE_DIAL%% *}"
 
     if [ "${ddev::3}" = 'eth' -o "${ddev::3}" = 'usb' ] ; then
-        message "Bring down interface: $ddev"
+        message -a "Bring down interface: $ddev"
         [ "${ddev::3}" = 'usb' ] && embed -v centauriswitch dhcp down "$ddev"
     else
         if [ -e "${DAT_PID}wvdial" ] ; then
-            message "Stopping wvdial"
+            message -a "Stopping wvdial"
             sysrun -e -p pkill -x wvdial
         fi
         if [ -e "${DAT_PID}wpasuppl" -o -e "${DAT_PID}dhclient" ] ; then
-            message "Stopping wpa_supplicant and dhclient"
+            message -a "Stopping wpa_supplicant and dhclient"
             [ -r "${DAT_PID}wpasuppl" ] && sysrun -e -p kill $(<"${DAT_PID}wpasuppl")
             [ -r "${DAT_PID}dhclient" ] && sysrun -e -p dhclient -pf "${DAT_PID}dhclient" -x
         fi
@@ -1609,9 +1657,9 @@ do_udev() {
     case "$1" in
     start|dial)
         if [ -n "$DAT_ROUTE_DIAL" ] ; then
-            message "Started via systemd/udev, already connected"
+            message -a "Started via systemd/udev, already connected"
         else
-            message "Started via systemd/udev, dialing..."
+            message -a "Started via systemd/udev, dialing..."
             do_dial || return
             do_status -w
 
@@ -1619,15 +1667,15 @@ do_udev() {
             # udev hotplug service should not set "RemainAfterExit" and the
             # background should not be stopped if the services terminates ...
 
-            [ -n "$CEN_QUIT_WSUB" ] && message "... waiting for connection to be closed"
+            [ -n "$CEN_QUIT_WSUB" ] && message -a "... waiting for connection to be closed"
         fi
         ;;
     stop)
         # must run code in this process, systemd will kill children
         if [ -z "$DAT_ROUTE_DIAL" ] ; then
-            message "Stopped via udev, not connected"
+            message -a "Stopped via udev, not connected"
         else
-            message "Stopped via udev, hanging up..."
+            message -a "Stopped via udev, hanging up..."
             do_hangup
         fi
         ;;
@@ -1663,7 +1711,8 @@ actionAddr() {
     case "$1" in
     add)    mode='add' ;;
     del*)   mode='del' ;;
-    *)      invoke -e "1st arg must be 'add' or 'delete'" ; return
+    ext*)   do_external "$host" "$ifce" ; return ;;
+    *)      invoke -a 1 'add|delete|external' ; return
     esac
 
     case "$host" in
@@ -1680,7 +1729,7 @@ actionAddr() {
         wl*)    local wtim                          # wait until carrier ...
                 for wtim in 1 2 3 4 5 6 7 8 9 10 ; do
                     nettool -c -d "$_addrchk_ifce" isup && break
-                    message -a "Waiting for carrier: $_addrchk_ifce (${wtim}s)"
+                    message -a -c "Waiting for carrier" "$_addrchk_ifce (${wtim}s)"
                     timer -w 1
                 done ;;
         *)      nettool -c -d "$_addrchk_ifce" isup || return
@@ -1717,13 +1766,7 @@ actionGateway() {
 # ------------------------------------------------------------------------------
 actionInit() {
     # action 'mode' should retain status
-    [ "$CEN_ACTION" = "mode" ] && do_status
-
-    # do a full network setup if no network config found
-    if ! [ -f "$CEN_NET_FILE_CONF" ] ; then
-        message "No network config, running 'centaurinetcfg setup -'"
-        embed -v centaurinetcfg --norestart setup -
-    fi
+    [ "$CEN_ACTION" = 'mode' ] && do_status
 
     # parse and switch $DAT_ETC_DIR/network/interfaces
     do_cmdline "$1" "$2" || return
@@ -1731,13 +1774,13 @@ actionInit() {
     do_ifswitch "$DAT_SWITCH_MODE" "$DAT_SWITCH_CONF"
 
     # return here if invoked as 'mode'
-    if [ "$CEN_ACTION" = "mode" ] ; then
+    if [ "$CEN_ACTION" = 'mode' ] ; then
         do_status -w ; return
     fi
 
     # handle smart mode
     DAT_SMART_ADDR=
-    if [ "$DAT_SWITCH_MODE" = "smart" ] ; then
+    if [ "$DAT_SWITCH_MODE" = 'smart' ] ; then
         if [ "${#CEN_NET_ADDR_IPLIST[@]}" -gt 1 ] ; then
             nethost "$HOSTNAME"
             DAT_SMART_ADDR="$_nethost_ip"
@@ -1752,7 +1795,7 @@ actionInit() {
     if [ -z "$CEN_NET_SERVER" ] ; then
         if [ -n "${CEN_NET_REJECT_HOST[1]}" ] ; then
             nettool -4 -q -i route add unreachable ${CEN_NET_REJECT_HOST[1]} &&
-                message "Added reject route:" "${CEN_NET_REJECT_HOST[1]}"
+                message -a -c "Added reject route" "${CEN_NET_REJECT_HOST[1]}"
         fi
     fi
 }
@@ -1771,7 +1814,7 @@ actionIpv6() {
                 1)  mode='off (disabled)' ;;
                 *)  mode='unknown'
                 esac
-                message -c "IPv6 status" "$mode"
+                message -a -c "IPv6 status" "$mode"
                 return ;;
         *)      invoke -e "state must be one of: on|off|auto|status"
                 return
@@ -1785,13 +1828,17 @@ actionIpv6() {
             nethost -- "$item" || continue                  # unknown host
             know=1
             netoption 'ipv6' "$_nethost_name" || continue   # no ipv6
-            $CEN_TRACE2 -a -c "IPv6 check..." "$_nethost_name".
-            sysrun -e -p -r -- ping -6 -c1 -q "$_nethost_name" || continue
+            $CEN_TRACE2 -a -c "IPv6 check" "$_nethost_name"
+            if ! sysrun -q -r -- ping -6 -c1 -q "$_nethost_name" ; then
+                timer -w 1
+                sysrun -q -r -- ping -6 -c1 -q "$_nethost_name" && continue
+                trace -a -c "IPv6 failed" "$_nethost_name" ; continue
+            fi
             $CEN_TRACE2 -a -c "IPv6 working" "$_nethost_name"
             know=2 ; break
         done
         [ "$know" = 1 ] || return
-        mode='off' ; message "IPv6 disabled, connectivity check failed"
+        mode='off' ; message -a "IPv6 disabled, connectivity check failed"
     fi
 
     [ "$mode" = 'on' ] && DAT_IPV6_MODE=0 || DAT_IPV6_MODE=1
@@ -1815,7 +1862,7 @@ actionMetric() {
     if [ "${metr:--}" = '-' ] ; then
         do_metric metr "$host" "$1" "$_addrchk_ifce"
     fi
-    message "Setting metric for '$1' to '$metr'"
+    message -a "Setting metric for '$1' to '$metr'"
 
     [ "$_addrchk_ipvx" != 6 ] && do_setmetric 'sysrun' -4 "$_addrchk_ifce" "$metr"
     if [ "$_addrchk_ipvx" != 4 ] ; then
@@ -1908,6 +1955,9 @@ actionProxy() {
 
 # -----------------------------------------------------------------------------
 # bring switch/router up/down: no args except 'dial run-dial'
+#
+#   The start action is called before init from a service only. When used via
+#   centauiswitch action init is invoked before start gets called ...
 # ------------------------------------------------------------------------------
 actionStart() {
     do_status                                   # load status
@@ -1937,7 +1987,7 @@ actionStart() {
 
                 # cold-plug dialing, run in background
                 if [ "$DAT_OPEN_DIAL" != 'none' ] ; then
-                    message "Starting dialer ..."
+                    message -a "Starting dialer ..."
                     runservice -e -n start 'centauriroute-udev@dial'
                 fi
             fi
@@ -1962,13 +2012,13 @@ actionStart() {
                     [ -n "$DAT_ROUTE_OPEN" ] && break   # ready now
                 fi
                 [ "$isum" -ge 5 ] &&
-                    message "udev call deferred:" "$* (${isum}s)"
+                    message -a "udev call deferred:" "$* (${isum}s)"
                 ((isum += irun))
                 timer -w "$irun"
             done
 
             if ! [ -e "$CEN_ROOT/transient/${CEN_NAME}-dial" ] ; then
-                message "udev call ignored:" "$*"
+                message -a "udev call ignored:" "$*"
             else
                 do_udev "$@"
             fi
@@ -2004,12 +2054,12 @@ actionStatus() {
     for curr in hostapd dnsmasq wvdial wpa_supplicant dhclient \
                 inetd nmbd smbd squid3 apache apache2 samba rpc.gssd ; do
         system -q -- pgrep -x "$curr" || continue
-        [ -n "$serv" ] && serv+=" " ; serv+="$curr"
-        if [ "$curr" = "wvdial" ] ; then
+        [ -n "$serv" ] && serv+=' ' ; serv+="$curr"
+        if [ "$curr" = 'wvdial' ] ; then
             do_config
             ndia="[not active]"
             [ -e "/sys/class/net/$DAT_OPEN_PPP" ] && ndia="[connected at $DAT_OPEN_PPP]"
-        elif [ "$curr" = "wpa_supplicant" ] ; then
+        elif [ "$curr" = 'wpa_supplicant' ] ; then
             ndia="[connected at ${ddev:--unknown-}]"
         fi
     done
@@ -2031,7 +2081,7 @@ actionStatus() {
            dialup connection: ${darg:--none-} $ndia
 
 !EOF
-    [ "$DAT_SWITCH_MODE" = "smart" ] && create -c <<!EOF
+    [ "$DAT_SWITCH_MODE" = 'smart' ] && create -c <<!EOF
     Smart computer address  : ${DAT_SMART_ADDR:--none-}
           smart interface   : ${DAT_SMART_IFACE:--none-}
 
@@ -2055,7 +2105,7 @@ actionTunnel() {
         actionSmart "$scmd" "$DAT_SMART_IFACE"
     fi
 
-    message "Tunnel metrics configuration: $tdev [$tact]"
+    message -a "Tunnel metrics configuration: $tdev [$tact]"
     ### TODO tunnel metrics
 }
 
@@ -2071,10 +2121,10 @@ actionWait() {
     system -f -c netcat
     ___wait_poll() {
         [ "$1" = '-l' ] || return 0             # not a poll call
-        system -n -q netcat -z "$addr" "$port" && return 0 || return 1
+        system -n -q netcat -w 1 -z "$addr" "$port" && return 0 || return 1
     }
     local wait="${3:--}" ; [ "$wait" = '-' ] && wait=10
-    timer -w "$wait" -l 0.5 -c ___wait_poll && return
+    timer -w "$wait" -l .5 -c ___wait_poll && return
     if [ "$4" = '-' ] ; then                    # no error mesg ...
         error -s 2
     else
@@ -2085,59 +2135,62 @@ actionWait() {
 # ------------------------------------------------------------------------------
 # Action parsing
 # ------------------------------------------------------------------------------
+
+CEN_SVC_NOROOT=1                                # allow wait for non-root
+
 actions() {
     case "$CEN_ACTION" in
 
-    '')                                         # end of option parsing ...
+    '')                                         # end of action parsing ...
         netconfig -f ;;                         # cannot run without config
 
     # service commands
     start)
-        invoke -        -            0 ;;
+        invoke    -        -            0 ;;
     sta*)
-        invoke 'status' -            0 ;;
+        invoke    'status' -            0 ;;
     stop)
-        invoke -        actionStart  0 ;;
+        invoke    -        actionStart  0 ;;
 
     # switch/router
     ope*)
-        invoke 'open'   actionStart  0 ;;
+        invoke -r 'open'   actionStart  0 ;;
     clo*)
-        invoke 'close'  actionStart  0 ;;
+        invoke -r 'close'  actionStart  0 ;;
     dia*)
-        invoke 'dial'   actionStart  0 ;;
+        invoke -r 'dial'   actionStart  0 ;;
     han*|hup)
-        invoke 'hangup' actionStart  0 ;;
+        invoke -r 'hangup' actionStart  0 ;;
     udev)
         if [ "${2#*:}" != "$2" ] ; then
-            invoke 'init' -          1          # device name argument
+            invoke -r 'init' -          1       # device name argument
         else
-            invoke -    actionStart  1          # a word (should be: dial)
+            invoke -r -    actionStart  1       # a word (should be: dial)
         fi ;;
 
     # other commands
     add*)
-        invoke 'addr'   -            1 4 ;;
+        invoke -r 'addr'   -            1 4 ;;
     ext*)
-        invoke 'extender' -          3 3 ;;
+        invoke -r 'extender' -          3 3 ;;
     gat*)
-        invoke 'gateway' -           0 3 ;;
+        invoke -r 'gateway' -           0 3 ;;
     ini*)
-        invoke 'init'   -            0 2 ;;
+        invoke -r 'init'   -            0 2 ;;
     ipv*)
-        invoke 'ipv6'   -            0 1 ;;
+        invoke -r 'ipv6'   -            0 1 ;;
     met*)
-        invoke 'metric' -            1 5 ;;
+        invoke -r 'metric' -            1 5 ;;
     mod*)
-        invoke 'mode'   actionInit   0 2 ;;
+        invoke -r 'mode'   actionInit   0 2 ;;
     pro*)
-        invoke 'proxy'  -            0 3 ;;
+        invoke -r 'proxy'  -            0 3 ;;
     sma*)
-        invoke 'smart'  -            0 2 ;;
+        invoke -r 'smart'  -            0 2 ;;
     tun*)
-        invoke 'tunnel' -            0 2 ;;
+        invoke -r 'tunnel' -            0 2 ;;
     wai|wait)
-        invoke 'wait'   -            1 4 ;;
+        invoke    'wait'   -            1 4 ;;
     esac
 }
 
@@ -2146,34 +2199,34 @@ actions() {
 # ------------------------------------------------------------------------------
 usage() {
     usageset \
-        -a "addr   add|delete <host>|<addr> <inam> [ipv4|ipv6|+|-" \
+        -a 'addr   add|delete|extern <host>|<addr> <inam> [ipv4|ipv6|+|-' \
         -a -                     "add/remove an address to/from interface" \
-        -a "extender start|stop|status <itnk> <inam>" \
+        -a 'extender start|stop|status <itnk> <inam>' \
         -a -                     "bridge local interface to trunk via arp/dhcp proxy" \
-        -a "gateway <host>|<addr>|- [<inam>|- [[ipv4|ipv6|-] " \
+        -a 'gateway <host>|<addr>|- [<inam>|- [[ipv4|ipv6|-]' \
         -a -                     "set default gateway or delete if <host> is '-'" \
-        -a "init   [<mode> [<conf>]]" \
+        -a 'init   [<mode> [<conf>]]' \
         -a -                     "like 'mode', do setups, used by centauriswitch" \
-        -a "ipv6   [<stat>]      show or set the ipv6 state of this computer" \
-        -a "metric <inam> [<host> [<metr> [ipv4|ipv6|- [<wait>]]]]" \
+        -a 'ipv6   [<stat>]'     "show or set the ipv6 state of this computer" \
+        -a 'metric <inam> [<host> [<metr> [ipv4|ipv6|- [<wait>]]]]' \
         -a -                     "set metric for a route of an interface" \
-        -a "mode   [<mode> [<conf>]]" \
+        -a 'mode   [<mode> [<conf>]]' \
         -a -                     "set $DAT_ETC_DIR/network/interfaces mode manually" \
-        -a "proxy  [<serv>|none|status|auto [<port>]]" \
+        -a 'proxy  [<serv>|none|status|auto [<port>]]' \
         -a -                     "set upstream proxy, use 'none' for no upstream" \
-        -a "smart  [up|down|drop] [<inam>]" \
+        -a 'smart  [up|down|drop] [<inam>]' \
         -a -                     "smart interface switch (used by ifup/ifdown)" \
-        -a "tunnel [up|down] [<inam>]" \
+        -a 'tunnel [up|down] [<inam>]' \
         -a -                     "for VPN tunnel: disable smart, set metrics" \
         -a 'wait <time>'         "wait for a fixed time" \
-        -a "wait <addr> <port> [<time> [<mesg>]]" \
+        -a 'wait <addr> <port> [<time> [<mesg>]]' \
         -a -                     "wait for a port to become available" \
         -a "••• dialup/bridge/switch actions •••" \
-        -a "open                 manually open brigde or router" \
-        -a "close                stop close brigde/router" \
-        -a "dial                 manually dial via gsm or wlan" \
-        -a "hangup               terminate dial-up connection" \
-        -a "udev   start|stop    internal use for systemd/udev hotplug"
+        -a 'open'                "manually open brigde or router" \
+        -a 'close'               "stop close brigde/router" \
+        -a 'dial'                "manually dial via gsm or wlan" \
+        -a 'hangup'              "terminate dial-up connection" \
+        -a 'udev   start|stop'   "internal use for systemd/udev hotplug"
 
     usagecat << !EOF
 $CEN_USE_HEADER

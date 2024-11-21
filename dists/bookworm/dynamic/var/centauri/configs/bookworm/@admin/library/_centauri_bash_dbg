@@ -42,10 +42,10 @@
 #,   [[actions()]]  -  verb dispatching
 #,   [[run()]]      -  non-verb script execution
 #
-# Copyright Dr. J. Pfennig (c) 2017-2022
+# Copyright Dr. J. Pfennig (c) 2017-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES["_centauri_bash_dbg"]="0.03:1"
+CEN_MODULES['_centauri_bash_dbg']="0.04:4"
 
 CEN_OPT_DEBUG=0                 # see --debug
 
@@ -204,7 +204,7 @@ CEN_OPT_DEBUG=0                 # see --debug
 #
 # Examples: **(1) execution without main() does not parse the command line**
 #
-#.          #!/bin/bash
+#.          #!/usr/bin/bash
 #.          PATH+=":${0%/*}" . _centauri_bash_lib -m iom "$0" "0.00:1" || exit 2
 #.
 #.          message "Arguments and Options:" "$*"
@@ -214,7 +214,7 @@ CEN_OPT_DEBUG=0                 # see --debug
 #
 #           **(2) using non-verb script execution**
 #
-#.          #!/bin/bash
+#.          #!/usr/bin/bash
 #.          CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2019; BSD License"
 #.          CEN_TITLE="Example of a simple script (no action syntax)"
 #.          PATH+=":${0%/*}" . _centauri_bash_lib -r "$0" "0.00:1" || exit 2
@@ -227,7 +227,7 @@ CEN_OPT_DEBUG=0                 # see --debug
 #
 #           **(3) using verb dispatching**
 #
-#.          #!/bin/bash
+#.          #!/usr/bin/bash
 #.          CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2019; BSD License"
 #.          CEN_TITLE="Example of a script using command line verbs"
 #.          PATH+=":${0%/*}" . _centauri_bash_lib "$0" "0.00:1" || exit 2
@@ -375,12 +375,13 @@ CEN_OPT_DEBUG=0                 # see --debug
 # Call:     (1) debug [-a] [-m] [-p] [-q] [-n] ...  # set trace options
 #           (2) debug ... [-i] <text>|<variable>    # dump output
 #           (3) debug ... -c|-f -- <text>...        # call tracing
-#           (4) debug -t on|off                     # bash trace on/off
+#           (4) debug -s -- <text>...               # print call stack
+#           (5) debug -t on|off                     # bash trace on/off
 #
 #+          Form (1) supports the same options that can be used at module load.
 #           Form (2) generates variable dump output. Using form (3) as the 1st
 #           statement of functions allows call tracing and function execution
-#           tracing via command line --debug. Form (4) should be used to control
+#           tracing via command line --debug. Form (5) should be used to control
 #           bash tracing (instead of "set -x" and "set +x").
 #
 # Options:  -a  "set -x" trace of actions()
@@ -395,6 +396,7 @@ CEN_OPT_DEBUG=0                 # see --debug
 #           -f  start function trace (only one at a time)
 #           -i  indent dump output
 #           -r  register (used internally on module load)
+#           -s  print function call stack
 #           -t  turn bash trace on/off (replaces "set -x" or "set +x")
 #
 # Bitmask:  The --debug option (or CEN_OPT_DEBUG) uses a bitmask to control the
@@ -431,26 +433,26 @@ CEN_OPT_DEBUG=0                 # see --debug
 # ------------------------------------------------------------------------------
 debug() {
     # turn bash trace on/off (put here to avoid tracing the while loop)
-    if [ "$1" = "-t" ] ; then
-        if [ "$2" = "on" ] ; then
+    if [ "$1" = '-t' ] ; then
+        if [ "$2" = 'on' ] ; then
             CEN_NOTRACE= ; CEN_OPT_TRACE=1 ; set -x
         else
-            set +x ; CEN_NOTRACE=":" ; CEN_OPT_TRACE=
+            set +x ; CEN_NOTRACE=':' ; CEN_OPT_TRACE=
         fi
         return 0
     fi
     $CEN_NOTRACE return                     # stop here when tracing
 
     # return trap for function tracing
-    if [ "$1" = "-X" ] ; then
+    if [ "$1" = '-X' ] ; then
         [ "$2" = 'debug' -o "$2" = '_cen_dyn_load' ] && return 1
         _cen_dbg_mesg -l "[return] ${FUNCNAME[1]}"
         return
     fi
 
     # normal option handling
-    local _item _sout _fopt _ilog _iopt
-    while [ "${1::1}" = "-" ] ; do
+    local _item _sout _fopt _ilog _iopt _stra
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -a)   CEN_DBG_OACT=1 ; CEN_DBG_TRACE+="$1 " ; _item=1 ;;
@@ -463,6 +465,7 @@ debug() {
         -o)   CEN_DBG_OOPT=1 ; CEN_DBG_TRACE+="$1 " ; _item=1 ;;
         -q)   CEN_DBG_OQUI=1 ; CEN_DBG_TRACE+="$1 " ; _item=1 ;;
         -r)   _item=0 ;;
+        -s)   _stra='[debug] ' ;;
         *)    _cen_abort - "$1"
         esac ; shift
     done || :
@@ -486,6 +489,12 @@ debug() {
         context -h CEN_HOOK_MAIN    CEN_DBG_OPT_MAIN _cen_dbg_main
     fi
 
+    # function call stack
+    if [ -n "$_stra" ] ; then
+        _cen_abort -r "$_stra$*"
+        return 0
+    fi
+
     # function trace
     if [ -n "$_fopt" ] ; then
         [ $((CEN_OPT_DEBUG & 6)) = 0 ] && return 0
@@ -503,12 +512,12 @@ debug() {
     # debug output
     [ $((CEN_OPT_DEBUG & 2)) = 0 ] && return 0
     while [ $# -gt 0 ] ; do
-        local -n _varg="$1"                     # must be local
-        [ $? = 0 ] && _item="${_varg[@]@A}" || _item=
-        if [ -n "$_item" ] ; then
-            _sout+=" ${_item#declare -* }"
+        local -n _varg="$1"                         # must be local
+        if [ $? = 0 ] ; then                        # is a variable ...
+           [ -v "$1" ] && _item="${_varg[@]@A}" || _item="$1="
+           _sout+=" ${_item#declare -* }"
         else
-            _sout+=" $1"
+            _sout+=" '$1'"
         fi
         shift
     done &>/dev/null
@@ -519,7 +528,7 @@ debug() {
 # Startup: [-n]
 # ------------------------------------------------------------------------------
 
-[ "$1" = "-n" ] && return 0                         # do not init
+[ "$1" = '-n' ] && return 0                         # do not init
 
 CEN_DBG_LOGFILE=            # redirect output to file
 CEN_DBG_TRACE=              # tracing options

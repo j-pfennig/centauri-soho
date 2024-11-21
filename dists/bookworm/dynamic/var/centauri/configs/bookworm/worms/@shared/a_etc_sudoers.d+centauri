@@ -1,6 +1,6 @@
 # Allow root and  members of some groups to execute any command
-root    ALL=(ALL:ALL)   NOPASSWD: ALL
-local   ALL=(ALL:ALL)   NOPASSWD: ALL
+root	ALL=(ALL:ALL)	NOPASSWD: ALL
+local	ALL=(ALL:ALL)	NOPASSWD: ALL
 %wheel	ALL=(ALL:ALL)	NOPASSWD: ALL
 %sudo	ALL=(ALL:ALL)	NOPASSWD: ALL
 
@@ -12,13 +12,20 @@ homeassistant ALL=NOPASSWD: /usr/bin/systemctl start centaurihass
 homeassistant ALL=NOPASSWD: /usr/bin/systemctl stop  centaurihass
 
 # this is for kiosk:
-kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- vterm
-kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- vterm 0
-kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- kiosk
-kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- reboot
-kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- shutdown
-kiosk  ALL=NOPASSWD: /usr/bin/fgconsole
-kiosk  ALL=NOPASSWD: /usr/bin/chvt *
+%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- vterm
+%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- vterm 0
+%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- clock 
+%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- homeassistant
+%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- kiosk
+%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- reboot
+%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- shutdown
+
+%kiosk  ALL=NOPASSWD: /usr/bin/fgconsole
+%kiosk  ALL=NOPASSWD: /usr/bin/chvt *
+%kiosk  ALL=NOPASSWD: /usr/bin/systemctl start --no-ask-password centauriissue
+
+%kiosk  ALL=NOPASSWD: /usr/bin/chgrp video '/sys/class/backlight'/*/brightness 
+%kiosk  ALL=NOPASSWD: /usr/bin/chmod 664   '/sys/class/backlight'/*/brightness 
 
 # this is for virtualbox:
 %vboxusers ALL=NOPASSWD: /usr/bin/systemctl start virtualbox
@@ -28,7 +35,8 @@ kiosk  ALL=NOPASSWD: /usr/bin/chvt *
 %vboxusers ALL=NOPASSWD: /usr/bin/umount -- /var/centauri/vbox/*
 %vboxusers ALL=(vbox)NOPASSWD: SETENV: /usr/bin/bash *
 
+# all users
 %users ALL=NOPASSWD: /var/centauri/tools/centauridata update
 %users ALL=NOPASSWD: /var/centauri/tools/centauriusers -q passwd -
-%users ALL=NOPASSWD: /usr/bin/systemctl start centauriissue
+%users ALL=NOPASSWD: /usr/bin/systemctl start --no-ask-password centauriissue
 

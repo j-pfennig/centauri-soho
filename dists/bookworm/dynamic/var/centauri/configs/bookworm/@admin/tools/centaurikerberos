@@ -4,12 +4,15 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2024; BSD License"
 CEN_TITLE="Samba-AD/Kerberos/NFS management tool"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -t -y - '0.23:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -t -y - '0.30:4' || exit 2
 
 # Data
 DAT_RUN_INIT=           # for action init/fallback
 DAT_DIR_SECRETS="/$CEN_ROOT/secrets"
 DAT_SEED_LIST=          # see get_seed
+
+DAT_VERB=               # current command verb, see check_verb
+DAT_ARGS=               # argument array of current verb
 
 # data for extra options
 CEN_OPT_SEED=           # see --seed
@@ -39,18 +42,18 @@ check_output() {
     return 0
 }
 
-# check argument for verb (create|delete|list), set _verb and _args: <arg>...
-_verb=
-_args=
+# check argument for verb (create|delete|list), set DAT_VERB and DAT_ARGS
 check_verb() {
+    local nerr
+    [ "$1" = '-q' ] && { nerr=1 ; shift; }
     case "$1" in
-    cre*|add)   _verb='create' ; shift ;;
-    del*)       _verb='delete' ; shift ;;
-    lis|list)   _verb="list"   ; shift ;;
-    *)          invoke -e $"invalid verb '%s'" "$1"
+    cre*|add)   DAT_VERB='create' ; shift ;;
+    del*)       DAT_VERB='delete' ; shift ;;
+    lis|list)   DAT_VERB='list'   ; shift ;;
+    *)          [ -z "$nerr" ] && invoke -e $"invalid verb '%s'" "$1"
                 return 1 ;;
     esac
-    _args=("$@") ; return 0
+    DAT_ARGS=("$@") ; return 0
 }
 
 # verify user: <princ>
@@ -253,16 +256,16 @@ actionClient() {
 
     # ---------------------------------- samba ---------------------------------
     else
-        # use mit kerberos, adcli wants it, sasl/sssd need gssapi
+        # use MIT kerberos, adcli wants it, sasl/sssd need gssapi
         if ! PATH+=':/usr/sbin' system -c -q -- "${gssm[@]}" ; then
             confirm -a -q $"Install tools"" (${gssm[*]})" &&
                 embed -v -z centauripackage --silent --tool --update=2 --yes "${gpak[@]}"
         fi
-
         if netquery server ; then
             message -a $"This computer is a server, nothing to join or register"
             return
         fi
+        server_info
 
         # add server public key to authorized keys
         [ -h ~/.ssh -a ! -e ~/.ssh/id_rsa ] && embed -r -- centauriencfs -q mount -
@@ -271,6 +274,7 @@ actionClient() {
         elif [ ! -w '/root/.ssh/authorized_keys' ] ; then
             warning "Cannot access root's authorized_keys"
         fi
+
         if [ -e "$CEN_ROOT/secrets/ssh_server_key.pub" ] ; then
             local pkey item
             read -r pkey <"$CEN_ROOT/secrets/ssh_server_key.pub"
@@ -283,7 +287,7 @@ actionClient() {
                 create -a -v pkey '/root/.ssh/authorized_keys'
             fi
         else
-            warning $"Missing public SSH key of server"
+            warning $"Missing public SSH key of server, will ask for password"
         fi
 
         if [ -n "$1" ] ; then
@@ -300,10 +304,14 @@ actionClient() {
         # clients don't export via nfs
         system -e -p systemctl mask nfs-server rpc-svcgssd
 
-        message -a $"Restarting sssd service"
-        runservice stop sssd
-        remove /var/lib/sss/db/* /var/log/sssd/*
-        runservice start sssd
+        if filestat -q -p '/etc/krb5.keytab' size && [ "${CEN_FILESTAT:-0}" -gt 8 ] ; then
+            message -a $"Restarting sssd service"
+            runservice stop sssd
+            remove /var/lib/sss/db/* /var/log/sssd/*
+            runservice start sssd
+        else
+            warning $"Not restarting sssd service (empty keytab)"
+        fi
     fi
 }
 
@@ -318,6 +326,164 @@ actionDestroy() {
 }
 
 # ------------------------------------------------------------------------------
+# Manage dns records
+# ------------------------------------------------------------------------------
+
+# [-r] <vnam>|- <what> <verb> <pasw>|- <arg>...
+run_samba() {
+    local args=() optr
+    [ "$1" = '-r' ] && { optr="$1" ; shift; }
+    [ "$1" = '-' ] && args+=('-z') || args+=('-a' "$1")
+    args+=('samba-tool' "$2" "$3")
+    [ "$4" = '-' ] || args+=('--user' "$4")
+    system -e -p $optr "${args[@]}" "${@:5}" && return 0
+    shift ; message -a "samba-tool $*" ; return 1
+}
+
+actionDns() {
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+        invoke -e $"kerberos does not manage DNS records" ; return
+    fi
+
+    check_verb -q "$@" || { DAT_VERB="$1" ; shift ; DAT_ARGS=("$@") ; }
+    check_master || return
+    check_tools || return
+    server_info
+
+    local pasw data=()
+    get_paswd pasw 'smbadmin' || return
+
+    local dns_name dns_addr=()
+    local -A dns_dict dns_host
+
+    # get a list of host (libnsswitch should be configured to use 'files' 1st)
+    ___dns_hosts() {
+        local list item wrds name
+        system -r -a list -- getent ahostsv4 "$@" || return
+        for item in "${list[@]}" ; do
+            splitjoin -s wrds -d ' \t' -- "$item"
+            if [ -n "$1" ] ; then
+                [ -n "${wrds[2]}" ] && name="${wrds[2]}"
+                dns_host["$wrds"]="${name%%.*}"
+            else
+                for name in "${wrds[@]:1}" ; do
+                    dns_host["$wrds"]="${name%%.*}"
+                done
+            fi
+        done
+        message -a -c 'host entries' "${#dns_host[@]}"
+    }
+
+    # parse samba-tool query output into dns_name and dns_addr, call ___dns_flush
+    ___dns_list() {
+        local stat=0 wrds
+        while [ $# -gt 0 ] ; do
+            splitjoin -s wrds -d ', \t' -- "$1"
+            $CEN_TRACE2 -a -c 'dns query' "${wrds[*]}"
+            case "$stat$wrds" in
+            ?Name=_*)   ___dns_flush
+                        stat=0 ;;                   # internal name
+            ?Name=*)    ___dns_flush
+                        stat=1
+                        dns_name="${wrds#*=}"
+                        ;;
+            1A:)        dns_addr+=("${wrds[1]}")
+                        ;;
+            1AAAA:)     dns_addr+=("${wrds[1]}")
+                        ;;
+            *)          ___dns_flush
+                        trace -a -c 'dns ignore' "${wrds[*]}"
+                        stat=0
+            esac
+            shift
+        done
+        ___dns_flush
+    }
+
+    # add output of ___dns_list to dns_dict
+    ___dns_flush() {
+        if [ -n "$dns_addr" ] ; then
+            trace -a -c -p 'dns host' '%-12s %s' "$dns_name" "${dns_addr[*]}"
+            dns_dict["${dns_name:-@}"]+="${dns_addr[*]} "
+        fi
+        dns_name= ; dns_addr=()
+    }
+
+    # process entries in dns_dict to list or remove ip addresses
+    ___dns_process() {
+        local item entr iopt addr list=("${!dns_dict[@]}") ndns nnss
+        txtsort -i list -a list
+        for entr in "${list[@]}" ; do
+            splitjoin -s addr -d ' ' -- "${dns_dict["$entr"]}"
+            txtsort -i addr -a addr
+            iopt=
+            for item in "${addr[@]}" ; do
+                # if a specific host is set samba-tool expects its name ...
+                [ "$entr" = '@' -a "${DAT_ARGS:-@}" != '@' ] && entr="$DAT_ARGS"
+                ndns="$entr"                            # the dns name
+                if [ "$DAT_VERB" = 'list' ] ; then
+                    nnss="${dns_host["$item"]}"         # the libnsswitch name
+                    if [ -z "$nnss" ] ; then
+                        printf '    %-12s [-]  %-39s\n' "$entr" "$item"
+                    elif [ "$ndns" = "$nnss" ] ; then
+                        printf '    %-12s      %-39s\n' "$entr" "$item"
+                    else
+                        printf '    %-12s [*]  %-39s  (%s)\n' "$entr" "$item" "$nnss"
+                    fi
+                    entr=
+                else
+                    ___dns_remove "$entr" "$item" $iopt
+                    iopt='-i'
+                fi
+             done
+        done
+    }
+
+    # <host> <addr> [-i]
+    ___dns_remove() {
+        if [ "$1" = '@' ] ; then                # delete unnamed entry
+            confirm $3 -f -n -q $"Remove '%s'" "$2" || return
+        else                                    # delete named entry
+            confirm $3 -f -n -q $"Remove '%-12s' '%s'" "$1" "$2" || return
+        fi
+        local kind dummy
+        [ "${2/:/}" = "$2" ] && kind='A' || kind='AAAA'
+        run_samba dummy 'dns' 'delete' "$pasw" "$DAT_SERVER" "${DAT_SERVER[1]}" "$1" "$kind" "$2"
+    }
+
+    # custom commands: create remove list
+
+    case "$DAT_VERB" in
+    cre*)   local addr="${DAT_ARGS[1]}" dummy
+            case "${addr:--}" in
+            *:*:*)      DAT_ARGS=("$DAT_ARGS" 'AAAA' "$addr") ;;
+            *.*.*.*)    DAT_ARGS=("$DAT_ARGS" 'A'    "$addr") ;;
+            -)          if system -q -r -s addr -- getent hosts "$DAT_ARGS" ; then
+                            DAT_ARGS=("$DAT_ARGS" 'A' "${addr%% *}")
+                        else
+                            invoke -e $"Host name is unknown" ; return
+                        fi ;;
+            *)          invoke -e $"Expected an IPv4 or IPv6 address as argument" ; return
+            esac
+            run_samba dummy 'dns' 'add' "$pasw" "$DAT_SERVER" "${DAT_SERVER[1]}" "${DAT_ARGS[@]}"
+            return ;;
+    rem*|list)
+            [ -z "$DAT_ARGS" ] && DAT_ARGS='@'
+            [ "$DAT_ARGS" = '@' ] && ___dns_hosts || ___dns_hosts "$DAT_ARGS"
+            run_samba -r data 'dns' 'query' "$pasw" "$DAT_SERVER" "${DAT_SERVER[1]}" "$DAT_ARGS" 'A'
+            ___dns_list "${data[@]}"
+            run_samba -r data 'dns' 'query' "$pasw" "$DAT_SERVER" "${DAT_SERVER[1]}" "$DAT_ARGS" 'AAAA'
+            ___dns_list "${data[@]}"
+            ___dns_process ; return ;;
+    esac
+
+    # native commands: add delete query ...
+
+    invoke -w $"Using native samba-tool command:" "$DAT_VERB"
+    run_samba - 'dns' "$DAT_VERB" "$pasw" "$DAT_SERVER" "${DAT_SERVER[1]}" "${DAT_ARGS[@]}"
+}
+
+# ------------------------------------------------------------------------------
 # Manage AD groups
 # ------------------------------------------------------------------------------
 actionGroup() {
@@ -329,29 +495,29 @@ actionGroup() {
     check_tools || return
 
     local flds
-    splitjoin -s flds -d ":" -- "${_args[0]}"
+    splitjoin -s flds -d ':' -- "${DAT_ARGS[0]}"
     local fnam="${flds[0]}"
     local fgid="${flds[1]:-}"
     local fgco="${flds[2]:-}"
 
     # ------------------------------ pre-condition -----------------------------
 
-    if [ "$_verb" = 'create' ] ; then
+    if [ "$DAT_VERB" = 'create' ] ; then
         if [ "$fgid" = '-' ] ; then
-            invoke -e $"missing unix gid" "$_verb ${_args[0]}" ; return
+            invoke -e $"missing unix gid" "$DAT_VERB ${DAT_ARGS[0]}" ; return
         fi
         # TODO error handling
         server_info
         local opts=(--gid-number "$fgid" --nis-domain "${DAT_SERVER[1]}")
         [ "$fgco" != '-' ] && opts+=(--description "$fgco")
         system -e -p -- samba-tool group add "$fnam" "${opts[@]}"
-    elif [ "$_verb" = 'delete' ] ; then
+    elif [ "$DAT_VERB" = 'delete' ] ; then
         system -e -p -- samba-tool group delete "$fnam"
-    elif [ "$_verb" = "list" ] ; then
+    elif [ "$DAT_VERB" = 'list' ] ; then
         # TODO add filter (3rd arg)
         system -e -p -z -- samba-tool group list
     else
-        invoke -e $"verb '%s' not implemented" "$_verb"
+        invoke -e $"verb '%s' not implemented" "$DAT_VERB"
     fi
 
     # ---------------------------------- samba ---------------------------------
@@ -370,13 +536,13 @@ actionHost() {
     check_tools || return
 
     local host pasw
-    splitjoin -s host -d ":" -- "${_args[0]}"
+    splitjoin -s host -d ':' -- "${DAT_ARGS[0]}"
     local add6 addr="${host[1]:--}"
-    if [ "$_verb" != 'list' ] ; then
+    if [ "$DAT_VERB" != 'list' ] ; then
         if [ "$addr" = '-' ] ; then
             nethost -- "${host,,}"
             if [ -z "$_nethost_ip" ] ; then
-                invoke -e $"verb '%s' can't find an IPv4 address" "$_verb $host" ; return
+                invoke -e $"verb '%s' can't find an IPv4 address" "$DAT_VERB $host" ; return
             fi
             addr="$_nethost_ip"
         fi
@@ -387,10 +553,10 @@ actionHost() {
     # TODO error handling
     server_info
 
-    if [ "$_verb" = 'create' ] ; then
+    if [ "$DAT_VERB" = 'create' ] ; then
         get_paswd pasw 'smbadmin' || return
         if list_hosts -s "$pasw" "$host" ; then
-            invoke_warn $"'%s' - host already existing" "$_verb $host"
+            invoke_warn $"'%s' - host already existing" "$DAT_VERB $host"
             [ -z "$CEN_OPT_FORCE" ] && return
         fi
         system -e -p -z -- samba-tool dns add "$DAT_SERVER" "${DAT_SERVER[1]}" \
@@ -399,10 +565,10 @@ actionHost() {
             system -e -p -z -- samba-tool dns add "$DAT_SERVER" "${DAT_SERVER[1]}" \
                                          "$host" AAAA "$add6" --user "$pasw"
 
-    elif [ "$_verb" = 'delete' ] ; then
+    elif [ "$DAT_VERB" = 'delete' ] ; then
         get_paswd pasw 'smbadmin' || return
         if ! list_hosts -s "$pasw" "$host" ; then
-            invoke_warn $"'%s' - host does not exist" "$_verb $host"
+            invoke_warn $"'%s' - host does not exist" "$DAT_VERB $host"
             [ -z "$CEN_OPT_FORCE" ] && return
         fi
         system -e -p -z -- samba-tool dns delete "$DAT_SERVER" "${DAT_SERVER[1]}" \
@@ -411,11 +577,11 @@ actionHost() {
             system -q -- samba-tool dns delete "$DAT_SERVER" "${DAT_SERVER[1]}" \
                                     "$host" AAAA "$add6" --user "$pasw"
 
-    elif [ "$_verb" = "list" ] ; then
+    elif [ "$DAT_VERB" = 'list' ] ; then
         get_paswd pasw 'smbtrust' || return
         list_hosts "$pasw" "$host"
     else
-        invoke -e $"verb '%s' not implemented" "$_verb"
+        invoke -e $"verb '%s' not implemented" "$DAT_VERB"
     fi
 }
 
@@ -506,20 +672,20 @@ actionMachine() {
     # ------------------------------ pre-condition -----------------------------
     check_tools || return
     server_info
-    [ "${_args[0]}" = '+' ] && _args[0]="$HOSTNAME"
-    local hnam="${_args[0]}" pnfs="nfs/${_args[0]}.${DAT_SERVER[1]}" root
+    [ "${DAT_ARGS[0]}" = '+' ] && DAT_ARGS[0]="$HOSTNAME"
+    local hnam="${DAT_ARGS[0]}" pnfs="nfs/${DAT_ARGS[0]}.${DAT_SERVER[1]}" root
     [ -n "$CEN_OPT_KERBEROS" ] && root="$pnfs" || root="${pnfs#nfs/}"
 
-    if [ "$_verb" = 'create' ] ; then
+    if [ "$DAT_VERB" = 'create' ] ; then
         check_user "$root"
         if [ "$?" = 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
-            invoke_warn "'%s' - machine account already existing" "$_verb $hnam"
+            invoke_warn "'%s' - machine account already existing" "$DAT_VERB $hnam"
             [ -z "$CEN_OPT_FORCE" ] && return
         fi
-    elif [ "$_verb" = 'delete' ] ; then
+    elif [ "$DAT_VERB" = 'delete' ] ; then
         check_user "$root"
         if [ "$?" != 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
-            invoke_warn $"'%s' - machine account does not exist" "$_verb $hnam"
+            invoke_warn $"'%s' - machine account does not exist" "$DAT_VERB $hnam"
             [ -z "$CEN_OPT_FORCE" ] && return
         fi
     fi
@@ -527,15 +693,15 @@ actionMachine() {
     # -------------------------------- kerberos --------------------------------
     if [ -n "$CEN_OPT_KERBEROS" ] ; then
 #        invoke -e "kerberos support not implemented" ; return
-        if [ "$_verb" = 'create' ] ; then
+        if [ "$DAT_VERB" = 'create' ] ; then
             system -e -p -- kadmin.local -q  "add_principal -randkey $hnam $pnfs"
         else
-            invoke -e $"verb '%s' not implemented" "$_verb" ; return
+            invoke -e $"verb '%s' not implemented" "$DAT_VERB" ; return
         fi
 
     # ---------------------------------- samba ---------------------------------
     else
-        if [ "$_verb" = 'create' ] ; then
+        if [ "$DAT_VERB" = 'create' ] ; then
             local pasw rcnt=0
             get_paswd pasw || return            # wanted by 'net ads'
 
@@ -557,7 +723,7 @@ actionMachine() {
                 system -e -p -- samba-tool spn add "${pnfs/nfs/root}" "$root"
             fi
 
-        elif [ "$_verb" = 'delete' ] ; then
+        elif [ "$DAT_VERB" = 'delete' ] ; then
             # delete (1) owner of SPNs (2) machine account
             system -q -- samba-tool user delete "$root"
             system -e -p -- samba-tool machine delete "$hnam"
@@ -569,11 +735,11 @@ actionMachine() {
     # ----------------------------- post-condition -----------------------------
     check_user "$root"
     if [ "$?" = 0 ] ; then
-        [ "$_verb" = 'delete' ] &&
+        [ "$DAT_VERB" = 'delete' ] &&
             invoke -e $"'%s' - machine could not be deleted" "$hnam"
     else
         [ -n "$CEN_OPT_DRYRUN" ] && return
-        [ "$_verb" = 'create' ] &&
+        [ "$DAT_VERB" = 'create' ] &&
             invoke -e $"'%s' - machine account not created" "$hnam"
     fi
 }
@@ -1033,13 +1199,13 @@ actionUser() {
     check_master || return
     check_tools || return
 
-    local sget spec="${_args[0]}"
+    local sget spec="${DAT_ARGS[0]}"
     if [ "${spec/:/}" = "$spec" ] ; then            # got only user name
         system -q -s sget -- getent passwd "$spec"
         [ -n "$sget" ] && spec="$sget"              # use db info
     fi
     local flds sget
-    splitjoin -s flds -d ":" -- "$spec"
+    splitjoin -s flds -d ':' -- "$spec"
     local fnam="${flds[0]}"
     local fuid="${flds[2]:-65534}"
     local fgid="${flds[3]:-100}"
@@ -1050,67 +1216,67 @@ actionUser() {
     [ "${frun::1}" != "/" ] && frun="/usr/sbin/nologin"
 
     # ------------------------------ pre-condition -----------------------------
-    if [ "$_verb" = 'create' ] ; then
+    if [ "$DAT_VERB" = 'create' ] ; then
         check_user "$fnam"
         if [ "$?" = 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
-            invoke_warn $"'%s' - user already existing" "$_verb $fnam"
+            invoke_warn $"'%s' - user already existing" "$DAT_VERB $fnam"
             [ -z "$CEN_OPT_FORCE" ] && return
         fi
-    elif [ "$_verb" = 'delete' ] ; then
+    elif [ "$DAT_VERB" = 'delete' ] ; then
         check_user "$fnam"
         if [ "$?" != 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
-            invoke_warn $"'%s' - user does not exist" "$_verb $fnam"
+            invoke_warn $"'%s' - user does not exist" "$DAT_VERB $fnam"
             [ -z "$CEN_OPT_FORCE" ] && return
         fi
-    elif [ "$_verb" = 'list' ] ; then
+    elif [ "$DAT_VERB" = 'list' ] ; then
         list_users "$fnam" ; return
     else
-        invoke -e $"verb '%s' not implemented" "$_verb"
+        invoke -e $"verb '%s' not implemented" "$DAT_VERB"
     fi
 
     # -------------------------------- kerberos --------------------------------
     if [ -n "$CEN_OPT_KERBEROS" ] ; then
-        if [ "$_verb" = 'create' ] ; then
+        if [ "$DAT_VERB" = 'create' ] ; then
             local popt
-            [ "${_args[1]:--}" = '-' ] || popt="-pw '${_args[1]}'"
+            [ "${DAT_ARGS[1]:--}" = '-' ] || popt="-pw '${DAT_ARGS[1]}'"
             system -q -- kadmin.local -q "add_principal $popt $fnam"
-        elif [ "$_verb" = 'delete' ] ; then
+        elif [ "$DAT_VERB" = 'delete' ] ; then
             system -q -- kadmin.local -q "delete_principal -force $fnam"
         fi
 
     # ---------------------------------- samba ---------------------------------
     else
-        if [ "$_verb" = 'create' ] ; then
+        if [ "$DAT_VERB" = 'create' ] ; then
             local opts pasw
             [ -n "$fgco" ] && opts+="--gecos=$fgco"
-            case "${_args[1]}" in
+            case "${DAT_ARGS[1]}" in
             '') if get_seed pasw "$fnam" ; then
                     opts+=("$fnam" "$pasw")
                 else
                     opts+=(--random-password "$fnam")
                 fi ;;
             -)  opts+=(--random-password "$fnam") ;;
-            *)  opts+=("$fnam" "${_args[1]}")
+            *)  opts+=("$fnam" "${DAT_ARGS[1]}")
             esac
             system -e -p -t -- samba-tool user create --uid-number="$fuid" --gid-number="$fgid" \
                                           --unix-home="$fdir" --login-shell="$frun" "${opts[@]}"
             system -e -p -t -- samba-tool user setexpiry --noexpiry "$fnam"
-        elif [ "$_verb" = 'delete' ] ; then
+        elif [ "$DAT_VERB" = 'delete' ] ; then
             system -q -- samba-tool user delete "$fnam"
         fi
     fi
 
     # ----------------------------- post-condition -----------------------------
-    if [ "$_verb" = 'create' ] ; then
+    if [ "$DAT_VERB" = 'create' ] ; then
         check_user "$fnam"
         if [ "$?" != 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
-            invoke -e $"'%s' - user not created" "$_verb $fnam"
+            invoke -e $"'%s' - user not created" "$DAT_VERB $fnam"
         fi
 
-    elif [ "$_verb" = 'delete' ] ; then
+    elif [ "$DAT_VERB" = 'delete' ] ; then
         check_user "$fnam"
         if [ "$?" = 0 -a -z "$CEN_OPT_DRYRUN" ] ; then
-            invoke -e $"'%s' - user not deleted" "$_verb $fnam"
+            invoke -e $"'%s' - user not deleted" "$DAT_VERB $fnam"
         fi
     fi
 }
@@ -1164,6 +1330,8 @@ actions() {
         invoke -r 'client'    -        0 1 ;;
     des*)
         invoke    'destroy'   -        0   ;;
+    dns*)
+        invoke    -           -        1 + ;;
     fal*|tic*)
         invoke    'ticket'    -        0 1 ;;
     gro*)
@@ -1235,6 +1403,11 @@ actions:
                             save samba state to a tar file
 
        ••• database actions •••
+       dns      list|remove [@|<host>]
+                            list or remove (interactive) dns entries
+       dns      create|remove @|<host> <addr>
+                            add or remove (batch) dns entries
+       dns      <arg>...    run 'samba-tool dns' with server/zone/user preset
        group    <verb> <gnam>[:<gid>[:<info>]]
                             create/list/delete a Samba-AD group
        host     <verb> <host>[:<ipv4>]

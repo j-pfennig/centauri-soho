@@ -4,7 +4,7 @@ CEN_LEGAL="Dr. Jürgen Pfennig (c) 2020-2024 ; all rights reserved"
 CEN_TITLE="Automounter tool and service for local and network filesystems"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -v - '0.14:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -v - '0.15:3' || exit 2
 
 CEN_SVC_AFTER='networking.service network-online.target remote-fs.target'
 CEN_SVC_WANTS='avahi-daemon.service'    # service dependency
@@ -88,14 +88,23 @@ do_tools() {
     do_spindown check
 
     # check required tools
-    local item list=(pkill ping systemctl umount "$DAT_MOUNTER")
-    for item in "$DAT_AVAHI_BROWSE" "$DAT_AVAHI_LIST" "$DAT_NFS_SHOW" \
-                "$DAT_SAMBA_SHOW" "$DAT_SAMBA_TREE" ; do
+    local item ival list=(pkill ping systemctl umount "$DAT_MOUNTER")
+    for item in "$DAT_AVAHI_BROWSE" "$DAT_AVAHI_LIST" ; do
         [ "${item:-true}" = 'true' ] && continue
         list+=("${item%% *}")
     done
     do_timeout check && list+=('touch')
     system -c -f "${list[@]}"
+
+    # check optional tools
+    for item in DAT_NFS_SHOW DAT_SAMBA_SHOW DAT_SAMBA_TREE ; do
+        eval ival="\$$item"
+        [ "${ival:-true}" = 'true' ] && continue
+        ival="${ival%% *}"
+        system -c "$ival" && continue
+        warning "'$ival' enabled but not installed"
+        eval $item=true
+    done
 
     # create temporary folder
     folder -s DAT_TEMP_FILE -b 'transient' -m -f "$CEN_NAME"
@@ -258,10 +267,15 @@ do_command() {
 }
 
 # ------------------------------------------------------------------------------
-# read or write config file: -no args-
+# read or write config file: [<file>]
 # ------------------------------------------------------------------------------
 do_config() {
-    [ -n "$DAT_HAVE_CONFIG" ] && return
+    local fout
+    if [ -n "$1" ] ; then
+        outfile -s fout -t -- "$1" || return
+    else
+        [ -n "$DAT_HAVE_CONFIG" ] && return 0
+    fi
     DAT_HAVE_CONFIG=1
 
     # create import/export folders
@@ -277,7 +291,7 @@ do_config() {
     fi
 
     ___replace() {
-        [ "$CEN_ACTION" = "config" ] && message "# $2"
+        [ "$CEN_ACTION" = 'config' ] && message "# $2"
         local -n cmap="$1"
         local item vali fldr base name mark=$'\a'
         for item in "${!cmap[@]}" ; do
@@ -306,49 +320,52 @@ do_config() {
 
     # get fstab mountpoints
     DAT_FSTAB_LIST=()
-    if [ -r "/etc/fstab" ] ; then
+    if [ -r '/etc/fstab' ] ; then
         local mdev mmnt mxxx
         while read mdev mmnt mxxx ; do
             [ -z "$mdev" -o "${mdev::1}" = "#" ] && continue
-            [ "${mmnt::1}" = '/' -a "${mmnt::5}" != "/dev/" ] && DAT_FSTAB_LIST+=("$mmnt")
-        done < "/etc/fstab"
+            [ "${mmnt::1}" = '/' -a "${mmnt::5}" != '/dev/' ] && DAT_FSTAB_LIST+=("$mmnt")
+        done < '/etc/fstab'
     fi
 
     # read config file
-    local cdir
-    if ! folder -s cdir -b 'default' ; then
-        warning "No configuration folder:" "$cdir" ; return
+    if [ -z "$fout" ] ; then
+        local cdir
+        if ! folder -s cdir -b 'default' ; then
+            warning "No configuration folder:" "$cdir" ; return 1
+        fi
+        fout="$cdir/$CEN_NAME"
+
+        if [ -e "$fout" ] ; then
+            $DAT_DEBUG -a -c "Config file" -- "$fout  [existing]"
+            source "$fout"
+
+            # variable replacement
+            ___replace DAT_HOSTS        "Ignored/forced hosts"
+            ___replace DAT_DNSMAP       "DNS mappings for NetBIOS names"
+
+            ___replace DAT_DEVICES      "Devices"
+            ___replace DAT_VOLUMES      "Volumes"
+            ___replace DAT_SYMLINKS     "Symlinks"
+            ___replace DAT_MOUNT_NFS    "NFS network mounts"
+            ___replace DAT_MOUNT_SAMBA  "SAMBA network mounts"
+
+            ___replace DAT_SPINDOWN     "Rotational disk idle spindown"
+
+            # disable samba or NFS
+            if [ "${DAT_AVAHI_BROWSE:-false}" = 'false' -o "${DAT_AVAHI_LIST:-false}" = 'false' ] ; then
+                DAT_AVAHI_BROWSE=true ; DAT_AVAHI_LIST=true
+            fi
+            if [ "${DAT_SAMBA_SHOW:-false}" = 'false' -o "${DAT_SAMBA_TREE:-false}" = 'false' ] ; then
+                DAT_SAMBA_SHOW=true ; DAT_SAMBA_TREE=true
+            fi
+            [ "${DAT_NFS_SHOW:-false}" = 'false' ] && DAT_NFS_SHOW=true
+            return 0
+        fi
     fi
 
-    if [ -e "$cdir/$CEN_NAME" ] ; then
-        $DAT_DEBUG -a -c "Config file" -- "$cdir/$CEN_NAME  [existing]"
-        . "$cdir/$CEN_NAME"
-
-        # variable replacement
-        ___replace DAT_HOSTS        "Ignored/forced hosts"
-        ___replace DAT_DNSMAP       "DNS mappings for NetBIOS names"
-
-        ___replace DAT_DEVICES      "Devices"
-        ___replace DAT_VOLUMES      "Volumes"
-        ___replace DAT_SYMLINKS     "Symlinks"
-        ___replace DAT_MOUNT_NFS    "NFS network mounts"
-        ___replace DAT_MOUNT_SAMBA  "SAMBA network mounts"
-
-        ___replace DAT_SPINDOWN     "Rotational disk idle spindown"
-
-        # disable samba or NFS
-        if [ "${DAT_AVAHI_BROWSE:-false}" = 'false' -o "${DAT_AVAHI_LIST:-false}" = 'false' ] ; then
-            DAT_AVAHI_BROWSE=true ; DAT_AVAHI_LIST=true
-        fi
-        if [ "${DAT_SAMBA_SHOW:-false}" = 'false' -o "${DAT_SAMBA_TREE:-false}" = 'false' ] ; then
-            DAT_SAMBA_SHOW=true ; DAT_SAMBA_TREE=true
-        fi
-        [ "${DAT_NFS_SHOW:-false}" = 'false' ] && DAT_NFS_SHOW=true
-        return
-    fi
-
-    message -a -c "Config file" -- "$cdir/$CEN_NAME  [creating]"
-    create -c -- "$cdir/$CEN_NAME" 660 <<!EOF
+    message -a -c "Config file" -- "$fout  [creating]"
+    create -a -c -- "$fout" 660 <<!EOF
 # configuration file for $CEN_NAME
 
 ###################################
@@ -595,7 +612,10 @@ DAT_DNSMAP[".*"]="#-0 #-1 # @"      # try DNS before nmlookup
 
 # Spindown rotational disk if idle for given time [seconds] (empty to disable)
 # Multiple entries are allowed, key uses bash globbing (not regular expression!)
-#DAT_SPINDOWN["/dev/sd?"]=900
+DAT_SPINDOWN["/dev/sd?"]=900
+
+# disable hdparm disk spinning check
+#DAT_SLEEP_SPINDOWN=0
 
 # End
 !EOF
@@ -1705,7 +1725,7 @@ run_timer() {
 }
 
 # ------------------------------------------------------------------------------
-# action config: -no args-
+# action config: [<file>]
 # ------------------------------------------------------------------------------
 actionConfig() {
     ___showvar() {
@@ -1718,7 +1738,9 @@ actionConfig() {
         message -a ' '
     }
 
-    do_config
+    do_config "$1"
+    [ -n "$1" ] && return
+
     ___showvar "Timers"  DAT_PING_TIME DAT_PING_SHORT DAT_IDLE_TIMEOUT \
                          DAT_UNMOUNT_TIME DAT_SLEEP_SPINDOWN
     ___showvar "Folders" DAT_FOLDER_TREE DAT_FOLDER_EXPORT DAT_FOLDER_IMPORT \
@@ -1870,17 +1892,17 @@ actions() {
         '')     [ "$CEN_VERB" -gt 1 ] && DAT_DEBUG='trace' ;;
 
         lis|list)
-                invoke "list"     -  1   ;;
+                invoke 'list'     -  1   ;;
         con*)
-                invoke "config"   -  0   ;;
+                invoke 'config'   -  0 1 ;;
         net*)
-                invoke "network"  -  1   ;;
+                invoke 'network'  -  1   ;;
         ser*)
-                invoke "servers"  -  0   ;;
+                invoke 'servers'  -  0   ;;
         spi*)
-                invoke "spindown" -  0 1 ;;
+                invoke 'spindown' -  0 1 ;;
         unm*|umo*)
-                invoke "unmount" -   0 1 ;;
+                invoke 'unmount' -   0 1 ;;
     esac
 }
 
@@ -1892,16 +1914,18 @@ usage() {
     local str_void="${CEN_NAME//?/ }"
 
     usageset \
-        -a "config               show effective configuration" \
-        -a "list     <host>      list shares/exports of a host" \
-        -a "servers              list detected servers" \
-        -a "spindown [<wait>]    run drive spindown for rotational drives" \
-        -a "unmount  [<idle>]    run unmount for drive/volume with idle-timeout" \
+        -a 'config'             $"show effective configuration" \
+        -a 'config   <conf>'    $"create configuration file" \
+        -a 'list     <host>'    $"list shares/exports of a host" \
+        -a 'servers'            $"list detected servers" \
+        -a 'spindown [<wait>]'  $"run drive spindown for rotational drives" \
+        -a 'unmount  [<idle>]'  $"run unmount for drive/volume with idle-timeout" \
 
-    usageset -l $"arguments" \
-        -t "<host>       a host name (DNS)" \
-        -t "<wait>       delay in [s]" \
-        -t "<idle>       minimum drive/volume idle time in [s]" \
+    usageset \
+        -p '<conf>'     $"configuration file" \
+        -p '<host>'     $"a host name (DNS)" \
+        -p '<wait>'     $"delay in [s]" \
+        -p '<idle>'     $"minimum drive/volume idle time in [s]" \
 
     usagecat << !EOF
 $CEN_USE_HEADER
@@ -1920,6 +1944,8 @@ $CEN_USE_HEADER
 $CEN_USE_OPTIONS
 
 $CEN_USE_ACTIONS
+
+$CEN_USE_PARAMS
 
 examples:
        $CEN_NAME config               # initialize or show configuration

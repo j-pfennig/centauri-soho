@@ -1,8 +1,10 @@
-# jpf@centauri 2017-12-19
+# jpf@centauri 2017-12-19, 2024-02-17
 
 # BEWARE: make sure that include paths end with a dot if you want symlinks to be
 #         dereferenced by tar. Example: Picture/.
 
+# REMARK: only the 1st folder statement that references an existing folder is
+#         used.
 # ------------------------------------------------------------------------------
 # macros
 # ------------------------------------------------------------------------------
@@ -65,6 +67,7 @@ target root             System root without /export and ~vbox
     exclude ./media/*
     exclude ./mnt/*
     exclude ./proc
+    exclude ./shared
     exclude ./sys
     exclude ./tmp/*
     exclude ./usr
@@ -87,6 +90,7 @@ target root             System root without /export and ~vbox
     exclude ./var/centauri/backup
     exclude ./var/lib/apt/lists
     exclude ./var/lib/centauri/*
+    exclude ./var/lib/dhcp/*
     exclude ./var/lib/flatpak
     exclude ./var/lib/mlocate/*
     exclude ./var/log/calamaris
@@ -124,10 +128,14 @@ target home             system home folder
 
 target boot             efi boot folder
     default disk
+    # this is for raspberry PI ...
+    folder  ./boot/firmware
+    # find EFI boot partition ...
     folder  ./mnt/boot
     folder  ./efi/boot/../..
     folder  ./boot/efi/EFI/..
-    folder  ./boot/firmware
+    # legacy ...
+    folder  ./boot
 
     exclude .swapfile*
     exclude [sS]wapfile*

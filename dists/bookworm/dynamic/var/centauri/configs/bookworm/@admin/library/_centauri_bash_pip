@@ -12,10 +12,10 @@
 #,          - [[syspipe()]]  - run a command in background using coproc or a pipe
 #,          - [[sysloop()]]  - implements an event loop using a pipe
 #
-# Copyright Dr. J. Pfennig (c) 2021-2022
+# Copyright Dr. J. Pfennig (c) 2021-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_pip']='0.02:1'
+CEN_MODULES['_centauri_bash_pip']='0.03:4'
 
 CEN_PIP_WAIT=
 CEN_PIP_BUSY=                   # coproc recursion protection
@@ -387,7 +387,10 @@ syspager() {
 #.              CEN_SYSPIPE=                        # tell producer to stop
 #.           }
 #
-# Examples: Fifo: send data through a pager
+#.Examples: Pipe: simple stdout -> stdin passing
+#.          syspipe -o 'ls -1' -d 'wc -l'
+#
+#.          Fifo: send data through a pager
 #.          producer() {
 #.              for ((i=0 ; i<100; i++)) ; do
 #.                 [ -z "$CEN_SYSPIPE" ] && break   # stop after SIGPIPE error
@@ -466,6 +469,9 @@ syspipe() {
     fi
     CEN_SYSPIPE=                                # reset state
     local _stat=0 _verb="$CEN_VERB" _acmd=("$@") _cen_pip_temp
+    if [ "$_oout" = 0 -a -z "$_acmd" ] ; then
+        eval _acmd=("$_ocon") ; _oout= ; _ocon=
+    fi
 
     # check cmd and origin/destination
     if [ -z "$_fnoc" ] ; then
@@ -568,7 +574,7 @@ syspipe() {
             if [ "$1" = '<>' ] ; then
                 tmpfile -r -s _pipe[1] -f ; CEN_SYSPIPE="${_pipe[*]}"
             fi
-            trace -a -c "() $1" "worker: $_acmd"
+            $CEN_TRACE -a -c "() $1" "worker: $_acmd"
 
             if [ "$1" = '<>' ] ; then
                 _cen_pip_worker - <"${_pipe[0]}" >"${_pipe[1]}" &
@@ -836,18 +842,18 @@ _cen_pip_ticker() {
         message -c ' ticker' "got signal - sending quit"
         trap '' 14                          # ignore alarm signal, will exit anyhow
         echo "$BASHPID" - > $CEN_SYSLOOP
-        trace -c ' ticker' "terminated" ; exit
+        $CEN_TRACE -c ' ticker' "terminated" ; exit
 
     # handler for internal trap: SIGALRM (raised by sysloop to stop ticker)
     elif [ "$1" = 'stop' ] ; then
-        trace -a -c ' ticker' "stopped" ; exit
+        $CEN_TRACE -a -c ' ticker' "stopped" ; exit
 
     # subroutine call from sysloop to stop ticker
     elif [ $# = 0 ] ; then
         [ -z "${CEN_SYSLOOP[2]}" ] && return 1
 
         kill -s 14 "${CEN_SYSLOOP[2]}" 2>/dev/null &&
-            trace -c ' ticker' "stopping"
+            $CEN_TRACE -c ' ticker' "stopping"
 
         if [ -n "${CEN_SYSLOOP[3]}" ] ; then
             $CEN_TRACE -a -c "removing pipe" "$CEN_SYSLOOP"

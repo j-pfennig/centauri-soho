@@ -1,7 +1,8 @@
 # jpf@Centauri - modified bash startup
 # ------------------------------------------------------------------------
-# The /etc/bashrc file is modified to source this script unless the user's
-# home folder contains custom .profile and/or .bashrc files. Invocations:
+# The /etc/bash.bashrc file is modified to source this script unless the
+# user's home folder contains custom .profile and/or .bashrc files.
+# Invokations:
 #
 #   ./etc/bash.centauri INIT        # from /etc/bash.bashrc
 #   ./etc/bash.centauri PROFILE     # from ~/.profile or via INIT
@@ -71,8 +72,19 @@ elif [ "$1" = "PROFILE" ] ; then
         fi
     fi
 
+    # show motd in simple GUI ...
+    [ "$EUID" = 0 ] && [ "$TERM" = 'xterm' ] && cat /etc/motd
+
+    # seeding of Kde or LxQt
+    if [ "$XDG_SESSION_TYPE" = 'x11' -o "$XDG_SESSION_TYPE" = 'wayland' ] ; then
+        [ ! -d "$HOME/.config/lxqt" ] && [ -e '/usr/bin/startlxqt' ] &&
+            type -t centauriprofile &>/dev/null && centauriprofile init lxqt
+        [ ! -d "$HOME/.kde" ] && [ -e '/usr/bin/startkde' ] &&
+            type -t centauriprofile &>/dev/null && centauriprofile init kde
+    fi    
+
     # check XDG_RUNTIMEDIR and if encrypted .cache is ok
-    if ! [ -d "$XDG_RUNTIME_DIR" -a -d ".cache" ] ; then
+    if ! [ -d "$XDG_RUNTIME_DIR" -a -d '.cache' ] ; then
         type -t centaurisession &>/dev/null && eval $(centaurisession profile)
     fi
 
@@ -177,7 +189,7 @@ elif [ "$1" = "BASHRC" ] ; then
     fi
 
     # start .autologin or X-Server
-    if [ "$SHLVL" = "1" -a -z "$DISPLAY" -a "$EUID" != "0" ] ; then
+    if [ "$SHLVL" = 1 -a -z "$DISPLAY" -a "$EUID" != 0 ] ; then
          case "$XDG_VTNR" in
              3|4|5|6)   if type -t centaurisession &>/dev/null ; then
                              centaurisession bashrc 
@@ -223,7 +235,24 @@ elif [ "$1" = "ALIASES" ] ; then
 
     # cfi need a little helper
     _cfi_helper() {
-        find -xdev \( -name ".encfs_*" -o -name ".cache" \) -prune -o -iname  "*$**" -print
+        if [ -z "$BASH_VERSION" ] ; then
+            find -xdev \( -name ".encfs_*" -o -name ".cache" \) -prune -o -iname  "*$**" -print
+        else
+            eval "local args+=('find""')"
+            while [ "${1::1}" = '-' ] ; do
+                case "$1" in
+                --)   shift ; break ;;
+                -f|-F|--fol*) shift ; eval "args+=('-F' \"$1\")" ;;   
+                -d|-D|--del*) eval "args+=('-D')" ;;   
+                -h|--help)    set -- ;;
+                *)    echo "***Error*** Invalid option: $1" ; return 1
+                esac ; shift
+            done
+            if [ $# != 1 ] ; then
+                echo "Usage: cfi [-d|--delete] [-f|--folder] <pattern>" ; return 2
+            fi
+            centauriinfo "${args[@]}" "$1"
+        fi
     }
     alias cfi="_cfi_helper"
 

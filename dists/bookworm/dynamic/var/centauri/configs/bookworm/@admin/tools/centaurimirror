@@ -1,751 +1,312 @@
 #!/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2024; BSD License"
-CEN_TITLE="Backup Btrfs Volumes to Archive Disk using 'centauricopy'"
+CEN_LEGAL="Dr. J. Pfennig (c) 2020-2024; BSD License"
+CEN_TITLE="Tool run by the SLAVE server to mirror the MASTER server"
 
-# include boot folder
-# excludes (sddm/cache)
-# TODO mount status in $CEN_ROOT/transient
-# TODO /etc/default/centaurimirror
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -s - '0.02:4' || exit 2
 
-PATH=+":${0%/*}" . _centauri_bash_lib -a -d -i -m bat -s -y - '0.25:2' || exit 2
+CEN_OPT_DIST=                   # see --dist
+CEN_OPT_MASTER=                 # ser --master
 
 # Data
-CEN_OPT_ALL=                    # see --all
-CEN_OPT_BASE=                   # see --base
-CEN_OPT_DEVICE=                 # see --device
-CEN_OPT_NAME=                   # see --name
-CEN_OPT_LABEL=                  # see --label
-CEN_OPT_MOUNT=                  # see --mount
-CEN_OPT_OPTION=()               # see --option
-CEN_OPT_REMOTE=                 # see --remote
-CEN_OPT_SOURCE=                 # see --source
+DAT_BASE="/mnt"
+DAT_CRON_FLG=
 
-DAT_CONFIRMED=                  # see _copy()
-DAT_DESTINATION=                # set by destination()
-DAT_STATUSDIR=                  # set by destination()
-DAT_KEEP=                       # do not unmount, see actionMount
-DAT_REMOTE=                     # set by remote()
-DAT_SSH_OPTS=                   # for centaurissh
+# Map of destination volume paths
+declare -A DAT_VOLUMES
 
-# ------------------------------------------------------------------------------
-# handle mount options
-# ------------------------------------------------------------------------------
-initialize() {
-    error -q
-    local labl mdev mdir
-
-    _mount() {
-        local mdev="$1" ; [ "${mdev::1}" = "/" ] || mdev="/dev/$mdev"
-        [ -b "$mdev" ] || fatal "Not a block device: $mdev"
-        if findmount "$mdev" ; then
-            [ -n "$CEN_OPT_MOUNT" -a "$CEN_OPT_MOUNT" != "$CEN_MOUNT_DIR" ] &&
-                fatal "Device '$mdev' is mounted at '$CEN_MOUNT_DIR'"
-            trace -a "Device '$mdev' is mounted at '$CEN_MOUNT_DIR'"
-            return 0
-        fi
-        trace -a "Device '$mdev' is not mounted"
-        CEN_MOUNT_DEV="$mdev" ; return 1
-    }
-
-    # remote call
-    if [ -n "$CEN_OPT_REMOTE" ] ; then
-        mdir="${CEN_OPT_REMOTE#*:}"
-        if [ -z "$mdir" -o "$mdir" = "$CEN_OPT_REMOTE" ] ; then
-            [ -z "$CEN_OPT_MOUNT" -a -z "$CEN_OPT_LABEL" -a -z "$CEN_OPT_DEVICE" ] &&
-                fatal "Missing --mount, --device or --label option"
-        else
-            [ -n "$CEN_OPT_MOUNT"  ] && fatal "Redundant --mount option"
-            CEN_OPT_MOUNT="$mdir" ; CEN_OPT_REMOTE="${CEN_OPT_REMOTE%%:*}"
-        fi
-        [ -h ~/.ssh -a ! -e ~/.ssh/id_rsa ] && embed centauriencfs -q mount -
-        return
+# find_volumes: <mount>
+find_volumes() {
+    [ -n "$DAT_VOLUMES" ] && return 0
+    if [ ! -d "$1" ] ; then
+        error "Not a folder:" "$1" ; return 1
     fi
 
-    # find device by label
-    if [ -n "$CEN_OPT_LABEL" ] ; then
-        [ -n "$CEN_OPT_DEVICE" ] &&
-            fatal "Conflicting options: --label --device"
-        for labl in "" "_vol0" "_vol1" "_data" ; do
-            labl="/dev/disk/by-label/$CEN_OPT_LABEL$labl"
-            [ -e "$labl" ] || continue
-            system -r -f -p -s CEN_OPT_DEVICE readlink -f "$labl"
-            trace -a "Label '${labl##*/}' is devive '$CEN_OPT_DEVICE'" ; break
-        done
-        if [ -n "$CEN_OPT_DEVICE" ] ; then
-            _mount "$CEN_OPT_DEVICE"
-        else
-            fatal "Label not found: $labl"
-        fi
+    local name path
+    for path in "$1"/vol?/Volumes/* ; do
+        name="${path##*/}"
+        [ -z "${name//[A-Za-z]}" ] || continue
+        [ "${name,,}" = "backup" ] && continue
+        [ -d "$path" ] || continue
+        DAT_VOLUMES["$name"]="$path"
+        trace -a -c "Found volume" -- "$name ($path)"
+    done
+    return 0
+}
 
-    # check given device
-    elif [ -n "$CEN_OPT_DEVICE" ] ; then
-        _mount "$CEN_OPT_DEVICE"
+# syncronize a volume to snapshot: <volume>
+sync_volume() {
+    message -a "Synchronize Volume: $1"
 
-    # find by mount point
-    elif [ -n "$CEN_OPT_MOUNT" ] ; then
-        if findmount "$CEN_OPT_MOUNT" ; then
-            trace -a "Device '$CEN_MOUNT_DEV' is mounted at '$CEN_MOUNT_DIR'"
-        else
-            fatal "Found no mounted device for '$CEN_OPT_MOUNT'"
-        fi
+    local opts=("--quiet" "--silent" "--local=on" "--one")
+    local repl orig
+    local volu="${DAT_VOLUMES["$1"]}"
+    local volp="$volu.mirror"
+    local volo="$volu.old"
+
+    if [ ! -d "$volp" ] && ! dryrun -s "Create $volp" ; then
+        embed -v -- centaurisnapshot --windows=off --suffix=mirror save "$1" || return
+    fi
+
+    case "${1,,}" in
+        root)   orig="${DAT_VOLUMES["$1"]}$CEN_OPT_DIST" ;;
+        home)   orig="${DAT_VOLUMES["$1"]}$CEN_OPT_DIST" ;;
+        *)      orig="/mnt/${1,,}"
+    esac
+    opts+=("--volume=${1^}")
+    embed -v centauricopy "${opts[@]}" mirror "$CEN_OPT_MASTER:$orig" "$volp"
+}
+
+# backups: copy only Backup/{data|disk}
+sync_backup() {
+    local item
+    for item in /mnt/backup/Backup/disk /mnt/backup/Backup/data ; do
+        [ -d "$item" ] || continue
+        embed -v -z -- centauriremove --free 40G --yes "$item"
+        # don't delete anything
+        embed -v -z -- centauricopy update --local=on --one "$CEN_OPT_MASTER:$item" "$item"
+    done
+}
+
+# rename/copy volume: <volume>
+commit_volume() {
+    local volu="${DAT_VOLUMES["$1"]}"
+    local volp="$volu.mirror"
+    local volo="$volu.old"
+
+    if [ ! -d "$volp" ] ; then
+        message -a "Commit Volume: $1 (no mirror data: $volp)" ; return
     else
-        fatal "Must use any of --label, --device or --mount"
+        message -a "Commit Volume: $1 ($volu)"
+    fi
+    if [ -d "$volo" ] ; then
+        system -e -p -- btrfs subvolume delete "$volo" || return
     fi
 
-    DAT_QUIT="$CEN_HOOK_QUIT" ; CEN_HOOK_QUIT=terminate
+    # rename volume tag file
+    local host="${HOSTNAME^^}"
+    local tags=("$volp"/${host%[0-9]}?_${1^^})
+    [ -f "$tags" ] && rename -o -- "$tags" "$volp/${host}_${1^^}"
+
+    # rename volume or copy data
+    case "${1,,}" in
+        root)   update_root "$volp" "$volu"
+                ;;
+        home)   update_home "$volp" "$volu"
+                ;;
+        # simple: replace volume with mirror
+        *)      local vmnt="/mnt/${1,,}"
+                if [ -e "$vmnt" ] && system -r -q -- mountpoint -q "$vmnt" ; then
+                    message -a "Unmount Volume: $vmnt"
+                    system -e -p -- sync "$vmnt"
+                    system -e -p -- umount "$vmnt"
+                fi
+
+                rename -- "$volu" "$volo" || return
+                rename -- "$volp" "$volu"
+    esac
 }
 
-# ------------------------------------------------------------------------------
-# cleanup callback
-# ------------------------------------------------------------------------------
-terminate() {
-    mounter -u
-    $DAT_QUIT "$@"
-}
-
-# ------------------------------------------------------------------------------
-# handle remote actions: [-s] [<prog> <arg>...]
-# ------------------------------------------------------------------------------
-remote() {
-    local ropt=() ssav fqui onam
-    if [ "$1" = "-s" ] ; then
-        ssav="-r -s DAT_REMOTE" ; fqui="--quiet" ; shift
-    fi
-
-    DAT_REMOTE=
-    [ -z "$CEN_OPT_REMOTE" ] && return 1
-    if [ -z "$1" ] ; then
-        DAT_KEEP=1
-        fatal "Action '$CEN_ACTION' cannot be run remote"
-    fi
-
-    if [ "$1" = "rename" ] ; then
-        DAT_SSH_OPTS="--term=on"             # for prompting
-        [ "$CEN_YESNO" = "n" ] && ropt+=("--no")
-        [ "$CEN_YESNO" = "y" ] && ropt+=("--yes")
-    fi
-    [ -n "$CEN_OPT_MOUNT"  ] && ropt+=("--mount='$CEN_OPT_MOUNT'")
-    [ -n "$CEN_OPT_LABEL"  ] && ropt+=("--label='$CEN_OPT_LABEL'")
-    [ -n "$CEN_OPT_DEVICE" ] && ropt+=("--device='$CEN_OPT_DEVICE'")
-    [ -z "$ropt" ] && fatal "Missing --mount, --label or --device"
-    onam="--name=${CEN_OPT_NAME:-$HOSTNAME}"
-    embed $ssav centaurissh $DAT_SSH_OPTS batch --host "$CEN_OPT_REMOTE" --- \
-          "$CEN_NAME" $fqui $onam "${ropt[@]}" --- "$@"
-    error -q ; return 0
-}
-
-# ------------------------------------------------------------------------------
-# check/make destination folder: [-q|-s|-t|-v]
+# copy_user: <folder> <volume>
+update_root() {
+    local opts=("--quiet" "--silent" "--one" "--delete")
+    local mori="$1/var/Mail"
+    local mdes="$2/var/Mail"
 #
-#       -q      quiet, no 'not found' error message
-#       -s      status, set DAT_STATUSDIR and return
-#       -t      test, don't set DAT_DESTINATION and don't change folder
-#       -v      volume, get volume name, set DAT_DESTINATION and return status
-# ------------------------------------------------------------------------------
-destination() {
-    local dest vols sdir
-    DAT_DESTINATION= ; DAT_STATUSDIR=
-    [ "$1" = '-v' ] || sdir="/.$CEN_NAME"
-    [ -d "$CEN_MOUNT_DIR/Volumes" ] && vols='Volumes/'
-    for dest in 'Computers' 'Backup' 'Data' ${sdir:+.} '' ; do
-        [ -z "$dest" ] && break
-        dest="$CEN_MOUNT_DIR/$vols$dest$sdir"
-        dest="${dest/\/.\//\/}"
-        [ -d "$dest" ] && break
-    done
+#    # partial sync of root (mail)
+#    runservice stop cyrus-imapd
+#    system -e -p -- find "$mdes/var_spool_cyrus/mail" \( -name cyrus.squat -o -name cyrus.cache \) -delete
+#    embed -v -- centauricopy "${opts[@]}" -x cyrus.squat -x cyrus.cache copy "$mori" "$mdes"
+#    embed -v -- centaurimail restore -- index
 
-    if [ "$1" = '-v' ] ; then
-        [ -z "$dest" ] && return 1
-        DAT_DESTINATION="$dest" ; return 0
-    elif [ -z "$dest" ] ; then
-        [ "$1" = "-q" -o "$1" = "-t" ] && return 1
-        fatal "Cannot find '.$CEN_NAME' at '${CEN_MOUNT_DIR:-<no mount>}'"
+    copy_user "$1/root" "$2/root"
+}
+
+# update home folders: <source> <dest>
+update_home() {
+    local user
+    for user in "$1"/* ; do
+        copy_user "$user" "$2/${user##*/}"
+    done
+}
+
+# copyr user data: <source> <dest>
+copy_user() {
+    [ -d "$1" ] || return
+    trace -a "   $1  =>  $2"
+    [ -d "$2" ] || folder -f -m -- "$2"
+
+    # partial sync of home volume (no .dot dirs)
+    local fldr opts=("--quiet" "--silent" "--one" "--delete")
+    for fldr in "$1"/.encfs_*/*/WARNING_FOLDER_NOT_ARCHIVED ; do
+        [ -f "$fldr" ] || continue
+        fldr="${fldr%/*}"
+        message -a "Encrypted cache: $fldr"
+        opts+=("-x" "${fldr#$1}")
+    done
+    embed -v -- centauricopy copy "${opts[@]}" -i "/.encfs_*" -x '/.*' "$1" "$2"
+}
+
+# delete 'old' volume snapshot: <volume>
+cleanup_volume() {
+    local volu="${DAT_VOLUMES["$1"]}"
+    local volo="$volu.old"
+
+    case "${1,,}" in
+        root|home)
+                 message -a "Cleanup Volume: $1 (skip)" ; return
+                ;;
+    esac
+
+    if [ ! -d "$volo" ] ; then
+        message -a "Cleanup Volume: $1 (no backup data)" ; return
     else
-        DAT_STATUSDIR="$dest"
-        [ "$1" = "-s" ] && return 0
+        message -a "Cleanup Volume: $1"
     fi
-
-    DAT_DESTINATION="${dest%/*}"
-    [ "${DAT_DESTINATION##*/}" = "Volumes" ] && return 0
-    [ "$1" = "-t" -o "$CEN_OPT_NAME" = '-' ] && return 0        # legacy --name=-
-    DAT_DESTINATION+="/${CEN_OPT_NAME:-$HOSTNAME}"
-    folder -f -m "$DAT_DESTINATION" ; return 0
-}
-
-# ------------------------------------------------------------------------------
-# handle mounting
-# ------------------------------------------------------------------------------
-mounter()  {
-    [ -n "$CEN_OPT_REMOTE" ] && return
-
-    # mount
-    if [ "$1" = "-m" ] ; then
-        if [ -n "$CEN_MOUNT_DIR" ] ; then
-            [ -z "$DAT_KEEP" ] && trace -a "Mounted, will keep mount"
-            DAT_KEEP=1 ; return
-        fi
-        [ -z "$DAT_KEEP" ] && DAT_KEEP=0
-
-        # not mounted
-        if [ -n "$CEN_OPT_MOUNT" ] ; then
-            CEN_MOUNT_DIR="$CEN_OPT_MOUNT"
-            trace -a "Mount '$CEN_MOUNT_DEV' at '$CEN_MOUNT_DIR'"
-            system -e -p -u "root" mount "$CEN_MOUNT_DEV" "$CEN_MOUNT_DIR" -o "subvol=/"
-        else
-            trace -a "Mount '$CEN_MOUNT_DEV' via udisks"
-            system -e -p -- udisksctl mount -b "$CEN_MOUNT_DEV" -o "subvol=/"
-            findmount "$CEN_MOUNT_DEV"
-        fi
-        error -t && return
-        DAT_KEEP=1 ; error -q
-
-    # umount
-    else
-        if [ -n "$CEN_MOUNT_DEV" -a  -n "$CEN_MOUNT_DIR" -a "$DAT_KEEP" = "0" ] ; then
-            trace -a "Unmount '$CEN_MOUNT_DEV' from '$CEN_MOUNT_DIR'"
-            folder -c /
-            system -e -p -- udisksctl unmount -b "$CEN_MOUNT_DEV"
-        fi
+    if [ -d "$volo" ] ; then
+        system -e -p -- btrfs subvolume delete "$volo" || return
     fi
-}
-
-# ------------------------------------------------------------------------------
-# handle history: [<name>|-]
-#                 - <volume>...
-# ------------------------------------------------------------------------------
-history() {
-    local dest="$DAT_STATUSDIR/history.log"
-
-    # show log entries
-    if [ $# -le 1 ] ; then
-        if [ ! -r "$dest" ] ; then
-            error "Cannot read from: $dest"
-        elif [ "${1:--}" = '-' ] ; then
-            system -e cat "$dest"
-        else
-            system -e grep -e "$1" "$dest"
-        fi
-
-    # add log entry
-    else
-        2>/dev/null >>"$dest"
-        if [ $? != 0 ] ; then
-            error "Cannot write to: $dest"
-        else
-            local name="$HOSTNAME"
-            [ "${CEN_OPT_NAME:--}" = '-' ] || name="$CEN_OPT_NAME"
-            shift
-            printf "%s %-10s %s\n" "$(date +"%Y-%m-%d %T")" "$name" "$*" >> "$dest"
-        fi
-    fi
-}
-
-# ------------------------------------------------------------------------------
-# copy btrfs volumes: <hist> <vols> <item>...
-# ------------------------------------------------------------------------------
-runbtrfs() {
-    local -n vhis="$1" ; vhis=() ; shift
-    local vols="$1" ; shift
-    local item labl prty=() acpy=() baki bakx vnam root=1
-    for item in "$@" ; do
-        [ -n "${item##*Volumes}" ] || continue              # skip base folder
-        prettypath -p -s item "$item"
-        voli="${item##*/}" ; baki=
-        [ "${voli/./}" = "$voli" ] || continue              # skip xxx.xxx things
-        if [ "${voli/[0-9]}" = "bak" -a -z "$bakx" ] ; then # old style
-             voli="Backup" ; bakx="$item" ; item="${item%/*}/$voli"
-             baki=" ($bakx)"
-        fi
-        voli=" ${voli^} "
-        if [ -n "$vols" -a "${vols/$voli/}" = "$vols" ] ; then
-            message -a -p "IGNORE: %-30s [not in destination]" "$item"
-            continue
-        fi
-        message -a "backup:" "$item$baki"
-        prty+=("$item")
-    done
-
-    if [ -z "$prty" ] ; then
-        error "Nothing to copy" ; return
-    fi
-
-    # run copy for seleted volumes
-    for item in "${prty[@]}" ; do
-        splitpath -a acpy -p "$item" ; acpy[0]="$item" ; vnam="${acpy[1]}"
-        case "$vnam" in
-            bak?|[bB]ackup)
-                [ -n "$bakx" ] && acpy[0]="$bakx"
-                vnam='Backup' ; acpy[1]="$vnam" ;;
-            Root)
-                root=0 ;;                       # allow system rename
-        esac
-        vhis+=("${acpy[1]}")
-        volcopy "$vnam" "${acpy[@]}"
-    done
-    return $root
-}
-
-# ------------------------------------------------------------------------------
-# copy btrfs volumes: <hist> <vols>
-# ------------------------------------------------------------------------------
-runplain() {
-    local -n vhis="$1" ; vhis=() ; shift
-    local vols="$1" ; shift
-    local rslt item orig excl
-    local locs=(Backup Boot Export Home Shared Root VBox)
-    # get special locacations
-    shortpath -n dash -a rslt 'backup' 'vbox'
-
-    for item in "${locs[@]}" ; do
-        case "$item" in
-            Backup)     orig="${rslt[0]}" ;;
-            Boot)       orig='/mnt/boot' ;;
-            Root)       orig='/' ;;
-            Home)       orig='/home' ;;
-            Export)     orig='/export' ;;
-            Shared)     orig='/shared' ;;
-            VBox)       orig="${rslt[1]}" ;;
-            *)          fatal -t - "$item"
-        esac
-        [ -d "$orig" ] || continue
-        filter -i "$item" || continue
-        message -a "backup:" "$item" ; vhis+=("$item")
-    done
-
-    if [ -z "$vhis" ] ; then
-        error "Nothing to copy" ; return
-    fi
-
-    # loop over folders and copy
-    for item in  "${vhis[@]}" ; do
-        excl=()
-        case "$item" in
-            Backup)     orig="${rslt[0]}" ;;
-            Boot)       orig='/mnt/boot' ; excl=(-x '/*swap*') ;;
-            Root)       orig='/'
-                        excl=(-x '/home/*' -x '/export/*' -x '/[bB]ackup/*' \
-                              -x '/archive/*' -x '/shared/*') ;;
-            Home)       orig='/home' ;;
-            Export)     orig='/export' ;;
-            Shared)     orig='/shared' ;;
-            VBox)       orig="${rslt[1]}" ;;
-        esac
-        volcopy "$item" "$orig" "$item" "${excl[@]}"
-    done
-}
-
-# ------------------------------------------------------------------------------
-# system rename: -no args-
-# ------------------------------------------------------------------------------
-sysrename() {
-    remote "rename" && return                   # invoked as subroutine?
-    local item name labl
-
-    # get vol0 label
-    if [ -n "$CEN_OPT_LABEL" ] ; then
-        labl="${CEN_OPT_LABEL%%_*}"
-    else
-        for item in /dev/disk/by-label/* ; do
-            [ "$item" -ef "$CEN_MOUNT_DEV" ] || continue
-            labl="${item##*/}" ; labl="${labl%%_*}" ; break
-        done
-    fi
-    [ "${CEN_OPT_NAME:--}" = '-' ] && name="$labl" || name="$CEN_OPT_NAME"
-
-    # get boot label
-    local cdsk lboo cboo dboo="${CEN_MOUNT_DEV%[0-9]}1"
-    for item in /dev/disk/by-label/* ; do
-        [ "$item" -ef "$dboo" ] || continue
-        lboo="${item##*/}" ; lboo="${lboo%%_*}" ; break
-    done
-
-    [ "$name" != "$labl" ] && cdsk="--clone=$labl"
-    [ -z "$lboo" ] && cboo="$cdsk" || cboo="--clone=$lboo"
-    [ -z "$cdsk" -a "$lboo" = "$labl" ] && cboo=
-
-    # run centauristore to rename
-    if [ "$labl" = "$HOSTNAME" ] ; then
-        trace -v "Same host, no rename"
-    elif [ -z "$labl" ] ; then
-        warning -a "Cannot find volume label of cloned system, please use --label="
-    elif [ -z "$name" ] ; then
-        warning -a "Cannot figure out name of cloned system, please use --name="
-    elif confirm -a "Rename cloned system to '$name'" ; then
-        remove -- "$DAT_DESTINATION/Root/etc/hostname"
-        embed -z -v centaurirestore --yes --restore "$DAT_DESTINATION/Root" "--clone=$name" $cboo $cdsk
-    fi
-}
-
-# ------------------------------------------------------------------------------
-# get list of volumes for host
-# ------------------------------------------------------------------------------
-volumes() {
-    remote "volumes" && return              # invoked as subroutine?
-    walk -l 1 -d true -f false -i -r "$DAT_DESTINATION"
-    local item prty
-    for item in "${CEN_WALK_DIRS[@]}" ; do
-        [ "$item" = "$DAT_DESTINATION" ] && continue
-        item="${item##*/}"
-        [ -n "$item" ] && prty+=("$item")
-    done
-    echo "${prty[*]}"
-}
-
-# ------------------------------------------------------------------------------
-# helper to run centauricopy: <vnam> <path> <name> <opt>...
-# ------------------------------------------------------------------------------
-volcopy() {
-    local vopt="--volume=$1" dest="$DAT_DESTINATION/$3" orig="$2" ; shift 3
-    folder "$orig" || return
-
-    if [ -z "$CEN_OPT_DRYRUN" ] ; then
-        if [ -z "$DAT_CONFIRMED" ] ; then
-            confirm -a "Backup volumes to: ${dest%/*}" || quit
-            DAT_CONFIRMED=1
-        fi
-        if [ -z "${CEN_OPT_REMOTE}" ] ; then
-            folder -m "$dest" || return
-        fi
-    fi
-
-    local oarg opts=('--local=on' '--one' '--force' '--option=delete-before' '--option=preallocate' "$vopt")
-    [ -n "$CEN_OPT_DRYRUN" -a -n "$CEN_OPT_SILENT" ] && opts+=('--silent')
-    for oarg in "${CEN_OPT_OPTION[@]}" ; do
-        opts+=("--option=$oarg")
-    done
-    embed -z -v centauricopy ${opts[@]} "$CEN_ACTION" "$orig" "$dest" "$@"
-
-    # set modification time to flag successfull copy
-    remote run touch "${dest#*:}" || system -e -p -- touch "$dest"
 }
 
 # ------------------------------------------------------------------------------
 # action check
 # ------------------------------------------------------------------------------
 actionCheck() {
-    remote -s "check"
-    if [ -n "$DAT_REMOTE" ] ; then
-        DAT_DESTINATION="$CEN_OPT_REMOTE:$DAT_REMOTE"
-    else
-        #DAT_KEEP=1 ;
-        mounter -m
-        destination
-    fi
-    echo "$DAT_DESTINATION"
+    find_volumes "$DAT_BASE" && return          # ok, got volumes
+    local mesg
+    [ -z "$CEN_OPT_SILENT" ] && mesg=message || mesg=trace
+    $mesg "Found no volumes, no mirror action taken."
+    error -s 11 ; quit
 }
 
 # ------------------------------------------------------------------------------
-# action copy: -no args-
+# action cleanup
 # ------------------------------------------------------------------------------
-actionCopy() {
-    DAT_CONFIRMED=                              # see volcopy
-    remote -s "check"
-    if [ -n "$DAT_REMOTE" ] ; then
-        DAT_DESTINATION="$CEN_OPT_REMOTE:$DAT_REMOTE"
-    else
-        mounter -m
-        destination
-    fi
+actionCleanup() {
+    [ -n "$DAT_CRON_FLG" ] && message "Cleanup server downloads"
+    find_volumes "$DAT_BASE" || return
 
-    # get clone's volume list if cloning
-    local vols root back
-    tmpfile -n                                  # volumes is run in a subshell
-    [ "${DAT_DESTINATION##*/}" = "Volumes" ] && vols="$(volumes)"
-    [ -n "$vols" ] && vols=" $vols "
-
-    # get local volumes
-    if [ -z "$CEN_OPT_ALL" ] ; then
-        optarg "exclude" - -x "Backup"
-        optarg "exclude" - -x "Root"
-        optarg "exclude" - -x "Home"
-    fi
-    if [ -n "$CEN_OPT_SOURCE" ] ; then
-        local spat="${CEN_OPT_SOURCE%/Volumes}"
-        [ "${spat::1}" = '/' ] || spat="/mnt/$spat"
-        walk -l 1 -d true -f false -i -r "$CEN_OPT_BASE"$spat/Volumes
-    else
-        walk -l 1 -d true -f false -i -r "$CEN_OPT_BASE/mnt"/vol[0-9]/Volumes
-        back="/mnt/vol[0-9]/Volumes/[bB]ackup"
-        set -- "$CEN_OPT_BASE"$back
-        [ "$1" = "$CEN_OPT_BASE$back" ] &&
-            walk -a -d true -f false -i "$CEN_OPT_BASE/mnt"/bak[0-9] "$CEN_OPT_BASE/mnt/backup"
-    fi
-
-    # asume a non-btrfs installation if no volumes were found
-    if [ -z "${CEN_WALK_DIRS}" ] ; then
-        runplain ahis "$vols" && root=1
-    else
-        runbtrfs ahis "$vols" "${CEN_WALK_DIRS[@]}" && root=1
-    fi
-    [ -z "$ahis" ] && return                # nothing copied
-
-    # rename maschine
-    [ "${DAT_DESTINATION##*/}" = "Volumes" -a -n "$root" ] && sysrename
-
-    # set modification time to flag successfull copy
-    remote run touch "${DAT_DESTINATION#*:}" || system -e -p -- touch "$DAT_DESTINATION"
-
-    # make history entry
-    dryrun "history - ${ahis[*]}" && return
-    remote history - "${ahis[@]}" || history - "${ahis[@]}"
+    local volu
+    for volu in "${!DAT_VOLUMES[@]}" ; do
+        filter -i -- "$volu" || continue
+        cleanup_volume "$volu"
+    done
 }
 
 # ------------------------------------------------------------------------------
-# action dedup
+# action commit
 # ------------------------------------------------------------------------------
-actionDedup() {
-    ___dedup_res_bedup() {
-        yes | system -e -n bedup reset --db-path="$2.db" "$1"
-        ___dedup_run_bedup "$@"
-    }
-    ___dedup_run_bedup() {
-        system -e -n -- $nexe bedup dedup --db-path="$2.db" --size-cutoff=60000 --defrag "$1"
-    }
-    ___dedup_res_duperemove() {
-        remove "$2.hash" ; ___dedup_run_duperemove "$@"
-    }
-    ___dedup_run_duperemove() {
-        local trgd="$1"
-        if   [ -d "$1/Computers" ] ; then trgd="$1/Computers"
-        elif [ -d "$1/Volumes" ] ; then trgd="$1/Volumes" ; fi
-        # backup/defragment hash table
-        if [ -e "$2.hash" ] ; then
-            rename -o -- "$2.hash" "$2.hash.old"
-            copy -a -n -- "$2.hash.old" "$2.hash"
-        fi
-        system -e -n -- $nexe duperemove -q -b 1M --io-threads=2 -dr \
-                        --exclude="${2%/*}" --hashfile="$2.hash" "$trgd"
-    }
+actionCommit() {
+    [ -n "$DAT_CRON_FLG" ] && message "Commit server downloads"
+    find_volumes "$DAT_BASE" || return
 
-    remote "dedup" && return
-    mounter -m
-    destination -s
-
-    local inst="/usr/local/bin" ddup base="$CEN_MOUNT_DIR" nexe
-    system -c ionice && nexe="ionice -c idle "
-    system -c nice && nexe+="nice"
-
-    if [ "${PATH/$inst/}" = "$PATH" ] ; then
-        PATH+=":$inst" ; export PATH
-    fi
-    for ddup in duperemove bedup - ; do
-        if [ "$ddup" = '-' ] ; then
-            invoke -e "neither 'duperemove' nor 'bedup' is installed"
-            [ "$CEN_ACTION" != "dedup" ] && return
-            error -s 2 ; return
-        fi
-        system -c "$ddup" && break
+    local volu
+    for volu in "${!DAT_VOLUMES[@]}" ; do
+        filter -i -- "$volu" || continue
+        commit_volume "$volu"
     done
 
-    local dest="$DAT_STATUSDIR/$ddup"
-    message -a -p "Deduplicating '%s' (logfile '%s')" "$CEN_MOUNT_DIR" "$dest.log"
-    if [ -n "$CEN_OPT_DRYRUN" ] ; then
-        case "$1" in
-            res*)   ___dedup_res_$ddup "$CEN_MOUNT_DIR" "$dest" ;;
-            "")     ___dedup_run_$ddup "$CEN_MOUNT_DIR" "$dest" ;;
-            *)      error "Bad '$CEN_ACTION' argument: $1" ;;
-        esac
+    system -e -p -- mount -a                # remount fstab mounts
+
+    runservice stop nfs-kernel-server       # don't block unmounts
+    sleep 5 ; sync
+
+    set -- /etc/systemd/system/*.wants/centaurimounter.service
+    if [ -e "$1" ] ; then
+        message -a "Restart centaurimounter"
+        runservice restart centaurimounter  # refresh mounts
     else
-        case "$1" in
-            res*)   ___dedup_res_$ddup "$CEN_MOUNT_DIR" "$dest" 2>&1 ;;
-            "")     ___dedup_run_$ddup "$CEN_MOUNT_DIR" "$dest" 2>&1 ;;
-            *)      error "Bad '$CEN_ACTION' argument: $1" ;;
-        esac >"$dest.log"
+        message -a "Restart autofs"
+        runservice restart autofs           # refresh autofs
     fi
+    runservice start nfs-kernel-server
+    sleep 5
 }
 
 # ------------------------------------------------------------------------------
-# action history
+# action mirror
 # ------------------------------------------------------------------------------
-actionHistory() {
-    remote "history" "$@" && return
-    mounter -m
-    destination -s
-    history "$@"
-}
+actionMirror() {
+    [ -n "$DAT_CRON_FLG" ] && message "Mirror server volumes"
+    find_volumes "$DAT_BASE" || return
 
-# ------------------------------------------------------------------------------
-# action mount
-# ------------------------------------------------------------------------------
-actionMount() {
-    remote "mount" && return
-    DAT_KEEP=1 ; mounter -m
-}
-
-# ------------------------------------------------------------------------------
-# action prepare: [<path>]
-# ------------------------------------------------------------------------------
-actionPrepare() {
-    remote "prepare" "$@" && return
-    mounter -m
-
-    local dest vols path="${1:--}"
-    [ "$path" = "+" ] && path="Volumes"
-    if [ "$path" = '-' ] ; then
-        if destination -v ; then
-            path="$DAT_DESTINATION"
+    local volu
+    for volu in "${!DAT_VOLUMES[@]}" backup ; do
+        filter -i -- "$volu" || continue
+        if [ "$volu" = "backup" ] ; then
+            sync_backup
         else
-            error "Cannot find destination, try to create a 'Computers' folder/subvol"
+            sync_volume "$volu"
         fi
-    else
-        [ "${path::1}" = '/' ] || path="$CEN_MOUNT_DIR/$path"
-        [ -d "$path" ] || error "Not a valid destination:" "$path"
-    fi
-    error -t || return
-    path="${path%/.}"
-    message -a -c "Using destination" "$path"
-
-    if destination -t ; then
-        if [ "$DAT_DESTINATION" -ef "$path" ] ; then
-            message -a "Existing destination: $DAT_DESTINATION"
-        else
-            warning -a "Conflicting destinations '$DAT_DESTINATION'"
-            warning -a "                 ... and '$path'"
-            if confirm -a -q "Replace previous destination '$DAT_DESTINATION'" ; then
-                remove -d -- "$DAT_DESTINATION/.$CEN_NAME"
-            else
-                error -s 4 ; return
-            fi
-        fi
-    fi
-
-    if [ ! "$DAT_DESTINATION" -ef "$path" ] ; then
-        if confirm -a -q "Prepare destination '$path'" ; then
-            folder -m "$path/.$CEN_NAME"
-        else
-            error -s 4 ; return
-        fi
-    fi
-    path="$path/.$CEN_NAME"
-    [ -e "$path/history.log" ] && confirm -a -y "Delete recorded history" &&
-        remove -- "$path/history.log" "$path/duperemove.log"
-    [ -e "$path/bedup.db" ] && confirm -a -y "Delete deduplication state" &&
-        remove -- "$path/bedup.db" "$path/duperemove.hash"
+    done
 }
 
 # ------------------------------------------------------------------------------
-# action rename: -no args-
+# action repository
 # ------------------------------------------------------------------------------
-actionRename() {
-    remote "rename" && return
-    mounter -m
-    destination -t
-    [ "${DAT_DESTINATION##*/}" = "Volumes" ] ||
-        fatal "Medium not configured for cloning (see 'prepare')"
-    sysrename
+actionRepository() {
+    [ -n "$DAT_CRON_FLG" ] && message "Synchronize repository"
+    embed -v -- centauriconfig cron --role=work --repository=alpha
 }
 
 # ------------------------------------------------------------------------------
-# action run: <args>...
+# action shutdown: [<time>]
 # ------------------------------------------------------------------------------
-actionRun() {
-    if [ -z "$1" ] ; then
-        set -- bash -i ; DAT_SSH_OPTS="--term=on"
-        #system -e -c socat || return
-        #set -- socat - EXEC:\'env TERM=linux bash -i\',pty,setsid,ctty,stderr,echo=0
-    fi
-    remote "run" "$@" && return
-    mounter -m
-    destination -q && export DAT_DESTINATION
-    folder -f -c "$CEN_MOUNT_DIR" ; system -f -- "$@"
+actionShutdown() {
+    local stim="${1:-+10}"
+    system -e -p -- /sbin/shutdown -h $stim \
+           "$CEN_NAME: Shutdown sheduled, run 'sudo /sbin/shutdown -c' to cancel."
 }
 
 # ------------------------------------------------------------------------------
-# action status
-# ------------------------------------------------------------------------------
-actionStatus() {
-    remote "status" && return
-    local snam="${CEN_EMBED:-$CEN_NAME}:"
-    snam="${snam//?/ }"
-    echo "${snam} Device     : ${CEN_MOUNT_DEV:-<no device>}"
-    echo "${snam} Mountpoint : ${CEN_MOUNT_DIR:-<no mount>}"
-    if [ -n "$CEN_MOUNT_DIR" ] ; then
-        destination -q
-        echo "${snam} Destination: ${DAT_DESTINATION:-<invalid>}"
-    fi
-}
-
-# ------------------------------------------------------------------------------
-# unmount device
-# ------------------------------------------------------------------------------
-actionUmount() {
-    remote "umount" && return
-    DAT_KEEP=0
-}
-
-# ------------------------------------------------------------------------------
-# list volumes for host
-# ------------------------------------------------------------------------------
-actionVolumes() {
-    remote "volumes" && return
-    mounter -m
-    destination
-    volumes
-}
-
-# ------------------------------------------------------------------------------
-# option parsing
+# option parsing: <option> <argument>
 # ------------------------------------------------------------------------------
 options() {
-    case "$1" in
-    '')
-        [ "${#CEN_CMDARGS[@]}" -gt 0 ] && initialize
-                                           ;;   # do inits
-    -A|--all)
-        optarg 'all'    CEN_OPT_ALL        ;;   # simple flag
-    -B|--bas|--base)
-        optarg 'base'   CEN_OPT_BASE   -d  ;;   # existing folder
-    -D|--dev*)
-        optarg 'device' CEN_OPT_DEVICE -t  ;;   # any text
-    -L|--lab*)
-        optarg 'label'  CEN_OPT_LABEL  -t  ;;   # any text
-    -M|--mou*)
-        optarg 'mount'  CEN_OPT_MOUNT  -t  ;;   # any test
-    -N|--nam|--name)
-        optarg 'name'   CEN_OPT_NAME   -t  ;;   # any text
-    -O|--opt*)
-        optarg 'option' CEN_OPT_OPTION[] -t ;;
-    -R|--rem*)
-        optarg 'remote' CEN_OPT_REMOTE -t  ;;   # any text
-    -S|--sou*)
-        optarg 'source' CEN_OPT_SOURCE -t  ;;   # any text
+    case "$CEN_ACTION" in
+
+    '')     [ -z "$CEN_OPT_MASTER" ] && netquery -f -s CEN_OPT_MASTER primary ;;
+
+    -D|--dis*)
+        optarg 'dist'       -       -v && CEN_OPT_DIST="-$2" ;;
+    -M|--mas*)
+        optarg 'master'     -       -v ;;           # variable name
     esac
 }
 
 # ------------------------------------------------------------------------------
-# Action parsing
+# action parsing: <verb> <argument>...
 # ------------------------------------------------------------------------------
 actions() {
-    case "$CEN_ACTION" in
+    case "$1" in
+
+    '') # check if we are slave
+        if ! netquery SLAVE ; then
+            local mesg
+            [ -z "$CEN_OPT_SILENT" ] && mesg=message || mesg=trace
+            $mesg "This is not a SLAVE server, no mirror action taken."
+            error -s 10 ; quit
+        fi
+        ;;
+
     che*)
-        invoke    'check'   -  0 ;;
-    cop|copy)
-        invoke -r 'copy'    -  0 ;;
-    ded*)
-        invoke -r 'dedup'   -  0 1 ;;
-    his*)
-        invoke    'history' -  0 + ;;
+        invoke -r 'check'        -  0 ;;
+    cle*)
+        invoke -r 'cleanup'      -  0 ;;
+    com*)
+        invoke -r 'commit'       -  0 ;;
+    cro|cron)
+        DAT_CRON_FLG=1
+        invoke -r 'repository'   -  0
+        invoke    'mirror'       -  0
+        invoke    'commit'       -  0
+        invoke    'cleanup'      -  0 ;;
     mir*)
-        invoke -r 'mirror'  actionCopy  0 ;;
-    mou*)
-        invoke    'mount'   -  0 ;;
-    pre*)
-        invoke -r 'prepare' -  0 1 ;;
-    ren*)
-        invoke -r 'rename'  -  0 ;;
-    run)
-        invoke    'run'     -  0 + ;;
-    sta*)
-        invoke    'status'  -  0 ;;
-    syn*)
-        invoke -r 'sync'    actionCopy  0 ;;
-    unm*|umo*)
-        invoke    'umount'  -  0 ;;
-    upd*)
-        invoke -r 'update'  actionCopy  0 ;;
-    vol*)
-        invoke    'volumes' -  0 ;;
+        invoke -r 'mirror'       -  0 ;;
+    rep*)
+        invoke -r 'repository'   -  0 ;;
+    shu*)
+        invoke -r 'shutdown'     -  0 1 ;;
+
     esac
 }
 
@@ -756,73 +317,25 @@ usage() {
     usagecat << !EOF
 $CEN_USE_HEADER
 
-       Copies the volumes Archive, Backup, Export, Shared and VBox to a backup
-       location (disk). The destination should be a device formatted with a
-       'btrfs' filesystem having a 'Volumes' sub-volume, see 'centaurimedia'.
-
-       The system volumes Root and Home are not included up by default, see
-       option '--all'. An archive can hold a 'clone' of a single host or can
-       backup multiple hosts (see action 'prepare +' and 'prepare -').
-
-       When using multiple actions on a remote location explicit use of 'mount'
-       and 'umount' is recommended for efficiency.
-
 $CEN_USE_OPTIONS
 
-       -A --all             copy all volumes (overridden by -i and -x)
-       -B --base    <fldr>  mount point of origin     (default: $CEN_OPT_BASE)
-       -D --device  <disk>  use this destination device
-       -L --label   <labl>  find destination device by label
-       -M --mount   <fldr>  use this mount point for destination
-       -N --name    <name>  override origin name      (default: $HOSTNAME)
-       -O --option  <valu>  add extra option to rsync command
-       -R --remote  <dest>  send data to remote destination
-       -S --source  <glob>  source mountpoint pattern (default: /mnt/vol[0-9])
+       -D --dist    <nick>  add distribution name to root/home btrfs-volumes
+       -M --master  <host>  override name of master (default: $CEN_OPT_MASTER)
 
 actions:
-       copy                 [*] copy to disk (not deleting)
-       mirror               [*] copy to disk, delete data that is not copied
-       sync                 [*] update disk, delete data no longer in source
-       update               [*] write newer data to disk (not deleting)
+       check                test if we are a SLAVE and if there are btrfs volumes
 
-       dedup                deduplicate disk (for 'btrfs' filesystem only)
-       history [<regex>]    show copy history
-       mount                mount disk (until umount)
-       prepare [<path>|-|+]
-                            configure disk: '+' to clone a single host,
-                                            '-' to backup multiple hosts
-       rename  <name>       rename a cloned system
-       run     [<prog> [<args>...]]
-                            run a program at Mountpoint      (default: bash -i)
-       status               show disk status
-       umount               unmount disk
-       volumes              show volumes for host on backup disk
+       cron                 short for 'repository -- mirror -- commit -- cleanup'
 
-       [*] see centauricopy for details on copy|mirror|sync|update
+       repository           update the configuration repository
+       mirror               mirror data
+       commit               make syncronized data current
+       cleanup              remove .old volumes
 
-examples:
-       centaurimedia --device=/dev/sdc partion gpt + \\
-                     -- format volume arch5            # format a archive disk
-       $CEN_NAME -L arch5 -M /mnt/xxx mount       # mount arch5_vol0
-       $CEN_NAME -L arch5 prepare -               # prepare a backup disk
-
-       centaurimedia --device=sdc system clone5        # format a clone disk
-       $CEN_NAME -L clone5 -M /mnt/xxx mount      # mount arch5_vol0
-       $CEN_NAME -L clone5 prepare +              # prepare a clone disk
-       $CEN_NAME -L clone5 sync --all             # copy data
-       $CEN_NAME -L clone5 -N clone5 rename       # rename cloned systemd
-
-       $CEN_NAME -L arch5 sync -- dedup -- umount # sync, dedup and unmount
-       $CEN_NAME -D sdc3 -B batch dedup -- status # batch, automount ... unmount
-
-       $CEN_NAME -L arch5 mount -- status         # keep mounted
-       $CEN_NAME -L arch5 history                 # use mounted disk
-       $CEN_NAME -L arch5 run --- tree -L 2 -d    # run tree
-
-       $CEN_NAME -R alpha:/tmp/xxx -b batch copy  # run remote and as batch
-       $CEN_NAME -R alpha:/tmp/xxx -b batch mount -- copy -- dedup -- umount
+       shutdown   [<time>]  shedule shutdown (not included in cron)
 !EOF
 }
+
 
 # ------------------------------------------------------------------------------
 # Finally call the library to execute the script

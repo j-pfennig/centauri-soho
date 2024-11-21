@@ -9,6 +9,7 @@ Type=simple
 PIDFile=/run/centauri/centaurimounter.pid
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/centaurimounter --daemon=0 start
+TimeoutStopSec=15
 
 [Install]
 WantedBy=runlevel3.target multi-user.target

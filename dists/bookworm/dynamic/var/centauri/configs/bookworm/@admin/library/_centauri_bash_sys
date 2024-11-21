@@ -43,10 +43,10 @@
 #,      [[syssetup()]]
 #,      °  └── [[_centauri_bash_ext]]
 #
-# Copyright Dr. J. Pfennig (c) 2019-2023
+# Copyright Dr. J. Pfennig (c) 2019-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES["_centauri_bash_sys"]="0.26:2"
+CEN_MODULES['_centauri_bash_sys']='0.28:4'
 
 CEN_SYS_STATE_DIR="$CEN_ROOT/persistent"    # non-volatile
 CEN_SYS_CACHE_DIR="$CEN_ROOT/transient"     # volatile
@@ -62,7 +62,6 @@ CEN_SYS_FAMILY=                 # distribution family
 CEN_SYS_NICKNAME=               # distribution nick name
 CEN_SYS_ALIAS=                  # distribution alias
 CEN_SYS_VERSION=                # distribution version (sortable)
-#CEN_SYS_KERNEL=                 # kernel version (like 'uname -r')
 
 CEN_SYS_KDEVERS=                # kde main version (sortable)
 CEN_SYS_PLASMA=                 # kde plasma version (sortable)
@@ -75,7 +74,7 @@ CEN_SYS_QTVERS=                 # qt version (sortable)
 CEN_SYS_INCLUDE=()              # include list for link tools
                                 # (centauri* are automatically included)
                                 # exclude list for link tools ...
-CEN_SYS_EXCLUDE=("centauri*_*" "*.*" "*~" "*[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*")
+CEN_SYS_EXCLUDE=('centauri*_*' '*.*' '*~' '*[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*')
 CEN_SYS_OBSOLETE=()             # obsolete tool files, remove links
 CEN_SYS_SERVICE=()              # list of service tools to be installed/enabled
 CEN_PATH_REXP=()                # list of path replacements
@@ -94,16 +93,17 @@ _cen_sys_rootdefs() {
 # ------------------------------------------------------------------------------
 # sysversion - determine os/kde versions, read/write version file
 #
-# Call:     sysversion [-f] [-k] [-m] [-o] [-r|-u|-w]
+# Call:     sysversion [-e|-f] [-k] [-m] [-o] [-r|-u|-w]
 #
-# Options:  -f  fix kde version info even for root user
-#           -k  update kde version
-#           -m  print version info
-#           -o  update os version
-#           -r  read state file (default, no updates)
-#           -u  like read but update if needed
-#           -v  generate trace messages
-#           -w  write state file
+# Options:  -e  report error when information cannot be obtained
+#           -f  make errors fatal
+#           -k  get kde and plasma version, see remarks about kde/plasma
+#           -m  print version info via [[message()]]
+#           -o  get os version
+#           -r  cache read only, return **false** for no cached data
+#           -u  update cache if needed
+#           -m  print version info via [[trace()]]
+#           -w  refresh information and write cache
 #
 # Variables:The function tries to obtain the following data:
 #
@@ -118,16 +118,30 @@ _cen_sys_rootdefs() {
 #,          CEN_SYS_PLASMA   -  KDE plasma version (sortable)
 #,          CEN_SYS_QTVERS   -  QT version (sortable)
 #
-# Storage:  CEN_SYS_STATE_FILE="$CEN_SYS_STATE_DIR/centaurisystem"
+# Storage:  The root user only uses the shared cache:
 #
-#+Default:  The following applies when sysversion is called without any option
+#,          - CEN_SYS_STATE_FILE="$CEN_SYS_STATE_DIR/centaurisystem"
 #
-#,          - version information already loaded: return **true**
-#,          - the caller is root: update persistent state as needed
-#,          - non-root caller: try persistent state or locally cached state
+#+          All other users first try the shared cache and that their
+#           private cache (only the private cache can be updated).
+#
+#+When called as non-root the default options are '-o -k -u'. The root user
+# always has '-u' enabled. The root user usually cannot get the plasma version.
 #
 #+It is not possible to determine the KDE-Plasma version if KDE is not
-# running. If so the function tries next time when running under KDE.
+# running. If so the function tries next time when running under KDE and
+# has '-k' explicitly set.
+#
+#+Cached data is not used when older than "$CEN_TOOLS/_centauri_bash_lib" (the
+# library proxy).
+#
+#+Special values:
+#
+#,      - CEN_SYS_KDEVERS='-'               # kde not installed
+#,      - CEN_SYS_KDEVERS='000.000.000'     # kde version unknown
+#
+#,      - CEN_SYS_PLASMA='-'                # plasma not installed
+#,      - CEN_SYS_PLASMA='000.000.000'      # plasma not installed
 # ------------------------------------------------------------------------------
 sysversion() {
     $CEN_DEBUG -c -- "$*"
@@ -135,112 +149,107 @@ sysversion() {
     # get state file path: -r|-w
     ___cen_sys_state() {
         CEN_SYS_STATE_FILE="$CEN_SYS_STATE_DIR/centaurisystem"
-        if [ "$EUID" = 0 ] ; then                   # root uses CEN_SYS_STATE_DIR
-            [ -r "$CEN_SYS_STATE_FILE" ] && return 0
-            if [ -d "$CEN_SYS_STATE_DIR" ] ; then
-                [ "$1" = '-w' ] && return 0
-                CEN_SYS_STATE_FILE= ; return 1      # must rewrite
-            fi
-            $CEN_TRACE -c " miss" -- "$CEN_SYS_STATE_DIR"
+        if [ ! -r "$CEN_SYS_STATE_FILE" ] ; then
+            [ "$EUID" = 0 ] && return 1
+        elif [ "$CEN_SYS_STATE_FILE" -nt "$CEN_TOOLS/_centauri_bash_lib"  ] ; then
+            [ "$1" != '-w' ] && return 0
+            [ "$EUID" = 0 ] && return 1
         fi
-
         local _usta="centauri-bash-lib_${CEN_MODULES['_centauri_bash_lib']%%:*}"
-        if [ "$1" != '-w' ] ; then
-            folder -g -r -s _usta -u 'cache' -- "$_usta/centaurisystem"
-            if [ "$CEN_SYS_STATE_FILE" -nt "$_usta" ] ; then
-                CEN_SYS_STATE_FILE="$CEN_SYS_STATE_FILE"
-            elif [ -r "$_usta" ] ; then
-                CEN_SYS_STATE_FILE="$_usta"
-            else
-                CEN_SYS_STATE_FILE=
-            fi
-        elif folder -q -m -r -s _usta -u 'cache' -- "$_usta" ; then
-            CEN_SYS_STATE_FILE="$_usta/centaurisystem"
-        else
-            CEN_SYS_STATE_FILE=
-        fi
-
-        if [ -n "$CEN_SYS_STATE_FILE" ] ; then
-            $CEN_TRACE2 -c " user" -- "$CEN_SYS_STATE_FILE"
-            return 0
-        fi
-        $CEN_TRACE -c " user" -- "-invalid-"
-        return 1                                    # error
+        folder -g -r -s CEN_SYS_STATE_FILE -u 'cache' -- "$_usta/centaurisystem"
+        # return state
+        [ "$CEN_SYS_STATE_FILE" -nt "$CEN_TOOLS/_centauri_bash_lib"  ]
     }
 
     ### main ###
 
-    local _flgk _flgo _flgf _flgu _flgw _otra
-    if [ $# = 0 ] ; then
-        [ -n "$CEN_SYS_VERSION" ] && return 0       # do nothing if state is loaded
-        [ "$EUID" = 0 ] && _flgu=1 || _flgw=0       # only root does implicit update
+    local _flgk _flgo _flgu _flgw _fpla _otra _oerr=':' _errk
+    if [ $# = 0 ] ; then                            # do nothing if state is loaded
+        [ -n "$CEN_SYS_VERSION" -a -n "$CEN_SYS_KDEVERS" ] && return 0
+        _flgo=1 ; _flgk=1 ; _flgu=1
+    else
+        while [ $# -gt 0 ] ; do
+        case "$1" in
+        -e)   _oerr='error' ;;
+        -f)   _oerr='fatal'  ;;
+        -k)   _flgk=1 ; _errk=1
+               [ "${CEN_DISPLAY:-tty}" != 'tty' ] && _fpla=1 ;;
+        -m)   _otra="$1" ;;
+        -o)   _flgo=1 ;;
+        -r)   _flgw=0 ;;
+        -u)   _flgu=1 ;;
+        -v)   _otra="$1" ;;
+        -w)   _flgw=1 ;;
+        *)    _cen_abort - "$1"
+        esac ; shift
+        done
+        [ "$EUID" = 0 -a "$_flgw" != 0 ] && _flgu=1 # root does implicit update
+        [ -z "$_flgk$_flgo$_flgr" ] && {  _flgk=1 ; _flgo=1 ; }
     fi
-    while [ "${1::1}" = "-" ] ; do
-      case "$1" in
-      --)   shift ; break ;;
-      -f)   _flgf=1 ;;
-      -k)   _flgk=1 ;;
-      -m)   _otra="$1" ;;
-      -o)   _flgo=1 ;;
-      -r)   _flgw=0;;
-      -u)   _flgu=1 ;;
-      -v)   _otra="$1" ;;
-      -w)   _flgw=1 ; _flgo=1 ; _flgk=1 ;;
-      *)    _cen_abort - "$1"
-      esac ; shift
-    done
+    # 1st step: try to read, prefer system file
 
-    if ___cen_sys_state -r ; then                   # have state...
-        if [ -z "$CEN_SYS_VERSION" ] ; then
-            $CEN_TRACE -a $"Loading OS and KDE versions:" "$CEN_SYS_STATE_FILE"
-            . "$CEN_SYS_STATE_FILE"
-            [ "$_flgw" = 0 ] && _flgw=              # no forced re-read
-        fi
-    elif [ "$_flgw" = 0 ] ; then                    # readonly
-        $CEN_TRACE -a $"Must query OS and KDE versions (no state file)"
-        _flgw=1
-    fi
-
-    [ -z "$CEN_SYS_VERSION" ] && _flgo=1
-    if [ "$EUID" != 0 ] ; then                      # no kde auto update for root
-        [ -z "$CEN_SYS_KDEVERS" ] && _flgk=1
-        _flgf=1
-    fi
-
-    # try to recover previous failure of kde check from tty mode
-    if [ -n "$_flgf" ] ; then
-        if [ -z "$CEN_SYS_KDEVERS" ] ; then
-            _flgk=1
-        elif [ "$CEN_SYS_KDEVERS" = '000.000.000' ] ; then
-            [ "$CEN_DISPLAY" = 'x11' ] && _flgk=1
-        fi
+    if [ "$_flgw" = 1 -o -n "$_otra" ] ; then       # opt -w|-m skip read
+        :
+    elif ___cen_sys_state -r ; then                 # have state...
+        [ -z "$CEN_SYS_VERSION" ] && _cen_source "$CEN_SYS_STATE_FILE"
+        [ "$_flgw" = 0 ] && return 0                # read only
+        [ "$CEN_SYS_KDEVERS" = '000.000.000' -a "${CEN_DISPLAY:-tty}" != 'tty' ] &&
+            CEN_SYS_KDEVERS=                        # could not get version before
+        [ -n "$CEN_SYS_VERSION" -a -n "$CEN_SYS_KDEVERS" ] && return 0
+        [ -n "$CEN_SYS_VERSION" ] && _flgo=
+        [ -n "$CEN_SYS_KDEVERS" ] && _flgk=
+        [ "$CEN_SYS_PLASMA" = '000.000.000' -a -n "$_fpla" ] && _flgk=1
+        [ -z "$_flgo$_flgk" ] && return 0
     fi
 
-    # implicit updates
-    if [ -z "$_flgw" ] ; then
-        if [ "$CEN_TOOLS/_centauri_bash_lib" -nt "$CEN_SYS_STATE_FILE" ] ; then
-            _flgo=1 ; _flgw=1 #; _flgk=1
-        elif [ -n "$_flgu" ] ; then
-            [ -n "$_flgo" -o -n "$_flgk" ] && _flgw=1
-        fi
+    # 2nd step: try to read then write, may use private file
+
+    if [ "$_flgw" = 1 ] ; then                      # opt '-w' skips read
+        ___cen_sys_state -w ; _flgo=1 ; _flgk=1
+    elif ___cen_sys_state -w ; then                 # have state...
+        _cen_source "$CEN_SYS_STATE_FILE"
+        [ "$_flgw" = 0 ] && return 0                # read only
+        [ "$CEN_SYS_KDEVERS" = '000.000.000' -a "${CEN_DISPLAY:-tty}" != 'tty' ] &&
+            CEN_SYS_KDEVERS=                        # could not get version before
+        [ -n "$CEN_SYS_VERSION" ] && _flgo=
+        [ -n "$CEN_SYS_KDEVERS" ] && _flgk=
+        [ "$CEN_SYS_PLASMA" = '000.000.000' -a -n "$_fpla" ] && _flgk=1
+        [ -z "$_flgo$_flgk$_otra" ] && return 0
+    elif [ "$_flgw" = 0 ] ; then                    # read only
+        $CEN_TRACE -a -c ' ' $"No state file"
+        return 1
     fi
 
-    # refresh data
-    [ -z "$_flgo" -a -z "$_flgk" -a -z "$_flgw" -a -z "$_otra" ] && return 0
+    if [ "$CEN_VERB" -gt 1 ] ; then
+        local _text=$"OS and KDE"
+        [ -z "$_flgo" ] && _text='KDE'
+        [ -z "$_flgk" ] && _text=$"OS"
+        [ -n "$_flgo$_flgk" ] && $CEN_TRACE -a -c -p ' ' $"Get %s version" "$_text"
+    fi
+
     embed -m '_centauri_bash_ins'
-    [ -n "$_flgo" ] && _cen_ins_version -s
-    [ -n "$_flgk" ] && _cen_ins_version -k
+    if [ -n "$_flgo" ] ; then
+        _cen_ins_version -s
+        if [ "${CEN_SYS_NICKNAME:--}" = '-' ] ; then
+            $_oerr $"Linux distribution unknown" ; return 1
+        fi
+    fi
+    if [ -n "$_flgk" ] ; then
+        _cen_ins_version -k
+        if [ "$CEN_SYS_KDEVERS" = '-' ] ; then
+            $_oerr $"No KDE version found" ; [ -n "$_errk" ] && return 1
+        fi
+    fi
     [ -n "$_otra" ] && _cen_ins_version $_otra
 
-    # write state file
-    if [ "$_flgw" = 1 ] ; then
-        if ! ___cen_sys_state -w ; then             # get file
-            warning $"Cannot write version info:" "$CEN_SYS_STATE_FILE"
-        else
-            $CEN_TRACE -a $"Writing version info:" "$CEN_SYS_STATE_FILE"
-            _cen_ins_version -w
-        fi
+    if [ "$_flgw" != 1 ] ; then                     # opt -w always writes
+        [ -z "$_flgu" ] && return 0                 # opt -u wanted to update
+        [ -z "$_flgo$_flgk" ] && return 0           # nothing to do
     fi
+
+    $CEN_TRACE -a -c -p ' ' $"Update '%s'" "$CEN_SYS_STATE_FILE"
+    folder -m "${CEN_SYS_STATE_FILE%/*}" '775'
+    _cen_ins_version -w                             # return state
 }
 
 # ------------------------------------------------------------------------------
@@ -294,14 +303,14 @@ sysversion() {
 syssetup() {
     $CEN_DEBUG -c -- "$*"
     local _stat=0 _warn  _remv _updt _usrv
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -[nptu])
             _updt="$1" ;;
       -i)   ;;
-      -r)   _remv="-r" ;;
-      -s)   _usrv="-s" ;;
+      -r)   _remv='-r' ;;
+      -s)   _usrv='-s' ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done
@@ -329,7 +338,7 @@ syssetup() {
         _stat=$? ; [ "$_stat" = 128 ] && return 128 # cancelled
     } || :
 
-    if [ -z "$_remv" -a "$_updt" != "-t" ] ; then
+    if [ -z "$_remv" -a "$_updt" != '-t' ] ; then
         local _fold="$PWD"
         folder -c -f '/'                            # do not block CEN_ROOT
         if [ -n "$_updt" ] ; then                   # update only (see centauriconfig)
@@ -408,14 +417,14 @@ sysinfo() {
     local _dopt _iopt _fnoq _stat=0
     # help should not advertise the 'detailed' command
     case "$1" in
-        "")         ;;
+        '')         ;;
         help|-)     ___cen_sys_help ;;
-        install)    _iopt="-i" ;;
+        install)    _iopt='-i' ;;
         paths)      _dopt=2 ;;
-        refresh)    _iopt="-n" ;;
-        setup)      _iopt="-n" ; CEN_OPT_FORCE=1 ;;
-        uninst*)    _iopt="-r" ;;
-        update)     _iopt="-u" ;;
+        refresh)    _iopt='-n' ; CEN_OPT_FORCE= ;;
+        setup)      _iopt='-n' ; CEN_OPT_FORCE=1 ;;
+        uninst*)    _iopt='-r' ;;
+        update)     _iopt='-u' ;;
         detailed)   _dopt=1 ;;
         ver*)       sysversion -f -m -u ; quit ;;
         *)          ___cen_sys_help -f
@@ -518,7 +527,7 @@ sysconfig() {
     # --- main part ---
 
     local _copt _popt _sopt _stat=0
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -c)   _copt=1 ;;

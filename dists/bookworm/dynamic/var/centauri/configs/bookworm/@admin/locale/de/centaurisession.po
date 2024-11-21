@@ -25,143 +25,151 @@ msgstr "Lokal"
 msgid "Private"
 msgstr "Privat"
 
-#: /var/centauri/tools/centaurisession:73
+#: /var/centauri/tools/centaurisession:75
 msgid "No 'centaurilogin=*' kernel parameter found"
 msgstr "Kein 'centaurilogin=*' Kernelparameter gefunden"
 
-#: /var/centauri/tools/centaurisession:131
+#: /var/centauri/tools/centaurisession:139
 msgid "Cannot delete now, renaming '%s' to '%s'"
 msgstr "Löschen derzeit unmöglich, verschiebe '%s' nach '%s'"
 
-#: /var/centauri/tools/centaurisession:142
+#: /var/centauri/tools/centaurisession:150
 msgid "Cannot move/link '%s' to '%s'"
 msgstr "Kann '%s' nicht nach '%s' verschieben/verknüpfen"
 
-#: /var/centauri/tools/centaurisession:151
+#: /var/centauri/tools/centaurisession:159
 msgid "Cannot restore '%s' - '%s' is not a link"
 msgstr "Kann '%s' nicht wiederherstellen - '%s' ist keine Verknüpfung"
 
-#: /var/centauri/tools/centaurisession:160
+#: /var/centauri/tools/centaurisession:168
 msgid "Cannot restore '%s'"
 msgstr "Kann '%s' nicht wiederherstellen"
 
-#: /var/centauri/tools/centaurisession:174
+#: /var/centauri/tools/centaurisession:182
 msgid "encrypted:"
 msgstr "verschlüsselt"
 
-#: /var/centauri/tools/centaurisession:176
+#: /var/centauri/tools/centaurisession:184
 msgid "decrypted:"
 msgstr "entschlüsselt"
 
-#: /var/centauri/tools/centaurisession:182
+#: /var/centauri/tools/centaurisession:190
 msgid "Found no mounted encfs for folder"
 msgstr "Kein eingehängtes encfs für Verzeichnis"
 
-#: /var/centauri/tools/centaurisession:182
+#: /var/centauri/tools/centaurisession:190
 msgid "Please run:"
 msgstr "Bitte ausführen:"
 
-#: /var/centauri/tools/centaurisession:186
+#: /var/centauri/tools/centaurisession:194
 msgid "to create an encfs. To mount an existing encfs use:"
 msgstr "um ein encfs zu erstellen. Zum Einhängen eines bestehenden encfs:"
 
-#: /var/centauri/tools/centaurisession:237
+#: /var/centauri/tools/centaurisession:245
 msgid "Delete the '%s' folder and content"
 msgstr "Verzeichnis '%s' nebst Inhalt löschen"
 
-#: /var/centauri/tools/centaurisession:247
+#: /var/centauri/tools/centaurisession:255
 msgid "Rename existing '%s' to '%s'"
 msgstr "Benenne vorhandenes '%s' nach '%s' um"
 
-#: /var/centauri/tools/centaurisession:283
+#: /var/centauri/tools/centaurisession:290
 msgid "WARNING__THIS_FOLDER_IS_LOCAL__PLEASE_READ_THIS"
 msgstr "ACHTUNG__LOKALES_VERZEICHNIS__BITTE_DIES_LESEN"
 
-#: /var/centauri/tools/centaurisession:318
+#: /var/centauri/tools/centaurisession:325
 msgid "mode '%s' invalid (use 'online' 'offline' or 'auto')"
 msgstr "Modus '%s' ungültig (erlaubte Modi: online offline auto)"
 
-#: /var/centauri/tools/centaurisession:333
+#: /var/centauri/tools/centaurisession:340
 msgid "Action '%s' disabled: existing '%s' folder"
 msgstr "Aktion '%s' abgeschaltet: Verzeichnis '%s' vorhanden"
 
-#: /var/centauri/tools/centaurisession:339
+#: /var/centauri/tools/centaurisession:346
 msgid "Action '%s' disabled: no '$netw' folder"
 msgstr "Aktion '%s' abgeschaltet: kein '$netw' Verzeichnis"
 
-#: /var/centauri/tools/centaurisession:348
+#: /var/centauri/tools/centaurisession:355
 msgid "not a member of group 'roaming'"
 msgstr "kein Mitglied der Gruppe 'roaming'"
 
-#: /var/centauri/tools/centaurisession:355
+#: /var/centauri/tools/centaurisession:362
 msgid "This user is not roaming"
 msgstr "Dies ist kein roaming user"
 
-#: /var/centauri/tools/centaurisession:407
+#: /var/centauri/tools/centaurisession:414
 msgid "%-2s of %s [s]"
 msgstr "%-2s von %s [s]"
 
-#: /var/centauri/tools/centaurisession:408
+#: /var/centauri/tools/centaurisession:415
 msgid "Waiting for network/server - "
 msgstr "Warten auf Netzwerk/Server - "
 
-#: /var/centauri/tools/centaurisession:409
+#: /var/centauri/tools/centaurisession:416
 msgid "This computer is not a domain member"
 msgstr "Dieser Rechner ist kein Domänenmitglied"
 
-#: /var/centauri/tools/centaurisession:450
+#: /var/centauri/tools/centaurisession:457
 msgid "On-line - linking (%s, Roaming) to server home"
 msgstr "On-line - verknüpfe (%s, Roaming) zum Server home"
 
-#: /var/centauri/tools/centaurisession:455
+#: /var/centauri/tools/centaurisession:462
 msgid "No server - using local (%s, Roaming) folders"
 msgstr "Kein Server - benutze lokale (%s, Roaming) Verzeichnisse"
 
-#: /var/centauri/tools/centaurisession:479
+#: /var/centauri/tools/centaurisession:478
+msgid "User has no home folder"
+msgstr "Benutzer hat kein Home Verzeichnis"
+
+#: /var/centauri/tools/centaurisession:489
 msgid "Set to 'no' to disable runnig $CEN_NAME at login/logout"
 msgstr "Wert 'no' verhindert Ausführung von $CEN_NAME bei login/logout"
 
-#: /var/centauri/tools/centaurisession:484
-#: /var/centauri/tools/centaurisession:551
+#: /var/centauri/tools/centaurisession:494
+#: /var/centauri/tools/centaurisession:576
 msgid "Action '%s' disabled: via '%s'"
 msgstr "Aktion '%s' abgeschaltet: durch '%s'"
 
-#: /var/centauri/tools/centaurisession:492
+#: /var/centauri/tools/centaurisession:504
 msgid "Existing KDE configuration not changed"
 msgstr "Vorhandene KDE Einrichtung nicht verändert"
 
-#: /var/centauri/tools/centaurisession:499
-msgid "Existing Mozilla configuration not changed"
-msgstr "Vorhandene Mozilla Einrichtung nicht verändert"
+#: /var/centauri/tools/centaurisession:513
+msgid "Existing LxQt configuration not changed"
+msgstr "Vorhandene LxQt Einrichtung nicht verändert"
 
-#: /var/centauri/tools/centaurisession:506
+#: /var/centauri/tools/centaurisession:522
+msgid "Existing firefox configuration not changed"
+msgstr "Vorhandene Firefox Einrichtung nicht verändert"
+
+#: /var/centauri/tools/centaurisession:530
 msgid "Existing '.centaurisecurity' not changed"
 msgstr "Vorhandene '.centaurisecurity' nicht verändert"
 
-#: /var/centauri/tools/centaurisession:510
+#: /var/centauri/tools/centaurisession:534
 msgid "Installing '.centaurisecurity' from '%s'"
 msgstr "Installiere '.centaurisecurity' von '%s'"
 
-#: /var/centauri/tools/centaurisession:518
+#: /var/centauri/tools/centaurisession:542
 msgid "Moved '.xsession-errors' to '.xsession-errors.old'"
 msgstr "'.xsession-errors' nach '.xsession-errors.old' verschoben"
 
-#: /var/centauri/tools/centaurisession:533
+#: /var/centauri/tools/centaurisession:557
 msgid "There is at least one pending issue, handle it now?"
 msgstr "Ein oder mehr Dinge sind ausstehend. Jetzt bearbeiten?"
 
-#: /var/centauri/tools/centaurisession:587
+#: /var/centauri/tools/centaurisession:612
 msgid "Cannot get network status"
 msgstr "Netzwerkstatus unbekannt"
 
-#: /var/centauri/tools/centaurisession:598
+#: /var/centauri/tools/centaurisession:623
 msgid "Computer has no '$netw' folder"
 msgstr "Rechner hat kein '$netw' Verzeichnis"
 
-#: /var/centauri/tools/centaurisession:647
+#: /var/centauri/tools/centaurisession:672
 msgid "Creating XDG_RUNTIME_DIR at"
 msgstr "Erstelle XDG_RUNTIME_DIR in"
 
-#: /var/centauri/tools/centaurisession:668
+#: /var/centauri/tools/centaurisession:693
 msgid "Save output as default profile"
 msgstr "Ausgabe als Standard Profil speichern"

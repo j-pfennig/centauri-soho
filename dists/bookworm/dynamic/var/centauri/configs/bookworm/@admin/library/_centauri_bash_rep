@@ -9,17 +9,17 @@
 # Copyright Dr. J. Pfennig (c) 2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_rep']='0.01:2'
+CEN_MODULES['_centauri_bash_rep']='0.02:4'
 
 CEN_REP_DKEY=                   # distribution key, see 'distro'
 
 # ------------------------------------------------------------------------------
 # repository - Repository basic operations
 #
-# Call:     (1) repository escape  -d|-u <vnam> <name>
-#           (2) repository folder  [-l|-q] <vnam> <dist> <inst> [<host>|+|@]
-#           (3) repository distro  [-f] <anam> [<dist>]
-#           (4) repository locate  [-b|-w] <vnam> <file> [<base> [<dkey>]]
+# Call:     (1) repository -d|-u   **escape** <vnam> <name>
+#           (2) repository [-l|-q] **folder** <vnam> <dist> <conf> [<host>|-|+|**@** [<base>]]
+#           (3) repository [-f]    **distro** <anam> [<dist>]
+#           (4) repository [-b|-w] **locate** <vnam> <file> [<base> [<dkey>]]
 #
 #           (1) **Decorate/undecorate repository file names**
 #               This command implements the escape rules for file names
@@ -43,6 +43,7 @@ CEN_REP_DKEY=                   # distribution key, see 'distro'
 #           <fkey>  family key: d=debian r=raspbian s=suse d=termux d=ubuntu
 #           <dfam>  family name: 'debian' or 'suse'
 #           <dist>  distribution name: debian|raspbian|termux|ubuntu|suse
+#           <conf>  a configuration name
 #           <file>  full path of file to be located
 #           <base>  overrides '$CEN_ROOT'
 #
@@ -58,15 +59,23 @@ CEN_REP_DKEY=                   # distribution key, see 'distro'
 # ------------------------------------------------------------------------------
 # Repository + The Centauri Repository Structure
 #
+# Terminology:
+#,- <<Main Repository>>     exactly one instance per domain at the primary server
+#,- <<Master Repository>>   a clone of the main repository containing all data
+#,- <<Local Repository>>    sub-set of main containing only data of the local host
+#,- <<Staging Repository>>  intermediate at the primary server for security reasons
+#,- <<Distribution>>        a distribution nick name like 'bookworm' or 'trixie'
+#,- <<Configuration>>       a local config like: 'centauri', 'worms' or 'trixies'
+#
 #+General:
 # The repository is a data tree and closely related to centauri-bash-lib but not
-# a part of it. Anyhow the library documentation is good place to briefly describe
+# a part of it. Anyhow the library documentation is a good place to briefly describe
 # its structure. Data is organised as folders and files around three main axes:
 #
-#,  - by distribution like debian/raspbian bookworm, debian trixie or others
-#,  - by configuration, instance of a configurations of computers in a network
-#,  - by computer machine dependent configs
-#   °
+#,      - <<by distribution>>   like debian/raspbian bookworm, debian trixie or others
+#,      - <<by configuration>>  instances of configurations of computers in a network
+#,      - <<by computer>>       machine dependent configs
+# °
 #- $CEN_ROOT                        # the installation root
 #- °  ├── configs                   # the repository part ...
 #- °  │   ├── <dist>                # a distribution, example: bookworm
@@ -76,7 +85,7 @@ CEN_REP_DKEY=                   # distribution key, see 'distro'
 #- °  │   │   │   ├── systemd       # systemd services and configs
 #- °  │   │   │   ├── tools         # centauri-tools bash code
 #- °  │   │   │   └── ...
-#- °  │   │   ├── <inst>            # a configuration instance, example: worms
+#- °  │   │   ├── <conf>            # a configuration instance, example: worms
 #- °  │   │   │   ├── @shared       # configurations shared be most computers
 #- °  │   │   │   │   ├── <path>    # a shared configuration file
 #- °  │   │   │   │   └── ...       # other shared configuration files
@@ -129,12 +138,60 @@ CEN_REP_DKEY=                   # distribution key, see 'distro'
 # passwords. The clients get their 'rsync' passwords over the 'centaurisecrets'
 # mechanism.
 # ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Staging + The Centauri Staging Repository
+#
+#+General: To avoid accidential or malicious corruption of the main repository
+# this intermediate data structure is used by client computers. The structure
+# is managed by the 'centaurimachines' tool. Via cron the staging data gets
+# updated once per hour from the main repository. Merging data back from staging
+# to main must be done manually.
+#
+#-      $CEN_ROOT/machines               # the installation root
+#- °  ├── rsyncd.static             # static part of 'rsyncd.conf' file
+#- °  ├── rsyncd.template           # per host fragment template
+#- °  ├── <host1>                   # any number of host computer folders ...
+#- °  │   ├── krb5.keytab           # kerberos keys, sent to host
+#- °  │   ├── machine-id            # host identity, passed from host
+#- °  │   ├── repository            # sub-set of main, shallow copy with BTRFS
+#- °  │   ├── repository.conf       # authentication info, sent to host
+#- °  │   ├── repository.rsyncd     # expanded 'rsyncd.template'
+#- °  │   └── repository.secret     # for rsyncd authentication/authorisation
+#- °  ├── <hostN>
+#- °  │   └── ...
+#- °  └── ...
+#
+#+rsyncd: The repository implementation uses the 'rsyncd' program to exchange
+# data over the network. By default 'inetd' is used to run 'rsyncd' on demand.
+# The configuration file '/etc/rsyncd.conf' is managed by 'centaurimachines'.
+# Whenever a host is added to or removed from staging the config is rewritten.
+# The file 'rsyncd.static' contains the static configuration data and for each
+# host a fragement 'repository.rsyncd' is added.
+#
+#+master: Some administrative hosts (including the servers) can be configured
+# to to bypass staging and keep a full copy of the main repository. This is
+# done creating symlinks to main for each '<host>/repository' instead of
+# creating sub-set folders (see "centaurimachines°--setup").
+# ------------------------------------------------------------------------------
+#   local root=/tmp/mount/var/centauri
+#   local base=/some/pool
+#   local dest
+#   # get path of @shared in repository at $root, make symlink
+#   repository -l folder dest trixie trixies - "$root"
+#   # copy from files from pool to @shared
+#   for item in /etc/services /etc/inetd.conf ; do
+#       repository -b locate file "$item" "$base"
+#       copy -a "$file" "$dest"
+#   done
+
+
 repository() {
+    local _opti ;  [ "${1::1}" = '-' ] && { _opti="$1" ; shift ; }
     local _func="$1" ; shift
-    local _opti ; [ "${1::1}" = '-' ] && { _opti="$1" ; shift ; }
     case "$#${_func::3}" in
     2esc)       _cen_repo_esc "$@" ;;
-    [34]fol)    _cen_repo_fol "$@" ;;
+    [345]fol)   _cen_repo_fol "$@" ;;
     [12]dis)    _cen_repo_dis "$@" ;;
     [234]loc)   _cen_repo_loc "$@" ;;
     *)          _cen_abort ? "$_func" $"(or wrong arg count)"
@@ -159,9 +216,10 @@ _cen_repo_esc() {
 }
 
 _cen_repo_fol() {
-    local _sout="$CEN_ROOT/configs/$2/$3" _link='private'
-    case "$4" in
-    '')     ;;
+    local _base="${5:-$CEN_ROOT}"
+    local _sout="$_base/configs/$2/$3" _link='private'
+    case "${4:--}" in
+    -)      ;;
     [a-z]*) _sout+="/$4" ;;
     +)      _sout+="/$HOSTNAME" ;;
     @)      _sout+="/@shared" ; _link='shared' ;;
@@ -183,7 +241,7 @@ _cen_repo_dis() {
     CEN_REP_DKEY=
     local _sout _sopt _sdis
     local -n _sarr="$1"
-    [ "$_opti" = '-w' ] && _sopt='-w'
+    [ "$_opti" = '-w' ] && _sopt='-w -o'
     if ! sysversion $_sopt ; then
         _sarr=() ; return 1
     fi

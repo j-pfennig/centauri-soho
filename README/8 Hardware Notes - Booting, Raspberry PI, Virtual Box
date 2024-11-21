@@ -7,37 +7,43 @@
 . Booting via systemd, Grub or Firmware
 =======================================
 
-For PC systems the preferred boot method is systemd-boot which is simple to use
-and to configure. This method depends on an EFI installation. As a fallback (or
-for a non-EFI installation the Grub boot loader is intalled.
+For PC systems the preferred boot method is 'systemd-boot' which is simple to use
+and to configure. This method depends on an EFI installation. As a fallback the EFI
+'Grub' boot loader is installed. EFI alse depends on MOK keys (Mashine owner keys).
+These can be registered via EFI setup (installing the MOK key) or automatically (if it
+works). In the worst case EFI 'Grub' will be startded. The BIOS version of 'Grub' can
+be installed, but this is rarely needed.
 
 For non-PC systems (Raspberry Pi) firmware boot is used, as there is neither a
 BIOS nor an EFI available at boot time.
 
-Centaurisoho can auto-configure systemd-boot and firmware-boot. For Grub there is
+Centaurisoho can auto-configure systemd-boot and firmware-boot. For 'Grub' there is
 an auto-generated 'grub.cfg' that should handle most situations by default. This
-Grub configuration has nothing in common with the way Debian or Ubuntu do it.
+'Grub' configuration has nothing in common with the way Debian or Ubuntu do it.
 
 For an EFI system the EFI partition gets mounted at '/mnt/boot' and is symlinked
-to '/boot/EFI'. The '/boot/grub' symlink points to the grub-EFI folder and for the
+to '/boot/EFI'. The '/boot/grub' symlink points to the Grub-EFI folder and for the
 systemd loader the '/boot/entries' symlink is provided, the actual boot entries
 are auto-generated, see below.
 
-IMPORTANT: centaurisoho uses disk volume labels to identify boot devices whereas
-most linux distros use partition UUIDs. The centaurisoho way has some disadvantages
+IMPORTANT
+---------
+
+Centauri-Soho uses disk volume labels to identify boot devices whereas
+most linux distros use partition UUIDs. The Centauri-Soho way has some disadvantages
 but makes the disk images more portable and allows a much simpler boot configuration
 management.
 
 The below mentioned tools modify the debian standard configuration in a way to run
-automatic automatic kernel updates as needed by Centauri-Soho.
-
+automatic automatic kernel updates as needed by Centauri-Soho. Debian's 'update-grub'
+is disabled, but initrd images will be generated on updates as expected.
 
 . Details of systemd-boot support, secure boot
-----------------------------------------------
+==============================================
 
-The central concepts is use are: UKI (unified kernel image) and the Loader Config.
-Centaurisoho does not use a Debian configuration, but has its own 'centauriefilinux'
-tool that handles all details, including secure boot. The later is achived by using
+The central concepts in this szenario are: UKI (unified kernel image) and the Loader Config.
+Centauri-Soho does not use a Debian boot configuration, but has its own 'centauriefilinux'
+tool that handles all details, including secure boot. The later is achived by generating
 an UKI and signing it with a MOK (Machine Owner Key). MOK and UKI are created, installed
 and updated by 'centauriefilinux'. The MOK is also installed for DKMS so that custom
 kernel modules get correctly signed.
@@ -45,18 +51,41 @@ kernel modules get correctly signed.
 The systemd boot loader uses a simple menu system. These menu entries are also managed
 by 'centauriefilinux'.
 
-Secure boot using a MOK requires the MOK to be registers with the BIOS. The tool
+MOK key registration
+--------------------
+
+Secure boot using a MOK requires the MOK to be registered by the EFI BIOS. The tool
 'centauriefilinux' tries to let the BIOS register the key at next boot time. When the
-MOK is not yet registered, the boot process should use Grub as a fallback loader.
+MOK is not yet registered, the boot process should use 'Grub' as a fallback loader.
 Often the automatic handling of secure boot simply works, at least the systemd boot
 loader is used after the second boot (Grub does register the MOK key at 1st boot).
 
+When the MOK key was copied to the EFI boot partition (which is the default) usually
+the EFI BIOS can be used to register it manually.
+
+Secure Boot can be disabled
+---------------------------
+
+If everything fails just disable secure boot in EFI BIOS. This has no negativ effect on
+Centauri-Soho.
+
+Portable media - disable EFI fallback entries
+---------------------------------------------
+
+One important concept of EFI are fallback entries. These should only be generated for internal
+media, and not for USB or MMC devices. The 'centauriefilinux' tries to autodetect external
+media, but you can use option '--external=<n>' to override the builtin heuristics. To edit
+EFI boot variables 'centauriefilinux' can be used. Examples:
+
+        centauriefilinux efimgr                 # list boot variables
+        centauriefilinux efimgr delete 13 14    # delete 2 entries
+        centauriefilinux efimgr order 2 1 3     # set boot priority
 
 . Details of Grub support
--------------------------
+=========================
 
-IMPORTANT: in centaurisoho grub is not configured as most linux distros do. Instead
-there is only one 'grub.cfg' file that checks the system configuration at boot time
+Please note: in Centauri-Soho 'Grub' is not auto-configured as most linux distros do. Instead
+there is only one 'grub.cfg' file that checks the system configuration at boot time in order
 to create a custom boot menu. See:
 
         /etc/network/interfaces.router          # enable router mode appliance
@@ -64,40 +93,58 @@ to create a custom boot menu. See:
         /etc/network/interfaces.switch          # enable switch mode appliance
         /var/lib/centauri/centaurihass.enabled  # enable homeassistant appliance
 
-As centaurisoho prefers a btrfs filesystem the grub core images becomes quite large.
-This implies that a grub bios partition is present.
+As centaurisoho prefers a 'btrfs' filesystem, so the 'grub core image' becomes quite large.
+This implies that a 'grub bios partition' is present.
 
+As said before 'update-grub' is disabled. Again it is 'centauriefilinux' that can update grub.
+The restore and installation tools of Centauri-Soho also adjust 'grub.cfg' (it mostly needs
+to hostname to be set).
 
 . Details of firmware-boot support
-----------------------------------
+==================================
 
-Currently the Raspberry has its own firmware based boot logic, EFI us not yet the
-default (although Ubuntu runs an EFI bios the run Grub).
+Currently the Raspberry Pi has its own firmware based boot logic, EFI is not yet the
+default (although Ubuntu runs an EFI bios to execute EFI 'Grub').
 
-The firmware can boot the OS is using an initrd so that btrfs can be supported as
+The Pi's firmware can boot the OS is using an 'initrd' so that 'btrfs' can be supported as
 root filesystem. The details are handled by the 'centauriraspi' tool, see below.
-
 
 . Working with a Raspberry PI
 =============================
 
-Centauri-Soho uses 32 and 64 bit 'Raspberry PI OS' which is based on Debian. Currently
-Raspberry offers more Wayland support, but this is not used by Centauri-Soho as it is
+Centauri-Soho uses 32 and 64 bit 'Raspberry Pi OS' which is based on Debian. Currently
+Raspberry offers nice wayland support, but this is not used by Centauri-Soho as it is
 not yet supported by Debian Bookworm. In general there is little difference between
 Raspberry and Debian, the Centauri Repository handles both flavours.
 
-Waning using 32 bit 'armhf': the Debian binaries are not compatible with 'Raspberry Pi Zero'
-hardware. Do not add Debian Repositories to your apt 'sources.list' when using such
-hardware.
+Warning using 32 bit 'armhf'
+----------------------------
+
+The Debian binaries are not compatible with 'Raspberry Pi Zero' hardware. Do not add the
+Debian Repositories to your apt 'sources.list' when using such a device. Centauri-Soho will
+default to an 'ext4' filesystem in 32 bit systems.
+
+Mind your Power Supply
+----------------------
 
 The Raspberry hardware is a bit shaky, in particular the power supply is important. When
-using an insufficient supply all sorts of trouble may happen. Centauri-Soho uses btrfs as
+using an insufficient supply all sorts of trouble may happen. Centauri-Soho uses 'btrfs' as
 its filesystem (except for a 32 bit install, where ext4 is used). Btrfs will detect write
-errors and complain harshly. This is not a bug, it is a great feature. Don't blame btrfs.
+errors and complain harshly. This is not a bug, it is a great feature. Don't blame 'btrfs'.
 Also recommended is the use of 'debsum -c' to verify md5 checksums of installed software
 (don't get confused by some diversions that are reported mistakingly as errors).
 
-The configuration of '/boot/firmware' is hndled automatically via 'centauriraspi'.
+Disable large VM Pages on Raspberry Pi 5
+----------------------------------------
+
+Some Debian binaries like qmlweb or the falkon browser cannot yet handle large pages. Also
+'btrfs' volumes become non-portable to a 4k page system. This is why Centauri-Soho disables
+large VM pages in Debian bookworm.
+
+Boot configuration
+------------------
+
+The configuration of '/boot/firmware' is handled automatically via 'centauriraspi'.
 Centauri-Soho prefers partion labels over partition uuids (which Raspberry prefers).
 Here we have a difference with the 32bit version that needs to use uuids for booting.
 

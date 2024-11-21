@@ -59,7 +59,6 @@ In centauri SysV run-levels are revived by reconfiguring system services.
 A helper service is used to start some network services (run-level >= 3):
 
 centauri-network.service:
-    cups-browsed.service (implies cups.service)
     gmediarender.service 
     inetd.service
     minidlna.service 
@@ -97,7 +96,6 @@ centauri-member.target:                     # any domain member computer
     centauri-network.service
     centauriswitch.service 
     centauriwsdd.service 
-### cups-browsed.service
     network-online.target
     nfs-mountd.service 
     nmbd.service
@@ -117,7 +115,6 @@ centauri-trusted.target:                    # in a trusted network
     nmbd.service
     smbd.service
     winbind.service
-### cups-browsed.service
 
 
 The following are started explicitly via 'centauriswitch':
@@ -138,5 +135,33 @@ SysV Legacy
 
 See 'centaurirunlevel' and /etc/default/centaurirunlevel
 
-***
 
+Location Awareness (run by centauriswitch)
+==========================================
+
+Helpers:
+    centauri-sysinit.service    early inits, started by sysinit.target
+
+    centauri-netconf.service    Check IPv6 and HTTP-Proxy Connectivity
+    centauri-network.service    Starts minimal networks services
+
+Only one of these can be active:
+
+    centauri-master.target  centauri-network    -
+    centauri-slave.target   centauri-network    -
+    centauri-member.target  centauri-network    centauri-netconf
+    centauri-trusted.target centauri-network    centauri-netconf
+    centauri-public.target  CONFLICTS           -
+
+Remarks:
+
+
+    runlevel2:  - centaurisysinit can start appliances and if so
+                  it also starts networking.target and inetd.service
+    runlevel3:  - centaurisysinit can start appliances
+                - centauriroute is started
+
+    Centauriswitch is not started below runlevel4. In all runlevels
+    some services are started via /etc/default/centauriswitch
+
+***

@@ -40,21 +40,21 @@ installer_allow() {
 }
 
 # ------------------------------------------------------------------------------
-# create an archive tar: [<file>]
+# create an archive tar: [<suff>]
 #
-# An archive (centaurisoho-master.tgz) contains all workspace sources except any
-# seed tars. It can only be generated from a 'centaurisoho-master' folder and
-# cannot be installed. Instead 'tar -xaf' must be used.
+# An archive tar ('centaurisoho-master.tgz' or 'centaurisoho-master-<suff>.tgz')
+# contains all workspace data. It is created from a 'centaurisoho-master' folder
+# using 'centaurisoho workspace ...' and cannot be used as a distributable tar.
 # ------------------------------------------------------------------------------
 installer_archive() {
     installer_chkroot
     local name='centaurisoho-master'
     local orig="${PWD%/*}/$name"
-    local file="$name.tgz" ; [ "$1" = '-' ] || file="$name-$1.tgz"
+    local file="$name.tgz" ; [ "${1:--}" = '-' ] || file="$name-$1.tgz"
     [ "${PWD##*/}" = "$name" ] ||
         quit -e "Only the '$name' workspace can be archived"
 
-    cd .. || quit -e "Command 'cd ..' failed"
+    folder -c '..' || return
     if [ -s "$file" ] ; then
         confirm -y -a "Replace existing archive" "'$file'" || quit -s 2
         system mv -f "$file" "$file.old" || quit
@@ -62,9 +62,6 @@ installer_archive() {
 
     orig="${orig#$PWD/}"
     system tar -caf "$file" "$orig" || quit
-    #system tar -caf "$file" \
-    #           "$orig/installer" "$orig/README-first" "$orig/README"/[0-9]*  \
-    #           "$orig/dists"/*/[a-z]* "$orig/dists"/*/@misc || quit
     message "Created archive:" "$file"
 }
 
@@ -180,27 +177,14 @@ installer_dist() {
 }
 
 # ------------------------------------------------------------------------------
-# prepare the bootimage: [-n]
+# prepare the bootimage: [-n|-p]
+#
+#   Option:     -n      update initramfs
+#               -p      called from prepare (no motd)
 # ------------------------------------------------------------------------------
 installer_initial() {
-    if [ -e '/etc/network/interfaces.installer' ] ; then
+    [ -e '/etc/network/interfaces.installer' ] &&
         system mv -f '/etc/network/interfaces.installer' '/etc/network/interfaces'
-    else
-        cat - >'/etc/network/interfaces' <<!EOF
-# interface config bootstrap version
-
-auto lo
-iface lo inet loopback
-
-allow-hotplug eth0
-iface eth0 inet dhcp
-
-allow-hotplug wlan0
-iface wlan0 inet dhcp
-
-# end
-!EOF
-    fi
 
     local fini
     if [ ! -e '/etc/systemd/network/99-default.link' ] ; then
@@ -213,16 +197,20 @@ iface wlan0 inet dhcp
     if [ -n "$fini" ] ; then
         system -e -p -r -s fini -- uname --kernel-release || return
         fini="/boot/initrd.img-$fini"
-        message -a "Updating initrd:" "$fini"
+        message -a "Updating initrd:" "$fini" "(this needs > 500MB in /run/user/0)"
+            # apt may run update-initrd which needs a lot of temp storage...
+        [ -d '/run/user/0' ] &&
+            system -e -p -- mount -o remount,size=1G,noatime /run/user/0
         system -e -p mkinitramfs -o "$fini"
     fi
 
     system rm -f /var/lib/dhcp/*leases
     # the debian installer flagged them as 'automatically'
-    system apt-mark manual bluetooth &>/dev/null
+    system -q apt-mark manual bluetooth wpasupplicant iw libdaemon0
     # the debian installer installed these ...
     [ -e '/usr/sbin/powertop' ] && system apt remove wireless-tools powertop libiw30
 
+    [ "$1" = '-p' ] && return 0
     cat - >/etc/motd <<!EOF
 
 This is a minimal unmodified Debian Bookworm system (last update: $(date +%Y-%m-%d)).
@@ -257,10 +245,10 @@ installer_install() {
 
     if [ ! -e '.timestamp' ] ; then
         printf -v mesg "Unpack and install configuration '%s' now" "$conf"
-        message -i "We are about to install 'centaurisoho' on this system"
+        message "We are about to install 'centaurisoho' on this system"
     elif [ "$DAT_SEED" -nt '.timestamp' ] ; then
         printf -v mesg "Unpack and update configuration '%s' now" "$conf"
-        message -i "We are about to update 'centaurisoho' on this system"
+        message "We are about to update 'centaurisoho' on this system"
         ddir="/dev/shm/$CEN_NAME"
     elif [ -z "$CEN_OPT_FORCE" ] ; then
         message -i "The '$DAT_SEED' file is already installed" ; return
@@ -270,12 +258,13 @@ installer_install() {
 
     if confirm -y -i "$mesg" ; then
         # to protect the development system ...
-        [ -e '/admin/utilities' ] && quit -e "Cannot install 'centaurisoho' on this system"
+        [ -e '/admin/utilities' ] &&
+            quit -e "Cannot install 'centaurisoho' on this system:" '/admin/utilities'
         if [ "$ddir" = '/' ] ; then
             system tar --directory=/ --strip-components=1 -xaf "$DAT_SEED" || quit -s 2
             installer_initial -n
         else
-            system mkdir "$ddir" || quit -s 2
+            system mkdir -p "$ddir" || quit -s 2
             # unfortunately --exclude=static cannot be used with --strip-components
             system tar --directory="$ddir" --exclude='static' -xaf "$DAT_SEED" || quit -s 2
             system cp -a "$ddir/dynamic"/* /
@@ -295,13 +284,17 @@ installer_install() {
     fi
     system echo "$conf" >"$INSTALLER_PERCONF" || quit -s 2
 
-    # save information for centaurisoho
-    conf="SOHO_WORKSPACE=${PWD@Q}\n"
-    conf+="SOHO_DISTRO=${INSTALLER_DISTRO@Q}\n"
-    conf+="SOHO_CONFIG=${INSTALLER_CONFIG@Q}"
-    system echo -e "$conf" >"$INSTALLER_PERBASE" || quit -s 2
-
-    message -i "centauri-tools installation succeeded"
+    # save information for centaurisoho (full install only)
+    if [ "$ddir" = '/' ] ; then
+        conf="SOHO_WORKSPACE=${PWD@Q}\n"
+        conf+="SOHO_DISTRO=${INSTALLER_DISTRO@Q}\n"
+        conf+="SOHO_CONFIG=${INSTALLER_CONFIG@Q}"
+        system echo -e "$conf" >"$INSTALLER_PERBASE" || quit -s 2
+        message -i "centauri-tools installation succeeded"
+    else
+        system rm -r -f "$ddir"
+        message -i "centauri-tools update succeeded"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -354,13 +347,13 @@ installer_links() {
 installer_login() {
     # undo boot settings ...
     [ -e '/boot/firmware/cmdline-default.txt' ] &&
-        cp -a '/boot/firmware/cmdline-default.txt' '/boot/firmware/cmdline.txt'
+        system cp -a '/boot/firmware/cmdline-default.txt' '/boot/firmware/cmdline.txt'
     [ -e '/boot/grub/grub.cfg.orig' ] &&
-        mv -f '/boot/grub/grub.cfg.orig' '/boot/grub/grub.cfg'
-    rm -f /root/.autologin
+        system mv -f '/boot/grub/grub.cfg.orig' '/boot/grub/grub.cfg'
+    system rm -f /root/.autologin
 
     # payload ...
-    dpkg-reconfigure keyboard-configuration
+    system dpkg-reconfigure keyboard-configuration
 }
 
 # ------------------------------------------------------------------------------
@@ -373,22 +366,24 @@ installer_minimal() {
 
     local item curr="$PWD"
     if folder -c /var/log ; then
-        system systemctl stop systemd-journald
+        system -q systemctl stop systemd-journald
         system rm -f -r installer journal/* apt/*
         system rm -f    *.gz */*.gz *.[0-9] */*.[0-9]
-        for item in *.log ; do
+        for item in *.log ; do                  # zero-size log files
             [ -s "$item" ] || continue
             > "$item"
         done
     fi
     folder -c "$curr"
 
+    message -i "Zerofill file system ..."
+    system -q -g 1 -- dd if=/dev/zero of=zero.tmp bs=1M
+    system sync ; system rm -f zero.tmp
 
-    dd if=/dev/zero of=zero.tmp bs=1M
-    system rm -f zero.tmp
-
+    message -i "Clean swap space ..."
     system swapoff -a
     system swapon -a -donce
+    message -i "Done."
 }
 
 # ------------------------------------------------------------------------------
@@ -487,14 +482,14 @@ installer_password() {
 $1
 $rpwd
 !EOF
-    confirm -y "Set password for user '$1'" || return
+    confirm -a -n "Set password for user '$1'" || return
     system -e -p chpasswd <<!EOF
 $1:$rpwd
 !EOF
 }
 
 # ------------------------------------------------------------------------------
-# Prepare system before centaurisoho setup: [-f]
+# Prepare system before centaurisoho setup: [-f] [<name>]
 #
 # This code works on a 'best effort' base and does limited error checking only!
 # ------------------------------------------------------------------------------
@@ -524,13 +519,18 @@ installer_prepare() {
     else
         quit "Missing 'setup.conf'"
     fi
-    local name="${SOHO_SONAME}9"
+    local name="${SOHO_SONAME}8"
+    case "${1:--}" in
+    -)  name="${SOHO_SONAME}8" ;;
+    ?)  name="${SOHO_SONAME}$1" ;;
+    *)  name="$1"
+    esac
 
     # --- update system ---
 
     message "Updating installed packages..."
     embed centauripackage -U2 -G -s || return
-    system -c wpa_supplicant && system -e -p -- apt-mark manual wpasupplicant
+    system -q apt-mark manual wpasupplicant iw libdaemon0
     embed centaurisoho message step0 '/etc/motd' '' $(date --iso-8601) || return
     message -i
 
@@ -543,11 +543,16 @@ installer_prepare() {
     fi
     message -i
 
-    if confirm -n "Install localepurge (remove unused locales)" ; then
+    if confirm -y "Install localepurge (remove unused locales)" ; then
+        [ -e '/etc/locale.nopurge' ] &&
+            quit "Try to run 'apt purge localepurge' before this!"
         embed centauripackage -T -s -y localepurge pwauth
         message -i
-        if confirm -n "Run localepurge now" ; then
+        if confirm -y "Run localepurge now" ; then
+            copy -a '/etc/locale.nopurge' '/etc/locale.nopurge.off'
+            system sed -e 's/^USE_DPKG/#USE_DPKG/' -i '/etc/locale.nopurge'
             system localepurge
+            remove '/etc/locale.nopurge'
         else
             move -q '/etc/locale.nopurge' '/etc/locale.nopurge.off'
         fi
@@ -558,16 +563,16 @@ installer_prepare() {
 
     local vnam ddev
     # debian image ...
-    if [ -b '/dev/sda5' ] && confirm -n "Rename system as '$name'" ; then
+    if [ -b '/dev/sda5' ] && confirm -y "Rename system as '$name'" ; then
         message "Rename x86 disk partions..."
-        embed centaurimedia --yes --device='/dev/sda' \
-                label 1 "${name}_root" -- label 5 "${name}_swap" || return
+        embed -i centaurimedia --yes --device='/dev/sda' label 1 "${name}_root" || return
+        embed -i centaurimedia --yes --device='/dev/sda' label 5 "${name}_swap" || return
         create -t -c '/etc/fstab' <<!EOF
-LABEL=${name}_root    /       auto  rw,nofail,defaults,noatime     0 0
+LABEL=${name}_root    /       auto  rw,defaults,noatime 0 0
 LABEL=${name}_swap    none    swap
 !EOF
     elif [ -b '/dev/disk/by-label/rootfs' ] && confirm -n "Rename system as '$name'" ; then
-        message "Rename RaspberryPi disk partions..."
+        message -i "Rename RaspberryPi disk partions..."
         vfatname vnam "$name"                       # random prefix for long name
         resolve -c -s ddev '/dev/disk/by-label/rootfs'
         case "$ddev" in
@@ -576,11 +581,11 @@ LABEL=${name}_swap    none    swap
         *)              error "Unknown boot device type, cannot rename:" "$ddev" ; ddev=
         esac
         if [ -n "$ddev" ] ; then
-            embed centaurimedia --yes --device="$ddev" \
-                label 1 "${vnam}_boot" -- label 2 "${name}_root" || return
+            embed -i centaurimedia --yes --device="$ddev" label 1 "${vnam}_boot" || return
+            embed -i centaurimedia --yes --device="$ddev" label 2 "${name}_root" || return
             create -t -c '/etc/fstab' <<!EOF
-LABEL=${vnam}_boot  /boot/firmware  auto  rw,nofail,defaults,noatime     0 0
-LABEL=${name}_root  /               auto  rw,nofail,defaults,noatime     0 0
+LABEL=${vnam}_boot  /boot/firmware  auto  rw,defaults,noatime 0 0
+LABEL=${name}_root  /               auto  rw,defaults,noatime 0 0
 !EOF
         fi
     fi
@@ -650,6 +655,7 @@ network={
     fi
 
     installer_initial
+    embed centaurisoho message step1 /etc/motd
 
     message -i
     message "Next boot uses bios interface names, please check '/etc/network/interfaces'"
@@ -742,19 +748,21 @@ ${CEN_NAME//?/ }  Run the 'centaurisoho' tool to continue the installation.
 
 Usage: $CEN_NAME install [<dist> <conf>]   # install '$DAT_SEED' to system
        $CEN_NAME keyboard [<host>]         # keyboard dialog at raspi/grub boot
-       $CEN_NAME prepare                   # pre-configure for centauri-soho
+       $CEN_NAME prepare [<name>]          # pre-configure for centauri-soho
        $CEN_NAME remove                    # try to remove centauri things
 
-       $CEN_NAME links   [<dist> <conf>]   # create symlinks to workspace only
-       $CEN_NAME unpack  [<dist> [<conf>]]
-                                           # unpack '$DAT_SEED' to workspace
-       $CEN_NAME pack    [<dist> [<conf>]] # pack workspace to '$DAT_SEED'
+       $CEN_NAME archive [<suff>]          # create archive tar from workspace
        $CEN_NAME dist    [<dist> [<conf>]] # create distributable from workspace
-       $CEN_NAME archive                   # create archive tar from workspace
+       $CEN_NAME links   [<dist> <conf>]   # create symlinks to workspace only
+       $CEN_NAME login                     # 1st grub.cfg boot: keyboard config
+       $CEN_NAME minimal                   # minimize disk usage
+       $CEN_NAME pack    [<dist> [<conf>]] # pack workspace to '$DAT_SEED'
+       $CEN_NAME unpack  [<dist> [<conf>]] # unpack '$DAT_SEED' to workspace
 
        This tool is a bootstrap installer and helper for 'centaurisoho'.
 
 Options:
+       -d --dryrun     make no changes, just show commands
        -f --force      override prudent default behaviours
        -h --help       show this text
        -v --verbose    be verbose (use twice for debug)
@@ -815,7 +823,7 @@ vfatname() {
 # a couple simplified library equivalents that are created below ...
 # ------------------------------------------------------------------------------
 [ "${CEN_NAME:--}" = '-' ] && [ -x '/usr/local/bin/_centauri_bash_lib' ] &&
-    . /usr/local/bin/_centauri_bash_lib -a -f - '0.10:2' 0
+    . /usr/local/bin/_centauri_bash_lib -a -d -f - '0.10:2' 0
 
 # ------------------------------------------------------------------------------
 # execute payload
@@ -832,15 +840,15 @@ run() {
     arc[12])    installer_archive  "${2:--}" ;;
     dis2)       installer_dist     "${2:--}" ;;
     dis[13])    installer_dist     "${2:--}" "${3:--}" ;;
-    log1)       installer_login   ;;
-    min1)       installer_minimal ;;
-    pac2)       installer_pack     "${2:--}" ;;
-    pac[13])    installer_pack     "${2:--}" "${3:--}" ;;
-    pre1)       installer_prepare ;;
-    rem1)       installer_remove  ;;
     ins[123])   installer_install  "${2:--}" "${3:--}" ;;
     key[12])    installer_keyboard "${2:--}" ;;
     lin[123])   installer_links    "${2:--}" "${3:--}" ;;
+    log1)       installer_login    ;;
+    min1)       installer_minimal  ;;
+    pac2)       installer_pack     "${2:--}" ;;
+    pac[13])    installer_pack     "${2:--}" "${3:--}" ;;
+    pre[12])    installer_prepare  "${2:--}" ;;
+    rem1)       installer_remove   ;;
     unp[2])     installer_unpack   "${2:--}" ;;
     unp[13])    installer_unpack   "${2:--}" "${3:--}" ;;
     *)          installer_usage -h
@@ -859,30 +867,35 @@ usage() {
 # ------------------------------------------------------------------------------
 #
 #   confirm     -a -i -n -y
-#   embed       [no options]
+#   dryrun      [no options]
+#   embed       [all options ignored]
 #   error       -a -t -q
 #   folder      -c -m -q
 #   message     -a -i
 #   symlink     -n
-#   system      [no options]
+#   system      -q -r -e -p [-e|-p ignored]
 #   trace       [all options ignored]
 #   quit        -e -s
 #
 # ------------------------------------------------------------------------------
 
 if [ -z "$CEN_HOOK_MESSAGE" ] ; then                # have no centauri-bash-lib
+    CEN_OPT_DRYRUN=         # option -d
     CEN_OPT_FORCE=          # option -f
-    CEN_OPT_VERB=0          # option -v
+    CEN_VERB=1              # option -v
     CEN_EXIT=0              # exit code
     CEN_NAME="${BASH_SOURCE##*/}"
 
     message() {
-        [ "$1" = '-a' ] && shift
-        if [ "$1" = '-i' ] ; then
-            shift ; echo "${CEN_NAME//?/ }  $*"
-        else
-            echo "$CEN_NAME: $*" >&2
-        fi
+        local _pref="$CEN_NAME:"
+        while [ "${1::1}" = '-' ] ; do
+            case "$1" in
+            --) shift ; break ;;
+            -i) _pref="${_pref//?/ }" ;;
+            esac ; shift
+        done
+        [ -z "$*" ] && return 0
+        echo "$_pref" "$@" >&2
     }
 
     trace() {
@@ -891,14 +904,25 @@ if [ -z "$CEN_HOOK_MESSAGE" ] ; then                # have no centauri-bash-lib
         echo "${CEN_NAME//?/ }  $*" >&2
     }
 
+    dryrun() {
+        [ -z "$CEN_OPT_DRYRUN" ] && return 1
+        trace "dryrun:" "$@" ; return 0
+    }
+
     # simplified error message: [-q|-t] <text>...
     error() {
-        case "$1" in
-        -a)     shift ;;
-        -q)     [ "${CEN_EXIT}" = 0 ] && return 0
-                shift ; quit -e "$*" ;;
-        -t)     [ "${CEN_EXIT}" = 0 ] && return 0 || return 1
-        esac
+        local _fqui
+        while [ "${1::1}" = '-' ] ; do
+            case "$1" in
+            --) shift ; break ;;
+            -q) _fqui=1 ;;
+            -t) [ "${CEN_EXIT}" = 0 ] && return 0 || return 1
+            esac ; shift
+        done
+        if [ -n "$_fqui" ] ; then
+            [ "${CEN_EXIT}" = 0 ] && return 0
+            quit -e "$@"
+        fi
         echo "$CEN_NAME: ***ERROR***" "$@" >&2
         CEN_EXIT=1 ; return 1
     }
@@ -909,10 +933,8 @@ if [ -z "$CEN_HOOK_MESSAGE" ] ; then                # have no centauri-bash-lib
         while [ "${1::1}" = '-' ] ; do
             case "$1" in
             --) shift ; break ;;
-            -a) ;;
             -i) oind=1 ;;
             -n) yesn='[y/N]' ; defn=1 ;;
-            -y) ;;
             esac ; shift
         done
 
@@ -927,8 +949,9 @@ if [ -z "$CEN_HOOK_MESSAGE" ] ; then                # have no centauri-bash-lib
     }
 
     embed() {
+        while [ "${1::1}" = '-' ] ; do shift ; done
         local prog="$1" ; shift
-        system "$prog" --embed="$CEN_NAME" "$@"
+        system -r "$prog" ${CEN_OPT_DRYRUN:+--dryrun} --embed="$CEN_NAME" "$@"
     }
 
     folder() {
@@ -943,7 +966,7 @@ if [ -z "$CEN_HOOK_MESSAGE" ] ; then                # have no centauri-bash-lib
         done
         if [ -d "$1" ] ; then
             [ -z "$ochg" ] && return 0
-            system cd "$1" ; return
+            system -r cd "$1" ; return
         elif [ -n "$omak" ] ; then
             system mkdir -p "$1" ; return
         fi
@@ -964,27 +987,51 @@ if [ -z "$CEN_HOOK_MESSAGE" ] ; then                # have no centauri-bash-lib
     }
 
     system() {
-        "$@" && return 0
-        error "Running '$1' failed (status $?)"
+        local _fqui _frun _fgoo=0
+        while [ "${1::1}" = '-' ] ; do
+            case "$1" in
+            --) shift ; break ;;
+            -e|-p) ;;
+            -g)  shift ; _fgoo="$1" ;;
+            -q) _fqui=1 ;;
+            -r) _frun=1 ;;
+            esac ; shift
+        done
+
+        [ -z "$_frun" ] && dryrun "$@" && return 1
+        trace "system: $@"
+        if [ -n "$_fqui" ] ; then
+            "$@" &>/dev/null && return 0
+        else
+            "$@" && return 0
+        fi
+        _frun=$?
+        [ "$_frun" -gt "$_fgoo" ] && error "Running '$1' failed (status $_frun)"
+        return "$_frun"
     }
 
     quit() {
-        case "$1" in
-        '')     ;;
-        -e)     shift ; error "$*" ;;
-        -s)     CEN_EXIT="${2:-2}" ;;
-        *)      message "$*"
-        esac
+        local _mesg='message'
+        while [ "${1::1}" = '-' ] ; do
+            case "$1" in
+            --) shift ; break ;;
+            -e) _mesg='error' ;;
+            -s) shift ; CEN_EXIT="${1:-2}"
+            esac ; shift
+        done
+        $_mesg "$*"
         exit "$CEN_EXIT"
     }
 
     while [ "${1::1}" = '-' ] ; do
         case "$1" in
-        -f|--for*)   CEN_OPT_FORCE=1 ; shift ;;
+        ---)         break ;;
+        -d|--dry*)   CEN_OPT_DRYRUN=1 ;;
+        -f|--for*)   CEN_OPT_FORCE=1 ;;
         -h|--help)   usage ; exit 2 ;;
-        -v|--ver*)   CEN_VERB=2 ; shift ;;
+        -v|--ver*)   CEN_VERB=2 ;;
         *)  break
-        esac
+        esac ; shift
     done
     run "$@" ; exit                         # using mini-bash-lib
 elif [ -n "$CEN_STAGE" ] ; then

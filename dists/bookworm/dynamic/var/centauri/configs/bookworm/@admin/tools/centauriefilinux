@@ -4,9 +4,11 @@ CEN_LEGAL="Dr. J. Pfennig (c) 2021-2024; BSD License"
 CEN_TITLE="Tool to manage EFI boot and to create systemd-boot menu and UKI"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -y - '0.23:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -y - '0.26:4' || exit 2
 
 CEN_OPT_BASE=           # see --base, EFI partition mount point
+CEN_OPT_EXTERN=         # see --external, external disk
+CEN_OPT_IFNAMES=        # see --ifnames
 CEN_OPT_IMAGE=          # see --image, kernel efi image, relative to DAT_EFIDIR
 CEN_OPT_NICKNAME=       # see --nickname, suffix for image folder and loader entries
 CEN_OPT_PLAIN=          # see --plain (<empty>:=shim+mok  1:=shim 2:mok 3:=nothing)
@@ -168,11 +170,11 @@ do_entry() {
 
     # create entry
     if [ "$file" = '-' ] ; then
-        text="Linux $text"
+        #text="Linux $text"
         entr+="$DAT_SUFFIX"
         file="${DAT_UKIPATH:${#DAT_MOUNT}}"
     elif [ "${file::1}" != '/' ] ; then
-        text="Linux $text ($file)"
+        text="Linux: $text ($file)"
         entr+="-$file"
         file="/image-$file/linux.efi" ; trun='-t'
     elif [ ! -f "$DAT_MOUNT/$file" ] ; then
@@ -202,10 +204,27 @@ efi     $file
     fi
 }
 
-# helper to check package install: <file> <name>
+# helper to check uki package install: <file> <name>
 do_file() {
     [ -e "$1" ] && return 0
     error -p "Please install package '%s'\nMissing file: %s" "$2" "$1" ; return 1
+}
+
+# grub configuration for efi: <fldr>
+do_grub() {
+    do_text grub "$1"
+
+    folder -f -m "$DAT_MOUNT/grub/fonts"
+    copy -q "$DAT_ROOTDIR/usr/share/grub/unicode.pf2" "$DAT_MOUNT/grub/fonts"
+
+    if [ -e "$DAT_MOUNT/grub/grub.cfg" ] ; then
+        trace -a -c "existing config" "$DAT_MOUNT/grub/grub.cfg"
+    else
+        do_repo '/boot/grub/grub.cfg' "$DAT_MOUNT/grub/grub.cfg" -
+    fi
+
+    do_repo '/etc/kernel/postrm.d/zz-update-grub'
+    do_repo '/etc/kernel/postinst.d/zz-update-grub'
 }
 
 # create hook scriptlet to handle kernel updates
@@ -245,8 +264,9 @@ do_image() {
 
     if [ "$mesg" != '-' ] ; then
         sysfind -q magick || mesg='-'
-    elif [ ! -e "$ibmp" ] && sysfind -q magick ; then
-        mesg="Booting Debian ${DAT_SUFFIX:1}"
+    elif [ ! -e "$ibmp" ] ; then
+        ibmp="$DAT_BOOTDIR/splash.bmp"
+        [ ! -e "$ibmp" ] && sysfind -q magick && mesg="Booting Debian ${DAT_SUFFIX:1}"
     fi
     [ "$mesg" != '-' ] && system -e -p magick -background black -fill white -pointsize 22 \
                                  -font /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
@@ -289,7 +309,7 @@ do_image() {
 do_memt() {
     local file='memtest86+x64.efi'
     if [ -e "$DAT_BOOTDIR/$file" ] ; then
-        message -a -c "Setup folder" "$PWD/$DAT_EFI_MEMTDIR"
+        trace -a -c "Setup folder" "$PWD/$DAT_EFI_MEMTDIR"
         folder -f -m "$DAT_EFI_MEMTDIR"
         copy -s -- "$DAT_BOOTDIR/$file" "$DAT_EFI_MEMTDIR"
     else
@@ -526,6 +546,7 @@ do_repo() {
 
 # helper for 'update' to get shim components right: <path>
 
+# internal disk:
 # ├── EFI
 # │   ├── BOOT              # default boot entry ...
 # │   │   ├── BOOTX64.EFI   # debian's shim64.efi
@@ -543,12 +564,52 @@ do_repo() {
 # │       ├── mmx64.efi     # debian's signed MOK manager
 # │       └── shimx64.efi   # debian's signed shim
 
+# external disk:
+# ├── EFI
+# │   └── BOOT              # default boot entry ...
+# │       ├── BOOTX64.EFI   # debian's shim64.efi
+# │       ├── mmx64.efi     # debian's signed MOK manager
+# │       └── grubx64.efi   # debian's signed grub
+
 do_shim() {
     do_file "$DAT_DIST_SHIM" shim-signed || return 1
-    system -c iconv || return 1                     # used for CSV entries
-    message -a -c "Setup folder" "$PWD/$1"
 
-    folder -m -f -- "$DAT_MOUNT/$1"
+    if [ -z "$CEN_OPT_EXTERN" ] ; then              # auto detect
+        findmount - "$DAT_MOUNT" || CEN_MOUNT_DEV=
+        case "$CEN_MOUNT_DEV" in
+        '')     warning "Cannot auto-detect disk type, using '--external=off'"
+                CEN_OPT_EXTERN=0
+                ;;
+        /dev/sd*|/dev/mmc*)
+                CEN_OPT_EXTERN=1
+                message -a "Found external disk, using '--external=on'"
+                ;;
+        *)      CEN_OPT_EXTERN=0
+                message -a "Found internal disk, using '--external=off'"
+        esac
+    fi
+
+    system -c iconv || return 1                     # used for CSV entries
+
+    if [ "$CEN_OPT_EXTERN" = 1 ] ; then
+        if [ "$1" = "$DAT_EFI_DISTDIR" -o "$1" = "$DAT_EFI_SYSDDIR" ] ; then
+            [ -d "$1" ] || return 0
+            confirm -a -f -y "Remove '%s' boot configuration" "$1" || return 0
+            remove -d -- "$1" ; return 0
+        elif [ "$1" = "$DAT_EFI_BOOTDIR" ] ; then
+            trace -a -c "External disk" "$PWD/$1"
+            do_file "$DAT_DIST_GRUB" grub-efi-amd64-signed || return 1
+            remove -q -- "$1"/* ; folder -m -f -- "$1"
+            copy -s -- "$DAT_DIST_GRUB" "$1/grubx64.efi"
+            copy -s -- "$DAT_DIST_SHIM" "$1/BOOTX64.EFI"
+            copy -s -- "$DAT_DIST_MM"   "$1/mmx64.efi"
+            do_grub "$1"
+            return 0
+        fi
+    fi
+
+    trace -a -c "Setup folder" "$PWD/$1"
+    folder -m -f -- "$1"
     remove -- "$1"/*.[eE][fF][iI] "$1"/*.[cC][sS][vV]
 
     if [ "$1" = "$DAT_EFI_BOOTDIR" ] ; then
@@ -561,26 +622,13 @@ do_shim() {
         copy -s -- "$DAT_DIST_GRUB" "$1/grubx64.efi"
         copy -s -- "$DAT_DIST_MM"   "$1/mmx64.efi"
         copy -s -- "$DAT_DIST_SHIM" "$1/shimx64.efi"
-        copy -s -- "$DAT_DIST_FB"   "$1/fbx64.efi"
-        do_text csv "$1" "Grub boot (fallback)" ; do_text grub "$1"
-
-        folder -f -m "$DAT_MOUNT/grub/fonts"
-        copy -q "$DAT_ROOTDIR/usr/share/grub/unicode.pf2" "$DAT_MOUNT/grub/fonts"
-
-        if [ -e "$DAT_MOUNT/grub/grub.cfg" ] ; then
-            trace -a "existing configuration:" "$DAT_MOUNT/grub/grub.cfg"
-        else
-            do_repo "/boot/grub/grub.cfg" "$DAT_MOUNT/grub/grub.cfg" -
-        fi
-
-        do_repo "/etc/kernel/postrm.d/zz-update-grub"
-        do_repo "/etc/kernel/postinst.d/zz-update-grub"
+        do_text csv "$1" "Grub boot (fallback)"
+        do_grub "$1"
     else
         do_file "$DAT_DIST_SYSD" systemd-boot-efi || return 1
         do_sign    "$DAT_DIST_SYSD" "$1/grubx64.efi"        # rename as grubx64 !
         copy -s -- "$DAT_DIST_MM"   "$1/mmx64.efi"
         copy -s -- "$DAT_DIST_SHIM" "$1/shimx64.efi"
-        copy -s -- "$DAT_DIST_FB"   "$1/fbx64.efi"
         do_text csv "$1" "Systemd boot (fallback)"
 
         do_repo "/etc/kernel/postrm.d/zz-systemd-boot" - -
@@ -604,6 +652,7 @@ do_sign() {
     tmpfile -f -s otmp
 
     if ! system -e "${opts[@]}" --output "$otmp" "$1" ; then
+        dryrun && return 0
         remove -- "$otmp" ; return 1
     elif [ -z "$2" ] ; then
         move -- "$otmp" "$1.signed"
@@ -632,7 +681,7 @@ do_text() {
 do_suffix() {
     local fcom
     if [ -z "$CEN_OPT_NICKNAME" ] ; then
-        sysversion -u || return
+        sysversion -u -o -f
         CEN_OPT_NICKNAME="$CEN_SYS_NICKNAME"
         DAT_SUFFIX="-$CEN_SYS_NICKNAME"
         fcom=1                                      # compatibility flag
@@ -660,8 +709,7 @@ do_suffix() {
 do_unconf() {
     local   mach base="$DAT_MOUNT/$DAT_EFI_BOOTDIR"
     case "$1" in
-    machine-id) [ -r "$DAT_ETCDIR/machine-id" ] || return
-                read mach < "$DAT_ETCDIR/machine-id" || return
+    machine-id) readline -s mach -i "$DAT_ETCDIR/machine-id" || return
                 [ -n "$mach" ] || return
                 remove -d "$DAT_MOUNT/$mach"    # remove folder
                 remove    "$DAT_MOUNT/$DAT_SYSD_ENTRIES"/$mach* ;;
@@ -716,8 +764,7 @@ actionCmdline() {
                     do_cmdline "$file" xtra || return
                     message "Extra parameters:" "${xtra:--none-}" ; return ;;
     sho|show|'')    ;;
-    *)      invoke -e "Valid sub-commands are:" "boot, copy, edit, show"
-            return ;;
+    *)              invoke -a 'boot|copy|edit|show' ; return ;;
     esac
     message "Kernel parameters - [*] indicates a default value:"
     do_cmdline "$file"
@@ -764,7 +811,13 @@ actionEfimgr() {
     local pefi pmen pref
     case "$1 $2" in
     add*)   arguments 3 - "$@" || return ; shift ; set -- -c -L "$1" -l "${2//\//\\}" ;;
-    del*)   arguments 2 - "$@" || return ; shift ; set -- -b "$1" -B ;;
+    del*)   if [ $# = 2 ] ; then
+                set -- -b "$2" -B
+            else                            # recurse for multiple deletes ...
+                while [ $# -gt 1 ] ; do
+                    shift ; actionEfimgr del "$1"
+                done ; return
+            fi ;;
     ent*\ gru*)
             arguments 2 - "$@" || return ; shift
             pmen="Grub boot menu" ; pref="$DAT_MOUNT/$DAT_EFI_DISTDIR"
@@ -907,7 +960,7 @@ actionMenu() {
         cre*)   ;;
         def*)   do_default "${appl}-" "$3" ; return ;;
         del*)   remove "$DAT_MOUNT/$DAT_SYSD_ENTRIES/${appl}-"* ; return ;;
-        *)      invoke -e "Argument #2 must be one of: create default delete" ; return
+        *)      invoke -a 2 'create|default|delete' ; return
         esac
         shift ; shift
     elif [ -d "$DAT_MOUNT/$DAT_SYSD_ENTRIES" ] ; then
@@ -946,11 +999,21 @@ actionMenu() {
     local opt2='splash loglevel=3'
     local resu="resume="
 
-    netoption 'sysdnames' "$host" || opt1="net.ifnames=0 $opt1"
+    local ifna
+    case "$CEN_OPT_IFNAMES" in
+    0)  ifna=0 ;;
+    1)  ifna=1 ;;
+    *)  if  [ "$DAT_ETCDIR/systemd/network/99-default.link" -ef '/dev/null' ] ; then
+            ifna=0
+        elif netoption 'sysdnames' "$host" ; then
+            ifna=1
+        fi
+    esac
+    [ -n "$ifna" ] && opt1="net.ifnames=$ifna $opt1"
 
     # entry for appliance
     if [ -n "$appl" ] ; then
-        local labl="$1" ; shift
+        local labl ; printf -v labl '%-29s.' "$1" ; shift
         [ "$1" != '-' ] && netw="$1" ; shift
         do_entry "$appl" "$labl" "$dist" "$root" "$resu" "$netw" "$opt1" "$opt2" "$@"
         return
@@ -969,17 +1032,17 @@ actionMenu() {
     # add extra options from kernel cmd line (to opt1 only)
     local xtra xfil="$DAT_MOUNT/image$DAT_SUFFIX/$DAT_CMDLINE"
     if [ -f "$xfil" ] && do_cmdline "$xfil" xtra && [ -n "$xtra" ] ; then
-        confirm -a "Add extra parameters ""($xtra)" && opt1+=" $xtra"
+        confirm -a $"Add extra parameters ""($xtra)" && opt1+=" $xtra"
     fi
     [ -e "/dev/disk/by-label/${host}_swap" ] && resu="resume=LABEL=${host}_swap"
 
-    local mode="workstation"
+    local mode=$"Workstation"
     if [ "$host" = "${CEN_NET_SERVERS[0]}" -o "$host" = "${CEN_NET_SERVERS[1]}" ] ; then
-        mode="server mode"
+        mode=$"Server mode"
         netw='centauriswitch=static'
-        if netoption "apoint" "$HOSTNAME" ; then
-            mode+=" with WLAN AP"
-            netw+=":apoint"
+        if netoption 'apoint' "$HOSTNAME" ; then
+            mode+=$" with WLAN AP"
+            netw+=':apoint'
         else
             netw+=":server"
         fi
@@ -992,14 +1055,19 @@ actionMenu() {
     local grub='/EFI/grub/shimx64.efi'
     [ -e "$DAT_MOUNT$grub" ] || grub='/EFI/grub/grubx64.efi'
 
-    do_entry 90 "$mode"             "$dist" "$root" "$resu"   "$netw" "$opt1" "$opt2"
-    do_entry 50 "maintenance mode"  "$dist" "$root" 'resume=' "$netw" "$opt1" \
-                                    'nosplash systemd.show_status=1 systemd.unit=runlevel2.target'
-    $nmen    40 "networking menu"   "$dist" "$root" 'resume=' "centauriswitch=router" "$opt1" \
-                                    'nosplash centaurilogin=local systemd.unit=runlevel2.target'
-    do_entry 30 "Memory test"       '/EFI/memtest/memtest86+x64.efi'
-    do_entry 20 "Boot via GRUB"     "$grub"
-    do_entry 10 "Windows"           '/EFI/Microsoft/boot/bootmgfw.efi'
+    printf -v mode '%-29s.' "Linux  : $mode"
+    do_entry 90 "$mode" "$dist" "$root" "$resu"   "$netw" "$opt1" "$opt2"
+
+    do_entry 80 $"Linux  : Maintenance mode    ." \
+                "$dist" "$root" 'resume=' "$netw" "$opt1" \
+                'nosplash systemd.show_status=1 systemd.unit=runlevel2.target'
+    $nmen    40 $"Network: Network menu        ." \
+                 "$dist" "$root" 'resume=' "centauriswitch=router" "$opt1" \
+                 'nosplash centaurilogin=local systemd.unit=runlevel2.target'
+
+    do_entry 30 $"Memory test"       '/EFI/memtest/memtest86+x64.efi'
+    do_entry 20 $"Boot via GRUB"     "$grub"
+    do_entry 10 $"Windows"           '/EFI/Microsoft/boot/bootmgfw.efi'
 
     # update loader config
     #   we use no file-name suffix when deleting or searching entries. For multiple distros
@@ -1007,7 +1075,8 @@ actionMenu() {
     local path="$DAT_MOUNT/$DAT_SYSD_ENTRIES"
     matchpath -e -o -s path -- "$path"/9?-* "$path"/8?-* "$path"/*
     path="${path##*/}" ; path="${path%.conf}" ; [ -z "$path" ] && path='*'
-    confirm -a -q -y "Update loader default to '$path'" || return
+    trimjoin -w -- "${path//-/ }"
+    confirm -a -f -q -y $"Update loader default to '%s'" "$CEN_TRIMJOIN" || return
     do_default "$path"
 }
 
@@ -1022,7 +1091,7 @@ actionMok() {
     imp*)   do_mokcheck && do_mokenroll ;;
     sig*)   do_mokdecrypt && do_sign "${@:2}" ;;
     sta*)   do_mokcheck -s ;;
-    *)      invoke -e "Valid sub-commands are: create decrypt delete import sign status"
+    *)      invoke -a 1 'create|decrypt|delete|import|sign|status'
     esac
  }
 
@@ -1078,7 +1147,7 @@ actionUpdate() {
     do_unconf   systemd
 
     if [ -z "$CEN_OPT_PLAIN" ] ; then
-        message "Configure for secure-boot"
+        message "Configure for secure-boot:" "${1/-/boot, systemd, grub}"
         case "$1" in
         -)      do_shim "$DAT_EFI_BOOTDIR" &&
                 do_shim "$DAT_EFI_DISTDIR" &&
@@ -1143,6 +1212,8 @@ options() {
             ;;
 
     -B|--bas|--base)    optarg 'base'        -   -d  ;;     # folder
+    -E|--ext*)          optarg 'extern'      -   -o  ;;     # ternary
+    -F|--ifn*)          optarg 'ifnames'     -   -o  ;;     # ternary
     -I|--img|--ima*)    optarg 'image'       -   -t  ;;     # text
     -N|--nic*)          optarg 'nickname'    -   -t  ;;     # text
     -P|--pla*)          optarg 'plain'       -   -f  ;;     # flag
@@ -1187,11 +1258,13 @@ usage() {
     do_mount -h ; do_suffix
     usageset \
         -o - \
-        -o "-B --base     <path> "$"EFI mount point or EFI folder (default: $DAT_MOUNT)" \
-        -o "-I --image    <file> "$"relative linux EFI image path (default: $DAT_IMAGE)" \
-        -o "-N --nickname <nick> "$"force distribution nick name  (default: $CEN_OPT_NICKNAME)" \
-        -o "-P --plain           "$"ignore secure boot shim, mok and signing" \
-        -o "-R --root     <path> "$"root file sytem to be used    (default: /)"
+        -o '-B --base     <path> '$"EFI mount point or EFI folder (default: $DAT_MOUNT)" \
+        -o '-E --external <extd> '$"External disk    (0:=no  1:=yes  2:=auto)" \
+        -o '-F --ifnames  <mode> '$"Interface naming (0:=kernel  1:=systemd  2:=auto)" \
+        -o '-I --image    <file> '$"relative linux EFI image path (default: $DAT_IMAGE)" \
+        -o '-N --nickname <nick> '$"force distribution nick name  (default: $CEN_OPT_NICKNAME)" \
+        -o '-P --plain           '$"ignore secure boot shim, mok and signing" \
+        -o '-R --root     <path> '$"root file sytem to be used    (default: /)"
 
     usagecat << !EOF
 $CEN_USE_HEADER

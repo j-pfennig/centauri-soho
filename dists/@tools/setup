@@ -38,9 +38,11 @@ if [ "$SOHO_SETUP" != 0 ] ; then
     DAT_RASPI=                          # raspberry pi flag
     DAT_REPOSITORY=                     # repository path
     DAT_SEED='seed.tgz'                 # the seed tar
+    DAT_SEED_OK=                        # flag in checkSeed()
     DAT_STATE_PATH='.state/setup'       # folder for state management
     DAT_SWAP=                           # swap partition size
     DAT_ONLINE=                         # flag for network being online
+    DAT_CLONE_SVR=                      # clone as server flag, see cloneName()
 fi
 
 # ------------------------------------------------------------------------------
@@ -57,13 +59,17 @@ SOHO_SERVER=                        # primary server name
 SOHO_SECOND=                        # secondary server name
 SOHO_GENAME=                        # generic server name
 
+SOHO_NAMES_X86=                     # default target system names
+SOHO_NAMES_RPI=
+
 SOHO_DOMAIN=                        # domain name
 SOHO_DOMUSR=                        # domain test user
 
 SOHO_APT_PROXY=                     # apt proxy
-SOHO_NET_BASE=                      # network base address
+SOHO_NET_BASE=                      # network base address/mask
 SOHO_NET_WLAN=                      # wlan ssid
 SOHO_NET_APNT=                      # wlan ssid for host access point
+SOHO_NET_EXTERN=                    # external base address/mask
 
 SOHO_HASS=                          # override homeassistant version
 SOHO_REPO_OPTS=                     # for centauriconfig OPTIONS file
@@ -71,11 +77,10 @@ SOHO_REPO_OPTS=                     # for centauriconfig OPTIONS file
     # derived from setup.conf but not part of it
 
 SOHO_DNAME=                         # 1st part of domain name
-SOHO_ORIGIN=                        # the bootstrap system name
-SOHO_EFISYS=                        # default target system name
 
     # other ...
 
+declare SOHO_HOST                   # target host name
 declare SOHO_PLATFORM               # set by centaurisoho
 
 # ------------------------------------------------------------------------------
@@ -98,8 +103,6 @@ DAT_SELF="${0##*/}"                 # the name of this script
 : ${SOHO_CONFIG:=$SOHO_DNAME}
 : ${SOHO_SONAME:='machine'}
 : ${SOHO_GENAME:=$SOHO_SONAME}
-: ${SOHO_ORIGIN:=${SOHO_SONAME}9}
-: ${SOHO_EFISYS:=${SOHO_SONAME}8}
 : ${SOHO_SERVER:=${SOHO_GENAME}0}
 : ${SOHO_SECOND:=${SOHO_GENAME}1}
 : ${SOHO_NET_WLAN:=${SOHO_DNAME^}}
@@ -110,17 +113,34 @@ DAT_SELF="${0##*/}"                 # the name of this script
 : ${SOHO_NET_ROUTER_DEF:="${SOHO_ROUTERS[1]:-"${SOHO_ROUTERS}0"}"}
 : ${SOHO_NET_ROUTER_IP4:="${SOHO_NET_BASE%.*}.1"}
 
+# default names for clones, pc and raspi ...
+[ -z "$SOHO_NAMES_X86" ] && SOHO_NAMES_X86=(
+    "$SOHO_SONAME"8 "$SOHO_SONAME"6 "$SOHO_SONAME"4 "$SOHO_SONAME"2 "$SOHO_SONAME"0)
+[ -z "$SOHO_NAMES_RPI" ] && SOHO_NAMES_RPI=(
+    "$SOHO_SONAME"9 "$SOHO_SONAME"7 "$SOHO_SONAME"5 "$SOHO_SONAME"3 "$SOHO_SONAME"1)
+
 # execution continues in a dispatcher at the very end of this script
 [ "$SOHO_SETUP" = 0 ] && return     # load conf only
+
+# ------------------------------------------------------------------------------
+# checkBoot make sure that /boot/efi is mounted
+# ------------------------------------------------------------------------------
+checkBoot() {
+    [ -h '/boot/efi' ] || return 0                  # no soho efi boot
+    [ -e '/boot/efi/EFI' ] && return 0              # is mounted
+    [ -e '/boot/efi/efi' ] && return 0              # is mounted
+    folder -f -m '/mnt/boot'                        # must exist
+    system -e -p mount -L "${SOHO_HOST}_boot" '/mnt/boot' && return 0
+    quitOnError "Access to '/boot/efi' is madatory for initramfs updates"
+}
 
 # ------------------------------------------------------------------------------
 # check for previous installation: <what> [<hdr>|true|false]       CEN_OPT_FORCE
 # ------------------------------------------------------------------------------
 checkInstalled() {
     case "$2" in
-    true)   create -- "$DAT_STATE_PATH-$1-done" ||
-                error -a "PWD=$PWD  $DAT_STATE_PATH"
-            quitOnError ; return 0 ;;
+    true)   quitOnError
+            create -f -- "$DAT_STATE_PATH-$1-done" ; return 0 ;;
     false)  remove -- "$DAT_STATE_PATH-$1-done" ; return 0 ;;
     esac
 
@@ -151,14 +171,9 @@ checkRepository() {
 #           -n  run installer and return
 # ------------------------------------------------------------------------------
 checkSeed() {
-    if [ "${DAT_STATE_PATH::1}" != '/' ] ; then         # create state folder ...
-        folder -f -m "${DAT_STATE_PATH%/*}"
-        DAT_STATE_PATH="$PWD/$DAT_STATE_PATH"           # absolute path
-        trace -a -c "state folder" "${DAT_STATE_PATH%/*}"
-    fi
 
     # centaurisoho may call us multiple times, ignore all but 1st
-    [ -n "$DAT_REPOSITORY" ] && return
+    [ -n "$DAT_SEED_OK" ] && return ; DAT_SEED_OK=1
 
     # we must have a seed tar
     if [ ! -e "$DAT_SEED" ] ; then
@@ -176,7 +191,7 @@ checkSeed() {
             . ./installer install || exit $?
         fi
         # remove uglified sources to avoid some strange update complications
-        remove $CEN_ROOT/library/_*.[dp]
+        rm -r -f $CEN_ROOT/library/_*.[dp]
     fi
 
     # 'centaurisoho' must exist to allow installation
@@ -191,7 +206,7 @@ checkSeed() {
     # now load centauri-bash-lib (but not if run by centaurisoho)
     # --------------------------------------------------------------------------
     if [ -z "$CEN_NAME" ] ; then                    # we are stand alone ...
-        PATH+=":${0%/*}" . _centauri_bash_lib -a - '0.00:2' || exit 2
+        PATH+=":${0%/*}" . _centauri_bash_lib -a - '0.00:4' || exit 2
         console -m 1                                # enable fancy output
     fi
 
@@ -199,28 +214,15 @@ checkSeed() {
     [ -e "$CEN_ROOT/tools/utilities" ] &&
         quit -e "Cannot install 'centaurisoho' on this system"
 
-    # check SOHO_DISTRO and SOHO_SERVER against repository
-    copyFromRepo -l || quitOnError
-
-    if checkInstalled 'step2' ; then
-        # folder that centauriconfig cowardly does not create
-        folder -f -m "$CEN_ROOT/backup/$SOHO_DISTRO"
-        local data REPO="$DAT_REPOSITORY/$HOSTNAME"
-        folder -f -m -- "$REPO"
-
-        if [ -n "$SOHO_REPO_OPTS" ] ; then              # centauriconfig OPTIONS file
-            create -t -v SOHO_REPO_OPTS -- "$REPO/OPTIONS"
-        elif [ "$DAT_HOST" = "$SOHO_EFISYS" ] ; then
-            create -t -c -- "$REPO/OPTIONS" <<!EOF
-CEN_OPT_MASTER=1
-CEN_OPT_GLOBAL=1
-CEN_OPT_ROLE=workstation
-!EOF
-        fi
-        data=
-        trimjoin -s data -m - -- "           opts: ${SOHO_REPO_OPTS[*]}"
-        message -m "Repository path: $REPO" "$data" ''
+    if [ "${DAT_STATE_PATH::1}" != '/' ] ; then         # create state folder ...
+        folder -f -m "${DAT_STATE_PATH%/*}"
+        DAT_STATE_PATH="$PWD/$DAT_STATE_PATH"           # absolute path
+        trace -a -c "state folder" "${DAT_STATE_PATH%/*}"
     fi
+
+    # check SOHO_DISTRO and SOHO_SERVER against repository
+    copyFromRepo -r || quitOnError
+    checkInstalled 'step2' && repoOptions               # create OPTIONS file
 
     # we badly need our services file for centaurinetcfg
     copyFromRepo /etc/services
@@ -230,13 +232,50 @@ CEN_OPT_ROLE=workstation
         system -e -p -- mount -o remount,size=1G,noatime /run/user/0
 }
 
+# ------------------------------------------------------------------------------
+# get the name of next clone
+#
+# call:     (1) cloneName                  # test: not yet cloned
+#           (2) cloneName -c [<name>]      # get next name, set SOHO_HOST
+#           (3) cloneName -n vres <indx>   # get name from list by index
+# ------------------------------------------------------------------------------
+cloneName() {
+    case "$1" in
+    -c) case "$2" in
+        $SOHO_SERVER)
+            confirm -y "Create the primary server '$2'" || quit -a -u
+            DAT_CLONE_SVR=1 ;;
+        $SOHO_SECOND)
+            confirm -y "Create the secondary server '$2'" || quit -a -u
+            DAT_CLONE_SVR=1 ;;
+        *)  if [ "${2:--}" = '-' ] ; then
+                cloneName -n SOHO_HOST 2
+                if [ "$SOHO_HOST" = "$HOSTNAME" ] || checkInstalled 'base' ; then
+                    cloneName -n SOHO_HOST 3
+                fi
+            fi
+            confirm -y "Sure to clone this system as '$SOHO_HOST'" || quit -a -u ;;
+        esac
+        # this is because we use volume labels for mount ...
+        [ "$2" = "$HOSTNAME" ] &&
+            quit -e -p "Cannot name target '%s', specify a different host name" "$2"
+        ;;
+    -n) if [ -e '/boot/firmware' -a "$DAT_RASPI" != 0 ] || [ "${DAT_RASPI:-0}" -gt 0 ] ; then
+            printf -v "$2" "${SOHO_NAMES_RPI[$3-1]}"
+        else
+            printf -v "$2" "${SOHO_NAMES_X86[$3-1]}"
+        fi
+        ;;
+    *)  local name ; cloneName -n name 1 ; [ "$SOHO_HOST" = "$name" ]
+    esac
+}
+
 ################################################################################
 ############ Begin of the customized part of the 'setup' script ################
 ################################################################################
 
 # set by workDispatch
 declare -g DAT_SEED DAT_DISK DAT_WHAT DAT_DESK  # the 1st invocation argument
-declare -g DAT_HOST                             # step 2, 2nd argument
                                                 # override network mode in step 3
 declare -g DAT_MODE_OVERRIDE="$DAT_PERSIST/centauriswitch-override"
 declare -g DAT_PASSWD                           # set by passwordFromFile
@@ -252,7 +291,7 @@ configureApt() {
     if [ -e '/etc/apt/apt.conf' ] ; then
         txtgrep -i - -m -s hasp -y "*Acquire::http::Proxy*" <'/etc/apt/apt.conf'
     fi
-    if [ -n "$SOHO_APT_PROXY" ] ; then
+    if [ "${SOHO_APT_PROXY:--}" != '-' ] ; then
         prox="Acquire::http::Proxy \"http://$SOHO_APT_PROXY:3128\";"
         dflt='-n'
     else
@@ -342,7 +381,10 @@ configureHass() {
 #
 configureLocales() {
     local havc havl
-    if checkInstalled 'localepurge' "Configure locales and localepurge" ; then
+    if [ -e '/etc/locale.nopurge.off' ] ; then          # done by 'installer prep' ...
+        checkInstalled 'locales' true ; checkInstalled 'localepurge' true
+        move -q '/etc/locale.nopurge.off' '/etc/locale.nopurge' ; return
+    elif checkInstalled 'localepurge' "Configure locales and localepurge" ; then
         checkInstalled 'locales' && return
     else
         if system -q -c localepurge ; then
@@ -358,12 +400,14 @@ configureLocales() {
 
     if confirm -n -b "Configure your locale settings now" ; then
         DEBIAN_FRONTEND=dialog system -e -t dpkg-reconfigure tzdata
-
-        [ -e '/etc/locale.nopurge.off' -a ! -e '/etc/locale.nopurge' ] &&
-            move '/etc/locale.nopurge.off' '/etc/locale.nopurge'
         DEBIAN_FRONTEND=dialog system -e -t dpkg-reconfigure locales
         if [ -n "$havl" ] ; then
+            # hide current config to avoid confusing config question
+            move -q '/etc/locale.nopurge' '/etc/locale.nopurge.off'
             DEBIAN_FRONTEND=dialog system -e -t dpkg-reconfigure localepurge
+            # config does not recreate nopurge
+            [ -e '/etc/locale.nopurge.ucf-dist' -a ! -e '/etc/locale.nopurge' ] &&
+                move '/etc/locale.nopurge.ucf-dist' '/etc/locale.nopurge'
         fi
         checkInstalled 'localepurge' true
     else
@@ -395,13 +439,14 @@ configureLocales() {
 
 # modify /etc/fstab for centaurimounter
 configureMounter() {
-    [ -e '/etc/fstab.static' ] && return
+    [ '/etc/fstab' -ef '/etc/fstab.static' ] && return
     printHeader "Update '/etc/fstab' for use with 'centaurimounter'"
 
     [ -r '/etc/fstab' ] || quitOnError "Cannot read:" '/etc/fstab'
     local fori fmnt fxxx data=(
-        '# This /etc/fstab contains only static mounts that should not be handled'
-        '# by centaurimounter. Use /etc/fstab.static to disable centaurimounter.'
+        "# This '/etc/fstab' contains only static mounts that should not be handled"
+        "# by centaurimounter.  To disable the automatic fstab configuration and/or"
+        "# using centaurimounter make '/etc/fstab' a symlink to '/etc/fstab.static'."
         ''
     )
     while read fori fmnt fxxx ; do
@@ -415,7 +460,11 @@ configureMounter() {
     data+=('' '# end')
     rename -f -b 'static' '/etc/fstab' || return
     create -v data -t -- '/etc/fstab' || return
-    system -e -p -- systemctl restart centaurimounter
+
+    # enable centaurimounter
+    copyFromRepo /etc/default/centaurimounter       # need nfs-common
+    system -e -p -t -- systemctl enable $CEN_ROOT/systemd/system/centaurimounter.service
+    system -e -p -t -- systemctl restart centaurimounter
 }
 
 # apply password default, message to users, shell window
@@ -423,10 +472,13 @@ configurePasswords() {
     checkInstalled "pw-$DAT_WHAT" && return
     printHeader "Setting passwords (see /etc/default/centauriusers)"
 
-    embed -t -v centauriswitch local
-    [ -e '/etc/samba/smb.conf.local' ] &&
-        symlink -f -m '/etc/samba/smb.conf.local' '/etc/samba/smb.conf'
+    if ! netquery server ; then
+        embed -t -v centauriswitch local
+        [ -e '/etc/samba/smb.conf.local' ] &&
+            symlink -f -m '/etc/samba/smb.conf.local' '/etc/samba/smb.conf'
+    fi
     embed -t -v centaurisecrets secrets 'passwords' -- init # set passwords from seed file
+    netquery server || embed -t -v centauriswitch auto
     embed -t -v centauriusers --seed='passwords' --silent linux
     checkInstalled "pw-$DAT_WHAT" true
 
@@ -449,10 +501,8 @@ configureWLAN() {
     local opts=(--force) curr="$PWD"
 
     if [ -z "$1" ] ; then                           # not called from step2
-        if [ -s "$sfil" ] ; then                    # check state file ...
-            read stat <"$sfil"
-            [ "$stat" = "$DAT_HOST" ] && return 1
-        fi
+        readline -e -i "$sfil" -s stat
+        [ "$stat" = "$SOHO_HOST" ] && return 1
         printHeader "Configure WLAN (${SOHO_NET_WLAN:--})"
     elif [ "$1" = '.' ] ; then
         [ -s "$1$sfil" ] || return 1                # not yet configured
@@ -483,8 +533,7 @@ configureWLAN() {
         embed -t -v centaurinetgen "${opts[@]}"     # create configs
     fi
     error -t || return 1
-#    [ -n "$1" ] && return 0                         # called from step2
-    echo "$DAT_HOST" >"$1$sfil" ; return 0
+    writeline -e -o "$1$sfil" -t "$SOHO_HOST"        # return status
 }
 
 # register an issue to configure the keyboard: [<base>]
@@ -508,27 +557,22 @@ packagesCommon() {
     checkInstalled 'samba' && return 0
     printHeader "Configure Basic Samba"
 
-    copyFromRepo /etc/samba/nmbd.conf
-    copyFromRepo /etc/samba/smb.conf.client
-    copyFromRepo /etc/samba/smb.conf.local
-    copyFromRepo /etc/samba/smbpass.conf
-    copyFromRepo /etc/samba/smbusers
-    copyFromRepo /etc/samba/services.conf
+    copyFromRepo    /etc/samba/nmbd.conf
+    copyFromRepo    /etc/samba/smb.conf.client
+    copyFromRepo -l /etc/samba/smb.conf.local      /etc/samba/smb.conf
+    copyFromRepo    /etc/samba/smbpass.conf.client
+    copyFromRepo -l /etc/samba/smbpass.conf.local  /etc/samba/smbpass.conf
+    copyFromRepo    /etc/samba/smbusers
+    copyFromRepo    /etc/samba/services.conf
     folder -m /var/log/samba                        # samba logs go here (if any)
-
-    [ -e /etc/samba/smb.conf ] || symlink -n smb.conf.local /etc/samba/smb.conf
 
     packagesInstall 'common'
 
-    # enable centaurimounter
-    system -e -p -t -- systemctl enable $CEN_ROOT/systemd/system/centaurimounter.service
+    copyFromRepo    /etc/openvpn/README
+    copyFromRepo -l "/etc/openvpn/client/$SOHO_DNAME/client.conf" "/etc/openvpn/client-$SOHO_DNAME.conf"
+    remove -q --    /etc/openvpn/update-resolv-conf
 
-    copyFromRepo /etc/openvpn/README
-    copyFromRepo "/etc/openvpn/client/$SOHO_DNAME/client.conf"
-    symlink -q -- "/etc/openvpn/server/$SOHO_DNAME/client.conf" /etc/openvpn/client-$SOHO_DNAME.conf
-    remove -q -- /etc/openvpn/update-resolv-conf
-
-    copyFromRepo /etc/default/centaurisecrets       # init $CEN_ROOT/secrets
+    copyFromRepo    /etc/default/centaurisecrets    # init $CEN_ROOT/secrets
     embed -t -v centaurisecrets secrets 'passwords' -- init
     error -t || return 1                            # return on error
 
@@ -556,7 +600,7 @@ packagesGUI() {
         printHeader "Install a minimal set of GUI tools"
         packagesInstall 'gui'
 
-        copyFromRepo /etc/default/centauristartx
+        copyFromRepo /etc/default/centauridisplay
         copyFromRepo /etc/lightdm/lightdm-xdmcp.conf
         copyFromRepo /etc/X11/Xmodmap
         copyFromRepo /etc/X11/xinit/xinitrc
@@ -564,15 +608,16 @@ packagesGUI() {
         copyFromRepo /etc/X11/Xsession.d/60centauri
         copyFromRepo /etc/pam.d/lightdm
         copyFromRepo "$cdir/centauri.desktop"
-
         quitOnError                                 # quit after error
-        message -i
-        if confirm -b "Install a browser/viewer for HTML Documentation and Web" ; then
 
-            printHeader "Install browser and generate HTML documentation"
-            packagesInstall 'viewer'
-
-            embed -t centaurihelp --delete --generate=all --yes
+        if ! checkInstalled 'viewer' ; then
+            message -i
+            if confirm -b "Install a browser/viewer for HTML Documentation and Web" ; then
+                printHeader "Install browser and generate HTML documentation"
+                packagesInstall 'viewer'
+                checkInstalled 'viewer' true
+                embed -t centaurihelp --delete --generate=all --yes
+            fi
         fi
     fi
 
@@ -638,20 +683,6 @@ quitOnError() {
                "This tool works incrementally and can be started repeatedly without causing harm."
 }
 
-# remove entries from group/passwd files: <name>...
-removeNames() {
-    local LIST FILE WHAT=('/etc/passwd' '/etc/shadow' '/etc/group' '/etc/gshadow')
-    for FILE in "${WHAT[@]}" ; do
-        [ -s "$FILE" ] || continue
-        trimjoin -d ':|^' -- "$@"
-        system -t -e -p -a LIST -- grep -v -E "(^$CEN_TRIMJOIN:)" "$FILE"
-        create -t -v LIST -- "$FILE.$CEN_NAME" 644 || continue
-        rename -b 'old' -o -- "$FILE" || continue
-        rename -- "$FILE.$CEN_NAME" "$FILE"
-    done
-    attributes -m 600 -- '/etc/shadow'* '/etc/gshadow'*
-}
-
 # set/clear CEN_OPT_GLOBAL, remove orphans: [-c|-s]
 removeSetupFiles() {
     [ -z "$DAT_NOT_LAST" ] || return            # set by centaurisoho if more cmds follow
@@ -675,27 +706,51 @@ removeSetupFiles() {
         done
         system -e -p -- systemctl enable NetworkManager
     fi
-    remove -- "$DAT_MODE_OVERRIDE"              # no longer override centauiswitch=xxx
-    message -a
+    remove -- "$DAT_MODE_OVERRIDE"*             # no longer override centauiswitch=xxx
 
     # for a server we set --global via OPTIONS file to keep all machine private folders
-    folder -f -m "$DAT_REPOSITORY/$DAT_HOST"
+    folder -f -m "$DAT_REPOSITORY/$SOHO_HOST"
     local data="CEN_OPT_GLOBAL=" role='workstation'
     [ "$1" = '-s' ] && { data+='1' ; role='primary' ; }
+
+    ### TODO implement CEN_OPT_DOMAIN to allow renaming the repository
     if [ -z "$SOHO_REPO_OPTS" ] ||
         confirm -y "Replace custom repository OPTIONS with defaults" ; then
-        create -t -v data -- "$DAT_REPOSITORY/$DAT_HOST/OPTIONS"
+        create -t -v data -- "$DAT_REPOSITORY/$SOHO_HOST/OPTIONS"
     fi
 
-    embed -t -v centauriconfig --yes --host="$DAT_HOST" --role="$role" --quiet \
+    embed -t -v centauriconfig --yes --quiet --role="$role" \
                                cleanup -- get grub.cfg -- get fstab -- get '*_*_key'
-    embed -t -v centauriconfig --yes --host="$DAT_HOST" --role="$role" --quiet --override=0 get
+    embed -t -v centauriconfig --yes --quiet --role="$role" --override=0 get
+    quitOnError
 
     confirm -n -b "After completing an installation all setup data should be removed" || return
     local curr="$PWD"
     folder -c -f ..
     remove -d -q -- "$curr" "$curr.tgz"
     quit -a "Done"
+}
+
+# add OPTIONS to repository folder
+repoOptions() {
+    # folder that centauriconfig cowardly does not create
+    folder -f -m "$CEN_ROOT/backup/$SOHO_DISTRO"
+    local data repo="$DAT_REPOSITORY/$HOSTNAME"
+    folder -f -m -- "$repo"
+
+    if [ -n "$SOHO_REPO_OPTS" ] ; then          # centauriconfig OPTIONS file
+        data="${SOHO_REPO_OPTS// /$'\n'}"
+        create -v data -- "$repo/OPTIONS"
+    elif cloneName ; then
+        create -c -- "$repo/OPTIONS" <<!EOF
+CEN_OPT_MASTER=1
+CEN_OPT_ROLE=workstation
+CEN_OPT_DOMAIN=$SOHO_CONFIG
+!EOF
+    fi
+    data=
+    trimjoin -s data -m - -- "           opts: $SOHO_REPO_OPTS"
+    trace -m "Repository path: $repo" "$data" ''
 }
 
 # check if server network is configured correctly: [<server>]
@@ -714,17 +769,14 @@ serverNetwork() {
 # if if AD/DC service is running: <port> <wait> <mesg>
 testActiveAdDc() {
     local tslp
-    for tslp in 0 1 1 1 1 2 ; do
-        if system -q -- systemctl is-active 'samba-ad-dc' ; then
-            [ $# = 3 ] || return 0
-            embed -t -v centauriroute wait 127.0.0.1 "$1" "$2" - && return
-            [ "$tslp" -gt 1 ] && quitOnError "$3"
-        else
-            sleep 1
-        fi
+    for tslp in 1 0 1 1 1 1 1 1 1 1 2 ; do
+        system -q -- systemctl is-active 'samba-ad-dc' && break
+        [ "$tslp" = 2 ] && quitOnError "Service samba-ad-dc is not running any more"
         [ "$tslp" = 0 ] && message "Wait for samba-ad-dc to become ready (port $1)"
+        timer -w 2
     done
-    quitOnError "Service samba-ad-dc is not running any more"
+                                                # wait for port, return status
+    embed -t -v centauriroute wait 127.0.0.1 "$1" "$2" "samba-ad-dc: $3"
 }
 
 # ------------------------------------------------------------------------------
@@ -746,6 +798,7 @@ setupStep1() {
 
     configureLocales
 
+    # at this point we should still have the init sources.list
     printHeader "Install some packages"
 
     checkInstalled 'aptconf' || configureApt        # also set proxy
@@ -769,9 +822,6 @@ setupStep1() {
         confirm -n "Ignore warning and continue" || quit -a -u
     fi
 
-    # save initial file ownerships before overriding any passwd/group file
-    embed -t -v -y  centauriowner --all save /root/OWNER-initial
-
     copyFromRepo /etc/DIR_COLORS                    # colors for ls et al.
     copyFromRepo /etc/adduser.conf                  # gid and uid ranges
     copyFromRepo /etc/nsswitch.conf                 # add sssd and extrausers
@@ -783,36 +833,20 @@ setupStep1() {
     copyFromRepo /etc/kernel-img.conf
     copyFromRepo /etc/systemd/logind.conf           # resize runtime dir !
     copyFromRepo /etc/vim/vimrc                     # better for white bgnd
-
-#    copyFromRepo /etc/default/centaurinetcfg        # see centauriefilinux menu
-    copyFromRepo /etc/default/centauriusers         # managing users/groups
-    symlink /etc/default/centaurinetcfg
-    symlink /etc/default/centauriusers
+    copyFromRepo /usr/lib/sysusers.d/centauri.conf  # seed for systemd
+                                                    # managing users/groups ...
+    copyFromRepo -l /etc/default/centauriusers "$PWD/centauriusers"
 
     remove "$DAT_PERSIST/centauri-bash-lib.dat"     # remove cache data
+    quitOnError
 
     # We let systemd create all system groups and users known in centauri-soho in
     # this early stage to get the same ids and gids for all instances. Non-system
     # linux users and groups are managed by 'centauriusers' via 'extrausers'. The
     # 'shadow.shared' is used to distribute hashed passwords via repository. To
     # fix ownerships after updates the 'centauriowner' tool is run ...
-
-    copyFromRepo /usr/lib/sysusers.d/centauri.conf  # seed for systemd
-    copyFromRepo /etc/shadow.shared                 # local user passwords
-    copy /etc/shadow.shared /etc/shadow             # passwords from repository
-    remove /etc/gshadow                             # rebuilt by systemd
-    quitOnError
-
-    # For known system users we remove passwd/group entries and assign new uid/guids
-
-    # We use libnss-extrausers. This tools disallows gids below 500. So we remove
-    # a lot of passwd/group entries to re-create then for extrausers ...
-
-    removeNames avahi avahi-autoipd _rpc _ssh bluetooth colord crontab \
-                geoclue input kvm messagebus netdev render saned sgx statd
-    system -e -p -t -- systemd-sysusers             # update passwd/group etc.
-
-    embed -t -v centauriusers --silent unix         # add group members, etc.
+    embed -t -v -y  centauriowner --all save /root/OWNER-initial
+    embed -t -v centauriusers --silent init          # add group members, etc.
     embed -t -v centauriowner restore /root/OWNER-initial
 
     # enable persistent logging
@@ -831,7 +865,7 @@ setupStep1() {
     else
         copyFromRepo /etc/apt/sources.list
     fi
-    [ "$DAT_RASPI" = 2 ] && copyFromRepo /etc/X11/xorg.conf.d+99-vc4.conf
+    [ "$DAT_RASPI" = 2 ] && copyFromRepo /etc/X11/xorg.conf.d/99-vc4.conf
     quitOnError
 
     if confirm -y "Run apt to upgrade installed packages" ; then
@@ -857,6 +891,7 @@ setupStep1() {
     copyFromRepo /etc/bash.bashrc
     copyFromRepo /etc/bash.centauri
     copyFromRepo /etc/bash.local
+    copyFromRepo /etc/profile
     copyFromRepo /etc/skel/.bash_aliases
     copyFromRepo /etc/skel/.bash_logout
     copyFromRepo /etc/skel/.bashrc
@@ -873,40 +908,27 @@ setupStep1() {
 # step2 - make efi bootable btrfs image
 # ------------------------------------------------------------------------------
 setupStep2() {
-    local SERVER HOSTOPT='-c'
-    case "$DAT_HOST" in
-    $HOSTNAME)
-            # this is because we use volume labels for mount
-            quit -e "Cannot name target '$DAT_HOST', specify a different host name" ;;
-    '')     DAT_HOST="$SOHO_EFISYS"
-            confirm -y "Sure to clone this system as '$DAT_HOST'" || quit -a -u ;;
-    -)      DAT_HOST="$SOHO_EFISYS" ;;
-    $SOHO_SERVER)
-            confirm -y "Create the primary server '$DAT_HOST'" || quit -a -u
-            SERVER=1 ;;
-    $SOHO_SECOND)
-            confirm -y "Create the secondary server '$DAT_HOST'" || quit -a -u
-            SERVER=1 ;;
-    esac
+    local HOSTOPT='-c'
+    cloneName -c "$SOHO_HOST"                               # SOHO_HOST set by dispatcher
 
     embed -t -v centaurinetcfg --quiet validate cache       # we need valid cache data
     while : ; do
         quitOnError
-        if [ -n "$SERVER" ] ; then
+        if [ -n "$DAT_CLONE_SVR" ] ; then
             copyFromRepo -c                                 # check host name
-            serverNetwork "$DAT_HOST"                       # check net configuation
+            serverNetwork "$SOHO_HOST"                      # check net configuation
             HOSTOPT='-s'
             quitOnError
-            nethost -s -- "$DAT_HOST" && break ; NETERR="server"
+            nethost -s -- "$SOHO_HOST" && break ; NETERR="server"
         else
-            nethost -c -- "$DAT_HOST" && break ; NETERR="client"
+            nethost -c -- "$SOHO_HOST" && break ; NETERR="client"
         fi
         confirm -n -f "Host has no %s network configuration. Edit configuration" \
                       "$NETERR" || quit -a -u
-        embed -t -v centaurinetcfg edit
+        embed -t -v centaurinetcfg edit ; netconfig -r -f   # edit and reload config
     done
 
-    local FSTAB="/run/setup-$DAT_HOST-fstab"                # temp file for step 2
+    local FSTAB="/run/setup-$SOHO_HOST-fstab"               # temp file for step 2
 
     # check disk, make sure that it is not mounted
     blkdevice -e -d -m -- "$DAT_DISK" ; quitOnError
@@ -937,7 +959,7 @@ setupStep2() {
     else
         outputMessage 'fstab' "$FSTAB" '# '
         embed -t centaurimedia --yes --device="$DAT_DISK" --fstab="$FSTAB" \
-                               system "$DAT_HOST" $MEDIA
+                               system "$SOHO_HOST" $MEDIA --sector=4096
         system -e -p -t partprobe "$DAT_DISK"           # reload partition table
         quitOnError                                     # quit after error
         sleep 0.3                                       # check if partitioned now ...
@@ -954,11 +976,11 @@ setupStep2() {
     if [ "$DAT_RASPI" = 1 ] ; then                      # system ext4 fs
         folder -f -m -s MNT_VOL0 '/run/setup_root'
         MNT_ROOT="$MNT_VOL0" ; MNT_HOME="$MNT_VOL0/home"
-        system -e -p -- mount -L "${DAT_HOST}_root" "$MNT_VOL0"
+        system -e -p -- mount -L "${SOHO_HOST}_root" "$MNT_VOL0"
     else                                                # system btrfs fs
         folder -f -m -s MNT_VOL0 '/run/setup_vol0'
         MNT_ROOT="$MNT_VOL0/Volumes/Root" ; MNT_HOME="$MNT_VOL0/Volumes/Home"
-        system -e -p -- mount -L "${DAT_HOST}_vol0" "$MNT_VOL0" -o subvol=/
+        system -e -p -- mount -L "${SOHO_HOST}_vol0" "$MNT_VOL0" -o subvol=/
 
         local item isrc irem
         for item in 'export' 'shared' ; do
@@ -1003,14 +1025,14 @@ setupStep2() {
     system -f -p -- mount -L "$BOOT_LBL" "$MNT_BOOT"
 
     if [ "$DAT_RASPI" = 1 ] ; then                      # 32bit, uses ext4
-        system -e -p -- mount -L "${DAT_HOST}_root" "$MNT_VOL0"
+        system -e -p -- mount -L "${SOHO_HOST}_root" "$MNT_VOL0"
     else                                                # mount by label this this time
-        system -e -p -- mount -L "${DAT_HOST}_vol0" "$MNT_VOL0" -o 'subvol=/'
+        system -e -p -- mount -L "${SOHO_HOST}_vol0" "$MNT_VOL0" -o 'subvol=/'
     fi
 
     # use --ifnames=X for centauriraspi and centauriefilinux
-    local IFNAMES='--ifnames='
-    netoption sysdnames "$DAT_HOST" && IFNAMES+='1' || IFNAMES+='0'
+    local IFNAMES='--ifnames=' temp
+    netoption sysdnames "$SOHO_HOST" && IFNAMES+='1' || IFNAMES+='0'
 
     # **************************************************************************
     # ********************************* x86 ************************************
@@ -1037,15 +1059,15 @@ setupStep2() {
         printHeader "Install EFI secure boot shim and bootloaders"
 
         # centauriefilinux needs repository links
-        folder -m -- "$MNT_ROOT/$DAT_REPOSITORY/$DAT_HOST"
+        folder -m -- "$MNT_ROOT/$DAT_REPOSITORY/$SOHO_HOST"
         local conf="${DAT_REPOSITORY##*/}"
-        symlink -n "configs/$SOHO_DISTRO/$conf/$DAT_HOST" "$MNT_ROOT$CEN_ROOT/private"
-        symlink -n "configs/$SOHO_DISTRO/$conf/@shared"   "$MNT_ROOT$CEN_ROOT/shared"
+        symlink -n "configs/$SOHO_DISTRO/$conf/$SOHO_HOST" "$MNT_ROOT$CEN_ROOT/private"
+        symlink -n "configs/$SOHO_DISTRO/$conf/@shared" "$MNT_ROOT$CEN_ROOT/shared"
 
         [ -h "$MNT_ROOT/boot/efi" ] || symlink -n '/mnt/boot' "$MNT_ROOT/boot/efi"
         copyFromRepo '/boot/grub/grub.cfg' "$MNT_BOOT/grub/grub.cfg"
         embed -t -v centauriefilinux --force --silent --base="$MNT_BOOT" --root="$MNT_ROOT" \
-                                     --yes update boot -- update grub -- update systemd
+                            --external=off --yes update boot -- update grub -- update systemd
         quitOnError                                     # quit after error
 
         if confirm -y "Copy MOK to EFI folder to allow enrolling at 1st boot" ; then
@@ -1064,12 +1086,11 @@ setupStep2() {
         printHeader "Create systemd boot menu entries"
 
         embed -t -v centauriefilinux --force --silent --base="$MNT_BOOT" --root="$MNT_ROOT" \
-                    --yes menu "$DAT_HOST" $IFNAMES "LABEL=${DAT_HOST}_vol0"
+                    --yes menu "$SOHO_HOST" $IFNAMES "LABEL=${SOHO_HOST}_vol0"
         # get the default kernel cmdline from generated menu entry
-        local TEMP
-        if matchpath -e -o -s TEMP "$MNT_BOOT/loader/entries"/90-*.conf ; then
-            txtgrep -m -s TEMP -y "options*" -i - <"$TEMP"
-            echo "${TEMP#* }" >"$MNT_BOOT/image-$SOHO_DISTRO/cmdline"
+        if matchpath -e -o -s temp "$MNT_BOOT/loader/entries"/90-*.conf ; then
+            txtgrep -m -s temp -y "options*" -i - <"$temp"
+            writeline -e -t -o "$MNT_BOOT/image-$SOHO_DISTRO/cmdline" "${temp#* }"
         fi
 
         # mask systemd-boot-update service, it would install an unsigned loader in the wrong place
@@ -1077,7 +1098,7 @@ setupStep2() {
         quitOnError                                     # quit after error
 
         if [ -h "$MNT_ROOT/vmlinuz" ] ; then
-            message "fix kernel symlinks"
+            message "Fix kernel symlinks"
             embed -t -v centauriefilinux --force --silent --yes --base="$MNT_BOOT" \
                                          --root="$MNT_ROOT" kernel -
         fi
@@ -1088,19 +1109,19 @@ setupStep2() {
     else
         if [ "$DAT_RASPI" = 1 ] ; then
             printHeader "Setup the raspberry boot loader (32 bit using ext4)"
-            local ROOT="LABEL=${DAT_HOST}_root"
+            local ROOT="LABEL=${SOHO_HOST}_root"
         else
             printHeader "Setup the raspberry boot loader (64 bit using btrfs)"
-            local ROOT="LABEL=${DAT_HOST}_vol0"
+            local ROOT="LABEL=${SOHO_HOST}_vol0"
         fi
 
         copyFromRepo -u /boot/firmware/config-default.txt
         copyFromRepo -u /boot/firmware/config-minimal.txt
 
-        embed -t -v centauriraspi --host="$DAT_HOST" --boot="$MNT_BOOT" copy -- initrd create
-        embed -t -v centauriraspi --host="$DAT_HOST" --boot="$MNT_BOOT" $IFNAMES entry - "$ROOT"
-        [ -n "$SERVER" ] && TEMP='server' || TEMP='default'
-        embed -t -v centauriraspi --host="$DAT_HOST" --boot="$MNT_BOOT" --yes config "$TEMP"
+        embed -t -v centauriraspi --host="$SOHO_HOST" --boot="$MNT_BOOT" copy -- initrd create
+        embed -t -v centauriraspi --host="$SOHO_HOST" --boot="$MNT_BOOT" $IFNAMES entry - "$ROOT"
+        [ -n "$DAT_CLONE_SVR" ] && temp='server' || temp='default'
+        embed -t -v centauriraspi --host="$SOHO_HOST" --boot="$MNT_BOOT" --yes config "$temp"
     fi
     quitOnError                                     # quit after error
 
@@ -1113,12 +1134,13 @@ setupStep2() {
     folder -m -f "$MNT_ROOT$DAT_PERSIST"            # create "persistent"
 
     if [ -e "$DAT_STATE_PATH-step3-done" ] ; then
-        remove "$MNT_ROOT$DAT_MODE_OVERRIDE"
+        remove "$MNT_ROOT$DAT_MODE_OVERRIDE"*
     else
         writeline -e -t -o "$MNT_ROOT$DAT_MODE_OVERRIDE" 'simple'
+        writeline -e -t -o "$MNT_ROOT$DAT_MODE_OVERRIDE-setup" 'flag to keep override file'
     fi
 
-    if [ -n "$SERVER" -o "$DAT_HOST" = "$SOHO_EFISYS" ] ; then
+    if [ -n "$DAT_CLONE_SVR" ] || cloneName ; then
         # networkmanager does not always respect static interface configuration
         # so disable it. Anyhow running NM is not a good idea for a server ...
         symlink -n '/dev/null' "$MNT_ROOT/etc/systemd/system/NetworkManager.service"
@@ -1130,11 +1152,11 @@ setupStep2() {
         configureWLAN "$MNT_ROOT"
     fi
 
-    printHeader "Rename new system to '$DAT_HOST'"
+    printHeader "Rename new system to '$SOHO_HOST'"
 
     create -t -c "$MNT_ROOT/etc/sysctl.d/host+domain.conf" <<!EOF
 kernel.domainname=$SOHO_DOMAIN"
-kernel.hostname=$DAT_HOST
+kernel.hostname=$SOHO_HOST
 !EOF
 
     # get rid of existing interface config (re-created by centaurinetgen)
@@ -1145,10 +1167,10 @@ kernel.hostname=$DAT_HOST
     # **************************************************************************
     if [ -z "$DAT_RASPI" ] ; then
         embed -t -v centaurirestore --restore="$MNT_ROOT" --yes \
-                    --clone="$DAT_HOST" --clone=- --clone=- --clone="$MNT_BOOT/grub"
+                    --clone="$SOHO_HOST" --clone=- --clone=- --clone="$MNT_BOOT/grub"
         quitOnError                                 # quit after error
 
-        if [ "$DAT_HOST" = "$SOHO_EFISYS" ] ; then
+        if cloneName ; then
             outputMessage 'efi' "$MNT_ROOT/etc/motd"
         else
             outputMessage 'stepN' "$MNT_ROOT/etc/motd" '' "step 2 (boot disk)"
@@ -1161,7 +1183,7 @@ kernel.hostname=$DAT_HOST
     else
         outputMessage 'stepN' '/etc/motd' '' "step 2 (boot disk)"
         embed -t -v centaurirestore --restore="$MNT_ROOT" --yes \
-                            --clone="$DAT_HOST" --clone=- --clone=- --clone=-
+                            --clone="$SOHO_HOST" --clone=- --clone=- --clone=-
         quitOnError                                 # quit after error
         outputMessage 'raspi' "$MNT_ROOT/etc/motd"
     fi
@@ -1212,13 +1234,13 @@ setupStep3Base() {
     copyFromRepo /etc/pam.d/sshd
     copyFromRepo /etc/pam.d/sudo
     copyFromRepo /etc/pam.d/su
-    copyFromRepo /usr/share/pam-configs/sss
     copyFromRepo /etc/security/pam_mount.conf.xml.client
     copyFromRepo /etc/security/pam_mount.conf.xml.local
     copyFromRepo /etc/sudoers.d/centauri
     copyFromRepo /etc/sysctl.conf
     copyFromRepo /etc/tmpfiles.d/centauri.conf
 
+    embed -t -v centauriconfig -q setup repository  # finish repository setup
     embed -t -v centaurisecrets local               # symlink local configs
 
     printHeader "Going to install a lot of packages now"
@@ -1244,11 +1266,13 @@ QUEUERUNNER=nodaemon
     copyFromRepo /etc/default/centauripower
     copyFromRepo /etc/default/dnsmasq
     copyFromRepo /etc/dnsmasq.conf
+    copyFromRepo /etc/dnsmasq.d/static
     copyFromRepo /etc/fuse.conf
     copyFromRepo /etc/mail.rc
     copyFromRepo /etc/minidlna.conf
     copyFromRepo /etc/udev/rules.d/01-centauriroute.rules
     copyFromRepo /etc/udev/rules.d/99-centauriroute.rules
+    copyFromRepo /etc/udev/rules.d/33-ax88179eth.rules
     copyFromRepo /etc/xdg/user-dirs.defaults        # beware! go away
 
     # some maintainer scripts override our config
@@ -1268,12 +1292,12 @@ QUEUERUNNER=nodaemon
     # let centauripower register it's hooks
     embed -t -v centauripower setup
 
-    # network configuration
-    embed -t -v centaurinetcfg --quiet setup "$DAT_HOST"
+    # network configuration (keep resolv.conf)
+    embed -t -v centaurinetcfg --keep --quiet setup "$SOHO_HOST"
 
     printHeader "A basic system is installed, now configure things the centauri way"
 
-    if [ "$HOSTNAME" = "$SOHO_SERVER" ] ||
+    if [ "$HOSTNAME" = "$SOHO_SERVER" -o "$HOSTNAME" = "$SOHO_SECOND" ] ||
         confirm -y "Configure 'inetd' and some network services to be run" ; then
 
         copyFromRepo /etc/default/centaurirunlevel
@@ -1323,18 +1347,36 @@ QUEUERUNNER=nodaemon
         copyFromRepo /etc/ssh/ssh_config.d/50-centauri.conf
         copyFromRepo /etc/ssh/sshd_config
         copyFromRepo /etc/ssh/sshd_remote
-
-        passwordFromFile 'wlanpsk'                  # wlan config
         local opts=()
-        [ "${SOHO_NET_WLAN:--}" != '-' ] && opts+=(--wlan="$SOHO_NET_WLAN:$DAT_PASSWD")
-        [ "${SOHO_NET_APNT:--}" != '-' ] && opts+=(--apoint="$SOHO_NET_APNT:$DAT_PASSWD")
-        embed -t -v centaurinetgen "${opts[@]}" nmconn -- wpasupp -- hostapd
+        netoption 'nm' "$HOSTNAME" && opts+=(nmconn --)
+        if netiface -k -x wlan0 ; then              # do we have wlan?
+            passwordFromFile 'wlanpsk'              # wlan config
+            [ "${SOHO_NET_WLAN:--}" != '-' ] && opts+=(--wlan="$SOHO_NET_WLAN:$DAT_PASSWD")
+            [ "${SOHO_NET_APNT:--}" != '-' ] && opts+=(--apoint="$SOHO_NET_APNT:$DAT_PASSWD")
+            opts+=(wpasupp -- hostapd)
+        fi
+        [ -n "$opts" ] && embed -t -v centaurinetgen "${opts[@]}"
 
         printHeader "Now centauri networking is configured (with ssh, vsftp and httpd)"
     fi
-                                                    # populate repository
+
+    # populate repository
+    if [ -n "$SOHO_REPO_OPTS" ] && confirm -y "Update repository data from server" ; then
+        printHeader "Load repository from server and update with local data"
+        passwordFromFile 'repository'
+        export CEN_RSYNC_PASSWD="$DAT_PASSWD"
+        while : ; do
+            embed -t -v centauriconfig --quiet --override=0 --yes rget -- put && break
+            error -c ; message -i
+            confirm -s CEN_RSYNC_PASSWD -p + -u \
+                    "Retry with another password (empty input to stop)" || break
+        done
+        repoOptions                                 # re-create OPTIONS file
+    else
+        printHeader "Update repository with local data (SOHO_REPO_OPTS not set)"
+    fi
     embed -t -v centauriconfig --quiet --role=workstation --yes \
-                               get grub.cfg -- get fstab -- get '_*_key'
+                            get grub.cfg -- get fstab -- get '_*_key'
     embed -t -v centauriconfig --quiet --role=workstation --yes --override=0 get
 
     copyFromRepo "/etc/skel/.profile"               # got overridden by dpkg
@@ -1358,6 +1400,7 @@ setupStep3Client() {
     packagesInstall 'client'
 
     copyFromRepo /etc/default/openvpn
+    copyFromRepo /etc/NetworkManager/system-connections/OpenVPN-$SOHO_DNAME.nmconnection
 
     embed -t -v centaurirunlevel install
 
@@ -1365,8 +1408,8 @@ setupStep3Client() {
     copyFromRepo /etc/apt/apt.conf.client
     copyFromRepo /etc/apt/apt.conf.local
     copyFromRepo /etc/apt/apt.conf.d/20auto-upgrades
+    copyFromRepo /etc/systemd/timesyncd.conf
     copyFromRepo /etc/tinyproxy/tinyproxy.conf.template
-    copyFromRepo /etc/default/centaurimounter       # need nfs-common
     configureMounter                                # modify fstab, restart
     quitOnError
 
@@ -1387,10 +1430,10 @@ setupStep3Client() {
 }
 
 # ------------------------------------------------------------------------------
-# step3 multi - install multi-use
+# step3 appliance - install appliances
 # ------------------------------------------------------------------------------
 setupStep3Appli() {
-    local mesg='stepN'
+    local home mesg='stepN'
     printHeader "Make this system an appliance"
 
     copyFromRepo /etc/services                      # we really depend on this
@@ -1403,15 +1446,23 @@ setupStep3Appli() {
         systemctl restart systemd-journald
     fi
 
-    if [ ! -d '/shared/HomeAssistant' ] &&
-       confirm -b "Install 'Home Assistant, Core Version'" ; then
-        configureHass
-        mesg='hass'
-    fi
+    for home in ~clock ~kiosk ~homeassistant ; do
+        [ -d "$home" ] && continue
+        case "${home##*/}" in
+        home*)  confirm -b "Install 'Home Assistant, Core Version'" || continue
+                configureHass ; mesg='hass' ;;
+        clock)  confirm -b "Enable 'clock' appliance mode" || continue
+                embed -v centauristartup -q install 'clock' ;;
+        kiosk)  confirm -b "Enable 'kiosk' appliance mode" || continue
+                embed -v centauristartup -q install 'kiosk' ;;
+        esac
+    done
 
-    if ! system -q -r -- getent passwd 'kiosk' ; then
-        confirm -b "Create user account to enable kiosk mode" &&
-            system -f -- useradd -m 'kiosk' -d "$CEN_ROOT/kiosk" -g 'users' -p 'kiosk'
+    if [ -d ~clock ] || [ -d ~kiosk ] ; then
+        if ! checkInstalled 'viewer' ; then
+            packagesInstall 'viewer'
+            checkInstalled 'viewer' true
+        fi
     fi
 
     printHeader "Set the default boot entry"
@@ -1430,30 +1481,40 @@ setupStep3Appli() {
 # step3 server - install server
 # ------------------------------------------------------------------------------
 setupStep3Server() {
-    serverNetwork ; quitOnError                     # check configuration
+    serverNetwork ; quitOnError                         # check configuration
 
-    if ! checkInstalled 'server' ; then
+    if ! checkInstalled 'certs' ; then
 
         printHeader "Make this system a server"
 
         copyFromRepo /etc/services                      # we really depend on this
+        copyFromRepo /etc/ntpsec/ntp.conf
+        copyFromRepo /etc/systemd/timesyncd.conf
+
+        folder -m /var/log/ntpsec 664 ntpsec:ntpsec     # make ntpsec happy
+
         copyFromRepo /etc/samba/smb.conf.master
         copyFromRepo /etc/samba/smb.conf.slave
+        copyFromRepo /etc/samba/smbpass.conf.master
 
         system -e -p -t -- systemctl disable sssd       # could make re-boot hang
         embed -t -v centaurikerberos setup krb5 sssd    # init kerberos via sssd
 
         configureCertificates -s
+
+        # some tools might rely on /mnt/vol0/Volumes
+        configureMounter                                # modify fstab, restart
+
         packagesInstall 'server'
         embed -t -v centaurirunlevel install
         quitOnError
 
         copyFromRepo /etc/exports                       # nfs exported volumes
+        copyFromRepo /etc/nfs.conf
 
-        copyFromRepo /etc/openvpn/README
-        copyFromRepo "/etc/openvpn/server/$SOHO_DNAME/server.conf"
-        copyFromRepo "/etc/openvpn/server/$SOHO_DNAME/updown"
-        symlink -q -- "/etc/openvpn/server/$SOHO_DNAME/server.conf" /etc/openvpn/server.conf
+        copyFromRepo    /etc/openvpn/README
+        copyFromRepo -l "/etc/openvpn/server/$SOHO_DNAME/server.conf" /etc/openvpn/server.conf
+        copyFromRepo    "/etc/openvpn/server/$SOHO_DNAME/updown"
         remove -q -- /etc/openvpn/update-resolv-conf
 
         copyFromRepo /etc/default/saslauthd
@@ -1470,19 +1531,20 @@ setupStep3Server() {
 
         # create archive and backup volumes
         embed -t -v centaurisnapshot --yes --quiet create 'Archive' -- create 'Backup'
+        checkInstalled 'certs' true
     fi
-
-    copyFromRepo /etc/default/centaurimounter       # need nfs-common
-    configureMounter                                # modify fstab, restart
 
     printHeader "Provisioning Samba AD/DC"
 
-    if checkInstalled 'addc' ] &&
+    if ! netoption 'addc' "$HOSTNAME" ; then
+        message "AD/DC is not configured, see 'option addc'"
+        checkInstalled 'populate' true
+    elif checkInstalled 'addc' &&
         confirm -y "Samba AD/DC already configured. Keep configuration"
     then
         :
     else
-        checkInstalled 'server' false ; checkInstalled 'populate' false
+        checkInstalled 'addc' false ; checkInstalled 'populate' false
         netquery server || error "Must be on a server - check your net config"
         # stop server services
         system -t -q systemctl start centauri-public.target
@@ -1503,7 +1565,7 @@ setupStep3Server() {
             ITEM="${ITEM##*/}" ; [ "$ITEM" = 'lo' ] && continue
             nettool -w -d "$ITEM" down
         done
-        netserver -w PRIMARY MASTER "$DAT_HOST"     # yes, we are MASTER here!
+        netserver -w PRIMARY MASTER "$SOHO_HOST"    # yes, we are MASTER here!
         quitOnError
 
         # Provisioning, add users, add users to groups
@@ -1522,14 +1584,15 @@ setupStep3Server() {
         move -q /etc/krb5.conf /etc/krb5.conf.samba # save samba generated config
         embed -t -v centaurikerberos setup krb5     # get our config again
 
-        remove -- "$DAT_MODE_OVERRIDE"              # no longer override centauiswitch=xxx
-        checkInstalled 'addc' false
+        remove -- "$DAT_MODE_OVERRIDE"*             # no longer override centauiswitch=xxx
+        checkInstalled 'addc' true
 
         # now we restart the network via centauriroute which handles the static
         # network mode used by a server ...
 
         embed -t -v centauriswitch init
         embed -t -v centauriroute --force --quiet open
+        embed -t -v centaurifilter --zombie restart
         quitOnError
     fi
 
@@ -1539,22 +1602,30 @@ setupStep3Server() {
 
         embed -t -v centaurinetcfg resolv default   # generate resolv.conf
 
+        # temporarily disable IPv6 support
+        #embed -t -v centauriroute ipv6 off
+
+        # it is important to map port 53 via 'centaurifilter dnsmap'. Usually this
+        # happens when the firewall is started. But better check it:
+        embed -q -t -v centauriroute wait 127.0.0.2 5354 - ||
+            embed -t -v centaurifilter dnsmap
+
         # it takes a moment for ifup to process callbacks to centauiswitch that do
         # add ipv6 addresses to the bridge. The samba-ad-dc service waits 5 seconds
         # and checks for DNS before starting the samba deamon ...
-        system -e -t systemctl start centauri-master.target # samba-ad-dc
+        system -e -t systemctl start centauri-master.target
 
         # wait until samba services are ready ...
-        testActiveAdDc  88 5 "No Kerberos server"  &&
-        testActiveAdDc 135 5 "No DCE/RPC endpoint" &&
-        testActiveAdDc 389 5 "No LDAP server"
+        testActiveAdDc  88 30 "No Kerberos server"  &&
+        testActiveAdDc 135 30 "No DCE/RPC endpoint" &&
+        testActiveAdDc 389 30 "No LDAP server"
         quitOnError
 
         # now get a keytab for the server itself ...
         embed -t -v centaurikerberos --seed='passwords' machine del + --quiet
         embed -t -v centaurikerberos --seed='passwords' machine add +
         embed -t -v centaurikerberos keytab + --output=/etc/krb5.keytab --yes
-        checkInstalled 'populate' false
+        checkInstalled 'populate' true
     fi
 
     system -e -p -t -- systemctl enable sssd        # should be ok now
@@ -1567,8 +1638,8 @@ setupStep3Server() {
     if [ ! -e "$CEN_ROOT/machines/rsyncd.conf" ] ; then
         printHeader "Create repository staging folder"
 
-        netserver -w PRIMARY MASTER "$DAT_HOST"     # fake MASTER role
-        embed -t -v centaurimachines --setup --add "$DAT_HOST"
+        netserver -w PRIMARY MASTER "$SOHO_HOST"    # fake MASTER role
+        embed -t -v centaurimachines --setup --add "$SOHO_HOST"
         quitOnError
     fi
 
@@ -1650,7 +1721,6 @@ setupStep3Server() {
 # ------------------------------------------------------------------------------
 setupStep3() {
     local CURR IGUI ICOMM ICLIE ISERV IPASW IAPPL
-    DAT_HOST="$HOSTNAME"                        # was configured in step 2
 
     # restrict 'server' final target
     for CURR in 'client' 'appliance' 'server' '' ; do
@@ -1696,7 +1766,6 @@ setupStep4() {
 
         printHeader "Preparing $DAT_DESK setup"
 
-        DAT_HOST="$HOSTNAME"                        # was configured in step 2
         packagesInstall "$DAT_DESK"
 
         copyFromRepo /etc/default/centaurirunlevel  # skipped earlier steps?
@@ -1712,7 +1781,7 @@ setupStep4() {
     fi
 
     if [ "$DAT_DESK" = 'hass' ] ; then
-        printHeader "$DAT_DESK is installed, use '/srv/homeassistant/centauihass' to manage"
+        printHeader "$DAT_DESK is installed, use 'centauihass' for its management"
     else
         printHeader "$DAT_DESK is installed, select a '$DAT_DESK' session at graphical login"
     fi
@@ -1722,33 +1791,40 @@ setupStep4() {
 # help for 'setup' command (centaurisoho has its own implementation)
 # ------------------------------------------------------------------------------
 usageSetup() {
-    local NONAME="${SOHO_GENAME//?/ }"      # place holder for help text
-
+    local serv name nam1 nam2 nam3
+    cloneName -n nam1 1 ; cloneName -n nam2 2 ; cloneName -n nam3 3
+    printf -v serv '%-11s' "$SOHO_SERVER"
+    printf -v name '%-11s' "$nam3"
     cat <<!EOF
-Usage:  (1) $DAT_SELF seed                  # step 1: prepare base system
-        (2) $DAT_SELF /dev/<drive> [<name>] # step 2: prepare (secure)EFI boot / clone
-        (3) $DAT_SELF base                  # step 3: install base system
-            $DAT_SELF client|server|appliance #       make it client, server or appliance
-        (4) $DAT_SELF lxqt|kde              # step 4: install a desktop
+Usage:  (1) $DAT_SELF seed                 # step 1: prepare base system
+        (2) $DAT_SELF /dev/<disk> [<name>] # step 2: clone and configure boot
+        (3) $DAT_SELF base                 # step 3: install base system
+            $DAT_SELF client|server        #         make it client or server
+            $DAT_SELF appliance            #         make it an appliance
+        (4) $DAT_SELF lxqt|kde             # step 4: install a desktop
+            $DAT_SELF hass                 #         install homeassistant core
+            $DAT_SELF weewx                #         install weatherstation software
 
-Example:(1) $DAT_SELF seed      $NONAME   # step 1: prepare base system
-        (2) $DAT_SELF /dev/sdb  $NONAME   # step 2: prepare EFI boot: $SOHO_EFISYS
-        (3) $DAT_SELF base      $NONAME   # step 3: boot $SOHO_EFISYS, create base system
-            $DAT_SELF /dev/sdb $SOHO_SERVER   #         clone to server image
-            $DAT_SELF server    $NONAME   #         boot $SOHO_SERVER, make it a server
-            $DAT_SELF /dev/sdb ${SOHO_GENAME}4   #         boot $SOHO_EFISYS, clone to client
-            $DAT_SELF client    $NONAME   #         boot ${SOHO_GENAME}4, make it a client
-        (4) $DAT_SELF lxqt|kde  $NONAME   # step 4: install a desktop
+Example:(1) $DAT_SELF seed                 # step 1: prepare base system $nam1
+        (2) $DAT_SELF /dev/sdb             # step 2: clone+configure boot for $nam2
+        (3) $DAT_SELF base                 # step 3: boot $nam2, create base system
+            $DAT_SELF /dev/sdb $serv #         clone to server image
+            $DAT_SELF server               #         boot $SOHO_SERVER, make it a server
+            $DAT_SELF /dev/sdb $name #         boot $nam2, clone to client
+            $DAT_SELF client               #         boot $nam3, make it a client
+        (4) $DAT_SELF lxqt                 # step 4: install a simple desktop
 
 Arguments:
-        <drive>     A (virtual) disk drive,  example: sda
-        <name>      a host name,  example: my-box3
+        <disk>      A (virtual) disk drive,  examples: sdb mmcblk0
+        <name>      a host name (<host> should be configured in centaurinetcfg)
 
-The '$DAT_SELF' script is a bootstrap tool and also a plugin for 'centaurisoho'. After
-performing step (1), the script hands control over to 'centaurisoho'. In other words:
-To run later steps, e.g. (2)...(4) you can run 'centaurisoho' directly as it contains
-more help information and debug/trace options. But if you are happy with '$DAT_SELF' then
-run it, there is no technical difference.
+The '$DAT_SELF' script is a bootstrap tool and also a plugin for 'centaurisoho'. It works
+using a 'workspace' which usually comes as a tar archive. There is an 'installer' tool
+that unpacks the 'seed.tar' and that can run step (1) '$DAT_SELF seed'.
+
+After step (1), the script hands control over to 'centaurisoho'. In other words: To run
+later steps, e.g. (2)...(4) you can run 'centaurisoho' directly as it provides more help
+information and debug/trace options.
 
 !EOF
 }
@@ -1757,12 +1833,14 @@ run it, there is no technical difference.
 # dispatcher
 # ------------------------------------------------------------------------------
 workDispatch() {
+    SOHO_HOST="$HOSTNAME"               # target name, see cloneName()
+
     case "$#$1" in
         # these command should always be implemented
         1seed)   DAT_WHAT='seed'   ;;               # step 1
-        1/dev/*) DAT_DISK="$1"     ;;               # step 2
-        2/dev/*) DAT_DISK="$1" ; DAT_HOST="$2" ;;   # step 2 clone
-        3/dev/*) DAT_DISK="$1" ; DAT_HOST="$2" ; DAT_SWAP="$3" ;;
+        1/dev/*) DAT_DISK="$1" ; SOHO_HOST= ;;      # step 2 clone
+        2/dev/*) DAT_DISK="$1" ; SOHO_HOST="$2" ;;
+        3/dev/*) DAT_DISK="$1" ; SOHO_HOST="$2" ; DAT_SWAP="$3" ;;
         1bas?)   DAT_WHAT='base'   ;;               # step 3
         1cli*)   DAT_WHAT='client' ;;               # ...
         1app*)   DAT_WHAT='appliance' ;;            # ...
@@ -1811,6 +1889,8 @@ workDispatch() {
             quit "Please fix boot config and fstab and networking, then rerun '$CEN_NAME'"
         fi
 
+        checkBoot                                   # need /boot/efi for initramfs
+
         [ -z "$DAT_DISK" ] && { configureWLAN ; quitOnError ; }
         [ -n "$DAT_WHAT" ] && setupStep3
         [ -n "$DAT_DESK" ] && setupStep4
@@ -1844,7 +1924,7 @@ elif [ "$SOHO_SETUP" != 1 ] ; then          # if not sourced by centaurisoho ...
     if [ $# = 0 ] ; then
         checkSeed -i                        # runs installer, no return
     else
-        [ -x "/usr/local/bin/centaurisoho" ] || checkSeed -n
+        [ -x '/usr/local/bin/centaurisoho' ] || checkSeed -n
         . /usr/local/bin/centaurisoho --embed="$DAT_SELF" --base="$PWD" "$@"
     fi
 fi

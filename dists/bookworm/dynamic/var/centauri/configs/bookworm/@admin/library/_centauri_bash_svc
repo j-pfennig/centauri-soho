@@ -119,7 +119,7 @@
 # Copyright Dr. J. Pfennig (c) 2015-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_svc']='0.37:2'
+CEN_MODULES['_centauri_bash_svc']='0.37:4'
 
 CEN_IS_SERVICE=                 # used by _cen_svc_action (internal)
 
@@ -133,6 +133,7 @@ CEN_SVC_AUTO_INIT=              # init early as service, see -n on load
 CEN_SVC_INHIBIT=                # see inhibit
 CEN_SVC_LOGPID=                 # used for logger
 CEN_SVC_NOROOT=                 # no root check
+CEN_SVC_NOTTY=                  # set for batch/service on module load
 
 export CEN_SVC_SYSLOG           # actual logging mode (environment import)
 
@@ -440,13 +441,16 @@ pidfile() {
 # ------------------------------------------------------------------------------
 # isservice - check if we run as service and initialize syslog output
 #
-# Call:     isservice [-r] [-i|-n] [-s <0|1|2>] [-l <text>...]
+# Call:     isservice [-r] [-i|-n] [-s <0|1|2>] [-l <prio>|- <text>...]
 #
 # Options:  -i  initialize explicitly
-#           -l  log message to syslog
+#           -l  log message output to syslog
 #           -n  do not init, just check service conditions
 #           -r  check if caller is **root**
 #           -s  override CEN_OPT_SYSLOG (no checks made)
+#
+# Arguments:<prio>  syslog level like "info", "warning" or "err"
+#           <text>  text written to syslog
 #
 # Return:   **true** if we run as a service or daemon, otherwise **false**
 #
@@ -503,10 +507,10 @@ isservice() {
             if [ -f "/dev/stderr" ] || [ -p "/dev/stderr" ] ; then
                 CEN_SVC_SYSLOG=0
             # interactive mode: 0 (stderr only) else 2 (syslog only)
-            elif [ -t 0 -o -t 1 -o -t 2 ] ; then
-                CEN_SVC_SYSLOG=0
-            else
+            elif [ -n "$CEN_SVC_NOTTY" ] ; then
                 CEN_SVC_SYSLOG=2
+            else
+                CEN_SVC_SYSLOG=0
             fi
         fi
     fi
@@ -518,11 +522,17 @@ isservice() {
       -i)   _flgi=1 ;;
       -l)   shift ; _flgl="$1" ;;
       -n)   _flgn=1 ;;
-      -r)   [ "$CEN_SVC_TYPE" = "daemon" -o -n "$CEN_OPT_TOOL" ] || context -r ;;
+      -r)   [ "$CEN_SVC_TYPE" = 'daemon' -o -n "$CEN_OPT_TOOL" ] || context -r ;;
       -s)   shift ; CEN_SVC_SYSLOG="$1" ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done
+
+    # hook output for syslog
+    if [ -z "$CEN_SVC_HOOK_MESSAGE" -a "${CEN_SVC_SYSLOG:-0}" != 0 ] ; then
+        CEN_SVC_HOOK_MESSAGE="$CEN_HOOK_MESSAGE"
+        CEN_HOOK_MESSAGE='_cen_svc_message'
+    fi
 
     # generate a syslog entry
     if [ -n "$_flgl" ] ; then
@@ -532,7 +542,7 @@ isservice() {
 
     # is already initialized?
     if [ -z "$_flgi" ] ; then
-        [ "$CEN_IS_SERVICE" = "0" ] && return 1
+        [ "$CEN_IS_SERVICE" = 0 ] && return 1
         [ -n "$CEN_IS_SERVICE" ] && return 0
         [ -z "$CEN_SVC_AUTO_INIT" ] && return 1
     fi
@@ -554,12 +564,7 @@ isservice() {
 
     if [ -z "$CEN_SVC_HOOK_OPTIONS" ] ; then        # hook option parsing
         CEN_SVC_HOOK_OPTIONS="$CEN_HOOK_OPTIONS"
-        CEN_HOOK_OPTIONS="_cen_svc_option"
-    fi
-
-    if [ -z "$CEN_SVC_HOOK_MESSAGE" ] ; then        # hook output
-        CEN_SVC_HOOK_MESSAGE="$CEN_HOOK_MESSAGE"
-        CEN_HOOK_MESSAGE="_cen_svc_message"
+        CEN_HOOK_OPTIONS='_cen_svc_option'
     fi
 
     if [ -z "$_fsvc" ] ; then                       # cannot run as a service
@@ -568,12 +573,12 @@ isservice() {
 
     if [ -z "$CEN_SVC_HOOK_ACTIONS" ] ; then        # hook action parsing
         CEN_SVC_HOOK_ACTIONS="$CEN_HOOK_ACTIONS"
-        CEN_HOOK_ACTIONS="_cen_svc_action"
+        CEN_HOOK_ACTIONS='_cen_svc_action'
     fi
 
-    if [ "${CEN_SVC_TYPE:-auto}" = "auto" ] ; then
-        CEN_SVC_TYPE="oneshot"
-        isfunction run && CEN_SVC_TYPE="simple"
+    if [ "${CEN_SVC_TYPE:-auto}" = 'auto' ] ; then
+        CEN_SVC_TYPE='oneshot'
+        isfunction run && CEN_SVC_TYPE='simple'
     fi
 
     case "$CEN_SVC_SCOPE" in
@@ -591,7 +596,7 @@ isservice() {
     CEN_IS_SERVICE=1                            # becoming svc or daemon
     [ -z "$CEN_SVC_SHORT" ] && CEN_SVC_SHORT="${CEN_TITLE:-$CEN_NAME}"
 
-    if [ "$CEN_SVC_TYPE" = "oneshot" ] ; then
+    if [ "$CEN_SVC_TYPE" = 'oneshot' ] ; then
         [ "$_fsvc" -lt 3 ] &&
             fatal $"A 'oneshot' service needs an 'actions' function"
     elif [ "$_fsvc" -lt 2 ] ; then
@@ -601,7 +606,7 @@ isservice() {
     # register action hook
     if [ -z "$CEN_SVC_HOOK_ACTIONS" ] ; then
         CEN_SVC_HOOK_ACTIONS="$CEN_HOOK_ACTIONS"
-        CEN_HOOK_ACTIONS="_cen_svc_action"
+        CEN_HOOK_ACTIONS='_cen_svc_action'
     fi
 
     # Using SysV defaults CEN_OPT_DAEMON to 1
@@ -615,7 +620,7 @@ isservice() {
     fi
 
     # no terminal -> run a daemon
-    if [ -t 0 -o -t 1 -o -t 2 ] ; then
+    if [ -z "$CEN_SVC_NOTTY" ] ; then
         [ -z "$CEN_OPT_DAEMON" ] && CEN_OPT_DAEMON=1
         _fpro=                              # interactive, no fancy reporting
     else
@@ -624,12 +629,8 @@ isservice() {
 
     # sysv fancy mode or dummy progress reporting
     if [ -n "$_fpro" ] ; then
-        if   [ -f "$CEN_PATHS/lib/init/vars.sh" ] ; then
-            . "$CEN_PATHS/lib/init/vars.sh"
-        elif [ -f "${CEN_PATHS[6]}/rcS" ]  ; then
-            . "${CEN_PATHS[6]}/rcS"
-        fi
-        if [ "${VERBOSE:-no}" = "no" ] ; then
+        _cen_source "$CEN_PATHS/lib/init/vars.sh" || _cen_source "${CEN_PATHS[6]}/rcS"
+        if [ "${VERBOSE:-no}" = 'no' ] ; then
             _fpro=
         elif [ ! -e "$CEN_PATHS/lib/lsb/init-functions" ] ; then
             _fpro=
@@ -637,7 +638,7 @@ isservice() {
     fi
     if [ -n "$_fpro" ] ; then
         CEN_IS_SERVICE=2
-        . "$CEN_PATHS/lib/lsb/init-functions"
+        _cen_source "$CEN_PATHS/lib/lsb/init-functions"
         progress() { _cen_svc_fancy prog "$*" ; }
     else
         progress() { : ; }
@@ -987,7 +988,7 @@ _cen_svc_logger() {
                     CEN_SVC_LOGPID=1 ; "${_lmsg[@]}" -- "$*"
                 fi
             fi
-    esac  &>/dev/null
+    esac &>/dev/null
     return 0
 }
 
@@ -1038,11 +1039,13 @@ _cen_svc_message() {
     else
         _sfmt="$*"
     fi
+    [ -n "$_scal" ] && _sfmt="${_scal:1} $_sfmt"
 
     # can send "info" messages to stderr in some cases ...
     _mlog="$CEN_SVC_SYSLOG"
-    if [ "$CEN_OPT_SYSLOG" = 2 -a -n "$JOURNAL_STREAM" ] ; then
-        [ -z "$_spri" ] && _mlog=3                  # can use stderr
+    if [ "$_mlog" = 2 -a -z "$_spri" ] ; then       # syslog-only message ...
+        [ -n "$JOURNAL_STREAM" -a -n "$CEN_SVC_NOTTY" ] &&
+            _mlog=3                                 # can use stderr
     fi
 
     # 0: stderr only - 1: stderr and syslog - 2: syslog only
@@ -1067,7 +1070,6 @@ _cen_svc_message() {
     fi
 
     if [ "$_mlog" != 0 ] ; then
-        [ -n "$_scal" ] && _sfmt="${_scal:1} $_sfmt"
         _cen_svc_logger "daemon.${_spri:-info}" "$_sfmt"
     fi
     return "$CEN_EXIT"
@@ -1355,36 +1357,35 @@ _cen_svc_fancy() {
 _cen_svc_option() {
     case "$1" in
 
-    "")
+    '')
         isservice -n ;;                         # service: hook actions
 
     # pass option info to usage module
     --help)
-        if [ "$2" = "verb" ] ; then             # input completion...
-            isservice -n && echo "start stop restart status setup"
+        if [ "$2" = 'verb' ] ; then             # input completion...
+            isservice -n && echo 'start stop restart status setup'
             return
         fi
-        [ "$2" = "opts" ] || return             # only completion and _cen_usage
+        [ "$2" = 'opts' ] || return             # only completion and _cen_usage
 
         if isservice -n ; then                  # will run as service ...
-            CEN_USE_ADDVERB="start stop restart status setup"
-            _cen_use_option "-a" "--daemon  [012]" \
+            CEN_USE_ADDVERB='start stop restart status setup'
+            _cen_use_option '-a' '--daemon  [012]' \
                             $"run this tool daemonized (0:no 1:yes 2:auto)"
+            _cen_use_option '-t' '--tool' \
+                            $"run as a tool, no root check, no pidfile"
         fi
         _cen_use_option '-l' '--syslog  [012]' \
                         $"control output to syslog (0:no 1:also 2:only)"
-        _cen_use_option '-t' '--tool' \
-                        $"run as a tool, no root check, no pidfile"
         ;;
 
     # options added by this module
     -a|--dae*)
-        isservice -n &&                         # for services only...
-            optarg "daemon" -           -t ;;
+        isservice -n && optarg 'daemon' - -t ;; # for services only...
     -l|--sys*)
-        optarg 'syslog'     -           -t ;;
+        optarg 'syslog' - -t ;;
     -t|--too|--tool)
-        optarg 'tool'       -              ;;
+        isservice -n && optarg 'tool' - ;;      # for services only...
 
     esac
     $CEN_SVC_HOOK_OPTIONS "$@"
@@ -1437,6 +1438,8 @@ _cen_svc_usage() {
 [ -n "${CEN_MODULES[_centauri_bash_win]}" ] &&
     fatal $"module conflict:" '_centauri_bash_svc/win'
 
+[ -t 0 -o -t 1 -o -t 2 ] || CEN_SVC_NOTTY=1
+
 # Library option -v (make service)
 if [ -n "$CEN_FEATURE_V" ] ; then
     CEN_SVC_AUTO_INIT=1
@@ -1447,10 +1450,10 @@ fi
 XDG_RUNTIME_DIR=
 
 # no initialization at all - init needs call to isservice()
-[ "$1" = "-n" ] && return 0
+[ "$1" = '-n' ] && return 0
 
 # enable/force automatic call to isservice()
-[ "$1" = "-i" ] && CEN_SVC_AUTO_INIT=1
+[ "$1" = '-i' ] && CEN_SVC_AUTO_INIT=1
 
 # register option hook - adds at least --syslog
 if [ "$1" != '-A' -o -n "$CEN_SVC_TYPE" ] ; then
@@ -1460,7 +1463,7 @@ if [ "$1" != '-A' -o -n "$CEN_SVC_TYPE" ] ; then
 fi
 
 # the svc  module uses sysrun, remove etc
-embed -c "_centauri_bash_ext"
+embed -c '_centauri_bash_ext'
 :
 
 # end

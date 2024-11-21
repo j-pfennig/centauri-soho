@@ -553,43 +553,79 @@ that loads the "network_proxy" file at login time.
 . Samba AD/DC, Samba member server and Samba basic
 ==================================================
 
+Server Side
+-----------
+
 Samba on a Centauri-Soho server runs in AD/DC mode and does:
 
-        - run a DNS forwarder to "dnsmasq" (needed by MS-Windows to find the DC)
+        - run as a DNS forwarder to "dnsmasq" (needed by MS-Windows to find the DC)
         - handle NS-Windows and Linux domain membership (computer accounts)
         - handle domain user accounts (via Kerberos)
         - runs as file server and print spooler
 
-To manage AD/DC and client domain memberships use "centaurikerberos" which is uses samba-tool
-and others as a backend.
+To manage AD/DC and client domain memberships use "centaurikerberos" which is a front-end to
+"samba-tool" and others like "net". Do not use native tools directly without knowing what you
+are doing. An AD/DC can be provisioned like:
 
-On a Centauri-Soho client samba typically runs as a "member server", where the authorizations
-are forwarded to the AD/DC and only "file server" functionality is handled locally.
+        centauriroute ipv6 off                  # prevent prefix registration
+        centaurikerberos provision my-secret-paswd
+        centauriroute ipv6 on                   # dns registration is disabled now
 
-Whithout an available AD/DC "basic mode" is used so that at least a simple "file server" is
-running. Authorization is handled via tool "smbpasswd" and the "/etc/samba/smbpasswd" file.
+User accounts can also be managed in batch mode via "centauriusers", see configuration
+file '/etc/default/centauriusers'.
 
-The "wsdd2" tool is run to make samba servers visible as "nmbd" is disabled nowadays.
+Client Side
+-----------
 
-. NFSv4 for Linux, anonymous or trusted Samba access
-====================================================
+On a Centauri-Soho client Samba typically runs as a "member server", where the authorizations
+are forwarded to the AD/DC and only "file server" functionality is handled locally. To make this
+work register the client via "centaurikerberos join".
+
+Whithout domain membership the so called "basic mode" is used so that at least a simple
+"file server" can be run. Authorization is handled via tool "smbpasswd" and the "/etc/samba/smbpasswd" file. The user passwords for Linux, Samba and more can be updated using "centauriusers password".
+
+Also the "wsdd2" tool is run to make Samba servers visible in network browsers. The traditional as
+"nmbd" functionality is disabled nowadays as the 'wins' protocol is broken beyond reapair.
+
+The Samba DNS integration
+-------------------------
+
+For AD/DC Samba must be the DNS server. It manages DNS for its domain (e.g. it returns NXDOMAIN
+for hosts that are not in its data base) and only forwards other domain (or non-domain) queries
+to "dnsmasq". The Samba AD/DC DNS port is 53 (the standard one) and 5354 is used by "dnsmasq". In
+contrast to Samba "dnsmasq" also reads '/etc/hosts', so it provides correct DNS replies for queries
+without a domain specifified. That Samba may reply with NXDOMAIN is usually not a problem in the
+local network, as the repository service replicates '/etc/hosts' which is used by 'libnsswitch'
+on highest priority.
+
+The make Samba DNS work for external or other computers add a DNS record manually. This is neccessary
+as automatic DNS registration is disabled (this is manadatory if your provider changes IPv6 prefixes
+in regular intervals). Here an example:
+
+        centaurikerberos dns create homeassistant 10.11.12.13
+
+. NFSv4 for member clients, anonymous or trusted Samba access for others
+========================================================================
+
+Why we are using NFSv4
+----------------------
 
 The often used NFSv3 implementation does not provide sufficient security, so Centauri-Soho
-has to use NFSv4. Samba is difficult to use in a Linux world, see below. Unfortunately NFSv4
-is difficult to configure. It depends on "Kerberos service principals and machine accounts"
-and the GSS security services of NFS. The "centaurikerberos" tool knows about the kerberos
-things and sends a correct "/etc/krb5.keytab" to clients at registration time.
+has to use NFSv4. Basic Samba file sharing is difficult to use in a Linux world, see below.
+And unfortunately NFSv4 is very difficult to configure. It depends on "Kerberos service principals
+and machine accounts" and the GSS security services for NFS. The "centaurikerberos" tool knows about
+the kerberos things and sends a correct '/etc/krb5.keytab' to clients at registration time.
 
 Users that have no domain account like "local" or "root" can use the "smbworld" and "smbtrust"
-account to get a kerberos ticket, see samba discussion below. Tickets are automatically renewed
+account to get a kerberos ticket, see Samba discussion below. Tickets are automatically renewed
 when service "centauricron" is running.
 
-Anonymous access
-----------------
+Anonymous access via Samba
+--------------------------
 
-Nowadays samba (and even Windows) can mount a share multiple times for different accounts. This
-would be difficult to implement in a convenient way, so on Linux clients NFS is preferred. To
-allow minimal access to samba shares, Centauri-Soho provides the local accounts "smbworld" (which
+Although nowadays Samba (and even Windows) can mount a share multiple times for different accounts,
+this would be difficult to implement in a convenient way. So on Linux clients NFS is preferred. To
+allow minimal access to Samba shares, Centauri-Soho provides the local accounts "smbworld" (which
 grants only read access) and "smbtrust" (which grant write access to members of group "smbtrust").
 But even working with "smbtrust" rights allows only limited file operations.
 
@@ -600,9 +636,13 @@ least the "smbtrust" passwords is not persistently stored on client machines.
 ====================================
 
 Although fixed IP addresses are preferred in the local network, DHCP is supported. Usually IOT
-and devices brought in by visitors use DHCP. The default firewall configuration assigns DHCP
-addresses to class 'friend', e.g. without further configuration they get limited access to
+things and devices brought in by visitors use DHCP. The default firewall configuration assigns
+DHCP addresses to class 'friend', e.g. without further configuration they get limited access to
 network services.
+
+DHCP is based on MAC addresses, this allow to assign IOT things or other to Firewall classes.
+Classe like 'iot' or 'alien' can be used to restrict access to network services. All configuration
+data gets placed in '/etc/default/centaurinetwork'.
 
 If not NetworkManager is in charge, the ISC 'dhclient' tool is used. To get fixed IP addresses
 over DHCP (see 'simple mode') the client's hostname is used as DHCP client identifier. The
@@ -610,7 +650,9 @@ over DHCP (see 'simple mode') the client's hostname is used as DHCP client ident
 The later is also responsible to start DHCP when an interface is brought up (ethernet ports that
 are not connected and thus have no carrier need some care).
 
-Note: for dialup connections 'centauriroute' starts/stops other 'dhclient' instances by itself.
+The 'dhclient's can get started via "ifup/ifdown" (same for "wpa_supplicant"). For dialup
+connections 'centauriroute' starts/stops other 'dhclient' instances by itself. All neccessary
+configuration work is done by "centaurinetgen" which in turn is invoked by "centaurinetcfg".
 
 As DHCP and DNS server 'dnsmasq' is used. The '/etc/dnsmasq.d' configuration folder is usually
 a symlink to instance 'local' (or to 'slave' on a server running as slave). The configurations

@@ -1,6 +1,10 @@
-# centauri local repo
-deb [ trusted=yes ] http://alpha1.centauri.home/debian/bookworm centauri base
 
-##deb [trusted=yesx] http://www.lesbonscomptes.com/upmpdcli/downloads/debian/ bullseye main 
-# deb [signed-by=/usr/share/keyrings/lesbonscomptes.gpg] http://www.lesbonscomptes.com/upmpdcli/downloads/debian/ bullseye main 
+# deb http://deb.debian.org/debian/ sid main 
+# deb http://deb.debian.org/debian/ sid contrib 
+# deb http://deb.debian.org/debian/ sid non-free contrib main  
+
+deb http://deb.debian.org/debian/ bookworm main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security/ bookworm-security non-free contrib main 
+deb http://deb.debian.org/debian bookworm-backports main contrib non-free
+
 

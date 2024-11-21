@@ -29,17 +29,17 @@
     path "shared"     "$CEN_ROOT/shared"        "repository branch - shared files"
     path "private"    "$CEN_ROOT/private"       "repository branch - private files"
     path "configs"    ".. $CEN_ROOT/shared"     "repository branch - for machine"
+    path "$CEN_SYS_NICKNAME" "$CEN_ROOT/configs/$CEN_SYS_NICKNAME" "$CEN_SYS_NICKNAME repository"
+    path "bullseye"   "$CEN_ROOT/configs/bullseye" "bullseye repository"
     path "staging"    "$CEN_ROOT/machines"      "repository staging area"
 
-    path "$CEN_SYS_NICKNAME" "$CEN_ROOT/configs/$CEN_SYS_NICKNAME" "$CEN_SYS_NICKNAME repository"
-
     # network
-    path "network"    "$CEN_PATHS/network"       "Network shared data"
-    path "server"     "$CEN_PATHS/network/worm"  "Network server data"
-    path "primary"    "$CEN_PATHS/network/worm0" "Network primary server"
-    path "secondary"  "$CEN_PATHS/network/worm1" "Network secondary server"
+    path "network"    "$CEN_PATHS/network|$CEN_PATHS/data"  "Network shared data"
+    path "server"     "@network/$CEN_NET_SERVER_GEN"        "Network server data"
+    path "primary"    "@network/${CEN_NET_SERVERS[0]}"      "Network primary server"
+    path "secondary"  "@network/${CEN_NET_SERVERS[1]}"      "Network secondary server"
 
-    # autosave, backup, hisoty  base folders
+    # autosave, backup, history  base folders
     
     path "autosave" \ 
         "$CEN_PATHS/mnt/backup/Autosave|$CEN_PATHS/shared/backup/Autosave|$CEN_PATHS/shared/Autosave|$CEN_PATHS/backup/Autosave|$CEN_PATHS/Autosave" \
@@ -68,8 +68,15 @@
     path "machines"   "~vbox/Machines"          "Virtualbox virtual machines"
     path "vms"        "~vbox/Machines"          "Virtualbox virtual machines"
 
+    # snapshots
+    path "snapshots" "/mnt/vol0/Snapshots"      "Snapshot base folder (vol0)"
+    path "daily"     "@snapshots/daily"         "Daily snapshots (vol0)"
+    path "weekly"    "@snapshots/weekly"        "Weekly snapshots (vol0)"
+    path "monthly"   "@snapshots/monthly"       "Monthly snapshots (vol0)"
+
     # others
     path "docs"      "/usr/share/doc"           "Linux Dokumentation"
+    path "rezepte"   "/export/Rezepte"          "Kochrezepte"
 
 # ------------------------------------------------------------------------------
 # Configuration for launcher() - run application by generic name
@@ -83,7 +90,8 @@
     files       *       dolphin pcmanfm-qt
     browser     gnome   firefox epiphany falkon qml
     browser     *       firefox falkon epiphany qml
-    kiosk       *       qml falkon epiphany firefox
+    clock       *       qml 
+    kiosk       *       falkon epiphany firefox qml
     webapp      *       .
     viewer      *       qml falkon epiphany firefox
 
@@ -102,16 +110,19 @@
 
     ### part 2: information texts (for apps, not commands)
 
+    -info:browser       "open a web browser"
+    -info:console       "command line terminal"
     -info:editor        "open a text editor"
     -info:files         "open a file manager"
-    -info:browser       "open a web browser"
+
+    -info:clock         "show a clock as full screen"
     -info:kiosk         "web browser in kiosk mode"
     -info:viewer        "html viewer (qml or browser)"
-    -info:console       "command line terminal"
+
     -info:httpd         "launch a private web server"
     -info:webapp        "run a centauri-bash-lib web application"
     -info:library       "interactive centauri-bash-lib console"
-    -info:service       "manage a systemd service (optinal GUI)"
+    -info:service       "manage a systemd service (optional GUI)"
 
     ### part 3: quirks and application options
 
@@ -120,8 +131,9 @@
     -wants:qml          /usr/lib/*/libQt5WebEngineWidgets.so.?
     -path:qml           /usr/lib/*/qt5/bin/qml
     browser:qml         @launcher_qmlweb - - -
-    kiosk:qml           @launcher_qmlweb 1200 800 1.2
-    viewer:qml          @launcher_qmlweb - - - "$CEN_PATHS/var/www/html/index.html" "$CEN_ROOT/html/index.html"
+    clock:qml           @launcher_qmlweb + + - "$CEN_TOOLS/Desktop/clock.html"
+    kiosk:qml           @launcher_qmlweb + + 1.2
+    viewer:qml          @launcher_qmlweb - - - 
 
     # lighttpd needs a script that gets the configuration
     httpd:lighttpd      @launcher_lighttpd 8080 /var/www
@@ -143,6 +155,10 @@
 
     webapp:.            @launcher_webapp 
     library:.           @launcher_library
+
+    -flags:def_http     duckduckgo.com
+    -flags:def_file     "$CEN_PATHS/var/www/html/index.html"
+    -flags:def_file     "$CEN_ROOT/html/index.html"
 
 # ------------------------------------------------------------------------------
 # Configuration for terminal() - run terminal emulator
@@ -206,9 +222,9 @@
     service "+centauriswitch" "+centauriroute" "+centaurifilter" "+centaurisecrets" 
 
     # redirections used by _centauri_bash_ext prettypath (option: -l local, -n network)
-    repath -n "/network/%2/%3%4" "/network/%2/.mount/%2_%3%4" "/network/%2/.mount/%3%4"
+    repath -n "/data/%2/%3%4" "/data/%2/.mount/%2_%3%4" "/data/%2/.mount/%3%4"
 
-    repath -l "/var/lib/centauri/import/([a-z]+[0-9a-z]*)_([a-z]+[0-9a-z]*)(/.*)?" "/network/home" "/network/%1/%2%3"
+    repath -l "/var/lib/centauri/import/([a-z]+[0-9a-z]*)_([a-z]+[0-9a-z]*)(/.*)?" "/data/home" "/data/%1/%2%3"
     repath -l "/dev/shm(/.*)?" "/tmp%1"
     repath -l "$CEN_ROOT/configs/$CEN_SYS_NICKNAME/@admin/tools(/.*)?" "/admin%1"
     repath -l "$CEN_ROOT/configs/$CEN_SYS_NICKNAME/@admin/tools(/.*)?" "$CEN_TOOLS%1"

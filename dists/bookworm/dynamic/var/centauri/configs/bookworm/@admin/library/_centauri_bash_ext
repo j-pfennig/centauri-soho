@@ -21,7 +21,7 @@
 # Copyright Dr. J. Pfennig (c) 2016-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_ext']='0.26:2'
+CEN_MODULES['_centauri_bash_ext']='0.27:3'
 
 CEN_EXT_TEMP=               # temp file base path, see tmpfile
 CEN_EXT_TIDX=               # ... auto index
@@ -244,7 +244,7 @@ copy() {
             $_omsg -a $"Removing destination before copy"": $_odes"
             remove $_orun ${_oflg/-p/} -d -- "$_odes" || return 1
         elif [ ! -w "$_odes" ] ; then
-            $_oerr $"Copy destination is not a writable"": $_odes" ; return 1
+            $_oerr $"Copy destination is not writable"": $_odes" ; return 1
         fi
     fi
 
@@ -624,10 +624,14 @@ prettypath() {
 # Return:   0   success
 #           1   error
 #           2   not a readable file (only without option -x)
+#
+#
+#           The function skips header lines starting with '#' and returns the
+#           1st line not starting with '#'. Trailing lines are ignored.
 # ------------------------------------------------------------------------------
 CEN_READLINE=
 readline() {
-    local _oerr='trace' _finp _oqui= _oarr _oexi _vnam='CEN_READLINE' _mesg
+    local _oerr='trace' _finp _oqui _oarr _oexi _vnam='CEN_READLINE' _mesg
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -647,14 +651,88 @@ readline() {
     if [ ! -r "$_finp" ] ; then
         [ -z "$_oexi" ] && return 2
         _mesg=$"Cannot read from:"" $_finp"
-    elif ! read $_oarr $_vnam <"$_finp" &>/dev/null ; then
+    else
+        while read $_oarr $_vnam ; do
+            eval "_mesg=\"\$$_vnam\""
+            [ "${_mesg::1}" = '#' ] && continue
+            [ -z "$_oqui" ] && $CEN_TRACE -a -c ' file OK' -- "$_finp"
+            return 0
+        done <"$_finp" &>/dev/null
         _mesg=$"Failed to read from:"" $_finp"
-    elif [ -z "$_oqui" ] ; then
-        trace -a -c ' file OK' -- "$_finp"
     fi
-
-    [ -z "$_mesg" ] && return 0
     $_oerr -- "$_mesg" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# writeline - write a single line of text
+#
+# Call:     (1) writeline [-c <text>] [-e|-f|-w] -o <file> [-m <mask>] [-t] [-q] <data>...
+#           (2) writeline [-c <text>] [-e|-f|-w] -h <hnum> [-q] <data>...
+#           (3) writeline [-c <text>] [-e|-f|-w] [-m <mask>] [-q] <data>...
+#
+#           This function writes data that can be retrieved by [[readline()]].
+#           Form (1) writes to a file, (2) to a file handle and (3) to **stdout**.
+#
+# Options:  -c  header comment text
+#           -e  report errors
+#           -f  make errors fatal
+#           -h  output to file handle
+#           -m  file mode (only bits 0666 are relevant)
+#           -o  output file path
+#           -q  no trace messages
+#           -t  truncate existing file
+#           -w  report errors as warnings
+#
+# Arguments:<data>  data to be written
+#           <file>  file path
+#           <hnum>  handle number
+#           <text>  header text ('-' for 'Created by ...')
+#
+# Return:   0   success
+#           1   write error
+#           2   destination exists
+#
+#.Examples: writeline -e -t -o 'some-file' -- write these words
+#
+#.          writeline -m 644 -q 'another-file' -- "This is data"
+#.          case $? in
+#.          1)  error "Write failed" ;;
+#.          2)  warning "Existing file not altered"
+#.          esac
+# ------------------------------------------------------------------------------
+writeline() {
+    local _oerr='trace' _fout _mask _oqui _orep _otxt
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -c)   [ "$2" = '-' ] && _otxt=$"Created by"" '$CEN_NAME'" || _otxt="$2"
+            shift ; _otxt="# $_otxt"$'\n' ;;
+      -e)   _oerr='error' ;;
+      -f)   _oerr='fatal' ;;
+      -h)   shift ; _fout="/dev/fd/$1" ; _orep=1 ;;
+      -m)   shift ; _mask="$1" ;;
+      -o)   shift ; _fout="$1" ;;
+      -q)   _oqui=1 ;;
+      -t)   _orep=1 ;;
+      -w)   _oerr='warning' ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    if [ -z "$_fout" ] ; then
+        _fout='/dev/stdout'
+    elif [ -z "$_orep" ] && [ -e "$_fout" ] ; then
+        $_oerr -- $"Destination already exists:" "$_fout" ; return 2
+    fi
+    dryrun 'writeline' "$_fout" && return 0
+
+    [ -n "$_mask" ] && _cen_umask -s "$_mask"
+    if printf '%s%s\n' "$_otxt" "$*" >"$_fout" 2>/dev/null ; then
+        [ -n "$_mask" ] && _cen_umask -r
+        [ -z "$_oqui" ] && $CEN_TRACE -a -c ' OK' -- "$_fout"
+        return 0
+    fi
+    [ -n "$_mask" ] && _cen_umask -r
+    $_oerr -- $"Failed to write:" "$_fout" ; return 1
 }
 
 # ------------------------------------------------------------------------------
@@ -1384,7 +1462,7 @@ suffixpath() {
 # see form (4).
 # ------------------------------------------------------------------------------
 symlink() {
-    local _fign _targ _ocan _odir _oftl='error' _onck _orel _osys='-e -p' _move _mesg="$CEN_TRACE"
+    local _fign _targ _ocan _odir _oftl='error' _onck _orel _osil _osys='-e -p' _move _mesg="$CEN_TRACE"
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -1396,7 +1474,7 @@ symlink() {
       -n)   _onck='-f' ;;
       -q)   _oftl=':' ; _osys='-q' ;;
       -r)   _orel=1 ;;
-      -s)   _mesg=: ;;
+      -s)   _mesg=: ; _osil='-s' ;;
       -v)   _mesg='message' ;;
       -w)   _oftl='warning' ; _osys='-w -p' ;;
       -x)   _move=0 ;;
@@ -1428,14 +1506,14 @@ symlink() {
     # move existing link away
     if [ -e "$_link" ] ; then
         if [ "$_move" = 0 ] ; then              # always delete ...
-            remove -d -- "$_link" || return 2
+            remove $_osil -d -- "$_link" || return 2
         elif [ -h "$_link" ] ; then
             if [ -n "$_move" ] ; then
-                remove -- "$_link"              # do not dereference
+                remove $_osil -- "$_link"       # do not dereference
             elif [ "$_targ" -ef "$_link" ] ; then
                 $_mesg -a -c $"Link is current" "$_link" ; return 0
             elif [ -z "$_odir" -a -n "$_onck" ] && [ -d "$_link" ] ; then
-                remove -d -- "$_link"           # do not dereference
+                remove $_osil -d -- "$_link"           # do not dereference
             fi
         elif [ -n "$_move" ] ; then             # move it away ...
             sysrun $_osys -b -- mv -f -- "$_link" "$_link.$CEN_NAME" || return 2
@@ -1979,7 +2057,7 @@ walk() {
       --)   shift ; break ;;
       -a)   _fadd=1 ;;
       -b)   _fbro=1 ;;
-      -c)   _fexc="filter --" ;;
+      -c)   _fexc='filter --' ;;
       -d)   shift; _fdir="$1" ;;
       -e)   shift; _fext+=("$1") ;;
       -f)   shift; _ffil="$1" ;;
@@ -1987,7 +2065,7 @@ walk() {
       -l)   shift; _levl="$1" ;;
       -n)   _fnod=1 ;;
       -r)   _frec=1 ;;
-      -i)   _fexc="filter -i --" ;;
+      -i)   _fexc='filter -i --' ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done
@@ -2036,18 +2114,20 @@ walk() {
                 [ -n "${CEN_WALK_DMAP[$_full]}" ] && continue
                 CEN_WALK_DMAP[$_full]="$_item"
                 _stat=0
-                if [ "$_ffil" = "false" ] ; then  # --incl/--excl
+                if [ "$_ffil" = 'false' ] ; then  # --incl/--excl
                     $_fexc "${_full##*/}" ; _stat=$?
                 fi
                 if [ "$_stat" = 0 ] ; then
                     $_fdir "$_full" "$_item" ; _stat=$?
                 fi
-                [ "$_stat" -ge 3 ] && break
-                [ "$_stat" = 0 ] && CEN_WALK_DIRS+=("$_full")
-                [ -z "$_frec" -o "$_stat" = 2 ] && continue
+                case "$_stat" in
+                0)  CEN_WALK_DIRS+=("$_full") ;;
+                1)  _stat=0 ;;
+                2)  _stat=0 ; continue ;;
+                *)  break
+                esac
                 [ "$CEN_WALK_LEVEL" -gt "$_levl" ] && continue
 
-                _stat=0
                 if [ -n "$_fhid" ] ; then
                     _cen_walk "$_item"/.[!.]* "$_item"/* || _stat=$?
                 else

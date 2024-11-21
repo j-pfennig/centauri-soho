@@ -1,4 +1,4 @@
-# common grub.cfg - jpf@centauri for debian (c) 2024-05-18
+# common grub.cfg - jpf@centauri for debian (c) 2024-09-09
 
 ### ### configuration section ### ### 
 
@@ -7,21 +7,21 @@ set distro=%Z%
 set resume=auto
 set repair=yes
 
-# ifnames=0 disables systemd names (deprecated, see /etc/systemd/network)
+# ifnames=0 disables systemd names (see /etc/systemd/network)
+# ifnames=1 forces the use of systemd names
+# ifnames=  check existence of /etc/systemd/network/99-default.link 
 set ifnames=   
 
-# <empty>: verbose boot, nosplash: fancy, splash: plymouth
-set splash="splash loglevel=3"
+# <empty>: automatic plymouth detection, nosplash: verbose, splash: plymouth
+#set splash="splash loglevel=3"
 #set splash="splash"
+#set splash="nosplash"
 
 # as we do not run public/shared servers relax security ...
 set params="mitigations=off security="
 
 # tell systemd-fsck.service that initrd checks the root fs
 if [ -n "$repair" ] ; then set params="$params fsck.repair=$repair" ; fi
-
-# disable systemd interface names (ifnames is patched by centaurirestore)
-if [ "$ifnames" = 0 ] ; then set params="$params net.ifnames=0" ; fi
 
 # hardware quirks ...
 #set params="$params mce=dont_log_ce"
@@ -141,11 +141,21 @@ else
     set grubdir="$rootdir/boot/grub"
 fi
 
+# add net.ifnames=0 parameter
+if [ -z "$ifnames" ] ; then
+    if test -e ${rootdir}/etc/systemd/network/99-default.link ; then set ifnames=0 ; fi
+fi
+if [ "$ifnames" = 0 ] ; then set params="$params net.ifnames=0" ; fi
+
 # implied settings
 if test -n "${rootdir}" ; then set rootvol="rootflags=subvol=${rootdir}" ; fi
 if test -z "${rootlbl}" ; then set rootlbl="${myname}_root" ; fi
-if test -z "${splash}"  ; then set splash="systemd.show_status=1" ; fi
 if test -z "${resume}"  ; then set resume="resume=" ; fi
+
+if [ -z "${splash}" ] ; then
+    set splash="systemd.show_status=1" 
+    if [ -e ${rootdir}/usr/lib/systemd/system/plymouth.service ] ; then set splash="splash" ; fi
+fi
 
 if [ -z "$efiboot" ] ; then
     if [ "$grub_platform" = "efi" ] ; then set efiboot=1 ; fi

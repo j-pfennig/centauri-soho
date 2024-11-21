@@ -2,48 +2,45 @@
 # Appliances are special boot options for computers that have no default linux
 # network and service configuration.
 #
-#   <runlevel>  2       # only networking and centauriswitch services started
+#   <runlevel>  2       # minimal networking and centauriswitch services started
 #               3       # all linux networking services get started
 #   <mode>      ...     # any network mode, auto selected if empty
 #   <conf>      ...     # optional network configuration
 #   <arg>       ...     # any kernel boot parameters
 #
+# centaurisysinit starts in appliance mode if runlevel is 2 or 3 and if either
+# the network mode is "(switch|router):.*" or 'centauriautlogin' is defined.
+#
 # For runlevel 2 centaurisysinit handles starting networking and centauriswitch
 # if kernel boot parameters match the definition of an appliance. All further
 # steps are handled by centauriswitch. See /etc/default/centauriswitch
-#
-# centaurisysinit can generate boot-loader entries for systemd-boot and for the
-# raspberry pi. Use one of the following commands:
-#
-#       centaurisysinit --boot <glob>               # make an entry
-#       centaurisysinit --boot --default <glob>     # ... set as boot default
-#       centaurisysinit --boot --default            # reset the boot default
-#
-# With: --boot          make a boot entry via centauriefilinux/centauriraspi
-#       --default       (optional) make this the default boot entry
-#       <glob>          glob expression to match an appliance label
 # -----------------------------------------------------------------------------
 
 # List of appliances:
-#             Format: <label>:<runlevel>:<mode>:<conf>:<arg>...
+#         Label                  runlevel   mode     conf       kernel boot params
+appliance "Network: Menu Mode"          2   disabled -          'centaurilogin=local'
+appliance "Network: Switch Mode"        2   switch          
 
+appliance "Network: Router Mode"        3   router          
+appliance "Network: Extender Mode"      3   switch   extender          
+appliance "Network: Repeater Mode"      3   router   repeater
 
-#         Label              runlevel   mode    conf    kernel boot params
-appliance "Kiosk Mode"              2   -       -       'centaurilogin=kiosk'
-appliance "Networking Boot Menu"    2   -       -       'centaurilogin=local'
-appliance "Network Router Mode"     3   router          
-appliance "Network Switch Mode"     3   switch          
-appliance "Network Repeater Mode"   3   router  repeater
-appliance "Home Assistant"          3   -       hass          
+appliance "Display: Digital Clock"      2   simple   -         'centaurilogin=clock'
+appliance "Display: Homeassistant GUI"  2   smart    -         'centaurilogin=homeassistant' 
+appliance "Display: Kiosk Mode"         2   simple   -         'centaurilogin=kiosk'
+
+# timers to be started in appliance modes 
+apptimers   anacron apt-daily apt-daily-upgrade  exin4-base logrotate systemd-tmpfile-clean
 
 # -----------------------------------------------------------------------------
 # This is a bash script that is sourced by service 'centaurisysinit' at early
 # boot. It can be used for things that could have been placed in 'rc.local'.
-# It also handles starting of appliaces. The 'centauri-bash-lib' is initialized 
+# It also handles starting of appliances. The 'centauri-bash-lib' is initialized 
 # prior to running this script.
 # -----------------------------------------------------------------------------
 
 remove -d -- /var/tmp/centauribashlib-*/*
+folder -m -- /run/sshd 
 
 # run 1st boot script
 if [ -e "$CEN_ROOT/persistent/centaurisysinit-1st-boot" ] ; then
@@ -62,9 +59,9 @@ fi
 
 # low profile system tweaks
 
-if [ -b "/dev/disk/by-label/${HOSTNAME}_swap" ] ; then
+if [ -b "/dev/disk-by-label/${HOSTNAME}_swap" ] ; then
     local ndev
-    resolve -c -q -s ndev "/dev/disk/by-label/${HOSTNAME}_swap" 
+    resolve -c -q -s ndev "/dev/disk-by-label/${HOSTNAME}_swap" 
     ndev="${ndev##*/}"
     if [ "${ndev::3}" = 'mmc' ] ; then
         echo 1 > '/sys/module/zswap/parameters/enabled'
@@ -74,29 +71,18 @@ fi
 
 # /tmp tweaks
 
-if [ -h "/var/tmp" ] ; then
-    message "life-system - removing persistent device rules"
-    remove /etc/udev/rules.d/70-persist*
-fi
 [ -e /run/user -a ! -e /tmp/user ] && symlink -q -- /run/user /tmp/user
 
 # generate locales
 
-    ___locale_check() {
-        local aloc
-        sysrun -a aloc -q -- locale -a || return
-        listsearch -i aloc -- 'en_SE.utf8' && return
-        message "Generating locales"
-        sysrun -q -- localedef -f UTF-8 -i en_US en_SE.UTF-8
-    }
-    system -c locale localedef && ___locale_check
-
-# network config, same code as in 'centauriswitch start'
- 
-if [ "/etc/default/centaurinetcfg" -nt "$CEN_ROOT/persistent/centaurinetcfg" ] ; then
-    message "Updating network configuration"
-    embed centaurinetcfg -q setup -
-fi
+___locale_check() {
+    local aloc
+    sysrun -a aloc -q -- locale -a || return
+    listsearch -i aloc -- 'en_SE.utf8' && return
+    message "Generating locales"
+    sysrun -q -- localedef -f UTF-8 -i en_US en_SE.UTF-8
+}
+system -c locale localedef && ___locale_check
 
 # make links in /mnt
 
@@ -120,26 +106,4 @@ fi
 # tinyproxy folder
 folder -m /var/log/tinyproxy 770 tinyproxy:staff
 
-# ------------------------------------------------------------------------------
-# runlevel2: start appliances via centauriswitch
-# ------------------------------------------------------------------------------
-# Runlevel 2 is a maintenance level where usually almost no services should run.
-# most things should be started in runlevel 3 where networking is enabled  by
-# default. Only appliances that depend on almost no other services might want to
-# run in level 2, see the centauriswitch boot parameter:
-#
-#       centauriswitch=router:<conf>        # minimalistic router
-#       centauriswitch=switch:<conf>        # minimalistic switch
-#       centauriswitch:<mode>:<hass>        # run 'home assistant'
-#
-# So here (in runlevel 2) we start 'networking' for the cases listed above and
-# launch 'centauriswitch' to do whathever it wants. 
-# ------------------------------------------------------------------------------
-
-# turn off display on raspi2
-
-if [ "$HOSTNAME" = "raspi2" ] ; then
-    message "Raspberry PI display turned off"
-    tvservice -o
-fi
-
+# end

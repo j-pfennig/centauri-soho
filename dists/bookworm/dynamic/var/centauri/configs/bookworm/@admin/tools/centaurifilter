@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2024; BSD License"
 CEN_TITLE="Simple IpTables Firewall and Masquerade Tool"
@@ -17,7 +17,7 @@ CEN_SVC_SHORT="Firewall and Masquerade Service"
 
 # Import the bash library, set name and version
 PATH+=":/usr/local/bin"
-PATH+=":${0%/*}" . _centauri_bash_lib -d -f -s -v - '0.53:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -d -f -s -v - '0.54:4' || exit 2
 
 embed -m _centauri_bash_net -n  # Load centaurinetcfg support
 
@@ -585,9 +585,9 @@ do_level() {
     if [ -n "$CEN_NET_SERVER" ] ; then
         DAT_RUN_MODE='home'
 
-    # are we in the home dns?
+    # are we in a trusted homedns network?
     else
-        local hdns ; embed -n -s hdns centauriname --home
+        netquery -s hdns 'homedns'
         if [ "${hdns:--}" != '-' ] ; then
             DAT_RUN_MODE='home'
             message "Configured home dns server:" "$hdns"
@@ -738,7 +738,7 @@ rules_reset() {
 # Early filtering: loopback, interfaces, icmp
 # ------------------------------------------------------------------------------
 rules_early() {
-    local neta aint
+    local neta aint optb
     rules_comment - "Early filter rules (local traffic)"
 
     # always allow localhost ...
@@ -757,14 +757,6 @@ rules_early() {
     }
     do_expand -o ___self_ok "$HOSTNAME"
 
-    # accept safe interfaces
-    rules_comment - "Early filter rules (bypass)"
-    do_list 'bypass' aint
-    for neta in "${aint[@]}" ; do
-        trace -a "Bypass interface: $neta"
-        do_tables -- -A INPUT -i $neta -j ACCEPT
-    done
-
     # drop unsafe interfaces
     rules_comment - "Early filter rules (deny)"
     do_list 'deny' aint
@@ -779,6 +771,17 @@ rules_early() {
     do_tables -6 -i -- -A INPUT -p icmpv6  -j ACCEPT
     do_tables -4 -n -- add rule ip filter INPUT ip protocol icmp counter accept
     do_tables -6 -n -- add rule ip6 filter INPUT meta l4proto ipv6-icmp counter accept
+}
+
+rules_bypass() {
+    local aint neta
+    # accept safe interfaces
+    rules_comment - "Early filter rules (bypass)"
+    do_list 'bypass' aint
+    for neta in "${aint[@]}" ; do
+        trace -a "Bypass interface: $neta"
+        do_tables -- -A INPUT -i $neta -j ACCEPT
+    done
 }
 
 # ------------------------------------------------------------------------------
@@ -837,10 +840,21 @@ rules_global() {
         53 520              # allow port 53, 520 for nameservice
         67 68               # allow port 67/68 (bootps) for dhcp
         123                 # allow port 123 (ntp) for ntp-server
-        3702                # for ws discovery
+        3702                # ... for ws discovery
+    )
+    local udp_always_drop=(
+        67 68               # disallow port 67/68 (bootps) for dhcp
+        546 547             # ... dhcp6
+        3702                # ... for ws discovery
+        5353                # ... for avahi
     )
 
     # by port
+    local sext
+    if netoption 'other' && netindex -s sext 'other' ; then
+        warning "Sub-net '<other>' is external, dhcp gets blocked" "$sext"
+        do_tables -a udp_always_drop -- -A INPUT -p udp @dport -s "$sext" -j DROP
+    fi
     if [ "$DAT_RUN_MODE" = 'home' ] ; then
         do_tables -a udp_always_accept -- -A INPUT -p udp @dport -j ACCEPT
     else
@@ -1091,8 +1105,9 @@ rules_setup() {
     rules_reset DROP                # reset, default input policy is to drop all
     rules_chains                    # setup chains
     rules_early                     # block/allow by interface or host
-    rules_track "$nmod"             # connection tracking or allow ephemeral ports
     rules_global                    # global rules
+    rules_bypass                    # accept by inteface or host
+    rules_track "$nmod"             # connection tracking or allow ephemeral ports
 
     # filter by firewall state home/wild
     if [ "$DAT_RUN_MODE" = 'home' ] ; then

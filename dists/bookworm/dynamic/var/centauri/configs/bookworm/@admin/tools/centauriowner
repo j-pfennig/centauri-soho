@@ -3,7 +3,7 @@
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
 CEN_TITLE="Save and restore system file ownership and rights"
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d - '0.15:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -y - '0.16:3' || exit 2
 
 # Options
 CEN_OPT_ALL=            # see --all
@@ -11,6 +11,7 @@ CEN_OPT_BASE=           # see --path
 CEN_OPT_CHECK=          # see --check
 CEN_OPT_FULL=           # see --full
 CEN_OPT_GROUP=          # see --group
+CEN_OPT_MAXID=999       # see --maxid
 CEN_OPT_NOMODE=         # see --nomode
 CEN_OPT_USER=           # see --user
 CEN_OPT_EXCLUDE=()      # see -exclude
@@ -63,11 +64,15 @@ actionSave() {
         outfile -l -s file -- "$1" || return
     fi
 
-    local pusr pgrp
-    [ "$CEN_OPT_USER" = 0 ]  && pusr="( -uid -1000 )" ||
-                                pusr="( -uid +$((CEN_OPT_USER - 1)) -uid -1000 )"
-    [ "$CEN_OPT_GROUP" = 0 ] && pgrp="( -gid -1000 )" ||
-                                pgrp="( -gid +$((CEN_OPT_GROUP - 1)) -gid -1000 )"
+    local pusr pgrp maxg maxu
+    if [ "${CEN_OPT_MAXID:-0}" != 0 ] ; then
+        maxg="-gid -$((CEN_OPT_MAXID + 1))"
+        maxu="-uid -$((CEN_OPT_MAXID + 1))"
+    fi
+    [ "$CEN_OPT_USER" = 0 ]  && pusr="( $maxu )" ||
+                                pusr="( -uid +$((CEN_OPT_USER - 1)) $maxu )"
+    [ "$CEN_OPT_GROUP" = 0 ] && pgrp="( $maxg )" ||
+                                pgrp="( -gid +$((CEN_OPT_GROUP - 1)) $maxg )"
 
     if [ -z "$CEN_OPT_FULL" ]  ; then
         system -e -p -a list -- find "$CEN_OPT_BASE" -xdev \
@@ -192,6 +197,8 @@ options() {
         optarg 'full'    -             ;;       # flag
     -G|--gro*)
         optarg 'group'   -          -n ;;       # number
+    -M|--max*)
+        optarg 'maxid'   -          -n ;;       # number
     -N|--nom*)
         optarg 'nomode'  -             ;;       # flag
     -U|--use*)
@@ -230,6 +237,7 @@ $CEN_USE_OPTIONS
        -C --check           [*] check for unknown (numeric) user or group id
        -F --full            [*] include all user/group ids
        -G --group   <gid>   [*] minimum group id
+       -M --maxid   <max>   [*] maximum group/user id
        -N --nomode          [**] do not modify file modes
        -U --user    <uid>   [*] minimum user id
        -X --exclude <fldr>  [*] add a folder to the exclusion list
@@ -243,10 +251,11 @@ actions:
 
 arguments:
        <file>               a file path
-       <fldr>               a relative path (no starting with / ./ or ../)
-       <gid>                minimum GID (default: 1)
+       <fldr>               a relative path (not starting with / ./ or ../)
+       <gid>                minimum GID     (default: 1)
+       <max>                maximum GID/UID (default: 999)
        <root>               alternate root prefix, example: /mnt/xxx
-       <uid>                minimum UID (default: 1)
+       <uid>                minimum UID     (default: 1)
 
 remarks:
        This tool was written to allow save/restore of ownerships and modes

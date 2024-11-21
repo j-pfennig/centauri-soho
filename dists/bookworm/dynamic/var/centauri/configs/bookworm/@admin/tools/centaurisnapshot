@@ -1471,24 +1471,35 @@ actions() {
 # usage info
 # ------------------------------------------------------------------------------
 usage() {
+#    usagecat << !EOF
+#$CEN_USE_HEADER
+#
+#$CEN_USE_OPTIONS
+#
+#       -A --all             exclude no volumes, list command: show all files
+#       -B --base   <fldr>   override location              (default: $CEN_DAT_BDEF)
+#       -O --post   <exec>   run <exec> as post-processor   ("cron" or "create")
+#       -S --suffix <text>   suffix for "save|restore|revert"    (default "$CEN_OPT_SUFFIX")
+#       -W --writable        create writable snapshot       ("cron" or "create")
+    #usageset \
+    #-u "$CEN_TITLE"
+    usageset \
+    -o  - \
+    -o '-A --all'            "exclude no volumes, list command: show all files" \
+    -o '-B --base    <fldr>' "override location                 (default: $CEN_DAT_BDEF)" \
+    -o '-O --post    <exec>' "run <exec> as post-processor        ('cron' or 'create')" \
+    -o '-S --suffix  <text>' "suffix for 'save|restore|revert'  (default: "$CEN_OPT_SUFFIX")" \
+    -o '-W --writable'       "create writable snapshot          ('cron' or 'create')"
+
+    usageset \
+    -a '[cron]   <period>'   "delete/create snapshots" \
+    -a 'copy     <period>|- [<host>:]<dest> <prnt>|+|- <snap>...' \
+    -a -                     "copy snapshots incrementally      (see: man brtfs-send)" \
+    -a 'create   [<period>]' "create snapshots                  (default: daily)" \
+    -a 'create   [-] <path>|<name>' \
+    -a -                     "create subvolume by path or name"
+    usageset -x
     usagecat << !EOF
-$CEN_USE_HEADER
-
-$CEN_USE_OPTIONS
-
-       -A --all             exclude no volumes, list command: show all files
-       -B --base   <fldr>   override location              (default: $CEN_DAT_BDEF)
-       -O --post   <exec>   run <exec> as post-processor   ("cron" or "create")
-       -S --suffix <text>   suffix for "save|restore|revert"    (default "$CEN_OPT_SUFFIX")
-       -W --writable        create writable snapshot       ("cron" or "create")
-
-actions:
-       [cron]   <period>    delete/create snapshots
-       copy     <period>|- [<host>:]<dest> <prnt>|+|- <snap>...
-                            copy snapshots incrementally  (see: man brtfs-send)
-       create   [<period>]  create snapshots                   (default: daily)
-       create   [-] <path>|<name>
-                            create subvolume by path or name
        dedup    [reset]     deduplicate volumes         ('reset' to rescan all)
        defrag               defragment volumes
        delete   [[<period>|all] [+|-]] | <snap>...

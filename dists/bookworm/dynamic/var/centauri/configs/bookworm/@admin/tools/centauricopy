@@ -1,13 +1,13 @@
-#!/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2023; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
 CEN_TITLE="Tool to copy folders recursively using rsync"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -i -m bat -m con -s -y "$0" "0.54:2" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -i -m bat -m con -s -y - '0.56:3' || exit 2
 
 # Data
-DAT_PASSWORD="/$CEN_ROOT/secrets/rsync_trusted"
+DAT_PASSWORD="$CEN_ROOT/secrets/rsync_trusted"
 DAT_RUN_IMPLIED=
 DAT_EXCLUDE=                    # filled by do_exclude
 DAT_COUNTER=0                   # copied + deleted files
@@ -25,7 +25,7 @@ CEN_OPT_HARDLINKS=      # see --hardlinks
 CEN_OPT_LOCAL=          # see --local
 CEN_OPT_MORE=           # see --more
 CEN_OPT_NOCOPY=         # see --nocopy
-CEN_OPT_ONE=            # see --onoe
+CEN_OPT_ONE=            # see --one
 CEN_OPT_OPTION=()       # see --option
 CEN_OPT_PASSWORD=       # see --password
 CEN_OPT_PROXY=          # see --proxy
@@ -40,7 +40,7 @@ do_folder_=
 do_folder() {
     # remove trailing slash
     do_folder_="${1%/}"
-    [ "$1" = "/" ] && do_folder_="/"
+    [ "$1" = '/' ] && do_folder_='/'
     [ "$1" = "." ] && do_folder_="$PWD"
     # return error if remote folder
     if [ "${do_folder_##*:}" != "$do_folder_" ] ; then
@@ -148,7 +148,7 @@ actionSync() {
     fi
 
     # get the backup folder
-    if [ "$CEN_OPT_BACKUP" = "-" ] ; then
+    if [ "$CEN_OPT_BACKUP" = '-' ] ; then
         [ -z "$base" ] &&
             fatal "cannot use '--backup=-' on remote destination"
         CEN_OPT_BACKUP=
@@ -166,14 +166,14 @@ actionSync() {
     # implement --folder
     if [ -z "$CEN_OPT_FOLDER" ] ; then
         [ -z "${orig##*:}" ] && orig+="."
-        orig+="/"
+        orig+='/'
     fi
     ___message "$info: $orig  =>  $dest"
 
     # get the rsync password
     if [ "${CEN_OPT_PASSWORD:-#}" != "#" ] ; then
         export RSYNC_PASSWORD
-        if [ "$CEN_OPT_PASSWORD" != "-" ] ; then
+        if [ "$CEN_OPT_PASSWORD" != '-' ] ; then
             if [ "$CEN_OPT_PASSWORD" = "+" ] ; then
                 CEN_OPT_PASSWORD="$DAT_PASSWORD"
             elif [ ! -r "$CEN_OPT_PASSWORD" ] ; then
@@ -390,48 +390,48 @@ actionSync() {
 options() {
     case "$CEN_ACTION" in
 
-    "")
+    '')
         CEN_FEATURE_S="-s --silent          do not print an information header before rsync  -or-\n"
         CEN_FEATURE_S+="                     print no progress output if used together with --quiet"
-        optarg "$CEN_OPT_FOLDER${CEN_OPT_VOLUME:+1}" - -m "--folder --volume"
+        optarg "$CEN_OPT_FOLDER${CEN_OPT_VOLUME:+1}" - -m '--folder --volume'
         ;;
 
     -A|--all)
-        optarg "all"        -           ;;
+        optarg 'all'        -           ;;
     -1|--one)
-        optarg "one"        -           ;;
+        optarg 'one'        -           ;;
     -B|--bac*)
-        optarg "backup"     -        -t ;;
+        optarg 'backup'     -        -t ;;
     -C|--com*)
-        optarg "compress"   -           ;;
+        optarg 'compress'   -           ;;
     -D|--del*)
-        optarg "delete"     -           ;;
+        optarg 'delete'     -           ;;
     -F|--fol*)
-        optarg "folder"     -           ;;
+        optarg 'folder'     -           ;;
     -Z|--fuz*)
-        optarg "fuzzy"      -           ;;
+        optarg 'fuzzy'      -           ;;
     -H|--har*)
-        optarg "hardlinks"  -           ;;
+        optarg 'hardlinks'  -           ;;
     -L|--loc*)
-        optarg "local"      -        -o ;;
+        optarg 'local'      -        -o ;;
     -M|--mor*)
-        optarg "more"       -        -t ;;
+        optarg 'more'       -        -t ;;
     -N|--noc*)
-        optarg "nocopy"     -        -o ;;
+        optarg 'nocopy'     -        -o ;;
     -O|--opt*)
-        optarg "option"     []       -t ;;
+        optarg 'option'     []       -t ;;
     -P|--pas*)
-        optarg "password"   -        -t ;;
+        optarg 'password'   -        -t ;;
     -S|--slo*)
-        optarg "sloppy"     -           ;;
+        optarg 'sloppy'     -           ;;
     -T|--cou*)
-        optarg "counts"     -           ;;
+        optarg 'counts'     -           ;;
     -U|--upd*)
-        optarg "update"     -           ;;
+        optarg 'update'     -           ;;
     -V|--vol*)
-        optarg "volume"     -        -t ;;
+        optarg 'volume'     -        -t ;;
     -X|--pro*)
-        optarg "proxy"      -        -t ;;
+        optarg 'proxy'      -        -t ;;
     esac
 }
 
@@ -442,21 +442,21 @@ actions() {
     case "$CEN_ACTION" in
 
     run*)
-        invoke "run"    actionSync  1 2 ;;
+        invoke 'run'    actionSync  1 2 ;;
     cop*)
-        invoke "copy"   actionSync  1 2 ;;
+        invoke 'copy'   actionSync  1 2 ;;
     mir*)
-        invoke "mirror" actionSync  1 2 ;;
+        invoke 'mirror' actionSync  1 2 ;;
     upd*)
-        invoke "update" actionSync  1 2 ;;
+        invoke 'update' actionSync  1 2 ;;
     syn*)
-        invoke "sync"   actionSync  1 2 ;;
+        invoke 'sync'   actionSync  1 2 ;;
 
     # the run action is implied
-    ""|-) ;;
+    ''|-) ;;
     *)
         DAT_RUN_IMPLIED=1
-        invoke "run"     actionSync 1 2 "$@" ;;
+        invoke 'run'     actionSync 1 2 "$@" ;;
 
     esac
 }

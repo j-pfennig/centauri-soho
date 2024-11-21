@@ -4,7 +4,7 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2024; BSD License"
 CEN_TITLE="Create the autoload module _centauri_bash_dyn"
 
 # we cannot use '-a' here ...
-PATH+=":${0%/*}" . _centauri_bash_lib -m ext -m iom -m utl -r - '0.24:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -m ext -m iom -m utl -r - '0.25:3' || exit 2
 
 CEN_OPT_BUILTIN=                # see --builtin
 CEN_OPT_PATH=                   # see --path

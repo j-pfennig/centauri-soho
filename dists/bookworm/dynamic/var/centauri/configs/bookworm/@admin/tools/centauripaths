@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2022; BSD License"
 CEN_TITLE=$"Resolve/symlink path shortcuts to real filesystem paths"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -t '-' '0.33:2' 1 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -t - '0.34:3' 1 || exit 2
 
 # Options
 CEN_OPT_ABSTRACT=       # path abstraction
@@ -14,6 +14,7 @@ CEN_OPT_LIST=           # list known short names
 CEN_OPT_LOGICAL=        # logical name
 CEN_OPT_NAME=()         # link names
 CEN_OPT_PHYSICAL=       # physical name
+CEN_OPT_REMOTE=         # remote host name
 CEN_OPT_STYLE=          # output style
 CEN_OPT_SYMLINK=        # create symlink
 CEN_OPT_TABLE=          # tabular output
@@ -162,8 +163,26 @@ proc_item() {
 # The one and only action
 # ------------------------------------------------------------------------------
 run() {
+    # run remote
+    if [ -n "$CEN_OPT_REMOTE" ] ; then
+        local item acmd=('ssh' "$CEN_OPT_REMOTE" "$CEN_NAME")
+        for item in "${CEN_CMDOPTS[@]}" "${CEN_CMDARGS[@]}" ; do
+            case "$item" in
+            --debug)    ;;
+            --pager=*)  ;;
+            --remote=*) ;;
+            --trace)    ;;
+            --verbose)  ;;
+            *)          acmd+=("$item")
+            esac
+        done
+        system -s item "${acmd[@]}"
+        [ -n "$item" ] && printf '%s\n' "$item"
+        quit
+    fi
+
     # load shortcut table
-    shortpath -a DAT_CONFIG -r -m "" || return
+    shortpath -a DAT_CONFIG -r -m '' || return
 
     if [ -n "$CEN_OPT_WORK" ] ; then
         local _serr="$DAT_PRETTY_MODE" ; DAT_PRETTY_MODE="-e -f"
@@ -200,39 +219,41 @@ options() {
     case "$1" in
 
     -A|--abs*)
-        optarg "abstract"   -    ;;
+        optarg 'abstract'   -    ;;
     -D|--del*)
         CEN_RUN_MIN_ARGS=0
-        optarg "deleted"    -    ;;
+        optarg 'deleted'    -    ;;
     -E|--err*)
-        optarg "error"      CEN_OPT_ERROR - "error" ;;
+        optarg 'error'      CEN_OPT_ERROR - 'error' ;;
     -F|--fat*)
-        optarg "fatal"      CEN_OPT_ERROR - "fatal" ;;
+        optarg 'fatal'      CEN_OPT_ERROR - 'fatal' ;;
     -I|--lis|--list)
         CEN_RUN_MIN_ARGS=0
-        optarg "list"       -    ;;
+        optarg 'list'       -    ;;
     -K|--sym*)
-        optarg "symlink"    -    ;;
+        optarg 'symlink'    -    ;;
     -L|--log*)
-        optarg "logical"    -    ;;
+        optarg 'logical'    -    ;;
     -N|--nam*)
-        optarg "name"      [] -t ;;
+        optarg 'name'      [] -t ;;
     -P|--phy*)
-        optarg "physical"   -    ;;
+        optarg 'physical'   -    ;;
+    -R|--rem*)
+        optarg 'remote'     - -t ;;
     -S|--sty*)
-        optarg "style"      - -n ;;         # numeric
+        optarg 'style'      - -n ;;         # numeric
     -T|--tab*)
-        optarg "table"      -    ;;
+        optarg 'table'      -    ;;
     -U|--uni*)
-        optarg "unique"     -    ;;
+        optarg 'unique'     -    ;;
     -W|--wor*)
-        optarg "work"       - -t ;;         # text
+        optarg 'work'       - -t ;;         # text
 
     --help)                                 # input completion
         CEN_OPT_VERB=1
-        [ "$2" = "verb" ] && run ;;
+        [ "$2" = 'verb' ] && run ;;
 
-    "")                                     # end of option parsing
+    '')                                     # end of option parsing
         # implied options
         [ -n "$CEN_OPT_UNIQUE" -a -z "$CEN_OPT_PHYSICAL$CEN_OPT_ABSTRACT$CEN_OPT_DELETED" ] &&
             CEN_OPT_LOGICAL="1"
@@ -278,29 +299,28 @@ usage() {
              -o "-K --symlink         "$"create symlink from cwd to folder" \
              -o "-L --logical         "$"returned paths should be logical names" \
              -o "-N --name    <link>  "$"link name, can be repeated" \
-             -o "-P --physical        "$"returned paths should be physical" \
+             -o '-P --physical'        $"returned paths should be physical" \
+             -o '-R --remote  <host>'  $"execute command on remote host" \
              -o "-S --style   <mask>  "$"modifies path output formatting" \
              -o "-T --tabular         "$"generate tabular output" \
              -o "-U --unique          "$"remove duplicated folders" \
              -o "-W --work    <work>  "$"set working folder"
 
-    usageset -l $"arguments" \
-             -t "<name>       "$"shortcut name, to get a list run:"" $CEN_NAME --list" \
-             -t "<path>       "$"any path (must contain a '/' or follow '<name>')" \
-             -t "<link>       "$"link name, overrides short name if present" \
-             -t "<mask>       "$"bit mask, 1 := print - if missing, 2 := quoted" \
-             -t "<work>       "$"working folder, can be a short name"
+    usageset -p '<host>'        $"remote host name" \
+             -p '<name>'        $"shortcut name, to get a list run:"" $CEN_NAME --list" \
+             -p '<path>'        $"any path (must contain a '/' or follow '<name>')" \
+             -p '<link>'        $"link name, overrides short name if present" \
+             -p '<mask>'        $"bit mask, 1 := print - if missing, 2 := quoted" \
+             -p '<work>'        $"working folder, can be a short name"
 
-    usageset -l $"remark" \
-             -t $"The shortcut definitions are loaded from \"centauri-bash-lib\" which is" \
+    usageset -t $"The shortcut definitions are loaded from \"centauri-bash-lib\" which is" \
              -t $"searched at \"~/.config\" \"~\" \"\$CEN_ROOT/default\" or \"/etc/default\"."
 
-    usageset -l $"examples" \
-             -t "$CEN_NAME --list --tabular --verbose        # "$"list all names/paths" \
-             -t "$CEN_NAME temp                              # "$"current user's TMPDIR" \
-             -t "$CEN_NAME --logical automount/alpha4_work   # "$"get a logical path" \
-             -t "$CEN_NAME --work=/tmp --symlink disk data   # "$"make symlinks ..." \
-             -t "$CEN_NAME --work=/tmp disk --name=d1 data --name=d2"
+    usageset -e ". --list --tabular --verbose        # "$"list all names/paths" \
+             -e ". temp                              # "$"current user's TMPDIR" \
+             -e ". --logical automount/alpha4_work   # "$"get a logical path" \
+             -e ". --work=/tmp --symlink disk data   # "$"make symlinks ..." \
+             -e ". --work=/tmp disk --name=d1 data --name=d2"
 }
 
 # ------------------------------------------------------------------------------

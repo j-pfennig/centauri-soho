@@ -8,7 +8,7 @@ ConditionPathExists=/var/centauri/persistent/issue.d
 
 [Service]
 ExecStartPre=/usr/bin/chvt 8
-ExecStart=/var/centauri/tools/centaurisysinit issue exec
+ExecStart=/var/centauri/tools/centaurisysinit issue exec 8
 Type=oneshot
 StandardInput=tty
 StandardOutput=tty

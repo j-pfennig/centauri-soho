@@ -1,6 +1,6 @@
 #!/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2022; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2024; BSD License"
 CEN_TITLE="Swap File/Partition Tool and Service"
 
 ### BEGIN INIT INFO
@@ -16,10 +16,10 @@ CEN_TITLE="Swap File/Partition Tool and Service"
 ### TODO zwap support - echo 1 > /sys/modules/zswap/enabled ... max_percentage
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -v -y "$0" "0.24" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -v -y - '0.25:3' || exit 2
 
 CEN_SVC_SHORT="Swap File/Partition Service"
-CEN_SVC_WANTED_BY="multi-user.target"
+CEN_SVC_WANTED_BY='multi-user.target'
 
 CEN_OPT_BASE=                   # see --base
 CEN_OPT_TARGET=                 # see --target
@@ -43,7 +43,7 @@ swap_location() {
     CEN_DAT_LDEST= ; CEN_DAT_TDEST=             # destination location/type
 
     # destination type options
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       -)    break ;;
       --)   shift ; break ;;
@@ -71,7 +71,7 @@ swap_location() {
     fi
 
     # new swap location
-    if [ "${1:--}" = "-" ] ; then
+    if [ "${1:--}" = '-' ] ; then
         CEN_DAT_LDEST="${CEN_DAT_LCURR:-$CEN_DAT_SWAP}"
         # do not use current if type does not match
         [ -n  "$CEN_DAT_TCURR" -a "$CEN_DAT_TCURR" != "$CEN_DAT_TDEST" ] &&
@@ -87,7 +87,7 @@ swap_location() {
                 ;;
     folder)     [ -d "$CEN_DAT_LDEST" ] && return 0
                 ;;
-    "")         return 0 ;;
+    '')         return 0 ;;
     *)          [ -h "$CEN_DAT_SWAP" -a "$CEN_DAT_SWAP" = "$CEN_DAT_LDEST" ] && return 0
                 [ -b "$CEN_DAT_LDEST" -o -d "$CEN_DAT_LDEST" ] || return 0
     esac
@@ -100,7 +100,7 @@ swap_delete() {
     if [ -z "$CEN_OPT_BASE" ] ; then
         message -a "Disable swapping ..."
         system -q swapoff -a
-        [ "$1" = "-d" ] && return 0
+        [ "$1" = '-d' ] && return 0
     fi
 
     [ -n "$CEN_DAT_LCURR" -a -z "$CEN_OPT_TARGET" ] || return 0
@@ -116,10 +116,10 @@ swap_delete() {
 
     # remove swap file
     if [ -e "$fdel" ] ; then
-        message -a "Delete existing swap file: $fdel"
+        message -a "Delete existing swap file:" "$fdel"
         remove -- "$fdel"
         if [ -e "$fdel" -a -z "$CEN_OPT_DRYRUN" ] ; then
-            error "Failed to delete swap file: $fdel"
+            error "Failed to delete swap file:" "$fdel"
             return 1
         fi
     fi
@@ -149,7 +149,7 @@ swap_create() {
         remove -- "$1"
 
         message -a "New swapfile: $1 ($smsg)"
-        if [ "$2" = "0"  -o "$CEN_ACTION" = "legacy" ] ; then
+        if [ "$2" = "0"  -o "$CEN_ACTION" = 'legacy' ] ; then
             system -e -p touch "$1"
             error -t || return 1
             [ "$2" = "0" -o "$2" -gt 512 ] && ___legacy_alloc "$1" "$2" 512
@@ -163,14 +163,14 @@ swap_create() {
         [ "$1" -ef "$CEN_DAT_SWAP" ] || symlink -n -- "${CEN_OPT_TARGET:-$1}" "$CEN_DAT_SWAP"
         error -t || return 1
 
-        [ "$CEN_ACTION" = "start" -o -n "$CEN_OPT_BASE" ] && return 0
+        [ "$CEN_ACTION" = 'start' -o -n "$CEN_OPT_BASE" ] && return 0
         message -a "Enable swapping ..."
         system -e -p swapon "$1"
         error -t                                        # return status
     }
 
     if [ "$1" = "-p" ] ; then
-        local labl="${2:--}" ; [ "$2" = "-" ] && labl="${HOSTNAME}_swap"
+        local labl="${2:--}" ; [ "$2" = '-' ] && labl="${HOSTNAME}_swap"
         message -a "New swap device: $CEN_DAT_LDEST  (Label=$labl)"
         system -e -p mkswap -L "$labl" "$CEN_DAT_LDEST"
         if error -t && [ -z "$CEN_OPT_BASE" ] ; then
@@ -209,7 +209,7 @@ swap_create() {
 swap_stat() {
     [ -n "$CEN_OPT_TARGET" ] && return
     local pfmt="%-7s swap location: %-20s %s\n"
-    if [ "$CEN_OPT_BASE" = "-" ] ; then
+    if [ "$CEN_OPT_BASE" = '-' ] ; then
         :
     elif [ -n "$CEN_DAT_LCURR" ] ; then
         message -a -p "$pfmt" "Current" "$CEN_DAT_LCURR" "Type: ${CEN_DAT_TCURR:--unknown-}"
@@ -281,12 +281,12 @@ find_swap() {
 
 # check if swap is configured in fstab: [-w|-e]
 check_fstab() {
-    [ "$CEN_OPT_BASE" = "-" ] && return 0
+    [ "$CEN_OPT_BASE" = '-' ] && return 0
     [ -r "$CEN_OPT_BASE/etc/fstab" ] || return 0
 
     local mtyp=message madd
-    [ "$1" = "-e" ] && mtyp=error
-    [ "$1" = "-w" ] && mtyp=warning
+    [ "$1" = '-e' ] && mtyp=error
+    [ "$1" = '-w' ] && mtyp=warning
 
     local mdev mmnt ftyp mxxx
     while read mdev mmnt ftyp mxxx ; do
@@ -321,11 +321,16 @@ actionShare() {
 actionNone() {
     check_fstab -w
     if swap_location ; then
-        [ "$CEN_DAT_LCURR" = '/dev/null' ] && return
-        swap_stat
-        swap_delete
+        if [ "$CEN_DAT_LCURR" != '/dev/null' ] ; then
+            swap_stat
+            swap_delete
+        fi
     fi
-    symlink -x -- '/dev/null' "$CEN_DAT_SWAP"
+    if [ "$CEN_ACTION" = 'void' ] ; then
+        symlink -x -- '/dev/null' "$CEN_DAT_SWAP"
+    else
+        remove "$CEN_DAT_SWAP"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -346,8 +351,8 @@ actionFile() {
 actionSwap() {
     check_fstab -e || return
 
-    local driv labl part="-"
-    if [ "${1:--}" = "-" ] ; then
+    local driv labl part='-'
+    if [ "${1:--}" = '-' ] ; then
         shift
     elif [ "${1::1}" = "/" ] ; then           # partion argument
         part="$1" ; shift
@@ -355,12 +360,12 @@ actionSwap() {
     labl="${1:--}"
 
     # try by label
-    if [ "$part" = "-" -a "$labl" = "-" ] ; then
+    if [ "$part" = '-' -a "$labl" = '-' ] ; then
         if ! find_swap ; then
              error "Cannot find a swap device" ; return 1
         fi
         part="$_find_swap"
-    elif [ "$part" = "-" ] ; then
+    elif [ "$part" = '-' ] ; then
         driv="/dev/disk/by-label/$labl"
         if ! [ -b "$driv" ] ; then
             error "Cannot find device for label: $labl" ; return 1
@@ -451,17 +456,17 @@ actionStop() {
 options() {
     case "$1" in
 
-    "") if [ "${CEN_OPT_BASE:--}" != "-" ] ; then
+    '') if [ "${CEN_OPT_BASE:--}" != '-' ] ; then
             folder -c -f "$CEN_OPT_BASE"
-            CEN_OPT_BASE="$PWD" ; [ "$CEN_OPT_BASE" = "/" ] && CEN_OPT_BASE=
+            CEN_OPT_BASE="$PWD" ; [ "$CEN_OPT_BASE" = '/' ] && CEN_OPT_BASE=
             CEN_DAT_SWAP="$CEN_OPT_BASE$CEN_DAT_SWAP"
-            message -a "Base folder:" "${CEN_OPT_BASE:-/}"
+            message -a -c "Base folder" "${CEN_OPT_BASE:-/}"
         fi
         ;;
     -B|--bas|--base)
-        optarg "base"     CEN_OPT_BASE    -t ;;         # text
+        optarg 'base'     CEN_OPT_BASE    -t ;;         # text
     -T|--tar*)
-        optarg "target"   CEN_OPT_TARGET  -t ;;         # text
+        optarg 'target'   CEN_OPT_TARGET  -t ;;         # text
 
     esac
 }
@@ -478,19 +483,21 @@ actions() {
     stop)
         invoke -        -            0 ;;
     sta|stat|sta*)
-        invoke "status" -            0 ;;
+        invoke 'status' -            0 ;;
 
     # other commands
     non*)
-        invoke "none"   -            0 ;;
+        invoke 'none'   -            0 ;;
     fil*)
-        invoke "file"   -            0 2 ;;
+        invoke 'file'   -            0 2 ;;
     leg*)
-        invoke "legacy" actionFile   0 2 ;;
+        invoke 'legacy' actionFile   0 2 ;;
     sha*)
-        invoke "share"  -            1 ;;
+        invoke 'share'  -            1 ;;
     swa*)
-        invoke "swap"   -            0 2 ;;
+        invoke 'swap'   -            0 2 ;;
+    voi|void)
+        invoke 'void'   actionNone   0 ;;
     esac
 }
 
@@ -500,16 +507,17 @@ actions() {
 usage() {
     usageset \
     -o - \
-    -o "-B --base   <fldr>   "$"mount folder for target system (no swapon/swapoff)" \
-    -o "-T --target <dest>   "$"override link target for /.centauri"
+    -o '-B --base   <fldr>'   $"mount folder for target system (no swapon/swapoff)" \
+    -o '-T --target <dest>'   $"override link target for /.centauri"
     usageset \
-    -a "none                 "$"disable service (link $CEN_DAT_SWAP to /dev/null)" \
-    -a "file   [<path>|- [<mbyte>]" \
-    -a "                     "$"create swap file, '-' for default location" \
-    -a "legacy ...           "$"like 'file' if fallocate fails (fat32 etc.)" \
-    -a "share  <part>        "$"share a partition for windows/linux swap files" \
-    -a "swap   [<part>|-] [<label>]" \
-    -a "                     "$"create/label swap partition, '-' try to find"
+    -a 'none'                 $"disable service (link '$CEN_DAT_SWAP' to /dev/null)" \
+    -a 'file   [<path>|- [<mbyte>]' \
+    -a -                      $"create swap file, '-' for default location" \
+    -a 'legacy ...'           $"like 'file' if fallocate fails (fat32 etc.)" \
+    -a 'share  <part>'        $"share a partition for windows/linux swap files" \
+    -a 'swap   [<part>|-] [<label>]' \
+    -a -                      $"create/label swap partition, '-' try to find" \
+    -a 'void'                 $"reset configuration (remove '$CEN_DAT_SWAP' link)"
     usageset \
     -t $"Creates either a real swapfile (action: file) --or-- a link to a mounted folder" \
     -t $"on a (vfat)partition with a swapfile (action: share)  --or--  a link to a swap" \
