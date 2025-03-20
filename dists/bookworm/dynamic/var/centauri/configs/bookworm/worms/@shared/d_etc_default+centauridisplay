@@ -1,0 +1,154 @@
+# configuration for centauridisplay
+# uses bash syntax, file gets sourced, can override options
+
+# --scale CEN_OPT_SCALE
+#
+#   0   manual mode keep all settings, disables --mode 
+#   1   GDK_SCALE=1
+#   2   GDK_SCALE=2 (automatically select for DPI >= 190)
+
+# --dpi CEN_OPT_DPI override automatic DPI, see mode
+#
+# --mode CEN_OPT_MODE control DPI detection
+#
+#   -   trigger DPI detection, see --scale=-
+#   pc  like --dpi=96
+#   sd       --dpi=103
+#   hd       --dpi=141
+#   4k       --dpi=172
+#   5k       --dpi=196
+
+# --force CEN_OPT_FORCE     rewrite configs even if DPI is unchanged
+
+# optionally set fixed mode and dpi
+
+# [ -z "$CEN_OPT_MODE" ] && CEN_OPT_MODE='hd'
+# [ -z "$CEN_OPT_DPI"  ] && CEN_OPT_DPI=132
+
+# ------------------------------------------------------------------------------
+# Things that should not be changed ...
+# ------------------------------------------------------------------------------
+
+# dpi table, see set_mode and set_mode: <<name> <min-x-res> <dpi>>...
+DAT_DPI_INFO=('pc 0 96'  'sd 1300 104'  'hd 1900 141'   '4k 2600 172'  '5k 2800 210')
+
+# map dpi to console font size
+DAT_DPI_CONS=('190 16x32' '170 14x28' '150 12x24' '130 10x18' '100 8x16' '0 8x14')
+
+# ------------------------------------------------------------------------------
+# /etc/centauridisplay
+# ------------------------------------------------------------------------------
+DAT_CFG_DISPLAY='
+
+# this file gets sources by /etc/bash.centauri if GDK_SCALE, GDK_DPI_SCALE and
+# QT_SCALE_FACTOR are void ...
+
+export GDK_SCALE=%%SCALE%%
+case "${GDK_SCALE:-0}" in
+0)                              # no scaling, use DPI only
+    ;;
+1)                              # scale GTK only
+    export GDK_DPI_SCALE=%%ZOOM1%%
+    export QT_SCALE_FACTOR=1
+    export QT_AUTO_SCREEN_SCALE_FACTOR=0
+    ;;
+*)                              # scale GTK and QT
+    export GDK_DPI_SCALE=%%ZOOM2%%
+    export QT_SCALE_FACTOR=1.33
+    export QT_AUTO_SCREEN_SCALE_FACTOR=0
+    ;;
+esac
+'
+
+# ------------------------------------------------------------------------------
+# /etc/default/console-setup template (quoted string), used with --mode
+# ------------------------------------------------------------------------------
+DAT_CFG_CONSOLE='
+# Consult the console-setup(5) manual page.
+
+ACTIVE_CONSOLES="/dev/tty[1-6]"
+
+CHARMAP="UTF-8"
+CODESET="guess"
+
+FONTFACE=%%CFONT%%
+FONTSIZE=%%CSIZE%%
+
+#FONTFACE="TerminusBold"
+#FONTSIZE="10x18"
+VIDEOMODE=
+'
+ 
+# ------------------------------------------------------------------------------
+# /etc/lightdm/lightdm.conf template (quoted string), used with --mode
+# ------------------------------------------------------------------------------
+DAT_CFG_LIGHTDM='
+[LightDM]
+[Seat:*]
+xserver-command=/usr/bin/Xorg %%SDPI%% -keeptty
+[XDMCPServer]
+[VNCServer]
+'
+
+# ------------------------------------------------------------------------------
+# /etc/lightdm/lightdm-gtk-greeter.conf template (quoted string), used with --mode
+# ------------------------------------------------------------------------------
+DAT_CFG_LIGHTDG='
+[greeter]
+background=/centauritools/Desktop/wallpaper.jpg
+#user-background=
+#theme-name=
+#icon-theme-name=
+#font-name=
+#xft-antialias=
+xft-dpi=%%DPI%%
+#xft-hintstyle=
+#xft-rgba=
+#indicators=
+clock-format = %Y-%m-%d
+#keyboard=
+#reader=
+#position=
+#screensaver-timeout=
+'
+
+# ------------------------------------------------------------------------------
+# /etc/sddm.conf template (quoted string), used with --mode
+# ------------------------------------------------------------------------------
+DAT_CFG_SDDM='
+[Autologin]
+Relogin=false
+Session=
+User=
+
+[General]
+HaltCommand=/usr/sbin/shutdown --no-wall
+RebootCommand=/usr/sbin/shutdown --no-wall
+
+[Theme]
+Current=debian-breeze
+CursorTheme=breeze_cursors
+
+[Users]
+MaximumUid=50000
+MinimumUid=1000
+
+[X11]
+ServerArguments=-nolisten tcp %%SDPI%%
+'
+
+DAT_CFG_XRES='
+! legacy, the XPNT variable is set to 16 or 20, XFNT is fixed or terminus
+xterm*font:      *-%%XFNT%%-*-*-*-%%XPNT%%-*
+xman*font:       *-%%XFNT%%-*-*-*-%%XPNT%%-*
+xmessage*font:   *-%%XFNT%%-*-*-*-%%XPNT%%-*
+
+! font and cursor settings
+Xft.antialias:  1
+Xft.hinting:    1
+Xft.hintstyle:  hintslight
+Xft.rgba:       rgb
+Xft.dpi:        %%DPI%%
+Xcursor.size:   %%CURSOR%%
+Xcursor.theme:  breeze_cursors
+'

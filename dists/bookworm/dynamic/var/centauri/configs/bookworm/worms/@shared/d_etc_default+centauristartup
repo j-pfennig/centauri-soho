@@ -1,0 +1,44 @@
+# -----------------------------------------------------------------------------
+# Appliances are special boot options for computers that have no default linux
+# network and service configuration.
+#
+#   <runlevel>  2       # minimal networking and centauriswitch services started
+#               3       # all linux networking services get started
+#   <mode>      ...     # any network mode, auto selected if empty
+#   <conf>      ...     # optional network configuration
+#   <arg>       ...     # any kernel boot parameters
+#
+# centaurisysinit starts in appliance mode if runlevel is 2 or 3 and if either
+# the network mode is "(switch|router):.*" or 'centauriautlogin' is defined.
+#
+# For runlevel 2 centaurisysinit handles starting networking and centauriswitch
+# if kernel boot parameters match the definition of an appliance. All further
+# steps are handled by centauriswitch. See /etc/default/centauriswitch
+# -----------------------------------------------------------------------------
+
+# List of appliances:
+#         Name      Label            runlevel   mode     conf      kernel params
+appliance switch    "Switch Mode"           3   switch   -         -
+appliance router    "Router Mode"           3   router   -         -
+appliance extender  "Extender Mode"         3   switch   extender  -
+appliance repeater  "Repeater Mode"         3   router   repeater  -
+
+appliance menu      "Menu Mode"             2   manual   -         -
+appliance clock     "Digital Clock"         2   smart    -         -
+appliance hass      "Homeassistant GUI"     2   smart    -         -
+appliance kiosk     "Kiosk Mode"            2   smart    -         -
+appliance weewx     "WeeWx Weather Station" 2   smart    -         -
+
+# flag as display appliances, set autologin users (use '-' for name) 
+applogin  menu      local           -
+applogin  clock     -               "centauriclock --quiet --gui=1 run"
+applogin  hass      homeassistant   "centaurihass  --quiet --gui=1 web"
+applogin  kiosk     -               -
+applogin  weewx     -               "centauriweewx --quiet --gui=1 web"
+
+# timers to be started in appliance modes 
+apptimers   -       logrotate systemd-tmpfile-clean
+apptimers   kiosk   anacron apt-daily apt-daily-upgrade exim4-base 
+apptimers   menu    anacron apt-daily apt-daily-upgrade exim4-base 
+
+# End

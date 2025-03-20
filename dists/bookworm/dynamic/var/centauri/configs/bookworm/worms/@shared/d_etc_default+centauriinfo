@@ -1,0 +1,192 @@
+# This is a configuration for 'centauriinfo'
+
+# ==============================================================================    
+# Localization example - german
+# ==============================================================================    
+infolocale  de \
+            "Local WEB"             "Lokales WEB" \
+            "Documentation"         "Dokumentation" \
+            "dwww Documentation"    "dwww Dokumentation" \
+            "Documentation Menu"    "Dokumentationsmenü" \
+            "Manual Pages"          "Manual Seiten" \
+            "Doc Folder"            "Doc Verzeichnis" \
+            "Recipes"               "Rezepte" \
+            "Recipes Folder"        "Rezepte Verzeichnis" \
+            "Search in Recipes"     "In Rezepten suchen" \
+            "Weather Station"       "Wetterstation" \
+            "Miscellaneous"         "Verschiedenes" \
+            "Folders"               "Verzeichnisse" \
+            "User WEBs"             "Benutzer WEBs" \
+            "Administration"        "Verwaltung" \
+            "Configuration"         "Konfiguration" \
+            "Manifests"             "Manifeste" \
+
+# ==============================================================================    
+infosection webindex "Centauri -" "Local WEB" "- $HOSTNAME" 
+# ==============================================================================    
+
+    # at execution time the current folder is the web root folder
+
+    # select input:
+    #       infowebdoc    folder   <path>...
+    #       infowebdoc    file     <path>...
+    
+    # add a link to group:
+    #       infoweburl    <text>   <url>
+    
+    # create a link group:
+    #       infoheader    <main>|- <sublevel>
+
+    # --------------------------------------------------------------------------
+    infoheader  "Documentation"
+    # --------------------------------------------------------------------------
+
+    infowebdoc  folder      dwww
+    infoweburl  "dwww Documentation" dww
+    infowebdoc  folder      dwww
+    infoweburl  "Documentation Menu" dwww/menu
+    infoheader  -           "Debian"
+
+    infowebdoc  folder      dwww/man
+    infoweburl  "Manual Pages"  cgi-bin/dwww/man
+    infowebdoc  folder      dwww
+    infoweburl  "Doc Folder"    cgi-bin/dwww/usr/share/doc?type=dir
+    infoheader  -           "Linux"
+
+    infowebdoc  file        centaurisoho/0_Table_of_Content.html
+    infoweburl  "Centauri Soho"     centaurisoho/0_Table_of_Content.html
+    infowebdoc  file        centauritools/tools.html
+    infoweburl  "Centauri Tools"     centauritools/tools.html
+    infowebdoc  file        centauritools/index.html
+    infoweburl  "centauri-bash-lib"  centauritools/index.html
+    infoheader  -           "Centauri Software"
+
+    infowebdoc  file        MiniDoc/index.html
+    infoweburl  "Centauri MiniDoc"     MiniDoc/index.html
+    infoheader  -           "Tutorials"
+
+    infowebdoc  folder      Rezepte
+    infoweburl  "Recipes Folder"    "Recipes"
+    infowebdoc  file        /usr/lib/cgi-bin/namazu.cgi
+    infoweburl  "Search in Recipes" cgi-bin/namazu.cgi 
+    infoheader  -           "Recipes"
+
+    infoweburl  "Home-Assistant"    //hass.centauri.home:8123
+    infowebdoc  folder      weewx
+    infoweburl  "Weather Station"   weewx/index.html
+    infowebdoc  folder      gutenberg
+    infoweburl  "Project Gutenberg" gutenberg/index.html
+    infoheader  -           "Miscellaneous"
+
+    # --------------------------------------------------------------------------
+    infoheader  "Folders"
+    # --------------------------------------------------------------------------
+
+    infowebdoc  folder      export shared
+    infoweburl  "\${FILE^}" "\$DOCUMENT/"
+    infoheader  -           "Filesystem"
+
+    infowebdoc  folder      /home/*/[pP]ublic/[hH]tml /home/*/Öffentlich/[hH]tml
+    infoweburl  "\$PARENT"   "~\$PARENT"
+    infoheader  -           "User WEBs"
+
+    infowebdoc  folder      rainloop
+    infoweburl  "Rainloop"  "rainloop"
+    infoheader  -           "WEB E-Mail"
+
+    # --------------------------------------------------------------------------
+    infoheader  "Administration"
+    # --------------------------------------------------------------------------
+    
+    infoweburl  "CUPS"      "//localhost:631"
+    infoweburl  "Router"    "//router.centauri.home"
+    infoweburl  "Printer"   "//printer0.centauri.home"
+    infoheader  -           "Configuration"
+
+    infowebdoc  file        "archived.html"
+    infoweburl  "Archiv"    "archived.html"
+    infowebdoc  file        "autosave.html"
+    infoweburl  "Autosave"  "autosave.html"
+    infoheader  -           "Backups"
+
+    infowebdoc  file        manifest/bullseye_*.html
+    infoweburl  "\${NAME#*_}" "\$DOCUMENT"
+    infoheader  -           "Manifests" "(bullseye)"
+
+    infowebdoc  file        manifest/bookworm_*.html
+    infoweburl  "\${NAME#*_}" "\$DOCUMENT"
+    infoheader  -           "Manifests" "(bookworm)"
+
+    infowebdoc  file        manifest/trixie_*.html
+    infoweburl  "\${NAME#*_}" "\$DOCUMENT"
+    infoheader  -           "Manifests" "(trixie)"
+
+# ==============================================================================    
+infosection manifest "Manifest" "- $HOSTNAME -" "$(printf '%(%Y-%m-%d)T' -1)"
+# ==============================================================================    
+
+    # infocheck     file     <path>
+    # infocheck     folder   <path>
+    # infocheck     tool     <name>|<path>
+
+    # infoheader    <main>|- <sublevel>
+    
+    # infodata      tool     <name>|<path>
+    # infodata      embed    <name>
+    # infodata      script   <code>
+
+    # --------------------------------------------------------------------------
+    infoheader "System State"
+    # --------------------------------------------------------------------------
+
+    infoheader  -           "Running Processes"
+    infodata    tool        pstree
+
+    infoheader  -           "Memory Usage"
+    infodata    tool        free -m
+
+    infocheck   file        /etc/fstab
+    infoheader  -           "Mounts via '/etc/fstab'"
+    infodata    tool        cat /etc/fstab
+    
+    infoheader  -           "Mounts via 'systemd automount'"
+    infodata    tool        systemctl list-unit-files --type automount --no-legend --no-pager
+    
+    infoheader  -           "Systemd Services"
+    infodata    tool        systemctl list-unit-files --type service --no-legend --no-pager
+    
+    infoheader  -           "Firewall Statistics"
+    infodata    embed       centaurifilter counts
+
+    infoheader  -           "Kernel Modules"
+    infodata    tool        lsmod
+
+    # --------------------------------------------------------------------------
+    infoheader "System Information"
+    # --------------------------------------------------------------------------
+
+    infocheck   file        /var/centauri/default/centaurinetcfg
+    infoheader  -           "Network Configuration"
+    infodata    embed       centaurinetcfg validate list
+
+    infocheck   tool        dpkg-query 
+    infoheader  -           "Installed Packages"
+    infodata    script      'dpkg-query -W -f "\${Package;-30} \${Version;-20}|\n" | grep -v -P "lib(?!reoffice)" | column -c$CEN_COLS'
+
+    # --------------------------------------------------------------------------
+    infoheader "Hardware Information"
+    # --------------------------------------------------------------------------
+
+    infocheck   tool        lsblk
+    infoheader  -           "Disk Partitions"
+    infodata    tool        lsblk -f -m 
+
+    infocheck   tool        smartctl
+    infoheader  -           "S.M.A.R.T Status"
+    infodata    embed       centaurismart -q stat
+
+    infocheck   tool        lshw
+    infoheader  -           "Hardware List"
+    infodata    tool        lshw -short
+
+# end
