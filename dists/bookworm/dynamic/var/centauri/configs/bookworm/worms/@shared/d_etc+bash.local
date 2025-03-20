@@ -1,7 +1,12 @@
-# optional local defines for /etc/bash.centauri
+# called by /etc/bash.centauri to allow local configuration overrides
 
-#export XCURSOR_SIZE=36
-#export GDK_DPI_SCALE=1.2
-export GDK_DPI_SCALE_FIREFOX=0.8
+# setting GDK_SCALE GDK_DPI_SCALE or QT_SCALE_FACTOR in this file
+# cause automatic setting from /etc/centauridisplay to be ignored
 
-# end
+# scale GTK only
+#   export GDK_SCALE=1.2
+#   export QT_SCALE_FACTOR=1
+
+# scale GTK and QT
+#   export GDK_SCALE=2 
+#   export QT_SCALE_FACTOR=1.4

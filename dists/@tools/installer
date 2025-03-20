@@ -163,7 +163,7 @@ installer_dist() {
         system mv -f "$dist" "$dist.old" || quit
     fi
 
-    [ -n "$star" ] && system ln -s -f "$star" "$orig/$DAT_SEED"
+    [ -n "$star" ] && symlink -n -- "$star" "$orig/$DAT_SEED"
 
     local xfrm="centaurisoho-${INSTALLER_SEED#*-}" ; xfrm="s|^$orig/|${xfrm%.*}/|"
     local ddir="$orig/dists/$INSTALLER_DISTRO"
@@ -177,9 +177,22 @@ installer_dist() {
 }
 
 # ------------------------------------------------------------------------------
+# Check interface name: <vnam> <ifce>
+# ------------------------------------------------------------------------------
+installer_ifname() {
+    local name ifce="$2" pref="$CEN_NAME:"
+    while [ ! -e "/sys/class/net/$ifce" ] ; do
+        read -p "$pref No '$ifce' interface, optionally enter another name: " name
+        [ -z "$name" ] && break
+        ifce="${name#*/}" ; pref="${pref//?/ }"
+    done
+    printf -v "$1" '%s' "$ifce"
+}
+
+# ------------------------------------------------------------------------------
 # prepare the bootimage: [-n|-p]
 #
-#   Option:     -n      update initramfs
+#   Option:     -n      don't update initramfs
 #               -p      called from prepare (no motd)
 # ------------------------------------------------------------------------------
 installer_initial() {
@@ -187,11 +200,11 @@ installer_initial() {
         system mv -f '/etc/network/interfaces.installer' '/etc/network/interfaces'
 
     local fini
-    if [ ! -e '/etc/systemd/network/99-default.link' ] ; then
-        message -i "Disable systemd interface naming (rebuilding initrd)"
-        symlink -n '/dev/null' '/etc/systemd/network/99-default.link'
-        fini=1
-    elif [ '.timestamp' -nt "/boot/initrd.img-$(uname -r)" ] ; then
+#    if [ ! -e '/etc/systemd/network/99-default.link' ] ; then
+#        message -i "Disable systemd interface naming (rebuilding initrd)"
+#        symlink -n '/dev/null' '/etc/systemd/network/99-default.link'
+#        fini=1
+    if [ '.timestamp' -nt "/boot/initrd.img-$(uname -r)" ] ; then
         [ "$1" = '-n' ] || fini=1
     fi
     if [ -n "$fini" ] ; then
@@ -543,7 +556,9 @@ installer_prepare() {
     fi
     message -i
 
-    if confirm -y "Install localepurge (remove unused locales)" ; then
+    if [ -e '/etc/locale.nopurge.off' ] ; then
+        :                                       # did run before
+    elif confirm -y "Install localepurge (remove unused locales)" ; then
         [ -e '/etc/locale.nopurge' ] &&
             quit "Try to run 'apt purge localepurge' before this!"
         embed centauripackage -T -s -y localepurge pwauth
@@ -610,26 +625,31 @@ LABEL=${name}_root  /               auto  rw,defaults,noatime 0 0
         system -e -p systemctl disable wpa_supplicant.service
         system -q    systemctl disable NetworkManager.service ModemManager.service
         message -a "Disabled NetworkManager/ModemManager and wpa_supplicant services"
+
+        local ieth iwla
+        installer_ifname ieth 'eth0'
+        installer_ifname iwla 'wlan0'
         create -t -c '/etc/network/interfaces.installer' <<!EOF
 # bootstrap interface config only - this file intends to start networking
 # in background to avoid a system that hangs at boot time. NetworkManager
-# does so, but at this point we want to use a classic setup ...
+# handles this correctly, but at this point we want to use a classic setup.
 
-# Please add WLAN credentials to /etc/wpa_supplicant/wpa_supplicant.conf !
+# Please add WLAN credentials to /etc/wpa_supplicant/wpa_supplicant.conf, see
+#   centaurinetgen wpa - <password>
 
 auto lo
 iface lo inet loopback
 
-iface eth0 inet manual
-pre-up   /usr/sbin/dhclient -nw -4 -v -i -pf /run/dhclient.eth0.pid -lf /var/lib/dhcp/dhclient.eth0.leases -I -df /var/lib/dhcp/dhclient6.eth0.leases eth0
-pre-down /usr/sbin/dhclient  -r -4 -v -i -pf /run/dhclient.eth0.pid -lf /var/lib/dhcp/dhclient.eth0.leases -I -df /var/lib/dhcp/dhclient6.eth0.leases eth0
-auto eth0
+iface $ieth inet manual
+pre-up   /usr/sbin/dhclient -nw -4 -v -i -pf /run/dhclient.$ieth.pid -lf /var/lib/dhcp/dhclient.$ieth.leases -I -df /var/lib/dhcp/dhclient6.$ieth.leases $ieth
+pre-down /usr/sbin/dhclient  -r -4 -v -i -pf /run/dhclient.$ieth.pid -lf /var/lib/dhcp/dhclient.$ieth.leases -I -df /var/lib/dhcp/dhclient6.$ieth.leases $ieth
+auto $ieth
 
-iface wlan0 inet manual
+iface $iwla inet manual
 wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
-pre-up   /usr/sbin/dhclient -nw -4 -v -i -pf /run/dhclient.wlan0.pid -lf /var/lib/dhcp/dhclient.wlan0.leases -I -df /var/lib/dhcp/dhclient6.wlan0.leases wlan0
-pre-down /usr/sbin/dhclient  -r -4 -v -i -pf /run/dhclient.wlan0.pid -lf /var/lib/dhcp/dhclient.wlan0.leases -I -df /var/lib/dhcp/dhclient6.wlan0.leases wlan0
-auto wlan0
+pre-up   /usr/sbin/dhclient -nw -4 -v -i -pf /run/dhclient.$iwla.pid -lf /var/lib/dhcp/dhclient.$iwla.leases -I -df /var/lib/dhcp/dhclient6.$iwla.leases $iwla
+pre-down /usr/sbin/dhclient  -r -4 -v -i -pf /run/dhclient.$iwla.pid -lf /var/lib/dhcp/dhclient.$iwla.leases -I -df /var/lib/dhcp/dhclient6.$iwla.leases $iwla
+auto $iwla
 !EOF
         local wpsk
         txtgrep -s wpsk -y wlanpsk=\* -i - <passwords
@@ -654,11 +674,24 @@ network={
             message "Add password to '/etc/wpa_supplicant/wpa_supplicant.conf' manually"
     fi
 
+    if [ -e '/etc/systemd/network/99-default.link' ] ; then
+        if [ "$ieth" != 'eth0' ] ; then
+            system -e rm '/etc/systemd/network/99-default.link'
+            system -e touch '.timestamp'
+        fi
+    else
+        if [ "$ieth" = 'eth0' ] ; then
+            symlink -n '/dev/null' '/etc/systemd/network/99-default.link'
+            system -e touch '.timestamp'
+        fi
+    fi
     installer_initial
     embed centaurisoho message step1 /etc/motd
 
     message -i
-    message "Next boot uses bios interface names, please check '/etc/network/interfaces'"
+    local mesg='systemd'
+    [ -e '/etc/systemd/network/99-default.link' ] && mesg='bios'
+    message "Next boot may use $mesg interface names, please check '/etc/network/interfaces'"
     message -i
 
     # --- fix cmdline/grub ---
@@ -691,7 +724,7 @@ installer_remove() {
     local item subi subd base="$PWD" ; cd ..
     system rm -f    /usr/local/bin/centauri* /usr/local/bin/_centauri_bash_lib
     system rm -f -r /var/centauri /etc/default/centauri* /var/lib/centauri
-    system rm -f -r /centauritools /etc/centauri* "$base"
+    system rm -f -r /run/centauri /centauritools /etc/centauri* "$base"
 
     # remove stale service links
     for item in /etc/systemd/system/* ; do
@@ -819,13 +852,6 @@ vfatname() {
 }
 
 # ------------------------------------------------------------------------------
-# This tool can be run without centauri-bash-lib being installed. If so it uses
-# a couple simplified library equivalents that are created below ...
-# ------------------------------------------------------------------------------
-[ "${CEN_NAME:--}" = '-' ] && [ -x '/usr/local/bin/_centauri_bash_lib' ] &&
-    . /usr/local/bin/_centauri_bash_lib -a -d -f - '0.10:2' 0
-
-# ------------------------------------------------------------------------------
 # execute payload
 # ------------------------------------------------------------------------------
 run() {
@@ -863,181 +889,392 @@ usage() {
 }
 
 # ------------------------------------------------------------------------------
-# The mini-bash-lib contains these functions and options ...
+# This tool can be run without centauri-bash-lib being installed. If so it uses
+# a couple simplified library equivalents that are created below ...
 # ------------------------------------------------------------------------------
-#
-#   confirm     -a -i -n -y
-#   dryrun      [no options]
-#   embed       [all options ignored]
-#   error       -a -t -q
-#   folder      -c -m -q
-#   message     -a -i
-#   symlink     -n
-#   system      -q -r -e -p [-e|-p ignored]
-#   trace       [all options ignored]
-#   quit        -e -s
-#
-# ------------------------------------------------------------------------------
+[ "${CEN_NAME:--}" = '-' ] && [ -x '/usr/local/bin/_centauri_bash_lib' ] &&
+    . /usr/local/bin/_centauri_bash_lib -a -d -f - '0.11:2' 0
 
-if [ -z "$CEN_HOOK_MESSAGE" ] ; then                # have no centauri-bash-lib
-    CEN_OPT_DRYRUN=         # option -d
-    CEN_OPT_FORCE=          # option -f
-    CEN_VERB=1              # option -v
-    CEN_EXIT=0              # exit code
-    CEN_NAME="${BASH_SOURCE##*/}"
-
-    message() {
-        local _pref="$CEN_NAME:"
-        while [ "${1::1}" = '-' ] ; do
-            case "$1" in
-            --) shift ; break ;;
-            -i) _pref="${_pref//?/ }" ;;
-            esac ; shift
-        done
-        [ -z "$*" ] && return 0
-        echo "$_pref" "$@" >&2
-    }
-
-    trace() {
-        [ "$CEN_VERB" -lt 2 ] && return 0
-        while [ "${1::1}" = '-' ] ; do shift ; done
-        echo "${CEN_NAME//?/ }  $*" >&2
-    }
-
-    dryrun() {
-        [ -z "$CEN_OPT_DRYRUN" ] && return 1
-        trace "dryrun:" "$@" ; return 0
-    }
-
-    # simplified error message: [-q|-t] <text>...
-    error() {
-        local _fqui
-        while [ "${1::1}" = '-' ] ; do
-            case "$1" in
-            --) shift ; break ;;
-            -q) _fqui=1 ;;
-            -t) [ "${CEN_EXIT}" = 0 ] && return 0 || return 1
-            esac ; shift
-        done
-        if [ -n "$_fqui" ] ; then
-            [ "${CEN_EXIT}" = 0 ] && return 0
-            quit -e "$@"
-        fi
-        echo "$CEN_NAME: ***ERROR***" "$@" >&2
-        CEN_EXIT=1 ; return 1
-    }
-
-    # yes/no confirm: [-y|-n] [-a|-i] <text>...
-    confirm() {
-        local oind yesn='[Y/n]' defn=0
-        while [ "${1::1}" = '-' ] ; do
-            case "$1" in
-            --) shift ; break ;;
-            -i) oind=1 ;;
-            -n) yesn='[y/N]' ; defn=1 ;;
-            esac ; shift
-        done
-
-        if [ -n "$oind" ] ; then
-            read -p "${CEN_NAME//?/ }  $* $yesn "
-        else
-            read -p "$CEN_NAME: $* $yesn "
-        fi
-        [ "${REPLY::1}" = 'y' ] && return 0
-        [ "${REPLY::1}" = 'n' ] && return 1
-        return "$defn"
-    }
-
-    embed() {
-        while [ "${1::1}" = '-' ] ; do shift ; done
-        local prog="$1" ; shift
-        system -r "$prog" ${CEN_OPT_DRYRUN:+--dryrun} --embed="$CEN_NAME" "$@"
-    }
-
-    folder() {
-        local ochg omak oqui
-        while [ "${1::1}" = '-' ] ; do
-            case "$1" in
-            --) shift ; break ;;
-            -c) ochg=1 ;;
-            -m) omak=1 ;;
-            -q) oqui=1 ;;
-            esac ; shift
-        done
-        if [ -d "$1" ] ; then
-            [ -z "$ochg" ] && return 0
-            system -r cd "$1" ; return
-        elif [ -n "$omak" ] ; then
-            system mkdir -p "$1" ; return
-        fi
-        [ -z "$oqui" ] && error "Not a folder:" "$1"
-        return 1
-    }
-
-    symlink() {
-        local nock
-        while [ "${1::1}" = '-' ] ; do
-            case "$1" in
-            --) shift ; break ;;
-            -n) nock='-f' ;;
-            esac ; shift
-        done
-        [ "$1" -ef "$2" ] && return 0
-        system ln -s $nock -- "$@"
-    }
-
-    system() {
-        local _fqui _frun _fgoo=0
-        while [ "${1::1}" = '-' ] ; do
-            case "$1" in
-            --) shift ; break ;;
-            -e|-p) ;;
-            -g)  shift ; _fgoo="$1" ;;
-            -q) _fqui=1 ;;
-            -r) _frun=1 ;;
-            esac ; shift
-        done
-
-        [ -z "$_frun" ] && dryrun "$@" && return 1
-        trace "system: $@"
-        if [ -n "$_fqui" ] ; then
-            "$@" &>/dev/null && return 0
-        else
-            "$@" && return 0
-        fi
-        _frun=$?
-        [ "$_frun" -gt "$_fgoo" ] && error "Running '$1' failed (status $_frun)"
-        return "$_frun"
-    }
-
-    quit() {
-        local _mesg='message'
-        while [ "${1::1}" = '-' ] ; do
-            case "$1" in
-            --) shift ; break ;;
-            -e) _mesg='error' ;;
-            -s) shift ; CEN_EXIT="${1:-2}"
-            esac ; shift
-        done
-        $_mesg "$*"
-        exit "$CEN_EXIT"
-    }
-
-    while [ "${1::1}" = '-' ] ; do
-        case "$1" in
-        ---)         break ;;
-        -d|--dry*)   CEN_OPT_DRYRUN=1 ;;
-        -f|--for*)   CEN_OPT_FORCE=1 ;;
-        -h|--help)   usage ; exit 2 ;;
-        -v|--ver*)   CEN_VERB=2 ;;
-        *)  break
-        esac ; shift
-    done
-    run "$@" ; exit                         # using mini-bash-lib
-elif [ -n "$CEN_STAGE" ] ; then
-    run "$@"                                # we got sourced
+# Packed mini-bash-lib, see centauricreate minilib --option minimal
+if [ -z "$CEN_HOOK_MESSAGE" ];then
+{
+CEN_HOOK_MESSAGE='message'
+CEN_STDOUT=41
+CEN_STDERR=42
+eval exec "$CEN_STDOUT>&1" "$CEN_STDERR>&2"
+CEN_EXIT=0
+CEN_HOOK_QUIT=
+CEN_IDNT=
+CEN_MINI_VERSION='0.03'
+CEN_ARGS=
+CEN_ARGOPT=
+CEN_ACTARR=
+CEN_CONFIRM=
+CEN_OPT_DRYRUN=
+CEN_OPT_FORCE=
+CEN_TMP_BASE="${TMPDIR:-/tmp}/$EPOCHSECONDS-$BASHPID-"
+CEN_TMP_INDX=0
+CEN_TMP_SYSO=
+CEN_TMPFILE=
+CEN_VERB=1
+CEN_YESNO=
+warning(){ message -w "$@";}
+error(){ message -e -l "$@";return "$CEN_EXIT";}
+fatal(){ message -f -l "$@";}
+trace(){ [ "$CEN_VERB" -lt 2 ]&&return 0;message "$@";}
+message(){
+local _idnt="$CEN_NAME:" _exit _mesg _olog="$CEN_VERB" _opre _oqui _omul _opri
+while [ "${1::1}" = - ];do
+case "$1" in
+-)break;;
+--)shift;break;;
+-a)[ -n "$CEN_IDNT" ]&&_idnt="${_idnt//?/ }";;
+-c)
+local _asci _ugly
+_asci="${2//[[:alpha:]]/.}"
+printf -v _ugly "%-18s:" "$_asci"
+printf -v _opre '%s' "${_ugly/$_asci/$2}"
+shift;;
+-e)_opre=$"***ERROR***";_exit=2;;
+-f)_opre=$"***FATAL ERROR***";_oqui=1;_exit=3;;
+-i)_idnt="${_idnt//?/ }";;
+-l)_olog=1;;
+-m)_omul=1;;
+-p)_opri=1;;
+-q)[ "$CEN_EXIT" = 0 ]&&return 0;_oqui=2;;
+-t)[ "$CEN_EXIT" = 0 ];return;;
+-w)_opre=$"***WARNING***";;
+esac;shift
+done
+[ -n "$_exit" ]&&{ _olog=1;CEN_EXIT="$_exit";}
+[ "$_oqui" = 2 ]&&quit -e "$@"
+[ "$_olog" -lt 1 ]&&return 0
+if [ -n "$_omul" ];then
+_omul="$1";shift
+set -- "$_omul${@/*/$'\n'${_idnt//?/ } &}"
+fi
+[ -z "$_opri" ]&&_mesg="$*"||printf -v _mesg "$@"
+[ -n "$_opre" ]&&_mesg="$_opre $_mesg"
+echo "$_idnt" "$_mesg" >&2
+CEN_IDNT=1;[ -n "$_oqui" ]&&quit
+}
+confirm(){
+local _ofmt _oupc _what=1 _repl _vnam='CEN_CONFIRM' _idnt="$CEN_NAME:" _info _defn _text
+while [ "${1::1}" = - ];do
+case "$1" in
+--)shift;break;;
+-a)[ -n "$CEN_IDNT" ]&&_idnt="${_idnt//?/ }";;
+-d)shift;_defn="$1";;
+-f)_ofmt=1;;
+-i)_idnt="${_idnt//?/ }";;
+-n)_what=1;;
+-p)shift;_what=;_info="$1";;
+-s)shift;_vnam="$1";;
+-u)_oupc=1;;
+-y)_what=0
+esac;shift
+done
+[ -z "$_ofmt" ]&&_text="$*"||printf -v _text "$@"
+if [ -z "$_what" ];then
+[ "$_info" = - ]&&_info=': '
+read -p -r "$_idnt $_text$_info" _repl;CEN_IDNT=1
+[ -z "$_repl" ]&&_repl="$_defn"
+[ -z "$_oupc" ]&&_repl="${_repl,,}"
+[ -n "$_vnam" ]&&printf -v "$_vnam" '%s' "$_repl"
+[ -n "$_repl" ];return
+fi
+local _locy _locn _loqy _loqn _loca=$"yes°no° [Y/n]? ° [y/N]? "
+IFS='°' read -r _locy _locn _loqy _loqn <<<"$_loca"
+if [ -z "$CEN_YESNO" ];then
+if [ "$_what" = 0 ];then
+_defn="$_locy";_info="$_loqy"
 else
-    main "$@" ; quit                        # using centauri-bash-lib
+_defn="$_locn";_info="$_loqn"
+fi
+while :;do
+read -rp "$_idnt $_text$_info" _repl;CEN_IDNT=1
+_repl="${_repl,,}"
+case "${_repl::1}" in
+'')  _repl="$_defn";break;;
+"${_locn::1}") _repl="$_locn";break;;
+"${_locy::1}") _repl="$_locy";break
+esac
+message -l $"Please enter 'yes' or 'no'"
+done
+else
+[ "$CEN_YESNO" = 'y' ]&&_repl="$_locy"||_repl="$_locn"
+fi
+[ -n "$_vnam" ]&&printf -v "$_vnam" '%s' "$_repl"
+[ "$_repl" = "$_locy" ]
+}
+create(){
+local _rdry _rtru _vnam _fout _darr
+while [ "${1::1}" = - ];do
+case "$1" in
+--)shift;break;;
+-c)_vnam='-';;
+-r)_rdry='-r';;
+-t)_rtru=1;;
+-v)shift;_vnam="$1"
+esac;shift
+done
+dryrun $_rdry 'create' "$@"&&return 1
+[ "${1:--}" = - ]&&_fout='/dev/stdout'||_fout="$1"
+if [ -z "$_rtru" ]&&[ "${_fout::5}" != '/dev/' ]&&[ -e "$_fout" ];then
+error $"Existing file:" "$_fout";return 1
+fi
+_cen_create_file "$_fout"||return 1
+[ -z "$_vnam" ]&&return 0
+if [ "$_vnam" = - ];then
+local _darr;readarray -t _darr
+else
+local -n _darr="$_vnam"
+fi
+printf '%s\n' "${_darr[@]}" >"$_fout"
+}
+_cen_create_file(){
+true >"$1" 2>/dev/null&&return 0;error $"Failed to create file:" "$1"
+}
+dryrun(){
+local _rdry="$CEN_OPT_DRYRUN"
+while [ "${1::1}" = - ];do
+case "$1" in
+--)shift;break;;
+-r)_rdry=;;
+esac;shift
+done
+if [ -z "$_rdry" ];then
+trace -a -c $"Execute" "$@";return 1
+fi
+message -a -c $"Skip" "$@";return 0
+}
+embed(){
+local _stat _opts=()
+while [ "${1::1}" = - ];do
+case "$1" in
+--)shift;break;;
+-m)return 0;;
+-a|-s)_opts+=("$1" "$2");shift;;
+-*)_opts+=("$1")
+esac;shift
+done
+_opts+=('--' "$1" "--embed=${CEN_NAME@Q}");shift
+[ -n "$CEN_OPT_DRYRUN" ]&&_opts+=('--dryrun')
+system -r "${_opts[@]}" "$@";_stat="$?"
+[ "$_stat" = 3 ]&&quit -s 3;return "$_stat"
+}
+folder(){
+local _ochg _omak _oerr='error'
+while [ "${1::1}" = - ];do
+case "$1" in
+--)shift;break;;
+-c)_ochg='cd';;
+-f)_oerr='fatal';;
+-m)_omak=1;;
+-p)_ochg='cd -P';;
+-q)_oerr=':';;
+esac;shift
+done
+if [ ! -d "$1" ];then
+if [ -n "$_omak" ];then
+system -e -p -- mkdir -p "$1"||return 1
+else
+$_oerr $"Not a folder:" "$1"||return 1
+fi
+fi
+[ -z "$_ochg" ]&&return 0
+system -r -e -- eval "$_ochg" "$1"||return 1
+trace -a -c $"Current folder" "$PWD";return 0
+}
+splitjoin(){
+local _sopt _deli
+while [ "${1::1}" = - ];do
+case "$1" in
+--)shift;break;;
+-d)shift;printf -v _deli "$1";;
+-s)shift;local -n _vjsx="$1";_sopt=1;;
+-j)shift;local -n _vjsx="$1";_sopt=2;;
+esac;shift
+done
+case "$_sopt" in
+1)[ -z "$_deli" ]&&_deli=$'\t\n'
+local _sifs="$IFS"
+set -f;IFS="$_deli" _vjsx=($*);set +f;IFS="$_sifs";;
+2)[ -z "$_deli" ]&&_deli=$'\t'
+printf -v _vjsx "${_deli::1}%s" "$@";_vjsx="${_vjsx:1}";;
+*)return 1
+esac;return 0
+}
+copy(){ _cen_simple_cmd 'cp' "$@";}
+rename(){ _cen_simple_cmd 'mv' "$@";}
+remove(){ _cen_simple_cmd 'rm' "$@";}
+symlink(){ _cen_simple_cmd 'ln' -s "$@";}
+_cen_simple_cmd(){
+local _oerr='-e -p' _orun _args=("$1");shift
+while [ "${1::1}" = - ];do
+case "$1${_args::1}" in
+--?)shift;break;;
+-ac)_args+=('-a');;
+-uc)_args+=('-u');;
+-dr)_args+=('-r');;
+-or)_args+=('--one-file-system');;
+-nl)_args+=('-f');;
+-rl)_args+=('-r');;
+-sl)_args+=('-s');;
+-f?)_oerr='-f -p';;
+-q?)_oerr='-q';;
+-r?)_orun=1;;
+esac;shift
+done
+system $_oerr $_orun -- "${_args[@]}" "$@"
+}
+system(){
+local _stat _mesg=':' _rdry _fchk _onam _ored _otyp _odel
+while [ "${1::1}" = - ];do
+case "$1" in
+--)shift;break;;
+-a)shift;_onam="$1";_ored=1;_otyp=2;;
+-c)_fchk=1;;
+-d)shift;_odel="$1";;
+-e)_mesg='error';;
+-f)_mesg='fatal';;
+-p)_ored=1;[ -z "$_otyp" ]&&_otyp=0;;
+-q)_ored=0;;
+-r)_rdry='-r';;
+-s)shift;_onam="$1";_ored=1;_otyp=1;;
+-t)[ "$CEN_EXIT" = 0 ]||return 1;;
+-w)_mesg='warning';;
+-z)_ored=2;[ -z "$_otyp" ]&&_otyp=0;;
+esac;shift
+done
+if [ -n "$_fchk" ];then
+_stat=0
+for _fchk in "$@";do
+type -t "$_fchk" &>/dev/null&&continue
+$_mesg -- $"Command not found:" "$_fchk";_stat=127
+done
+return "$_stat"
+fi
+dryrun $_rdry "$@"&&return 1
+[ -n "$_otyp" -a -z "$CEN_TMP_SYSO" ]&&tmpfile -r -s CEN_TMP_SYSO
+case "$_ored" in
+0)"$@" &>/dev/null;return;;
+1)"$@" &>"$CEN_TMP_SYSO";_stat=$?;;
+2)"$@" 2>"$CEN_TMP_SYSO";_stat=$?;;
+*)"$@";_stat=$?
+esac
+[ "$_stat" = 0 -a -z "$_onam" ]&&return 0
+[ "$_otyp" = 2 ]&&local -n _vsys="$_onam"||local _vsys
+[ -n "$_otyp" ]&&readarray -t _vsys <"$CEN_TMP_SYSO"
+[ "$_otyp" = 1 ]&&splitjoin -j "$_onam" -- "${_vsys[@]}"
+[ "$_stat" = 0 ]&&return 0
+$_mesg -p $"Execution of '%s' failed (status %s)" "$1" "$_stat"
+[ -n "$_otyp" ]&&message -i -m "${_vsys[@]}"
+return "$_stat"
+}
+tmpfile(){
+local _vtmp='CEN_TEMPFILE' _rdry _crea=1
+local _temp="$CEN_TMP_BASE$CEN_TMP_INDX-$BASHPID"
+((CEN_TMP_INDX += 1))
+while [ "${1::1}" = - ];do
+case "$1" in
+-n)_crea=;;
+-r)_rdry='-r';;
+-s)shift;_vtmp="$1";;
+esac;shift
+done
+printf -v "$_vtmp" '%s' "$_temp"
+[ -z "$_crea" ]&&return 0
+dryrun $_rdry $"Temporary file" "$_temp"&&return 1
+_cen_create_file "$_temp"
+}
+main(){
+if [ "${CEN_NAME:--}" = - ] ;then
+CEN_NAME="${BASH_ARGV0##*/}"
+CEN_FEATURE_F=1;CEN_FEATURE_Y=1
+fi
+local _opts=':';PATH=' ' type -t 'options' &>/dev/null&&_opts='options'
+while [ "${1::1}" = - ];do
+CEN_ARGS=;CEN_ARGOPT=;CEN_ACTION="$1";CEN_ACTARR="$2"
+case "$1" in
+--*=*)CEN_ARGOPT="${1#*=}";CEN_ACTION="${1%%=*}";;
+-[^-]*)CEN_ARGOPT="${1:2}";CEN_ACTION="${1::2}";;
+--|---)shift;break;;
+esac
+$_opts "$CEN_ACTION" "${CEN_ARGOPT:-$2}"
+[ -z "$CEN_ARGS" ]&&CEN_ARGS=1&&case "$CEN_ACTION" in
+-d|--dry*)CEN_OPT_DRYRUN=1;;
+-f|--for*)[ -n "$CEN_FEATURE_F" ]&&CEN_OPT_FORCE=1||CEN_ARGS=0;;
+-h|--help)PATH=' ' type -t usage &>/dev/null&&{ usage >&2;quit -s 2;}
+quit $"Option '--help' is not implemented";;
+-n|--no)[ -n "$CEN_FEATURE_Y" ]&&CEN_YESNO='n'||CEN_ARGS=0;;
+-q|--qui*)CEN_VERB=0;;
+-v|--ver*)CEN_VERB=2;;
+-y|--yes)[ -n "$CEN_FEATURE_Y" ]&&CEN_YESNO='y'||CEN_ARGS=0;;
+--embed)optarg - CEN_NAME -t;;
+--info)quit -p "mini-bash-lib $CEN_MINI_VERSION; '%s'; %s" "$CEN_VERSION" \
+"${CEN_LEGAL:-$"<unknown Author/Licence>"}";;
+--mini*);;
+--trace)set -x;;
+*) CEN_ARGS=
+esac
+[ "${CEN_ARGS:-0}" -lt 1 ]&&quit -e $"Unknown option:" "$1"
+[ "$CEN_ARGS" -gt $# ]&&CEN_ARGS="$#";shift "$CEN_ARGS"
+done
+CEN_ACTARR=;CEN_ARGOPT=;CEN_ACTION=;$_opts
+PATH=' ' type -t run &>/dev/null||return 2;run "$@"
+}
+optarg(){
+local _name="${2:--}";[ "$_name" = - ]&&_name="CEN_OPT_${1^^}"
+case "${3:--f}" in
+-f)printf -v "$_name" '%s' "${4:-1}";CEN_ARGS=1;;
+*)if [ -z "$CEN_ARGOPT" ];then
+[ "$CEN_ACTARR" != - -a "${CEN_ACTARR::1}" = '-' ] &&
+quit -e "Missing option value:" "--$1"
+CEN_ARGS=2;CEN_ARGOPT="$CEN_ACTARR"
+else
+CEN_ARGS=1
+fi
+[ "$CEN_ARGOPT" = - ]&&CEN_ARGOPT="${4:--}";printf -v "$_name" '%s' "$CEN_ARGOPT"
+esac
+}
+quit(){
+local _opts=() _term
+while [ "${1::1}" = - ];do
+case "$1" in
+-)break;;
+--)shift;break;;
+-s)shift;CEN_EXIT="$1";;
+-e)_term=$"Terminated after error";CEN_EXIT=1;_opts+=('-e');;
+-t|-u)_term=$"Terminated";CEN_EXIT=4;;
+*)_opts+=("$1");;
+esac;shift
+done
+type -t "$CEN_HOOK_QUIT" &>/dev/null&&"$CEN_HOOK_QUIT" "$@"
+if [ -n "$_term" ];then
+if [ $# = 0 ];then set -- "$_term"
+elif [ "$*" = - ];then set --
+elif [ "$1" = - ];then set -- "$_term""${2:+:}" "${@:2}"
+fi
+fi
+[ -n "$*" ]&&message "${_opts[@]}" "$@"
+[ "$CEN_TMP_INDX" != 0 -a -n "$CEN_TMP_BASE" ]&&system -q -r -- rm -f "$CEN_TMP_BASE"*
+trace -a "quit STATUS=$CEN_EXIT";exit "$CEN_EXIT"
+}
+command_not_found_handle(){
+set +xeE;exec 1>&$CEN_STDOUT 2>&$CEN_STDERR
+message -l $"***ABORT***" $"Command not found:" "$1"
+kill -42 $$
+}
+trap 'trap 42; quit -s 127' 42
+}
+if PATH=' ' type -t run &>/dev/null;then
+main "$@";quit
+fi
+elif [ -n "$CEN_STAGE" ];then
+run "$@"
+else
+main "$@";quit
 fi
 
 # end

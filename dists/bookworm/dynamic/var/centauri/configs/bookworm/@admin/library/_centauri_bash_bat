@@ -37,9 +37,10 @@
 # Copyright Dr. J. Pfennig (c) 2017-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_bat']='0.12:2'
+CEN_MODULES['_centauri_bash_bat']='0.12:4'
 
 embed -c '_centauri_bash_utl'   # import on demand, see timer()
+embed -c '_centauri_bash_cfm'   # ... confirm()
 
 CEN_OPT_BATCH=                  # see --batch
 CEN_OPT_LOGFILE=                # see --logfile

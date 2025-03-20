@@ -51,7 +51,11 @@ if [ -z "$CEN_ROOT" ] && [ "$BASHRC_IGNORE" != 2 ]  ; then
     [ -d "$HOME/bin" ] && PATH="$HOME/bin:$PATH"
 
     # load local defs
-	[ -f "/etc/bash.local" ] && . /etc/bash.local
+	[ -r '/etc/bash.local' ] && . '/etc/bash.local'
+
+    # display config
+    [ -z "$GDK_SCALE$GDK_DPI_SCALE$QT_SCALE_FACTOR" ] &&
+        [ -r '/etc/centauridisplay' ] && . '/etc/centauridisplay'
 fi
  
 ############################# ignore BASHRC #############################
@@ -191,9 +195,10 @@ elif [ "$1" = "BASHRC" ] ; then
     # start .autologin or X-Server
     if [ "$SHLVL" = 1 -a -z "$DISPLAY" -a "$EUID" != 0 ] ; then
          case "$XDG_VTNR" in
-             3|4|5|6)   if type -t centaurisession &>/dev/null ; then
-                             centaurisession bashrc 
-                             [ $? = 127 ] || exit
+             3|4|5|6)   if [ ~/.centauriautologin -ef /dev/null ] ; then
+                            :
+                        elif type -t centaurisession &>/dev/null ; then
+                             exec centaurisession bashrc 
                         fi ;;
          esac
     fi

@@ -1,8 +1,10 @@
+# jpf@centauri: smb.conf.local for centauri: 2025-02-21
+
 # Global parameters
 [global]
     ### make it a Member Server
-    workgroup = %N^^%
     realm = %D^^%
+    workgroup = %D1^^%
     server role = member server
     time server = no
     dns proxy = no
@@ -60,7 +62,7 @@
     include = /etc/samba/services.conf
 
 [netlogon]
-    path = /var/lib/samba/sysvol/%D%/scripts
+    path = /var/lib/samba/sysvol/%D1%/scripts
     read only = No
 
 [sysvol]

@@ -100,7 +100,7 @@
 # Copyright Dr. J. Pfennig (c) 2019-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES["_centauri_bash_doc"]='0.23:2'
+CEN_MODULES['_centauri_bash_doc']='0.24:4'
 
 CEN_DOC_VERSION=1       # serialized data format
 CEN_DOC_FLIST=()        # file list, see _cen_doc_flist
@@ -247,17 +247,17 @@ CEN_DOC_BLOCK=()        # text of documentation block
 #,          one    # This is a list with multiple item lines (one per item)
 #,          two    # using the "," marker.
 #
-#,          - This list uses the "-" as 1st character to produce bullets
+#,          - This list uses the '-' as 1st character to produce bullets
 #,          - Very long lines can be continued in a very intuitive way,
 #,            just by indenting them.
 #,          - This is it.
 #
-#-          [1] This output is using the "-" marker.
+#-          [1] This output is using the '-' marker.
 #-          [2] This is called **literal** output (no formatting).
 #-          [3] The ''[n]'' decoration was added manually. There is
 #-              nothing like automatic numbering.
 #
-#+Examples: Usually code examples a output as a preformatted box in HTML.
+#+Examples: Usually code examples are output as a preformatted box in HTML.
 #           In text mode the ''┃'' character flags a preformatted line. Such
 #           text is never justified. This is how it looks:
 #
@@ -379,12 +379,12 @@ documentation() {
     local _fopt=()              # file list options
     local _otra="$CEN_TRACE"    # for option -s
     local _sfil                 # start file flag
-    local _vers="-"             # signal module version if empty
+    local _vers='-'             # signal module version if empty
     local _lnum=0               # line number
     local _bcnt=0               # block counter
     local _stat=0               # worker exit code
 
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -a)   _abdy='_cen_doc_body' ;;
@@ -411,7 +411,7 @@ documentation() {
     fi
 
     # do caching
-    if [ "$_work" = ":" ] ; then
+    if [ "$_work" = ':' ] ; then
         _popt="-c" ; _vers=             # all header and versions
         CEN_DOC_CACHE=1
         $_otra -a -c 'documentation' $"cache filling:" "$_file"
@@ -447,7 +447,7 @@ documentation() {
         if [ "$1" = 0 ] ; then
             if [ "$arun" -gt 3 ] ; then
                 if [ -z "$_sfil" ] ; then               # signal begin of data
-                    if [ "$_popt" = "-m" ] ; then
+                    if [ "$_popt" = '-m' ] ; then
                         _sfil=0
                     else
                         _sfil=1
@@ -457,16 +457,16 @@ documentation() {
                 ((_bcnt += 1))
                 if [ -z "$_popt" ] ; then
                     $_work "$_file" "$_lnum:B$_bcnt"
-                elif [ "$_popt" = "-m" ] ; then         # module listing only
+                elif [ "$_popt" = '-m' ] ; then         # module listing only
                     if [[ "$asub" == *:M* ]] ; then
-                        [ -z "$_vers" ] && _vers="-"    # end version wait
+                        [ -z "$_vers" ] && _vers='-'    # end version wait
                         return 0                        # ignore this block
                     fi
                     [ -z "$_vers" ] && _cen_doc_version # find version
                 else
                     [ -z "$_vers" ] && _cen_doc_version # find version
                 fi
-                if [ "$_work" = ":" ] ; then            # fill cache ...
+                if [ "$_work" = ':' ] ; then            # fill cache ...
                     local _temp
                     for _temp in "${asub[@]}" ; do
                         _cen_doc_citem "$_file:$_temp"
@@ -487,7 +487,7 @@ documentation() {
         # expecting one or more headers
         elif [ "$arun" != '-1' ] ; then
             ((arun += 1))
-            local aadd="-" tnam text="$2"
+            local aadd='-' tnam text="$2"
             case "$text" in
                 "")     aadd=
                         if [ -n "$asub" ] ; then
@@ -508,7 +508,7 @@ documentation() {
                         fi
                         ;;
             esac
-            if [ "$aadd" = "-" ] ; then             # not a header -> not a doc block
+            if [ "$aadd" = '-' ] ; then             # not a header -> not a doc block
                 asub=() ; arun=-1
             elif [ -n "$aadd" ] ; then              # ok, expecting more headers
                 asub+=("$aadd")
@@ -535,7 +535,7 @@ documentation() {
             [ "${_rlin/"$_what"/}" = "$_rlin" ] && continue
             _vers="${_rlin##*=}"
             _cen_doc_citem "$_file:$_lnum:V$_vers"  # add to cache
-            [ "$_popt" = "-m" ] &&
+            [ "$_popt" = '-m' ] &&
                 $_work "$_file" "$_lnum:V$_vers"    # signal module version
             [ -n "$_warn" ] &&
                 error -n -p $"Marker comment before version: %s[%s]:\n%s" "$_file" "$_lnum" "$_rlin"
@@ -599,7 +599,7 @@ documentation() {
                 esac
                 [ -n "$_rblk" ] && _cen_doc_parser 0 ; _rblk= ; break
             done
-            [ "$_popt" = "-m" -a -n "$_vers" ] && break
+            [ "$_popt" = '-m' -a -n "$_vers" ] && break
 
         # wait for comment
         else
@@ -704,7 +704,7 @@ _cen_doc_flist() {
     local _copt _fopt _popt _sopt _pars
     local _curr _item _skip _otra="$CEN_TRACE"
 
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -c)   _popt="$1" ;;
@@ -826,7 +826,7 @@ _cen_doc_flist() {
             fi
 
             # user callback <prep>
-            if [ "$_prep" != "-" ] ; then
+            if [ "$_prep" != '-' ] ; then
                 $_otra -a -c 'documentation' $"run file list:" "$_item"
                 $_prep "$_fcnt" "$_item" ; _stat=$?
                 if [ "$_stat" = 1 ] ; then
@@ -1429,7 +1429,7 @@ _cen_doc_citem() {
 #
 # Example:  This is the parser used by [[filter()]]:
 #.          local _oinv _rval
-#.          while [ "${1::1}" = "-" ] ; do
+#.          while [ "${1::1}" = '-' ] ; do
 #.            case "$1" in
 #.              --)   shift ; break ;;
 #.              -f)   _rval=1 ;;

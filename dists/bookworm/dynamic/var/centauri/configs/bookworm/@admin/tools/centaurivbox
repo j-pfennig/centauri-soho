@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2024; BSD License"
 CEN_TITLE="Run VirtualBox commands using the 'vbox' proxy user"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g -y - '0.42:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g -y - '0.43:4' || exit 2
 
 # Data
 

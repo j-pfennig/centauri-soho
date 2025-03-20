@@ -4,14 +4,14 @@
 # yourself or use 'dpkg-reconfigure exim4-config'
 
 dc_eximconfig_configtype='smarthost'
-dc_other_hostnames='%N%;%D%;*.%D%;%G%;%G%?'
+dc_other_hostnames='%D1%;%D%;*.%D%;%G%;%G%?'
 dc_local_interfaces=''
 dc_readhost='my-domain.home'
 
 # relay domains/nets require no authorization
 dc_relay_domains=''
 dc_minimaldns='true'
-dc_relay_nets='%D4%/%B4%;::1;fc01::/64'
+dc_relay_nets='%B%;::1;fc01::/64'
 
 dc_smarthost='smtp.provider.home'
 CFILEMODE='644'

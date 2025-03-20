@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2023; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
 CEN_TITLE=$"Tool to simplify the use of 'encfs'"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -d -m ext -m win -t -y "$0" "0.35:2" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -m win -t -y - '0.37:4' || exit 2
 
 # Options
 CEN_OPT_CRYPT=          # see --cryptdir
@@ -27,7 +27,7 @@ TXT_MOUNT=$"mount"
 TXT_UNMOUNT=$"unmount"
 
 # fix HOME (for sudo):
-[ "$EUID" = "0" ] && HOME="/root"
+[ "$EUID" = 0 ] && HOME='/root'
 [ -d "$HOME" ] || HOME="/home/$USER"
 
 # ------------------------------------------------------------------------------
@@ -36,7 +36,7 @@ TXT_UNMOUNT=$"unmount"
 do_is_mounted() {
     local vmfs vusr vxxx name="${1:-$APP_MOUNT}"
     while read vmfs vusr vxxx ; do
-        [ "$vmfs" = "encfs" ] || continue
+        [ "$vmfs" = 'encfs' ] || continue
         [ "$vusr" -ef "$name" ] && return 0
     done < /proc/mounts
     return 1
@@ -61,14 +61,14 @@ do_create() {
     error -a -q $"Cannot continue, consider using" "'$CEN_NAME delete $APP_BNAME'."
 
     if do_is_mounted ; then             # check if mounted
-        if [ "$1" = "-i" ] ; then
+        if [ "$1" = '-i' ] ; then
             error $"Cannot create, mountpoint is in use:" "$APP_MOUNT"
             return 1
         fi
     else
         do_desktop "$APP_MOUNT"         # (re)create mount.desktop
         if do_has_encfs -q ; then       # existing encfs
-            if [ "$1" = "-i" ] ; then
+            if [ "$1" = '-i' ] ; then
                 error $"Cannot create, found 'encfs' configuration:" "$APP_MOUNT"
                 return 1
             fi
@@ -93,7 +93,7 @@ do_create() {
 #               ++              like + but also check existence
 # ------------------------------------------------------------------------------
 do_folders() {
-    if [ "${1:--}" = "-" ] ; then
+    if [ "${1:--}" = '-' ] ; then
         local name
         for name in $APP_PRIVATE ; do
             APP_MOUNT="$HOME/$name"
@@ -107,18 +107,18 @@ do_folders() {
     APP_CRYPT="$HOME/.encfs_$APP_BNAME"
     [ -n "$CEN_OPT_CRYPT" ] && prettypath -c -s APP_CRYPT -- "$CEN_OPT_CRYPT"
 
-    if [ -n "$2" -a "$2" != "-" -a \
+    if [ -n "$2" -a "$2" != '-' -a \
          -r "$APP_MOUNT/$APP_INFO" -a -z "$CEN_OPT_CRYPT" ] ; then
-        local sifs="$IFS" ; IFS="="
+        local sifs="$IFS" ; IFS='='
         while read -e key val ; do
-            [ "$key" = "crypt" ] && APP_CRYPT="$val"
-            [ "$key" = "idle" -a -z "$CEN_OPT_IDLE" ] && CEN_OPT_IDLE="$val"
+            [ "$key" = 'crypt' ] && APP_CRYPT="$val"
+            [ "$key" = 'idle' -a -z "$CEN_OPT_IDLE" ] && CEN_OPT_IDLE="$val"
         done < "$APP_MOUNT/$APP_INFO"
         trace -a "Cryptpath read from config: $APP_CRYPT"
         IFS="$sifs"
     fi
 
-    if [ "$2" = "++" ] ; then
+    if [ "$2" = '++' ] ; then
         [ -d "$APP_MOUNT" ] || fatal $"Mount folder does not exist:" "$APP_MOUNT"
         [ -d "$APP_CRYPT" ] || fatal $"Crypt folder does not exist:" "$APP_CRYPT"
     fi
@@ -153,7 +153,7 @@ do_umount() {
     # check if mounted then unmount
     if do_is_mounted ; then
         trace -a "Unmount: $APP_MOUNT"
-    elif [ "$1" = "-s" ] ; then
+    elif [ "$1" = '-s' ] ; then
         trace -a "Not mounted: $APP_MOUNT"
         return
     else
@@ -175,15 +175,15 @@ do_password() {
 
     # use pwd from option
     [ -n "$CEN_OPT_PASSWORD" ] && APP_PASSWORD="$CEN_OPT_PASSWORD"
-    [ "${APP_PASSWORD:--}" != "-" ] && return 0
+    [ "${APP_PASSWORD:--}" != '-' ] && return 0
 
     # window mode if no terminal available
-    [ "/dev/fd/0" -ef "/dev/null" ] && windows -i 1
+    [ '/dev/fd/0' -ef '/dev/null' ] && windows -i 1
 
     # simple password question
     if [ -z "$1" ] ; then
         mesg=$"Mounting encrypted folder '&'"
-        if [ "$EUID" = '0' ] ; then
+        if [ "$EUID" = 0 ] ; then
             mesg="${mesg//&/$APP_MOUNT}"
         else
             mesg="${mesg//&/${APP_MOUNT#$HOME/}}"
@@ -269,7 +269,7 @@ X-KDE-Username=
         local dest=~ lnam="${3##*/}"
         lnam="${lnam%%.*}" ; [ "${lnam:-.}" = "." ] && lnam="$APP_BNAME"
         if [ -d "$dest/Desktop" ] ; then
-            dest+="/Desktop"
+            dest+='/Desktop'
         elif [ -d "$dest/Arbeitsfläche" ] ; then
             dest+="$dest/Arbeitsfläche"
         fi
@@ -306,7 +306,7 @@ X-DCOP-ServiceType=
 X-KDE-SubstituteUID=false
 X-KDE-Username=
 !EOF
-        trace -a "Wrote: " "$dest/$lnam$suff"
+        trace -a -c "Wrote" "$dest/$lnam$suff"
     fi
 }
 
@@ -364,7 +364,7 @@ actionPasswd() {
         do_folders "$1" ++
         context -c
     fi
-    trap "quit" INT
+    trap 'quit' INT
     system -f encfsctl passwd "$APP_CRYPT"
     trap - INT
 }
@@ -372,7 +372,7 @@ actionPasswd() {
 actionDesktop() {
     local xcmd=true sifs="$IFS" ; IFS="="
     while read -e key val ; do
-        [ "$key" = "Exec" ] || continue
+        [ "$key" = 'Exec' ] || continue
         eval xcmd=($val) ; break
     done < "$1"
     IFS="$sifs"
@@ -391,7 +391,7 @@ actionOpen() {
     # run if arg exists
     local targ="$APP_MOUNT/$2"
     if [ -e "$targ" ] ; then
-        [ "$CEN_ACTION" = "open" ] && system -e -x -- "$ocmd" "$APP_MOUNT/$2"
+        [ "$CEN_ACTION" = 'open' ] && system -e -x -- "$ocmd" "$APP_MOUNT/$2"
         do_desktop "" "" "$2"
     else
         error $"Target does not exist:" "$targ"
@@ -415,7 +415,7 @@ actionMount() {
 }
 
 actionUmount() {
-    if [ "$1" = "-" ] ; then
+    if [ "$1" = '-' ] ; then
         do_folders "$1" +
         [ -d "$APP_MOUNT" -a -d "$APP_CRYPT" ] || return
     else
@@ -671,7 +671,7 @@ actionCache() {
 # ------------------------------------------------------------------------------
 actionCleanup() {
     local user="${1:--}"
-    [ "$user" = "-" ] && context -s         # multiuser: rerun as root
+    [ "$user" = '-' ] && context -s         # multiuser: rerun as root
 
     system -c -e id loginctl || return
     if ! [ -d "/run/user" ] ; then
@@ -681,7 +681,7 @@ actionCleanup() {
 
     # --- single user ---
 
-    if [ "$user" != "-" ] ; then
+    if [ "$user" != '-' ] ; then
         do_folders ; do_is_mounted || return
         local alis item coun=0
         system -a alis -r -e -p -- loginctl list-sessions --no-pager --no-legend || return
@@ -713,7 +713,7 @@ actionCleanup() {
             trace -a "User '$eusr' still has a systemd user session"
             continue
         fi
-        system -a pids -q -r -- pgrep -u $euid -f "/bin/bash -l"
+        system -a pids -q -r -- pgrep -u $euid -f '/usr/bin/bash -l'
         if [ -n "$pids" ] ; then
             trace -a "User '$eusr' still has a bash login shell"
             continue
@@ -732,13 +732,13 @@ options() {
         folder -q -c "$HOME"        # run in user's home dir
         ;;
     -C|--cry*)
-        optarg "cryptdir"   CEN_OPT_CRYPT  -t ;;            # any text
+        optarg 'cryptdir'   CEN_OPT_CRYPT  -t ;;            # any text
     -I|--idl*)
-        optarg "idle"       CEN_OPT_IDLE   -n ;;            # a number
+        optarg 'idle'       -              -n ;;            # a number
     -P|--pas*)
-        optarg "password"   CEN_OPT_PASSWORD -t ;;          # any text
+        optarg 'password'   -              -t ;;          # any text
     -U|--upd*)
-        optarg "update"     CEN_OPT_UPDATE ;;               # a simple flag
+        optarg 'update'     -                 ;;               # a simple flag
     esac
 }
 

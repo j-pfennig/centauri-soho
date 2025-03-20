@@ -10,6 +10,7 @@ CEN_REAL="${CEN_ROOT:-.}"
 CEN_NAME="${0##*/}"                 # the name of this script
                                     # temporary folder, see extract
 DAT_TEMP="${TMP:-/tmp}/centaurisoho-$CEN_NAME"
+DAT_ORIG="$PWD"
 
 # remove outdated tools/library
 [ -e "$DAT_TEMP" ] && [ "$BASH_SOURCE" -nt "$DAT_TEMP" ] && rm -rf "$DAT_TEMP"
@@ -74,7 +75,7 @@ else
     echo "$CEN_NAME: Archive extracted:" "$DAT_TEMP"
 fi
 
-# Import the private copy of  bash library
+# Import the private copy of centauri bash library
 . $CEN_ROOT/tools/_centauri_bash_lib -a -d -f - '0.10:2' || exit 2
 
 # ------------------------------------------------------------------------------
@@ -106,6 +107,7 @@ actionInstall() {
 actionRemove() {
     [ -d "$DAT_TEMP" ] && remove -d -- "$DAT_TEMP"
     resolve -f -x -p || return
+    CEN_RESOLVE="${CEN_RESOLVE%/*}"
     case "$CEN_RESOLVE" in
         */configs/*/@soho)
             message -c "Not removing" "${CEN_RESOLVE#$PWD/}/$CEN_NAME" ;;
@@ -142,7 +144,10 @@ actionArchive() {
     fi
 
     # change to the installation folder if not run as './<name>"'
-    resolve -f -x -p && message -c "Config folder" "${CEN_RESOLVE#$PWD/}"
+    folder -f -c -- "$DAT_ORIG"
+    resolve -f -x -p
+    CEN_RESOLVE="${CEN_RESOLVE%/*}"
+    message -c "Config folder" "${CEN_RESOLVE%/*}"
     folder -c -f -- "$CEN_RESOLVE"
 
     local list="$CEN_NAME.files"

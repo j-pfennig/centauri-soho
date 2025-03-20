@@ -218,14 +218,17 @@ group   shadow
 
 user    _apt
         unix        42 nogroup
+        mechs       passwd
 
-user    _flatpac
+user    _flatpak
         info        "Flatpak system-wide installation helper"
         unix        200 +
+        mechs       passwd
 
 user    _rpc
         home        /run/rpcbind
         unix        201 +
+        mechs       passwd
 
 group   _ssh
         unix        202
@@ -234,6 +237,12 @@ group   _ssh
 user    fetchmail   
         home        /var/lib/fetchmail
         unix        203 +
+        mechs       passwd
+
+user    sssd        
+        info        SSSD system user
+        home        /var/lib/sss
+        unix        204 +
         mechs       passwd
 
 # groups -----------------------------------------------------------------------
@@ -383,19 +392,10 @@ group   linux-roaming
 
 # users (extrausers) -----------------------------------------------------------
 
-user    _flatpak
-        info        Flatpak system-wide installation helper
-        home        /nonexistent
-        unix        500 +
-
-#user    _rpc
-#        home        /run/rpcbind
-#        unix        + +
-
 user    avahi
         info        Avahi mDNS daemon
         home        /run
-        unix        + +
+        unix        500 +
 
 user    avahi-autoipd
         info        "Avahi autoip daemon"
@@ -426,10 +426,6 @@ user    Debian-exim
 user    dnsmasq     
         info        dnsmasq
         home        /var/lib/misc
-        unix        + +
-
-user    fetchmail-dummy
-        info        "hack for debian bug"
         unix        + +
 
 user    ftp         
@@ -464,6 +460,11 @@ user    messagebus
 user    minidlna    
         info        MiniDLNA server
         home        /var/lib/minidlna
+        unix        + +
+
+user    mosquitto   
+        info        Mosquitto MQtt broker
+        home        /var/lib/mosquitto
         unix        + +
 
 user    nm-openvpn
@@ -521,12 +522,6 @@ user    sshd
         home        /run/sshd
         unix        + +
 
-# TODO fixed id
-user    sssd        
-        info        SSSD system user
-        home        /var/lib/sss
-        unix        + +
-
 user    statd       
         home        /var/lib/nfs
         unix        + nogroup
@@ -556,8 +551,8 @@ user    vboxadd
         unix        + +
 
 user    weewx
-        info        "Weewx Weather Station"
-        home        /etc/weewx
+        info        "WeeWx Weather Station"
+        home        /opt/WeeWx/home
         unix        + +
 
 # users ------------------------------------------------------------------------
@@ -636,6 +631,7 @@ user    work2
 user    domain
         info        "Domain test user"
         unix        30010 centauri
+        shell       /usr/bin/bash
         mechs       samba-ad extra mailbox
 
 user    smbtrust    

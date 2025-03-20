@@ -4,7 +4,7 @@ CEN_LEGAL="Dr. J. Pfennig (c) 2023-2024; BSD License"
 CEN_TITLE=$"Generate interface, wlan, dhcp and dnsmasq configurations"
 
 # Import the bash library
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.12:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.13:4' || exit 2
 
 # Data
 CEN_OPT_APOINT=                 # see --host
@@ -204,7 +204,7 @@ do_interface() {
             for name in 'apoint' 'server' 'extender' 'repeater' \
                         'smart' 'simple' 'static' 'manual' ; do
                 [ -e "$base.$name" ] || continue
-                symlink -m -r -- "$base.$name" "$base" ; break
+                symlink -m -l -- "$base.$name" "$base" ; break
             done
         fi
         return
@@ -225,18 +225,19 @@ do_interface() {
     # --- fill generator table: smart/eth0/wlan0/eth1/wlan1 ---
 
     CEN_AUTOIND= ; indx=-1
-    local feth fodd addr agen=(- - - - -) aidx=0 ipok
+    local feth fodd addr agen=(- - - - -) aidx=0 ipok nbit
+    if [ -n "$CEN_NET_EXTERNAL" ] ; then
+        nbit="$CEN_NET_BITS"
+    fi
     for name in '' -0 -1 -2 -3  ; do
         ((indx += 1)) ; name="$CEN_OPT_HOST$name"
         addr="${atab[indx]:--}"
         if [ "$addr" != '-' ] ; then
-            if [ -n "$CEN_NET_EXTERNAL" -a "$aidx" != 0 ] &&
-                netmask "$CEN_NET_EXTERNAL" "$addr" ; then
-                feth=                               # skip external
-                $CEN_TRACE2 -a -p "Host: %-15s external  addr: %s" "$name" "$addr"
-            elif [ "$fodd" = 0 ] ; then             # default WLAN
+            [ -n "$nbit" ] && addr="$addr/\/*/$nbit"    # replace bitmask
+
+            if [ "$fodd" = 0 ] ; then               # default for name-1/3 is WLAN
                 netoption 'ether' "$name" && feth=1 || feth=0
-            else                                    # default eth
+            else                                    # default for name-0/2 is eth
                 netoption 'wlan' "$name" && feth=0 || feth=1
             fi
             $CEN_TRACE2 -a -p "Host: %-15s feth: %1s  addr: %s" "$name" "$feth" "$addr"
@@ -293,8 +294,10 @@ do_interface() {
         loga="${agen[0]}"
         ade0="${agen[1]}" ; adw0="${agen[2]}"
         ade1="${agen[3]}" ; adw1="${agen[4]}"
+        [ "$adw0" = '-' ] && { adw0="$adw1" ; adw1='-' ; }
     fi
 
+    # wake-on-lan only for eth0
     if [ "${ade0:--}" = '-' ] ; then
         ade0='xx.xx.xx.xx' ; hth0='#' ; h6h0='#'
     elif netoption 'wol' "$CEN_OPT_HOST" ; then
@@ -306,6 +309,12 @@ do_interface() {
             warning -a "Option 'wol' depends on installed ethtool"
        fi
     fi
+
+    # hotplug is not implemented
+    for addr in "$CEN_OPT_HOST-0" "$CEN_OPT_HOST-1" "$CEN_OPT_HOST-2" "$CEN_OPT_HOST-4" ; do
+        netoption 'hotplug' "$CEN_OPT_HOST" || continue
+        warning -a "Option 'hotplug' support not yet implemented" ; break
+    done
 
     if [ "${ife0:--}" = '-' ] ; then
     # simple
@@ -531,18 +540,27 @@ $head
 ### Server is a configuration of 'static' mode. A server should. Use the boot
 ### parameter 'CENTAURISWITCH=static:server' for this configuration.
 
-### eth0:
+### ethernet:
 
 ${hth0}iface $ife0 inet static
 ${hth0}   address $ade0
 ${hth0}   netmask $mask
 ${owol}
-### wlan0:
+${hth1}iface $ife1 inet static
+${hth1}   address $ade1
+${hth1}   netmask $mask
+
+### wlan:
 
 ${hlan}iface $ifw0 inet static
 ${hlan}   wpa-conf $fwpa
 ${hlan}   address $adw0
 ${hlan}   netmask $mask
+
+${hla1}iface $ifw1 inet static
+${hla1}   wpa-conf $fwpa
+${hla1}   address $adw1
+${hla1}   netmask $mask
 
 ### br0: bridge for server mode. Run-time setup by centauriroute, do not add
 ###      br0 and it's members to auto.  Brigde members like wlan0, eth0, ...
@@ -611,7 +629,7 @@ ${hoga}   netmask $mask
                 netoption "$meth" "$CEN_OPT_HOST" && break ; meth=
             done
             # nothing at all, same as "manual"
-            [ -z "$meth" ] && meth="manual"
+            [ -z "$meth" ] && meth='manual'
         fi
 
         if [ "$meth" = 'auto' ] ; then
@@ -785,7 +803,7 @@ ${owol}${hth0}auto $ife0
 ${hth1}iface $ife1 inet manual
 ${hth1}   address  $ade1
 ${hth1}   netmask  $mask
-${hth1}   post-up  $p6up || $fswi $ife1 static
+${hth1}   post-up  $p6up || $fswi up $ife1 static
 ${hth1}allow-hotplug $ife1
 
 ### wlan (hotplug is not reliable!):
@@ -870,7 +888,7 @@ do_linkconf() {
         fi
         rename -f -b '' -- "$1"                 # append .bak suffix
     fi
-    symlink -n -r -- "$2" "$1" ; return         # returns status
+    symlink -n -l -- "$2" "$1" ; return         # returns status
 }
 
 # ------------------------------------------------------------------------------
@@ -997,7 +1015,7 @@ method=ignore
 do_passphrase() {
     local _pass _spsk="${3:--}"
     if [ "$_spsk" = '-' ] ; then
-        printf -v _spsk "%4.4x-%4.4x" "$RANDOM" "$RANDOM"
+        printf -v _spsk '%4.4x-%4.4x' "$RANDOM" "$RANDOM"
         message -a -c "Random psk" -- "$_spsk"
     fi
     if [ -n "$CEN_OPT_PLAIN" ] ; then
@@ -1006,7 +1024,7 @@ do_passphrase() {
         system -e -p -r -s _pass -- wpa_passphrase "$2" "$_spsk" || return 1
     fi
     _pass="${_pass##*[[:space:]]psk=}"
-    printf -v "$1" "%s" "${_pass%%[[:space:]]*}" ; return 0
+    printf -v "$1" '%s' "${_pass%%[[:space:]]*}" ; return 0
 }
 
 # ------------------------------------------------------------------------------
@@ -1026,11 +1044,11 @@ do_wpa_check() {
             conf="$dwpa/$name.conf"
         fi
     else
-        conf="$dwpa/$DAT_WLAN_SSID.conf"
+        conf="$dwpa/${DAT_WLAN_SSID,,}.conf"
     fi
     [ -z "$CEN_OPT_SILENT" -a -z "$fgen" ] && [ ! -f "$conf" ] &&
         invoke -w "No such WLAN config:" "$conf"
-    printf -v "$1" "%s" "$conf"
+    printf -v "$1" '%s' "$conf"
 }
 
 # ------------------------------------------------------------------------------
@@ -1178,7 +1196,7 @@ actionHostapd() {
         local skey="${sopt%%=*}" sval="${sopt#*=}"
         case "$skey" in
         hw_mode) [ "$sval" = 'a'  ] && ((mod5 |= 1)) ;;
-        channel) number -e -u -s sval -- "$sval" || return
+        channel) isnumber -e -u -s sval -- "$sval" || return
                  [ "$sval" -ge 32 ] && ((mod5 |= 2)) ;;
         esac
 
@@ -1193,10 +1211,10 @@ actionHostapd() {
     # fix things for 5GHz mode
     if [ "$mod5" != 0 ] ; then
         if [ "$mod5" = 1 ] ; then           # got 'hw_mode=a', set channel
-            listsearch -c -g -t -i data -n indx -- "channel=*" &&
+            listsearch -c -g -t -i data -n indx -- 'channel=*' &&
                 data[indx]='channel=36'
         elif  [ "$mod5" = 2 ] ; then        # get 'channel=xx', set hw_mode
-            listsearch -c -g -t -i data -n indx -- "hw_mode=*" &&
+            listsearch -c -g -t -i data -n indx -- 'hw_mode=*' &&
                 data[indx]='hw_mode=a'
         fi
         data+=( '#added for 5GHz mode' 'ieee80211ac=1')
@@ -1306,7 +1324,7 @@ actionInterface() {
 # Interface naming: [bios|sys|default]
 #
 # For the current host: - use the library detected mode
-#                       - give a warnig if configuration differs
+#                       - give a warning if configuration differs
 # For any other host:   - always use the configured mode
 # ------------------------------------------------------------------------------
 actionNaming() {

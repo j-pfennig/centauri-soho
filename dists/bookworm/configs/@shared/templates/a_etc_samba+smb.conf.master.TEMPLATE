@@ -1,14 +1,17 @@
+# jpf@centauri: smb.conf.local for centauri: 2025-02-21
+
 # Global parameters
 [global]
     realm = %D^^%
     server role = active directory domain controller
-    workgroup = %N^^%
+    workgroup = %D1^^%
 
     # samba does not start if it binds to an interface in 'linkdown' state (e.g.
-    # an unplugged eth0). As a workaround bind to a bridge only and add eht0 to
-    # the bridge. Also add lo and wlan0 (which might be unable to joind br0):
+    # an unplugged eth0). As a workaround bind to a bridge only and add eth0 to
+    # the bridge. Also add lo and wlan0 (which might be unable to join br0):
     # interfaces lo br0 wlan0
-    # bind interfaces only = yes
+    interfaces = lo br0
+     bind interfaces only = yes
 
     # ad/dc replication creates log spam. We can use a private /tmp folder (see
     # /etc/tmpfile.d/) for logging or even a ringbuffer to keep syslog clean.
@@ -22,9 +25,6 @@
 
     # a secondary server should replicate the domain 
     # server services = -drepl
-
-    interfaces = lo br0
-    bind interfaces only = yes
 
     # to make dnsmasq work, the centaurifilter script creates a port forwarding
     # for 127.0.0.2:53 to port 5354 (centauriadns) and dnsmasq is configured to
@@ -68,7 +68,7 @@
     include = /etc/samba/services.conf
 
 [netlogon]
-    path = /var/lib/samba/sysvol/%D%/scripts
+    path = /var/lib/samba/sysvol/%D1%/scripts
     read only = No
 
 [sysvol]

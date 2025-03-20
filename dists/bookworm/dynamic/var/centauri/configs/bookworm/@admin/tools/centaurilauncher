@@ -335,7 +335,7 @@ context -e 0 -v 3
         [ -s "$CEN_INTERACTIVE" ] || break
         read stat < "$CEN_INTERACTIVE" || break
         [ "${stat:-0}" -le 2 ] && break
-        printf -v stat $"The centauri-bash-lib shell terminated (status=%s). Restarting..." "$stat"
+        printf -v stat $"The %s shell terminated (status=%s). Restarting..." 'centauri-bash-lib' "$stat"
         echo "                   " "$stat" >&2
         >"$CEN_INTERACTIVE"                         # clear old status
     done
@@ -568,8 +568,7 @@ launcher_service() {
                 shift ;;
         esac ; shift
     done
-    timer -m
-    #system $orun $oerr -- "$@"
+    system $orun $oerr -- "$@"
 }
 
 # ------------------------------------------------------------------------------

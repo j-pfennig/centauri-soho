@@ -452,10 +452,10 @@ do_setup() {
     local pppd='/etc/ppp/if-down.local'
 
     # remove callbacks
-    if [ "$1" = "-r" -o "$1" = "-x" ] ; then
+    if [ "$1" = '-r' -o "$1" = '-x' ] ; then
         trace "Removing interface up/down and dhcp callbacks"
         remove "$ifup" "$ifdn" "$dent" "$down" "$pppd" "$pppu"
-        [ "$1" = "-r" ] && return
+        [ "$1" = '-r' ] && return
     elif [ "$1" != '-d' -a -e "$dent" ] ; then
         trace "Removing dhcp callback script"
         remove "$dent"
@@ -1095,9 +1095,11 @@ actionStatus() {
     embed -v centaurisecrets -t status
     netserver
 
-    local inam='BIOS' ife0 ife1 ifw0 ifw1
+    local inam='BIOS' ife0 ife1 ifw0 ifw1 ifu1
     netiface -s ife0 -k 'eth0'  ; netiface -s ife1 -k 'eth1'
     netiface -s ifw0 -k 'wlan0' ; netiface -s ifw1 -k 'wlan1'
+    netiface -s ifu0 -k 'usb0'
+    netiface -p
     [ "$CEN_NET_IFNAMES" != 0 ] && inam='systemd'
 
     create -c <<!EOF
@@ -1118,6 +1120,7 @@ actionStatus() {
         eth1                ${ife1:-<unknown>}
         wlan0               ${ifw0:-<unknown>}
         wlan1               ${ifw1:-<unknown>}
+        usb0                ${ifu0:-<unknown>}
 
 !EOF
 }

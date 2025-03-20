@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 #-------------------------------------------------------------------------------
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2022; BSD License"
 CEN_TITLE="Tool to retrieve Network Names"
@@ -140,7 +140,7 @@ do_homedns() {
     fi
     if [ -z "$ndom$nnam" ] ; then
         [ "$arg1" = 'q' ] && return 1
-        echo "local" ; return 0
+        echo 'local' ; return 0
     fi
 
     # loop over homedns entries in config

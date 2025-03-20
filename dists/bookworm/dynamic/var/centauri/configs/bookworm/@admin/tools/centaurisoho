@@ -1147,14 +1147,14 @@ actionBackup() {
     elif [ -d "$aboo" ] ; then
         prettypath -s mptb -- "$aboo"
     else
-        automount -- "$aboo" || return
+        automount -o progress -- "$aboo" || return
         mptb="$CEN_MOUNT_DIR" ; auto=1
     fi
 
     if [ -d "$aroo" ] ; then
         prettypath -s mptr -- "$aroo"
     else
-        automount -b -- "$aroo" || return
+        automount -b -o progress -- "$aroo" || return
         mptr="$CEN_MOUNT_DIR" ; auto=1
     fi
 
@@ -1247,7 +1247,7 @@ actionBackup() {
         fi
     fi
 
-    [ -n "$auto" ] && automount -q
+    [ -n "$auto" ] && automount -o progress -q
 }
 
 # ------------------------------------------------------------------------------
@@ -1583,9 +1583,9 @@ actionRename() {
     else
         trace -a -c "mounting" "$disk ($lblr)"
         if [ -n "${parr[0]}" ] ; then
-            automount -- "${parr[0]}" || quit -e ; dirb="$CEN_MOUNT_DIR"
+            automount -o progress -- "${parr[0]}" || quit -e ; dirb="$CEN_MOUNT_DIR"
         fi
-        automount -b -- "${parr[2]}" || quit -e ; dirr="$CEN_MOUNT_DIR"
+        automount -o progress -b -- "${parr[2]}" || quit -e ; dirr="$CEN_MOUNT_DIR"
     fi
 
     ___rename_x86() {
@@ -1604,7 +1604,7 @@ actionRename() {
             embed -i -v -z centaurirestore -y "${args[@]}" -C "$name" -C + -C + -C -
         [ -z "$2" ] && [ ! -d '/boot/firmware' ] && return
         confirm -y "Update boot firmware config" || return
-        local item args=('--force')
+        local item args=('--nocheck')                       # don't check part. labels
         [ -n "$2" ] && args+=('--root' "$2")
         [ -n "$1" ] && args+=('--boot' "$1")
         args+=('root' '.' "$3" '--')
@@ -1640,7 +1640,7 @@ actionRename() {
     fi
 
     message -a "Unmount and change partition labels"
-    folder -c '/' ; automount -q                    # allow umount
+    folder -c '/' ; automount -o progress -q        # allow umount
     system -q -- umount -a --types vfat,ext4,btrfs
 
     confirm -y -f "Change partition labels of '%s'" "$disk" || return
@@ -1805,7 +1805,7 @@ actionRestore() {
     # mount destination partition
     system -e -p -r -- partprobe ; sleep 1
     [ "$fsys" = 'ext4' ] && item="${name}_root" || item="${name}_vol0"
-    if automount -b -- "$item" ; then
+    if automount -b -o progress -- "$item" ; then
         auto=1
 
         [ "$name" != "$host" ] && samba_check "$CEN_MOUNT_DIR"
@@ -1889,7 +1889,7 @@ actionRestore() {
     fi
 
     # remove tmp data
-    [ -z "$auto" ] || automount -q
+    [ -z "$auto" ] || automount -o progress -q
     folder -c -f -- "$curr"
     remove -d -- "$base"
 }

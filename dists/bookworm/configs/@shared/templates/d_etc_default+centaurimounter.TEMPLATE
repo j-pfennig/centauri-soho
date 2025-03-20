@@ -203,7 +203,7 @@ DAT_DNSMAP[".*"]="#-0 #-1 # @"      # try DNS before nmlookup
 #DAT_MOUNT_NFS["*"]="vers=4,proto=tcp,sloppy,noatime,soft,intr,fsc,timeo=100,retry=0"
 
 #DAT_MOUNT_SAMBA["*"]="vers=1.0,iocharset=utf8"
-DAT_MOUNT_SAMBA["%N%*"]="vers=1.0,domain=centauri,credentials=/.secrets/samba_trusted,iocharset=utf8"
+DAT_MOUNT_SAMBA["%D1%*"]="vers=1.0,domain=centauri,credentials=/.secrets/samba_trusted,iocharset=utf8"
 
 ######################
 ### External Tools ###

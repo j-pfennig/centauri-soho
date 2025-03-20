@@ -460,8 +460,8 @@ actionRoaming() {
     else
         context -g -                        # enter GUI mode if needed
         warning -l -a -p $"No server - using local (%s, Roaming) folders" "$ddoc"
-        symlink -m -r "$ldoc" "$ddoc"
-        symlink -m -r "$lroa" "Roaming"
+        symlink -m -l "$ldoc" "$ddoc"
+        symlink -m -l "$lroa" "Roaming"
     fi
 }
 

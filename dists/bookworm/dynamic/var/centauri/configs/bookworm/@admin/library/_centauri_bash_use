@@ -57,9 +57,9 @@ usageparser() {
     local _popt                 # call option -c|-m
     local _sopt                 # call option -s
     local _otra="$CEN_TRACE"    # for option -s
-    local _vers="-"             # signal module version if empty
+    local _vers='-'             # signal module version if empty
 
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -c)   _popt="$1" ;;
@@ -83,7 +83,6 @@ usageparser() {
     _cen_use_reformat() {
         isfunction -e labelsplit || return 1
         local _ause _text _left _temp _leng _frem _frag _ltmp _mode
-
         if [ "$_file" = "/dev/stdin" ] ; then       # get from stdin
             splitjoin -s _ause -i - -n
         else                                        # get help text from tool
@@ -104,10 +103,11 @@ usageparser() {
                     _frem=                          # label ends remark
                     # got a short label? Otherwise reformat
                     if [ "${#_temp}" -le 10 ] ; then
-                        _temp="${_temp^}        "
+                        _temp="${_temp^}          "
                         _left="${_temp::10}"        # make it 10 chars wide
                         [ -z "${_text#*:}" ] && continue
-                        _text="$_left ${_text#*: }" ; _left=
+                        _text="${_text#*:}"
+                        _text="$_left${_text#"${_text%%[![:space:]]*}"}" ; _left=
                     else
                         _left="${_text#*:}" ; _text="${_temp^}"
                         [ -n "$_left" ] && _text+=" $_left" ; _left=
@@ -125,8 +125,10 @@ usageparser() {
                 _temp="${_text%%[! ]*}" ; _leng="${#_temp}"
                 if [ "$_leng" -le 4 ] ; then        # is a remark text
                    _frem=1
-                elif [ "$_leng" -ge 7 ] ; then      # normal block
+                elif [ "$_leng" -gt 11 ] ; then     # backward compat
                     _text="   $_text"
+                elif [ "$_leng" -ge 7 ] ; then      # normal block
+                    _text="          ${_text:_leng}"
                 fi
             fi
 
@@ -148,27 +150,27 @@ usageparser() {
                     _body+=("$_text") ; continue
                 fi
 
-            if [ "${_text/§/}" = "$_text" ] ; then
-                # can be tabular data (col #2 starts at position 31)
-                _frag="${_text:27:4}"
-                case "$_frag" in                            # detect table ...
-                    "    ")     ;;
-                    ">   ")     ;;
-                    ?">  ")     ;;
-                    ??"> ")     ;;
-                    ".   ")     ;;
-                    "..  ")     ;;
-                    ?".. ")     ;;
-                    [-+\|\]]"   ")     ;;
-                    ?[-+\|\]]"  ")     ;;
-                    ??[-+\|\]]" ")     ;;
-                    *)  _frag=
-                esac
-                if [ -n "$_frag" ] ; then                   # insert tabulator
-                    _ltmp="${_text::30}"
-                    _text="${_ltmp} § ${_text:31}"
+                if [ "${_text/§/}" = "$_text" ] ; then
+                    # can be tabular data (col #2 starts at position 31)
+                    _frag="${_text:27:4}"
+                    case "$_frag" in                        # detect table ...
+                        "    ")     ;;
+                        ">   ")     ;;
+                        ?">  ")     ;;
+                        ??"> ")     ;;
+                        ".   ")     ;;
+                        "..  ")     ;;
+                        ?".. ")     ;;
+                        [-+\|\]]"   ")     ;;
+                        ?[-+\|\]]"  ")     ;;
+                        ??[-+\|\]]" ")     ;;
+                        *)  _frag=
+                    esac
+                    if [ -n "$_frag" ] ; then               # insert tabulator
+                        _ltmp="${_text::30}"
+                        _text="${_ltmp} § ${_text:31}"
+                    fi
                 fi
-            fi
                 _text="${_text//[[/[\'\'[\'\'}"             # avoid [[xxxx]]
                 _body+=("$_text") ; continue
             fi
@@ -204,7 +206,7 @@ usageparser() {
             warning -a "$_file:" $"Bad exit status ignored" "($CEN_EXIT)"
             CEN_EXIT=0
         fi
-        [ "$_popt" = "-c" ] && _cen_use_worker "0:B0"
+        [ "$_popt" = '-c' ] && _cen_use_worker "0:B0"
         [ -n "$_popt" ]     && _cen_use_worker "0:V${_ause[1]:--}"
         _name="$_file:${_ause[0]:--}"
     else
@@ -326,13 +328,13 @@ _cen_completion() {
         fi
 
         # skip command options
-        while [ "${#ckey}" = 2 -a "${ckey::1}" = "-" ] ; do
+        while [ "${#ckey}" = 2 -a "${ckey::1}" = '-' ] ; do
             ckey="$cnam" ; cnam="$cflg" ; cflg="$cxxx"
         done
-        [ "$1" = "options" ] || cflg=
+        [ "$1" = 'options' ] || cflg=
 
         # use 1st command arg or list from case statement
-        [ "$ckey" != "-" ] && carr=("$ckey")
+        [ "$ckey" != '-' ] && carr=("$ckey")
 
         for ckey in "${carr[@]}" ; do
             case "${cflg:--f}" in
@@ -348,14 +350,14 @@ _cen_completion() {
     # extra actions or options
     if [ "$1" = "actions" ] ; then
         [ -n "$CEN_USE_ADDVERB" ] && _cen_use_writeln "$CEN_USE_ADDVERB"
-    elif [ "$1" = "options" ] ; then
-        [ -n "$CEN_FEATURE_D" ] && echo "--dryrun"
-        [ -n "$CEN_FEATURE_F" ] && echo "--force"
-        [ -n "$CEN_FEATURE_G" ] && echo "--gui="
-        [ -n "$CEN_FEATURE_I" ] && echo "--include= --exclude="
-        [ -n "$CEN_FEATURE_S" ] && echo "--silent"
-        [ -n "$CEN_FEATURE_Y" ] && echo "--yes --no"
-        embed -r -c '_centauri_bash_pip' && echo "--pager="
+    elif [ "$1" = 'options' ] ; then
+        [ -n "$CEN_FEATURE_D" ] && echo '--dryrun'
+        [ -n "$CEN_FEATURE_F" ] && echo '--force'
+        [ -n "$CEN_FEATURE_G" ] && echo '--gui='
+        [ -n "$CEN_FEATURE_I" ] && echo '--include= --exclude='
+        [ -n "$CEN_FEATURE_S" ] && echo '--silent'
+        [ -n "$CEN_FEATURE_Y" ] && echo '--yes --no'
+        embed -r -c '_centauri_bash_pip' && echo '--pager='
         [ -n "$CEN_USE_ADDOPTS" ] && _cen_use_writeln "$CEN_USE_ADDOPTS"
     fi
     return 0
@@ -415,12 +417,12 @@ _cen_usage() {
     CEN_USE_OMAP["y"]="-y --yes             "$"do not prompt for confirmation, assume 'yes'"
     CEN_USE_OMAP["z"]="-z --zombie          "$"next action(s) even after error"
 
-    if [ "$CEN_VERB" -gt 1 ] ; then
-        CEN_USE_OMAP["z0"]=" "
-        CEN_USE_OMAP["z1"]="   --embed   <name>  "$"use <name> instead of script name"
-        CEN_USE_OMAP["z2"]="   --info            "$"print full path and version"
-        CEN_USE_OMAP["z4"]="   --trace           "$"trace actions() or run()"
-        CEN_USE_OMAP["z5"]="   --wait            "$"prompt before exit"
+    if [ "$CEN_USE_USAGE" -gt 1 ] ; then
+        CEN_USE_OMAP['z0']=' '
+        CEN_USE_OMAP['z1']='   --embed   <name>  '$"use <name> instead of script name"
+        CEN_USE_OMAP['z2']='   --info            '$"print full path and version"
+        CEN_USE_OMAP['z4']='   --trace           '$"trace actions() or run()"
+        CEN_USE_OMAP['z5']='   --wait            '$"prompt before exit"
     fi
 
     [ "$CEN_VERB" -gt 1 -o -n "$CEN_OPT_PAGER" ] && embed -r -q '_centauri_bash_pip' &&
@@ -431,17 +433,26 @@ _cen_usage() {
         local -n vval="$1"
         if [ -z "$vval" ] ; then
             CEN_USE_OMAP["$2"]= ; [ -n "$3" ] && CEN_USE_OMAP["$3"]=
-        else
-            [ -z "${CEN_USE_OMAP[$2]}" -o "${#vval}" -gt 1 ] && CEN_USE_OMAP["$2"]="$vval"
+        elif [ -z "${CEN_USE_OMAP[$2]}" -o "${#vval}" -gt 1 ] ; then
+            CEN_USE_OMAP["$2"]=
+            splitjoin -x "_cen_use_omap $2" -d '\n' -- "$vval"
         fi
         return 0
+    }
+
+    # handle § indentation
+    _cen_use_omap() {
+        local slef="${2%% § *}" srig="${2#* § }" sval="$2"
+        [ "$slef" != "$srig" ] && printf -v sval '%-20s %s' "$slef" "$srig"
+        [ -n "${CEN_USE_OMAP["$1"]}" ] && sval=$'\n'"       $sval"
+        CEN_USE_OMAP["$1"]+="$sval"
     }
 
     # call options hook to allow overriding of option messages
     _cen_use_check CEN_FEATURE_G 'g'
     _cen_use_check CEN_FEATURE_I 'i' 'x'
-    [ -n "$CEN_FEATURE_R" ] && CEN_USE_OMAP["z"]=
-    $CEN_HOOK_OPTIONS "--help" "opts"
+    [ -n "$CEN_FEATURE_R" ] && CEN_USE_OMAP['z']=
+    $CEN_HOOK_OPTIONS '--help' "opts"
 
     # these options cannot be overridden
     _cen_use_check CEN_FEATURE_D 'd'
@@ -455,8 +466,12 @@ _cen_usage() {
             ogrp=1 ; continue                       # flag group change
         fi
         omsg="${CEN_USE_OMAP[$orun]}" ; [ -z "$omsg" ] && continue
-        omsg="       $omsg" ;  [ -z "${omsg// /}" ] && omsg=
-        omsg="${omsg//\\n/\\n       }"              # indent multi-line
+        if [ -z "${omsg// /}" ] ; then
+            omsg=
+        else
+            omsg="       ${omsg/ /°}"
+            omsg="${omsg//\\n/\\n       }"          # indent multi-line
+        fi
         if [ -n "$CEN_USE_OPTIONS" ] ; then         # new line...
             omsg="$olin$omsg"
             [ -n "$ogrp" ] && CEN_USE_OPTIONS+="$olin" ; ogrp=
@@ -510,7 +525,7 @@ _cen_usage() {
 usagecat() {
     local _flit _pger="${CEN_OPT_PAGER##*/}" _verb
 
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -l)   _flit=1 ;;
@@ -760,7 +775,7 @@ usageopt() {
     if [ "${#2}" -le 7 ] ; then
         _cen_use_option "-$1" "$_lopt" "$4"
     else
-        _cen_use_option "-$1" "${2:+--}$2" "" "          $_para" "$4"
+        _cen_use_option "-$1" "${2:+--}$2" '' "          $_para" "$4"
     fi
     return 0
 }
@@ -775,8 +790,8 @@ case "${LANG,,}" in
 *.utf-8)    CEN_USE_UTF8=1 ;;
 esac
 
-[ "$1" = "-h" ] && _cen_usage 0
-[ "$1" = "-u" ] && _cen_usage 1
+[ "$1" = '-h' ] && _cen_usage 0
+[ "$1" = '-u' ] && _cen_usage 1
 
 :
 

@@ -391,8 +391,9 @@ options() {
     case "$CEN_ACTION" in
 
     '')
-        CEN_FEATURE_S="-s --silent          do not print an information header before rsync  -or-\n"
-        CEN_FEATURE_S+="                     print no progress output if used together with --quiet"
+        CEN_FEATURE_S="-s --silent § do not print an information header before rsync  -or-" # $'\n'
+    #    CEN_FEATURE_S+="                            print no progress output if used together with --quiet"
+        CEN_FEATURE_S+=$'\n'" § print no progress output if used together with --quiet"
         optarg "$CEN_OPT_FOLDER${CEN_OPT_VOLUME:+1}" - -m '--folder --volume'
         ;;
 

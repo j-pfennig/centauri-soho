@@ -22,6 +22,9 @@ CEN_PATHS=(''      '/usr/bin' '/etc' '/var' '/tmp' '/usr/lib')
 # path replacements from [library] section
 CEN_PATH_REXP=([0]=$'-n\a/data/%2/%3%4\a/data/%2/.mount/%2_%3%4\a/data/%2/.mount/%3%4' [1]=$'-l\a/var/lib/centauri/import/([a-z]+[0-9a-z]*)_([a-z]+[0-9a-z]*)(/.*)?\a/data/home\a/data/%1/%2%3' [2]=$'-l\a/dev/shm(/.*)?\a/tmp%1' [3]=$'-l\a/var/centauri/configs/bookworm/@admin/tools(/.*)?\a/admin%1' [4]=$'-l\a/var/centauri/configs/bookworm/@admin/tools(/.*)?\a/var/centauri/tools%1' [5]=$'-l\a/var/centauri/tools(/.*)?\a/admin%1')
 
+# things from [proxy] section
+CEN_MONITOR+=(centaurirouter centraurifilter:monitor-filter)
+
 # sanitize environment (bash needs TMPDIR)
 [ -z "$TMPDIR" ] && export TMPDIR="${XDG_RUNTIME_DIR:-${CEN_PATHS[4]:-/tmp}}" ;
 [ -z "$TMP" ] || export TMP="$TMPDIR"

@@ -33,9 +33,10 @@
 # ------------------------------------------------------------------------------
 
 # do not demand an api-version, we get loaded by centauriconfig
-CEN_MODULES['_centauri_bash_ins']='0.13:4'
+CEN_MODULES['_centauri_bash_ins']='0.14:4'
 
 embed -c '_centauri_bash_ext'               # dependency
+embed -c '_centauri_bash_cfm'               # ... confirm()
 
 CEN_INS_SYSTEMD=                            # flags that systemd is supported
 CEN_INS_SYSVOK=                             # flags that sysv is supported
@@ -1093,10 +1094,10 @@ _cen_ins_paths() {
     else
         create -d -- "$CEN_ROOT" 775 "$_sgrp" || return 1
         if [ "$EUID" = 0 ] ; then
-            create -d -- "$_drun/centauri"   775 "$_sgrp" &&
+            create -d -- "$_drun/centauri" 775 "$_sgrp" &&
                 symlink -- "$_drun/centauri" "$CEN_ROOT/transient"
             create -d -- "${CEN_PATHS[3]}/lib/centauri" 775 "$_sgrp" &&
-                symlink -r -- "${CEN_PATHS[3]}/lib/centauri" "$CEN_ROOT/persistent"
+                symlink -l -- "${CEN_PATHS[3]}/lib/centauri" "$CEN_ROOT/persistent"
         fi
     fi
 
@@ -1106,9 +1107,9 @@ _cen_ins_paths() {
         if [ -n "$_frem" ] ; then
             remove -- "$CEN_TOOLS" "$CEN_ROOT/admin" "$CEN_ROOT/locale" "$CEN_LIBRARY"
         elif [ -e "$_repo" ] ; then
-            symlink -r -- "$_repo/tools"   "$CEN_TOOLS"
-            symlink -r -- "$_repo/locale"  "$CEN_ROOT/locale"
-            symlink -r -- "$_repo/library" "$CEN_LIBRARY"
+            symlink -l -- "$_repo/tools"   "$CEN_TOOLS"
+            symlink -l -- "$_repo/locale"  "$CEN_ROOT/locale"
+            symlink -l -- "$_repo/library" "$CEN_LIBRARY"
         fi
     fi
 
@@ -1119,7 +1120,7 @@ _cen_ins_paths() {
     elif [ -d "$CEN_ROOT/default" ] ; then
         $CEN_TRACE2 -a -c " keep" -- "$CEN_ROOT/default"
     elif [ "$EUID" = 0 -a -e "$CEN_INS_ETCPATH/default" ] ; then
-        symlink -r -- "$CEN_INS_ETCPATH/default" "$CEN_ROOT/default"
+        symlink -l -- "$CEN_INS_ETCPATH/default" "$CEN_ROOT/default"
     else
         create -d -- "$CEN_ROOT/default" 775 "$_sgrp"
     fi

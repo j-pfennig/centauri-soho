@@ -21,7 +21,7 @@
 # Copyright Dr. J. Pfennig (c) 2016-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_ext']='0.27:3'
+CEN_MODULES['_centauri_bash_ext']='0.30:4'
 
 CEN_EXT_TEMP=               # temp file base path, see tmpfile
 CEN_EXT_TIDX=               # ... auto index
@@ -1426,24 +1426,27 @@ suffixpath() {
 # ------------------------------------------------------------------------------
 # symlink - Make symlink single or multiple targets using /usr/bin/ln
 #
-# Call:     (1) symlink [-f|-q] [-i] [-n] [-m|-x] [-r] [-s] [--] <target> <link>
-#           (2) symlink [-f|-q] [-i] [-n] [-m|-x] [-r] [-s] [--] <target> [<fldr>]
-#           (3) symlink [-f|-q] [-n] [-r] [--] <target>... <fldr>
-#           (4) symlink -n [-f|-q] [-r] [-s] [--] <target> <fldr>/<link>
+# Call:     (1) symlink [-f|-q] [-i] [-n] [-m|-x] [-l] [-r] [-s] [--] <target> <link>
+#           (2) symlink [-f|-q] [-i] [-n] [-m|-x] [-l] [-r] [-s] [--] <target> [<fldr>]
+#           (3) symlink [-f|-q] [-n] [-l] [-r] [--] <target>... <fldr>
+#           (4) symlink -n [-f|-q] [-l] [-r] [-s] [--] <target> <fldr>/<link>
 #
 # Options:  -c  canonicalize target path
 #           -d  allow that <link> is a folder
 #           -f  make errors fatal
 #           -i  [*] no error message for missing <target>
+#           -l  make relative links [**]
 #           -m  if <link> is a file/dir move it to '<link>.$CEN_NAME'
 #           -n  [*] no checks, <link> will replace file (ln -f -s)
 #           -q  do not report errors
-#           -r  make relative links
+#           -r  ignore --dryrun [**]
 #           -s  do not generate messages
 #           -w  report errors as warnings
 #           -x  if <link> is a file/dir explicitly delete it
 #
-#           [*] use '-i -n' to allow the creation of stale symlinks
+#           [*]  use '-i -n' to allow the creation of stale symlinks
+#           [**] changed in api level 4: -l must be used instead of -r,
+#                option -r did no "ignore --dryrun" in older api levels!
 #
 # Arguments:<target> location the symlink points to
 #           <link>   name (or path) of symlink to be created
@@ -1462,7 +1465,8 @@ suffixpath() {
 # see form (4).
 # ------------------------------------------------------------------------------
 symlink() {
-    local _fign _targ _ocan _odir _oftl='error' _onck _orel _osil _osys='-e -p' _move _mesg="$CEN_TRACE"
+    local _fign _targ _ocan _odir _odry _oftl='error' _onck _orel _osil \
+          _osys='-e -p' _move _mesg="$CEN_TRACE"
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -1470,10 +1474,11 @@ symlink() {
       -d)   _odir=1 ;;
       -f)   _oftl='fatal' ; _osys='-f -p' ;;
       -i)   _fign=1 ;;
+      -l)   _orel=1 ;;
       -m)   _move=1 ;;
       -n)   _onck='-f' ;;
       -q)   _oftl=':' ; _osys='-q' ;;
-      -r)   _orel=1 ;;
+      -r)   _odry=' -r' ;;
       -s)   _mesg=: ; _osil='-s' ;;
       -v)   _mesg='message' ;;
       -w)   _oftl='warning' ; _osys='-w -p' ;;
@@ -1485,6 +1490,7 @@ symlink() {
     local _etxt _link="$2" _targ="${1%/}"
     [ -z "$1" ] && _targ='/'
     [ -z "$_link" ] && _link="${_targ##*/}"
+    _osys+="$_odry" ; _osil+="$_odry"
 
     # multiple targets, link must be an existing folder, run /usr/bin/ln
     if [ $# -gt 2 ] ; then

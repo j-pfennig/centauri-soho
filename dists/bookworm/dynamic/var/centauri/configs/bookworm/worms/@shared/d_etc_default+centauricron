@@ -24,6 +24,10 @@
 
 # This should be invoked via anacrontab every few hours
 hourly() {
+    if [ -d "/run/log/journal" ] ; then
+        header "Save journal to persistent storage"
+        execute journalctl --flush
+    fi
 
     # run the default
     default
@@ -32,15 +36,34 @@ hourly() {
 # This should be invoked via anacrontab once per day
 daily() {
 
+    header "Library maintenance"
+
+    execute "$CEN_LIBRARY/uglify" -D -U
+    execute -r 4 centaurihelp -G all -y
+
+    header "Update /export"
+
+    # update gps tree
+    [ -x /export/GeoData/make_tree ] && execute -r 4 /export/GeoData/make_tree --yes
+    [ -x /export/Bilder/make_tree  ] && execute -r 4 /export/Bilder/make_tree  --yes
+    [ -x /export/Video/make_video_tree  ] && execute /export/Video/make_video_tree
+
+    # make HTML search index
+    [ -d '/var/www/html' ] && [ -x '/usr/bin/namazu' ] &&
+        execute -r 4 -o namazu-cron
+
+    # copy weewx data
+    # [ -e "/var/lib/weewx" ] && execute -o weewx-cron copy
+
     # make btrfs snapshots
     if [ -d "/mnt/vol0" ] ; then
-        if execute -c mirror-server check ; then
+        if execute -r 4 -c mirror-server check ; then
             header "Creating minimal snapshots (replicating master)"
             execute centaurisnapshot --silent --yes quota off -- delete daily 2 ..
             execute centaurisnapshot --silent --yes create daily
             
             header "Mirroring server"
-            execute mirror-server cron
+            execute -r 4 mirror-server cron
             autoshutdown
         else
             header "Creating snapshots"
@@ -61,7 +84,7 @@ daily() {
     header "Running defaults tasks"
 
     # renew kerberos tickets
-    system -c krenew && execute centaurikerberos renew +
+    system -c kinit krenew && execute -r 4 centaurikerberos renew +
 
     # run the default
     default
@@ -80,6 +103,12 @@ weekly() {
 
     # run the default
     default
+
+    # restart weewx
+    [ -e "/var/lib/weewx" ] && execute -o weewx-cron restart
+
+    # minidlna refresh
+    execute -r 4 minidlna-reload --yes
 }
 
 # This should be invoked via anacrontab once per month
@@ -98,12 +127,12 @@ monthly() {
 
     # run a system backup (servers only)
     if netquery server && shortpath disk ; then
-        execute centauriremove --purge --yes disk
-        execute centauribackup disk 
+        execute -r 4 centauriremove --purge --yes disk
+        execute -r 4 centauribackup disk 
     fi
 
     # purge backups, update history
-    execute centauridata --zombie purge -- history
+    execute -r 4 centauridata --zombie purge -- history
 }
 
 # end

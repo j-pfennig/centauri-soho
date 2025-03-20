@@ -40,7 +40,13 @@ apptimers   anacron apt-daily apt-daily-upgrade  exin4-base logrotate systemd-tm
 # -----------------------------------------------------------------------------
 
 remove -d -- /var/tmp/centauribashlib-*/*
-folder -m -- /run/sshd 
+folder -m -- /run/sshd
+ 
+# disable ipv6 for virtual box guests
+if [ -c /dev/vboxguest ] ; then
+    message "Disabled ipv6 (running as virtual box guest)"
+    embed centauriroute ipv6 off
+fi
 
 # run 1st boot script
 if [ -e "$CEN_ROOT/persistent/centaurisysinit-1st-boot" ] ; then
@@ -106,4 +112,3 @@ fi
 # tinyproxy folder
 folder -m /var/log/tinyproxy 770 tinyproxy:staff
 
-# end

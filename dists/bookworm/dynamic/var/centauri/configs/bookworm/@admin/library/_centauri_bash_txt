@@ -27,11 +27,94 @@
 # Copyright Dr. J. Pfennig (c) 2021-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES["_centauri_bash_txt"]="0.03:2"
+CEN_MODULES["_centauri_bash_txt"]="0.10:4"
 
 CEN_TXT_SORT=                   # paths of tools
 CEN_TXT_UNIQ=
 CEN_TXT_GREP=
+
+# ------------------------------------------------------------------------------
+# regexp - Helper to simplify parsing using regular expressions
+#
+# Calls:    regexp [-g] [-t] [--] <rexp> <data> <emsg>|- <gmsg>|- <vmat>|-...
+#
+# Options:  -d  call [[debug()]] to show BASH_REMATCH
+#           -g  allow garbage (unmatched data)
+#           -t  call [[trace()]] instead of [[error()]]/[[warning()]]
+#
+# Arguments:<rexp>  a regular expression
+#           <data>  data to be matchd
+#           <emsg>  message for no match (calls [[error()]] by default)
+#           <gmsg>  message for garbage (calls [[warnning()]] by default)
+#           <vmat>  name of variable to be set tp a match
+#
+# Return:   0   matched all data
+#           1   found garbage
+#           2   no match at all
+#
+# Example:  A simple JSON parser (key/value only):
+#
+#.          # extract: <obj>
+#.          local jlst='[[:space:]]*\{[[:space:]]*(.*)*\}[[:space:]]*'
+#.          # extract: <key> <separator> <remainder>
+#.          local jelt='[[:space:],]*\"([^\"]+)\"[[:space:]]*([:,])?[[:space:]]*(.*)'
+#.          # extract: <value> <quoted> <plain> <remainder>
+#.          local jval='(\"([^\"]*)\"|([^[:space:]\"]*))[[:space:]]*(.*)'
+#.
+#.          local dstr="$*" dkey ddel dall dquo dpln
+#.          # step 1: isolate the object content
+#.          regexp "$jlst" "$dstr" "Extra chars:" \
+#.                                 "No JSON object" dstr || return
+#.          while [ -n "${dstr/[[:space:]]/}" ] ; do
+#.              # step 2: get <key> [<deli>] [<rest>]
+#.              regexp "$jelt" "$dstr" "Extra chars:" \
+#.                                     "No key:" dkey ddel dstr || return
+#.              if [ "$ddel" = ':' ] ; then
+#.                  # step 3: get value (can be missing, quoted or a plain word)
+#.                  regexp "$jval" "$dstr" "Extra chars:" \
+#.                                         "Error:" dall dquo dpln dstr || return
+#.                  if [ "${dall:-,}" = ',' ] ; then dval='<none>'
+#.                  elif [ -n "$dquo" ] ; then       dval="$dquo"
+#.                  else                             dval="$dpln"
+#.                  fi
+#.                  message -a -p "key %-10s  value %s" "'$dkey'" "'$dval'"
+#.              else
+#.                  warning 'missing colon:' "$dkey"
+#.              fi
+#.          done
+#
+#+This function runs "[[ <data> =~ <rexp> ]]" to evaluate extended posix regular
+# expressions. Bash saves matches in BASH_REMATCH[n]. The arguments <vmat> are
+# assigned in ascending order starting with n=1.
+# ------------------------------------------------------------------------------
+regexp() {
+    local   _oerr='error' _owrn='warning -a' _odeb=':' _ogok _osta=0 _oidx=1
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -d)   _odeb='debug' ;;
+      -g)   _ogok=1 ;;
+      -t)   _oerr='trace -a -c " "' ; _owrn="$_oerr"
+      esac ; shift
+    done
+
+    if [[ "$2" =~ $1 ]] ; then
+        $_odeb BASH_REMATCH
+        if [ -z "$_ogok" ] && [ "$2" != "$BASH_REMATCH" ] ; then
+            [ "${3:--}" != '-' ] && $_owrn -- "$3" "'${2/$BASH_REMATCH/ ... }'"
+            _osta=1
+        fi
+        [ $# -le 4 ] && return "$_osta"
+        shift 4
+        while [ $# != 0 ] ; do
+            [ "${1:--}" = '-' ] || printf -v "$1" '%s' "${BASH_REMATCH[_oidx]}"
+            shift ; ((_oidx += 1))
+        done
+        return "$_osta"
+    fi
+    [ "${3:--}" != '-' ] && $_oerr -- "$4"
+    return 2
+}
 
 # ------------------------------------------------------------------------------
 # txtsort - Simple internal sort of text lines
@@ -70,17 +153,17 @@ CEN_TXT_GREP=
 txtsort() {
     #$CEN_DEBUG -c -- "$*"
     local _ffat _fqui _fmax=15 _frev _farr _leng _xopt _stat=0
-    local _vinp _vout="-s -" _vsys _cen_sort_aarg
+    local _vinp _vout='-s -' _vsys _cen_sort_aarg
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -a)   shift ; _farr="$1" ; _vout="-s $1" ; _vsys="-a $1"  ;;
-      -f)   _ffat="-f" ;;
+      -f)   _ffat='-f' ;;
       -i)   shift ; _vinp="$1" ;;
       -m)   shift ; _fmax="$1" ;;
-      -n)   _xopt="-o -n" ;;
-      -q)   _fqui="-q" ;;
-      -r)   _frev="-r" ;;
+      -n)   _xopt='-o -n' ;;
+      -q)   _fqui='-q' ;;
+      -r)   _frev='-r' ;;
       -s)   shift ; _vout="-j $1 -d \n" ; _vsys="-s $1" ;;
       *)    _cen_abort - "$1"
       esac ; shift
@@ -119,8 +202,8 @@ txtsort() {
     _barr=("${_varr[@]}")                   # copy input
 
     # performing a bubble sort
-    local _iter _curr _next _temp _oper=">"
-    [ -n "$_frev" ] && _oper="<"
+    local _iter _curr _next _temp _oper='>'
+    [ -n "$_frev" ] && _oper='<'
 
     for ((_iter=0; _iter < _leng; _iter++)) ; do
         if [ -n "$_xopt" ] ; then           # numeric sort
@@ -183,11 +266,11 @@ extsort() {
       case "$1" in
       --)   shift ; break ;;
       -a)   shift ; _fnam="$1" ; _vout="-a $1" ;;
-      -f)   _ferr="-f" ;;
+      -f)   _ferr='-f' ;;
       -i)   shift ; _vinp="-i $1" ;;
       -o)   shift ; _fopt="$1" ;;
-      -q)   _ferr="-q" ;;
-      -r)   _frev="-r" ;;
+      -q)   _ferr='-q' ;;
+      -r)   _frev='-r' ;;
       -s)   shift ; _fnam="$1" ; _vout="-s $1" ;;
       -u)   _funi=1 ;;
       *)    _cen_abort - "$1"
@@ -203,7 +286,7 @@ extsort() {
     else                                            # sort with uniq
         _acmd=('_cen_sort_uniq')
         if [ -z "$CEN_TXT_UNIQ" ] ; then
-            sysfind ${_ferr/.q/} -s CEN_TXT_UNIQ -c uniq || return 1
+            sysfind ${_ferr/-q/} -s CEN_TXT_UNIQ -c uniq || return 1
             _cen_sort_uniq() {                      # helper for uniq
                 set -o pipefail ; "$CEN_TXT_SORT" $_frev $_fopt | "$CEN_TXT_UNIQ"
             }
@@ -252,7 +335,7 @@ extsort() {
 #
 #.          # in-place filtering
 #.          local days=(monday montag wednesday mercredi friday)
-#.          txtgrep -o days -i days -x ".*day"
+#.          txtgrep -a days -i days -x ".*day"
 #
 #+Return:   Without option -a or -s status **true** is returned after the 1st match
 #           and **false** if no match is found (this implies option -m).
@@ -396,13 +479,13 @@ extgrep() {
       case "$1" in
       --)   shift ; break ;;
       -a)   shift ; _fnam="$1" ; _vout="-a $1" ;;
-      -f)   _ferr="-f" ;;
+      -f)   _ferr='-f' ;;
       -i)   shift ; _vinp="-i $1" ;;
       -l)   _acmd+=('-n') ;;
       -m)   _acmd+=('-q') ;;
       -n)   _acmd+=('-v') ;;
       -o)   shift ; _aopt+=("$1") ;;
-      -q)   _ferr="-q" ;;
+      -q)   _ferr='-q' ;;
       -s)   shift ; _fnam="$1" ; _vout="-s $1" ;;
       -u)   _acmd+=('-i') ;;
       -x)   shift ; _fexp=1 ; _acmd+=('-e' "$1") ;_acmd+=('-E') ;;
@@ -431,12 +514,11 @@ extgrep() {
 
     # additional error reporting
     if [ -n "$_fnam" -o "$_ferr" != '-q' ] ; then
-        splitjoin -d "\n" -i "$_fnam" -j _sout
+        splitjoin -d '\n' -i "$_fnam" -j _sout
         message -a -n -- "$_sout"
     fi
     return $_stat
 }
-
 
 # ------------------------------------------------------------------------------
 # txtfold - folding of long text lines, fetch limited text size

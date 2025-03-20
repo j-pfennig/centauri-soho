@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2012-2022; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2012-2024; BSD License"
 CEN_TITLE="Tool to use/manage 'Deleted' folders"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -s -y "$0" "0.30" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -s -y - '0.31:4' || exit 2
 
 # Data
 
@@ -227,7 +227,7 @@ options() {
     case "$1" in
 
     -B|--bas*)
-         optarg "base"  oval -t && do_base_arg "$oval" ;;
+        optarg "base"   oval -t && do_base_arg "$oval" ;;
     -D|--del*)
         optarg "delete" oval -t && do_mbyte_arg "delete" "$oval" ;;
     -E|--emp*)
@@ -261,7 +261,7 @@ run() {
 # print usage info
 # ------------------------------------------------------------------------------
 
-CEN_FEATURE_S="-s --silent          show only deletion summary"
+CEN_FEATURE_S="-s --silent § show only deletion summary"
 
 usage() {
     usagecat << !EOF
@@ -272,7 +272,7 @@ usage: $CEN_NAME [options...] path...
 
 $CEN_USE_OPTIONS
 
-          --anypath         do not search '[Dd]eleted', use verbatim paths
+       °  --anypath         do not search '[Dd]eleted', use verbatim paths
        -B --basedir <path>  base directory for 'Deleted' folder search
        -D --delete  <size>  purge up to <size> from the 'Deleted' folder(s)
        -F --free    <size>  purge until <size> diskspace are free

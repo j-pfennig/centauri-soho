@@ -11,7 +11,7 @@
 # enable loadable bash builtins.
 # ------------------------------------------------------------------------------
 
-CEN_MODULES["_centauri_bash_dyn"]="0.25:3"
+CEN_MODULES['_centauri_bash_dyn']="0.26:4"
 
 # ------------------------------------------------------------------------------
 # Dynamic loading + Dynamic loading of centauri-bash-lib modules
@@ -28,7 +28,7 @@ CEN_MODULES["_centauri_bash_dyn"]="0.25:3"
 #       (4) explicit loading via [[embed()]] option -m
 #
 # Examples: Loading [[_centauri_bash_win]] using method (1):
-#.          PATH+=":${0%/*}" . _centauri_bash_lib -m win "$0" "0.00" || exit 2
+#.          PATH+=":${0%/*}" . _centauri_bash_lib -m win - '0.00' || exit 2
 #
 #           Explicitly loading [[_centauri_bash_win]] using method (4):
 #.          embed -m _centauri_bash_win
@@ -136,7 +136,7 @@ CEN_MODULES["_centauri_bash_dyn"]="0.25:3"
 # Example:  See [[centauricreate]] and **$CEN_TOOLS/templates/_custom_module_usr**
 # ------------------------------------------------------------------------------
 
-[ "$1" = "-f" ] ||
+[ "$1" = '-f' ] ||
     fatal "Cannot load '_centauri_bash_dyn' via embed, use '_centauri_bash_lib -a'"
 
 # dynamic loader: <module> <arg>...
@@ -180,6 +180,9 @@ attributes() { _cen_dyn_load atr "$@" ; }
 filestat() { _cen_dyn_load atr "$@" ; }
 
 backup() { _cen_dyn_load bak "$@" ; }
+
+confirm() { _cen_dyn_load cfm "$@" ; }
+password() { _cen_dyn_load cfm "$@" ; }
 
 cgiapp() { _cen_dyn_load cgi "$@" ; }
 
@@ -270,6 +273,7 @@ sysconfig() { _cen_dyn_load sys "$@" ; }
 
 trash() { _cen_dyn_load tra "$@" ; }
 
+regexp() { _cen_dyn_load txt "$@" ; }
 txtsort() { _cen_dyn_load txt "$@" ; }
 extsort() { _cen_dyn_load txt "$@" ; }
 txtgrep() { _cen_dyn_load txt "$@" ; }
@@ -281,8 +285,9 @@ usagecat() { _cen_dyn_load use "$@" ; }
 usageset() { _cen_dyn_load use "$@" ; }
 usageopt() { _cen_dyn_load use "$@" ; }
 
+isname() { _cen_dyn_load utl "$@" ; }
+isnumber() { _cen_dyn_load utl "$@" ; }
 listsearch() { _cen_dyn_load utl "$@" ; }
-number() { _cen_dyn_load utl "$@" ; }
 optmake() { _cen_dyn_load utl "$@" ; }
 pluralize() { _cen_dyn_load utl "$@" ; }
 splitcall() { _cen_dyn_load utl "$@" ; }

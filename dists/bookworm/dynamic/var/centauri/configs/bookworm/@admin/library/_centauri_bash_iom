@@ -70,6 +70,7 @@ CEN_IOM_OPT_W=
 CEN_SERIALIZE=          # set by serialize()
 
 embed -c '_centauri_bash_ext'           # import on demand
+embed -c '_centauri_bash_cfm'           # ... confirm()
 
 # ------------------------------------------------------------------------------
 # get library cache dir: [-r|-w] <vnam>
@@ -149,7 +150,7 @@ _cen_iom_error() {
 # ------------------------------------------------------------------------------
 inpdata() {
     local _oerr='error -z' _anam _func _hndl _oinp _orun _stat=0 _file _coun
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -)    break ;;
@@ -264,7 +265,7 @@ _cen_iom_reader() {
 CEN_INPFILE=
 inpfile() {
     local _fblk _fcan _fdir _femp _ffil _floo _fopt _fext _fset="CEN_INPFILE" _oerr='error -z' _stat
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -)    _break ;;
@@ -315,7 +316,7 @@ inpfile() {
             [ -n "$_fopt" ] && return 0
             _cen_iom_error "$_oerr" $"No input path specified" ; return 1
         fi
-        if [ "$_varg" = "-" ] ; then
+        if [ "$_varg" = '-' ] ; then
             _varg="/dev/stdin" ; return 0
         elif [ -n "$_fext" ] ; then
             suffixpath -d -s "$_fset" -- "$_fext"
@@ -418,7 +419,7 @@ inpfile() {
 # ------------------------------------------------------------------------------
 outdata() {
     local _oerr='error -z' _anam _hndl _oind _oloo='-a' _oout _orun _stat=0 _file _line
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -)    break ;;
@@ -477,7 +478,7 @@ outdata() {
     fi
 
     if [ "$_stat" = 0 ] ; then
-        $CEN_TRACE -p $"Wrote %s line(s) to: %s" "${#_vwrt[@]}" "$_line"
+        $CEN_TRACE2 -p $"Wrote %s line(s) to: %s" "${#_vwrt[@]}" "$_line"
     else
         $_oerr -p $"Failed to write to: %s" "$_line"
     fi
@@ -532,7 +533,7 @@ CEN_OUTFILE=
 outfile() {
     local _fcan _fexi _ffil _fdir _floo _fopt _fext _fook _frun _ftru \
           _fset="CEN_OUTFILE" _oerr='error -z' _stat
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -)    break ;;
@@ -584,7 +585,7 @@ outfile() {
             [ -n "$_fopt" ] && return 2
             _cen_iom_error "$_oerr" $"No output path specified" ; return 2
         fi
-        if [ "$_varg" = "-" ] ; then
+        if [ "$_varg" = '-' ] ; then
             _fexi=1 ; _varg="/dev/stdout" ; return 0
         elif [ -n "$_fext" ] ; then
             suffixpath -d -s "$_fset" -- "$_fext"
@@ -653,7 +654,7 @@ outfile() {
 #           -s  source (deserialize) cache file if it has non-zero size
 #           -w  get a writetable path if cache does not exist
 #
-# Arguments:<name>  name of the cache file, a full path or "-" for "$CEN_NAME.dat"
+# Arguments:<name>  name of the cache file, a full path or '-' for "$CEN_NAME.dat"
 #           <conf>  name of a configuration file or a full path
 #
 # Variables:CEN_CACHEFILE   set to the resulting cache file (empty on error)
@@ -681,7 +682,7 @@ CEN_CACHEFILE=
 cachefile() {
     $CEN_DEBUG -c -- "$*"
     local _fwri _ferr _fglo=1 _fpri=1 _fqui _fsrc _fdef _spri _scfg
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -)    break ;;
@@ -698,7 +699,7 @@ cachefile() {
     done
     [ -z "$_fglo" -a -z "$_fpri" ] && _cen_abort - '-g -p'
     CEN_CACHEFILE=
-    local _cfil="${1:--}" ; [ "$_cfil" = "-" ] && _cfil="$CEN_NAME.dat"
+    local _cfil="${1:--}" ; [ "$_cfil" = '-' ] && _cfil="$CEN_NAME.dat"
 
     # validate a cache
 
@@ -706,24 +707,27 @@ cachefile() {
         [ -n "$_fpri" -a -z "$_fdef" ] && _scfg='-p'
         configfile $_fqui $_scfg -i true -n "$2"        # get config path
         if cachefile $_ferr $_spri -- "$_cfil" ; then   # get cache path
-            #$CEN_TRACE2 -c " check" -- "$CEN_CACHEFILE" "$CEN_CONFIGFILE"
-            if [ "$CEN_CACHEFILE" -nt "$CEN_CONFIGFILE" ] ; then
+            $CEN_TRACE2 -c " check" -- "$CEN_CACHEFILE" "$CEN_CONFIGFILE"
+            if _cen_cache_chk ; then
                 [ -n "$_fscr" ] && serialize $_ferr -r -n "$CEN_CACHEFILE"
                 return 0                                # valid cache
             fi
         fi
         [ -z "$_fwri" ] && return 1                     # no write intention
 
+
         # write intention may show a valid private cache
 
+        local _cone="$CEN_CACHEFILE"                    # current cache
         cachefile $_ferr $_spri -w -- "$_cfil"          # get write path
-        #$CEN_TRACE2 -c " write" -- "$CEN_CACHEFILE" "$CEN_CONFIGFILE"
-        if [ "$CEN_CACHEFILE" -nt "$CEN_CONFIGFILE" ] ; then
+        $CEN_TRACE2 -c " write" -- "$?" "$CEN_CACHEFILE" "$CEN_CONFIGFILE"
+        [ "$_cone" = "$CEN_CACHEFILE" ] && return 1     # no private cache
+        if _cen_cache_chk ; then
             [ -n "$_fscr" ] && serialize $_ferr -r -n "$CEN_CACHEFILE"
             return 0                                    # valid cache
         fi
         return 1                                        # not valid
-    fi || :
+    fi
 
     # only the <name> argument (or CEN_NAME is used by default
 
@@ -751,6 +755,15 @@ cachefile() {
         [ -r "$CEN_CACHEFILE" ] && return 0             # cache file ok
     fi || :
     return 1                                            # error
+}
+
+# check if CEN_CACHEFILE is valid and newer then CEN_CONFIGFILE
+_cen_cache_chk() {
+    if [ "$CEN_CACHEFILE" -nt "$CEN_CONFIGFILE" ] ; then
+        [ -s "$CEN_CACHEFILE" ] && return 0
+        warning $"Ignoring empty cache file:" "$CEN_CACHEFILE"
+    fi
+    return 1
 }
 
 # ------------------------------------------------------------------------------
@@ -876,7 +889,7 @@ configfile() {
     $CEN_DEBUG -c -- "$*"
     local _file _aflg _init _priv _rlin _read _ropt="-r" _sopt _sect=()
     local _ocom _oerr _omul _oqui _ovar _orep='error -z' _otra="$CEN_TRACE"
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       -)    break ;;
       --)   shift ; break ;;
@@ -1137,7 +1150,7 @@ serialize() {
     $CEN_DEBUG -c -- "$*"
     local _fdel _fdec _fmod _fref _fzer _fqui _mode
     local _ffil="$CEN_NAME.dat" _oerr='error -z' _otra="$CEN_TRACE -a"
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -f)   _oerr='fatal' ;;
@@ -1187,7 +1200,7 @@ serialize() {
             _sout+="$_item" ; _sout+=$'\n'
         done
 
-        dryrun "serialize: $_ffil" && return
+        dryrun -s "serialize: $_ffil" && return
         create $_fqui -v _sout -h - -s -t -- "$_ffil" $_mode || return 1
         $_otra -c $" write" -- "$_ffil"
 
@@ -1269,7 +1282,7 @@ serialize() {
 spliteval() {
     local _oinp _oset _oerr=error _oglo _onoe _oset _stat=0
     local -n _vvei _vveo
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -a|-u)
@@ -1442,7 +1455,7 @@ _cen_iom_add_opts() {
 # Startup
 # ------------------------------------------------------------------------------
 
-while [ "${1::1}" = "-" ] ; do
+while [ "${1::1}" = '-' ] ; do
     case "$1" in
     --)   shift ; break ;;
     -e)   CEN_IOM_OPT_E="-e" ;;

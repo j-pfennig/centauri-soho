@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2005-2023; BSD License"
 CEN_TITLE="Tool to handle fetchmail and to do some exim4/cyrus maintenance"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -s -y - '0.35:' 0 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -s -y - '0.36:3' 0 || exit 2
 
 # data for extra options
 CEN_OPT_CLIENT=         # see --client
@@ -307,7 +307,7 @@ actionBackup() {
     cyrus_data || return
 
     message -a "Checkpointing dbs and saving mailbox list..."
-    system -e -p -u cyrus -- /bin/bash -c \
+    system -e -p -u cyrus -- /usr/bin/bash -c \
         "/usr/sbin/cyrus ctl_cyrusdb -c ; /usr/sbin/cyrus mboxlist -d >list_of_mailboxes"
 }
 
@@ -444,7 +444,7 @@ actionIndex() {
     local tmpf="/tmp/sqidx_$$"
     system -e -r -u cyrus -- /usr/sbin/cyrus ctl_mboxlist -d >"$tmpf"
     if [ $? = 0 ] ; then
-        system -e -p -u cyrus -- /bin/bash -c "
+        system -e -p -u cyrus -- /usr/bin/bash -c "
             ierr=0
             while read mbox dumy ; do
                 echo \"Indexing \$mbox\"

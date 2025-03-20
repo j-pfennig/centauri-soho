@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2023; BSD License"
 CEN_TITLE="Tool to run Programs in Window or Console mode"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -m win -t -y - '0.22:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -m win -t -y - '0.23:2' || exit 2
 
 ### TODO replace doFindmount by findmount
 ### TODO doReplace -r vs. filenames
@@ -756,7 +756,7 @@ examples:
        > $CEN_NAME make --- script --- "mkdir /mnt/z -o ro ; mount /dev/xxx /mnt/z"
 
        Use from inside a bash script (hello world example):
-       #!/bin/bash
+       #!/usr/bin/bash
        $CEN_NAME --wait --root --console=- --- run "$@" || exit 1
        echo "Hello world"
        # End

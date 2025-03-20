@@ -1,8 +1,10 @@
+# jpf@centauri: smb.conf.local for centauri: 2025-02-21
+
 # Global parameters
 [global]
     realm = %D^^%
     server role = active directory domain controller
-    workgroup = %N^^%
+    workgroup = %D1^^%
 
     # ad/dc replication creates log spam. use ringbuffer to keep syslog clean.
     # use this to view messages: smbcontrol smbd ringbuf-log
@@ -10,7 +12,7 @@
     logging = ringbuf@1 rpc_svr:0 rpc_cli:0
 
     # in slave mode use mastes's DNS
-    dns forwarder = %G4%
+    dns forwarder = %P4%
 
     # unix user and group objects in LDAP 
     idmap_ldb:use rfc2307 = yes
@@ -34,7 +36,7 @@
     # access controll via allow/deny hosts
     include = /etc/samba/networks.conf 
 
-    # we need netbios
+    # we allow netbios
     netbios name = %H^^%
     disable netbios = no
     winbind use default domain = yes
@@ -48,7 +50,7 @@
     include = /etc/samba/services.conf
 
 [netlogon]
-    path = /var/lib/samba/sysvol/%D%/scripts
+    path = /var/lib/samba/sysvol/%D1%/scripts
     read only = No
 
 [sysvol]

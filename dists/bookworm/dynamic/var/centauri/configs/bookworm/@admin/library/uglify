@@ -7,14 +7,11 @@ CEN_TITLE="Pack centauri-bash-lib sources, create packaged script"
 # TODO function '(){'
 
 # cannot use autoload - might autolod .p before being written completely ...
-PATH+=":${0%/*}" . _centauri_bash_lib -d -f -m ext -r -y - '0.25:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -d -f -m ext -m cfm -m utl -r -y - '0.26:4' || exit 2
 
 embed -m _centauri_bash_iom -o
-embed -m _centauri_bash_utl
 
 # Data
-#CEN_RUN_MIN_ARGS=1              # min arg count, see arguments()
-#CEN_RUN_MAX_ARGS=+              # max arg count
 
 CEN_OPT_CONFIG=                 # see --config
 CEN_OPT_DOCU=                   # see --docu
@@ -30,7 +27,7 @@ DAT_FLG_DYNAMIC=                # set in do_libarg (-a option)
 DAT_FLG_LOCALE=                 # ...              (-t option)
 DAT_FLG_MOVED=                  # see do_special
 
-DAT_LIB_USER="_*_*_usr"         # glob pattern for user libraries
+DAT_LIB_USER='_*_*_usr'         # glob pattern for user libraries
 
 declare -A DAT_MAP_EMBED        # map for external apps
 declare -A DAT_MAP_MODULE       # map for module status
@@ -205,7 +202,6 @@ do_regex() {
             local _tmp1="${BASH_REMATCH[1]}"
             local _tmp2="${BASH_REMATCH[2]}"
             local _tmp3="${BASH_REMATCH[3]}"
-   #         $CEN_TRACE2 -a -c "SINGLE   $nlin" -- "$_tmp1|$_tmp2|$_tmp3"
             $CEN_TRACE2 -a -c "SINGLE   $nlin" -- "$_tmp2"
 
             [[ "$_tmp2" == \'[[:alnum:]/:+-]\' ]] && _tmp2="${_tmp2:1:1}"
@@ -259,7 +255,7 @@ do_ugly() {
 
         # not in !EOF block
         if [ -z "$feof" ] ; then
-            if [ "${rlin::1}" = "#" ] ; then        # full line comment
+            if [ "${rlin::1}" = '#' ] ; then        # full line comment
                 [ -z "$DAT_FLG_PACKAGE" ] && echo
                 continue
             fi
@@ -285,7 +281,7 @@ do_ugly() {
                         rlin="${rlin%% # *}"
             esac
 
-            [ "${rlin::1}" = " " ] && rlin="${rlin:1}"
+            [ "${rlin::1}" = ' ' ] && rlin="${rlin:1}"
             if [ -n "$DAT_FLG_PACKAGE" ] ; then     # collect map declares
                 do_special -l "$rlin"
                 [ -n "$DAT_FLG_MOVED" ] && continue
@@ -672,11 +668,15 @@ run() {
             warning "Could not parse input - edit output manually"
         fi
     fi
-    folder -c -f "$CEN_LIBRARY"                         # set library folder
 
-    if [ "${finp:--}" = '-' ] ; then
+    if [ $# = 1 -a "${finp/\//}" != "$finp" ] ; then    # path argument ...
+        resolve -a list -c -e -- "$finp" || return ; shift
+    elif [ "${finp:--}" = '-' ] ; then
+        folder -c -f "$CEN_LIBRARY"                     # set library folder
         [ $# -gt 1 ] && fatal "Extra arguments"
         set -- _centauri_bash_??? $DAT_LIB_USER
+    else
+        folder -c -f "$CEN_LIBRARY"                     # set library folder
     fi
 
     # --- select modules ---
@@ -824,7 +824,7 @@ run() {
 options() {
     case "$1" in
 
-    "")
+    '')
         if [ -n "$CEN_OPT_DOCU" -o -n "$CEN_OPT_UGLY" ] ; then
             [ -z "$CEN_OUTFILE" ] || optarg - - -m '--output --docu|--uglify'
         elif [ -z "$CEN_OUTFILE" ] ; then

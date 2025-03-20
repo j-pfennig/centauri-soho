@@ -149,19 +149,19 @@ do_addrchk() {
         fi
     fi
 
-    [ "$_addrchk_ipvx" = 4 ] && return 0            # using ipv4 only
+    [ "$_addrchk_ipvx" = 4 ] && return 0            # using IPv4 only
     if ! do_ipv6chk ; then
         if [ -z "$now6" -a "$CEN_ACTION" != 'open' ] ; then
-            [ -z "$DAT_IPV6_NOWARN" ] && invoke -w "ipv6 is not enabled for this host"
+            [ -z "$DAT_IPV6_NOWARN" ] && invoke -w "IPv6 is not enabled for this host"
             DAT_IPV6_NOWARN=1
         fi
     elif [ "$ifce" != '-' ] && ! nettool -6 -d "$_addrchk_ifce" status ; then
-        [ -z "$now6" ] && invoke -w "ipv6 is not enabled for:" "$ifce"
+        [ -z "$now6" ] && invoke -w "IPv6 is not enabled for:" "$ifce"
     else
-        return 0                                    # ipv6 is ok
+        return 0                                    # IPv6 is ok
     fi
     [ "$_addrchk_ipvx" = 6 ] && return 1            # cannot run
-    _addrchk_ipvx=4 ; return 0                      # use ipv4 only
+    _addrchk_ipvx=4 ; return 0                      # use IPv4 only
 }
 
 # -----------------------------------------------------------------------------
@@ -188,7 +188,7 @@ do_address() {
         *)      iopt='delete'
     esac
 
-    if [ "$ipvx" != 6 ] ; then                          # ipv4 address
+    if [ "$ipvx" != 6 ] ; then                          # IPv4 address
         nettool -q -a -4 -d "$ifac:0" "$iopt" "$neti" $flag
     fi
 
@@ -430,7 +430,7 @@ do_config() {
         ___ifce_names "$@" ; DAT_SWITCH_IFACES="${list[*]}"
         ___ifce_names "${DAT_OPEN_BRIDGE[@]}" ; DAT_OPEN_BRIDGE=("${list[@]}")
         ___ifce_names "${DAT_OPEN_PROXY[@]}" ; DAT_OPEN_PROXY=("${list[@]}")
-        set -f ; set -- $DAT_SWITCH_WLAN ; set +f
+        set -f ; set -- $DAT_OPEN_WLAN ; set +f
         ___ifce_names "$@" ; DAT_OPEN_WLAN="$list"
         if [ "$DAT_OPEN_DIAL" = 'wlan' ] ; then
             ___ifce_names "${DAT_OPEN_DIAL[1]}" ; DAT_OPEN_DIAL[1]="$list"
@@ -478,6 +478,7 @@ do_external() {
     #            1 : try 3 then 2
     local indx="${1#*-}" name="${1%-*}"
     [ "$indx" = 0 ] && indx=1 || indx=2
+
     # do not add an address if external is a subnet of the inner net ...
     if nethost "$name-$indx" && ! netmask "$CEN_NET_EXTERNAL" "$_nethost_ip" ; then
         $CEN_TRACE2 -a -c "External addr" "$1 -> $_nethost_ip [$indx]"
@@ -487,7 +488,12 @@ do_external() {
         $CEN_TRACE2 -a -c "External addr" "$1  =>  <is subnet>"
         return 1
     fi
-    nettool -d "$2" -w -o add "$CEN_NET_EXTERNAL"
+
+    # these may fail, a route may already exist ...
+    nettool -d "$2" -w -o add "$CEN_NET_EXTERNAL" &&
+        message -a -p "Added route '%s' via '%s'" "$CEN_NET_EXTERNAL" "$2"
+    nettool -d "$2" -q -o add "$CEN_NET_NETWORKS" &&
+        message -a -p "Added route '%s' via '%s'" "$CEN_NET_NETWORKS" "$2"
 }
 
 # -----------------------------------------------------------------------------
@@ -525,7 +531,7 @@ do_ifexists() {
 }
 
 # -----------------------------------------------------------------------------
-# Check if ipv6 is enabled for some host: <host>|-
+# Check if IPv6 is enabled for some host: <host>|-
 # -----------------------------------------------------------------------------
 do_ipv6chk() {
     local host="${1%-[0-9]}"
@@ -541,7 +547,7 @@ do_ipv6chk() {
         netoption 'ipv6' "$host" ; DAT_IPV6_HOST="$host:$?"
     fi
     [ "${DAT_IPV6_HOST#*:}" = 0 ] && return 0
-    trace -a -p "No ipv6 for host: %s" "$host" ; return 1
+    trace -a -p "No IPv6 for host: %s" "$host" ; return 1
 }
 
 # -----------------------------------------------------------------------------
@@ -646,7 +652,7 @@ do_gateway() {
     do_addrchk -d -h -- "$1" "$2" "$3" || return 1
     trace -a -c "gateway host" "${_nethost_name:--unknown-}  $_nethost_ip  $_nethost_mac"
 
-    # for an ipv6 route we need the router's mac to generate a link local IPv6 address
+    # for an IPv6 route we need the router's mac to generate a link local IPv6 address
     if [ "$_addrchk_ipvx" != 4 ] ; then
         if [ "${_nethost_mac:--}" = '-' ] ; then    # try to get mac via arp ...
             local list item
@@ -667,22 +673,23 @@ do_gateway() {
             netconv -m "$_nethost_mac"
         fi
         if [ -z "$_netconv" ] ; then
-            local mesg="Got no mac address for ipv6 route, please add in configuration:"
+            local mesg="Got no mac address for IPv6 route, please add in configuration:"
             if [ "$_addrchk_ipvx" = 6 ] ; then
                 invoke -e "$mesg" "$1" ; return 1
             fi
             invoke -w "$mesg" "$1" ; _addrchk_ipvx=4
-            nettool -6 -w && message "Disabled Iov6 due to unreachable gateway"
+            nettool -6 off && message "Disabled IPv6 due to unreachable gateway"
         fi
     fi
 
+    # adding a gateway fails if the interface has no address in the dest. subnet
     if [ "$_addrchk_ipvx" != 6 ] ; then
-        nettool -4 -i route flush default
-        nettool -4 -i route add default via "$_nethost_ip" dev "$_addrchk_ifce"
+        nettool -4 -o flush default
+        nettool -4 -w -o add default via "$_nethost_ip" dev "$_addrchk_ifce"
     fi
     if [ "$_addrchk_ipvx" != 4 ] ; then
-        nettool -6 -i route flush default
-        nettool -6 -i route add default via "$_netconv" dev "$_addrchk_ifce"
+        nettool -6 -o flush default
+        nettool -6 -w -o add default via "$_netconv" dev "$_addrchk_ifce"
     fi
     return 0
 }
@@ -1048,9 +1055,9 @@ do_service() {
 # ------------------------------------------------------------------------------
 # replace metric in routes: system|sysrun -4|-6 <ifce> <metr> <wait>
 # ------------------------------------------------------------------------------
-# Notes:    ipv6 route metrics are a nightmare
-#           for ipv4 we use ifmetric if it is installed
-#           setting ipv6 addresses does do not create routes synchronously
+# Notes:    IPv6 route metrics are a nightmare
+#           for IPv4 we use 'ifmetric' if it is installed
+#           setting IPv6 addresses does do not create routes synchronously
 # ------------------------------------------------------------------------------
 do_setmetric() {
     local scmd="$1" imod="$2" ifce="$3" metr="$4"
@@ -1058,7 +1065,7 @@ do_setmetric() {
     # optional sleep
     [ "${5:-0}" != 0 ] && timer -w "$5"
 
-    # for ipv4 'ifmetric' would be faster ...
+    # for IPv4 'ifmetric' would be faster ...
     if [ "$imod" = '-4' ] && sysfind -c 'ifmetric' ; then
         $scmd -- ifmetric "$ifce" "$metr" ; return  # return status
     fi
@@ -1109,7 +1116,7 @@ do_setmetric() {
     $scmd -e -p -- ip $imod route flush table all dev "$ifce"
     set -f
 
-    # ipv4 routes have dependencies, let 'ip' handles this via retrying
+    # IPv4 routes have dependencies, let 'ip' handles this via retrying
     if [ "$imod" != '-6' ] ; then
         alst=()
         for item in "${nlst[@]}" ; do
@@ -1172,7 +1179,7 @@ do_open() {
         netoption 'dns'  || error "Mode 'router' depends on 'option dns'"
         netoption 'dhcp' || error "Mode 'router' depends on 'option dhcp'"
         if netoption 'ipv6' ; then
-            message -a "Mode 'router' disables ipv6 to allow NAT"
+            message -a "Mode 'router' disables IPv6 to allow NAT"
             nettool -6 off ; DAT_IPV6_NOWARN=1
         fi
     fi
@@ -1205,8 +1212,11 @@ do_open() {
     # set '4addr' mode of wlan client in bridge
     local wdev="${DAT_OPEN_WLAN%% *}" wcfg="${DAT_OPEN_WLAN#* }"
     [ "$wcfg" = "$wdev" ] && wcfg="$CEN_NAME"
-    netiface -k -s wdev -x -- "$wdev"
-    [ -z "$wdev" ] && wdev='none'
+    if [ -z "$wdev" ] ; then
+        trace -a "No WLAN configured" ; wdev='none'
+    elif ! netiface -k -s wdev -x -- "$wdev" ; then
+        warning "Configured WLAN not found:" "$DAT_OPEN_WLAN" ; wdev='none'
+    fi
 
     # client wlan in bridge must be in '4addr' mode
     if [ "$ibri" = 'none' ] ; then
@@ -1265,7 +1275,10 @@ do_open() {
         [ "$DAT_SWITCH_MODE" = 'switch' -o "$DAT_SWITCH_MODE" = 'router' ] &&
             do_homedns add "$ibri"                  # add an extra homedns address
 
-        # adding the gateway fails if bridge has no matching address assigned...
+        # adding the gateway fails if bridge has no matching address assigned, so
+        # so to be safe (re-)add the generic address which might already be set ...
+
+        do_address add - - - "$ibri"                # add generic address
         do_gateway "$CEN_NET_ROUTER_DEF" "$ibri"
         actionMetric "$ibri" - 200 +
     fi
@@ -1287,7 +1300,7 @@ do_open() {
             nettool -6 status ||
                 warning "interface mode 'static' without bridge: no IPv6 support"
         else                                            # server with brigde ...
-            local item imac                             # add ipv6 addresses to...
+            local item imac                             # add IPv6 addresses to...
             ifce="$ibri"                                # ... the bridge (not the slaves)
             netgetip -6                                 # get known addresses
             for item in "$HOSTNAME" "$HOSTNAME-0" "$HOSTNAME-1" ; do
@@ -1300,7 +1313,7 @@ do_open() {
                     do_address add "$_nethost_name" "$_nethost_ip" "$_nethost_mac" "$ifce" 6
                 fi
             done
-            # set bridge mac
+            # set bridge mac (allowing firewall rules to filter by mac)
             message -a -p "Bridge '%s' mac address: %s" "$ifce" "${imac:--unknown-}"
             [ -n "$imac" ] && nettool -d "$ifce" -i link set address "$imac"
         fi
@@ -1696,13 +1709,13 @@ do_udev() {
 # -----------------------------------------------------------------------------
 # add/remove addresses: add|delete <host>|- [<ifce> [ipv4|ipv6|+|-]]
 #
-#   <host>  name or ipv4 address (not ipv6!)
+#   <host>  name or IPv4 address (not IPv6!)
 #   <ifce>  internal interface name like eth0, wlan1, ...
-#   ipv ... specify ipv4/6 behaviour (default: ipv4):
-#           ipv4|4  ipv4 only
-#           ipv6|6  ipv6 only
-#           -       ipv4, ipv6 if enabled
-#           +       like '6' but no ipv6 warning, and for static interface mode:
+#   ipv ... specify IPv4/6 behaviour (default: ipv4):
+#           ipv4|4  IPv4 only
+#           ipv6|6  IPv6 only
+#           -       IPv4, IPv6 if enabled
+#           +       like '6' but no IPv6 warning, and for static interface mode:
 #                            add generic ip to 1st calling interface
 # ------------------------------------------------------------------------------
 actionAddr() {
@@ -1723,8 +1736,10 @@ actionAddr() {
             host="$_nethost_name"
     esac
 
-    do_addrchk - "$ifce" "$mipv" || return
+    do_addrchk - "$ifce" "$mipv" || return          # address already set
+
     if [ "$mipv" = '+' ] ; then
+        trace -a -p "Add generic address to '%s'" "$_addrchk_ifce"
         case "$_addrchk_ifce" in
         wl*)    local wtim                          # wait until carrier ...
                 for wtim in 1 2 3 4 5 6 7 8 9 10 ; do
@@ -1736,6 +1751,121 @@ actionAddr() {
         esac
     fi
     do_address "$mode" "$host" - - "$_addrchk_ifce" "$_addrchk_ipvx"
+}
+
+# -----------------------------------------------------------------------------
+# add/remove arp entries: add|delete|list [<host> [<maca>|-]]
+#
+#   <host>  name or IPv4 address (not IPv6!)
+#   <maca>  mac address of a single <host> (can be '-' for delete)
+# ------------------------------------------------------------------------------
+actionArp() {
+    local mode host="${2:--}" maca="$3" lall
+
+    case "$1" in
+    add)    mode=$"add" ;;
+    del*)   mode=$"delete" ;;
+    lis*)   ;;
+    *)      invoke -a 1 $"add|delete|list" ; return
+    esac
+
+    # add/delete a sing arp entry
+    ___arp_entry() {
+        local mesg
+        if [ "$mode" = $"add" ] ; then
+            [ "${2:--}" = '-' ] && return
+            if sysrun -q -s mesg -- arp -s "$1" "$2" ; then
+                message -a -c $"Added entry" "$1" "$2"
+            else
+                message -a -c $"Adding failed" "$mesg"
+            fi
+        else
+            if sysrun -q -s mesg -- arp -d "$1" ; then
+                message -a -c $"Deleted entry" "$1"
+            else
+                message -a -c $"Delete failed" "$mesg"
+            fi
+        fi
+    }
+
+    local list item wrds ; local -A hmap
+    case "$host" in
+    -)          lall=1 ;;
+    .)          list=("$HOSTNAME" "$HOSTNAME-0" "$HOSTNAME-1" "$HOSTNAME-2" "$HOSTNAME-3") ;;
+    *-[0-9])    list=("$host") ;;
+    *)          list=("$host" "$host-0" "$host-1" "$host-2" "$host-3") ;;
+    esac
+
+    if [ -n "$lall" ] ; then                        # list all
+        if [ -n "$mode" ] ; then
+            invoke -e $"Need <host> argument to %s arp entries" "$mode" ; return
+        fi
+    elif [ -n "$maca" ] ; then                      # add/delete single entry
+        ___arp_entry "$list" "$maca" ; return
+    else
+        # add aliases to list
+        nethost -- "$list" || return
+        hmap["${_nethost_name//-/ }"]="$_nethost_mac"
+        list=("${list[@]:1}" "${_nethost_name[@]}")
+
+        # get mac addresses
+        for item in "${list[@]}" ; do
+            [ -n "${hmap["${item//-/ }"]}" ] && continue
+            nethost -- "$item" || continue
+            hmap["${_nethost_name//-/ }"]="$_nethost_mac"
+        done
+    fi
+
+    # add/delete entries for <host>
+    if [ -n "$mode" ] ; then
+        txtsort -a list -- "${!hmap[@]}"
+        for host in "${list[@]}" ; do
+            maca="${hmap["$host"]}"
+            host="${host// /-}"
+            ___arp_entry "$host" "$maca"
+        done
+        return
+    fi
+
+    # print list of arp entries
+    system -a list -e -p -r -- arp || return
+    txtgrep -a list -i list -y '* ether *'
+    txtsort -a list -i list
+
+    local head=$"Host_____________  Arp______________  Config___________  Interface"
+    local hcnt=0 macc
+    for item in "${list[@]}" ; do
+        splitjoin -s wrds -d " \t" -- "$item"
+        host="${wrds[0]}"
+        if [ "${host//[0-9]/}" = '...' ] ; then
+            nethost -- "$host" && host="$_nethost_name"
+        else
+            host="${host%%.*}"
+        fi
+        if [ -z "$lall" ] ; then
+            macc="${hmap[${host//-/ }]}"
+            [ -n "$macc" ] || continue
+        else
+            nethost -- "$host" ; macc="$_nethost_mac"
+        fi
+        if [ "${wrds[2]}" = "$macc" ] ; then
+            macc=$"<ok>"
+        elif [ "${macc:--}" = '-' ] ; then
+            macc=$"<unknown>"
+            nethost "${wrds[2]}" && macc="$_nethost_name"
+        fi
+
+        if [ "$hcnt" = 0 ] ; then
+            message -- "${head//_/ }"               # title text
+            message -a -- "${head//[! ]/-}"         # header line
+        fi ; ((hcnt += 1))
+        message -a -p '%-18s %-18s %-18s %s' "$host"  "${wrds[2]}" "$macc" "${wrds[4]}"
+    done
+    if [ "$hcnt" = 0 ] ; then
+        message -a $"No matches"
+    else
+        message -a -- "${head//?/=}"                # footer line
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -1821,13 +1951,13 @@ actionIpv6() {
     esac
 
     if [ "$mode" = 'chk' ] ; then
-        local item know=0               # 0 no change,  1 disable ipv6, 2 ipv6 ok
+        local item know=0               # 0 no change,  1 disable IPv6, 2 IPv6 ok
         netresolv -r
         for item in "${_netresolv[@]:1}" ; do
             $CEN_TRACE2 -a -c "IPv6 dns server" "$item"
             nethost -- "$item" || continue                  # unknown host
             know=1
-            netoption 'ipv6' "$_nethost_name" || continue   # no ipv6
+            netoption 'ipv6' "$_nethost_name" || continue   # no IPv6
             $CEN_TRACE2 -a -c "IPv6 check" "$_nethost_name"
             if ! sysrun -q -r -- ping -6 -c1 -q "$_nethost_name" ; then
                 timer -w 1
@@ -1862,7 +1992,7 @@ actionMetric() {
     if [ "${metr:--}" = '-' ] ; then
         do_metric metr "$host" "$1" "$_addrchk_ifce"
     fi
-    message -a "Setting metric for '$1' to '$metr'"
+    message -a -c "setting metric" "iface '$1' to '$metr'"
 
     [ "$_addrchk_ipvx" != 6 ] && do_setmetric 'sysrun' -4 "$_addrchk_ifce" "$metr"
     if [ "$_addrchk_ipvx" != 4 ] ; then
@@ -1871,7 +2001,7 @@ actionMetric() {
         else
             # change cgroup to root to avoid getting killed from systemd
             background -c $$ '/' || CEN_QUIT_WSUB=1
-            # must defer ipv6 a little bit until routes are set
+            # must defer IPv6 a little bit until routes are set
             background -s do_setmetric 'sysrun' -6 "$_addrchk_ifce" "$metr" "$wait"
         fi
     fi
@@ -2171,6 +2301,8 @@ actions() {
     # other commands
     add*)
         invoke -r 'addr'   -            1 4 ;;
+    arp)
+        invoke -r -        -            1 3 ;;
     ext*)
         invoke -r 'extender' -          3 3 ;;
     gat*)
@@ -2201,13 +2333,15 @@ usage() {
     usageset \
         -a 'addr   add|delete|extern <host>|<addr> <inam> [ipv4|ipv6|+|-' \
         -a -                     "add/remove an address to/from interface" \
+        -a 'arp    add|delete|list [<host> [<maca>|-]]' \
+        -a -                     "add/remove/list arp entries manually" \
         -a 'extender start|stop|status <itnk> <inam>' \
         -a -                     "bridge local interface to trunk via arp/dhcp proxy" \
         -a 'gateway <host>|<addr>|- [<inam>|- [[ipv4|ipv6|-]' \
         -a -                     "set default gateway or delete if <host> is '-'" \
         -a 'init   [<mode> [<conf>]]' \
         -a -                     "like 'mode', do setups, used by centauriswitch" \
-        -a 'ipv6   [<stat>]'     "show or set the ipv6 state of this computer" \
+        -a 'ipv6   [<stat>]'     "show or set the IPv6 state of this computer" \
         -a 'metric <inam> [<host> [<metr> [ipv4|ipv6|- [<wait>]]]]' \
         -a -                     "set metric for a route of an interface" \
         -a 'mode   [<mode> [<conf>]]' \
@@ -2236,10 +2370,6 @@ $CEN_USE_OPTIONS
 $CEN_USE_ACTIONS
 
 arguments:
-       <addr>      An Ipv4 address
-       <host>      A host name (must be defined in centaurinetcfg)
-       <inam>      An internal interface name
-       <itnk>      An trunk interface name (this network runs dhcp)
        <mode>      The computer's network mode (default: static)
                    °   disabled - centauri[switch|filter|secrets] are off
                    °   static   - only centauri[filter|secrets] are on
@@ -2250,6 +2380,12 @@ arguments:
        <conf>      The suffix of a $DAT_ETC_DIR/network/interfaces configuration;
                    °   <mode> is used if not specified. Only the <mode>s static,
                    °   switch and router are allowed to set <conf>.
+
+       <addr>      An Ipv4 address
+       <host>      A host name (must be defined in centaurinetcfg)
+       <inam>      An internal interface name
+       <itnk>      An trunk interface name (this network runs dhcp)
+       <maca>      A MAC address for a single <host> (can be '-' for delete)
        <serv>      A DNS name or IP address
        <stat>      Must be one of: on|off|auto|status
        <time>      wait time (floating point) in [s]

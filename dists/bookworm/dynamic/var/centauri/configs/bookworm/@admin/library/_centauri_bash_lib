@@ -18,6 +18,7 @@
 #           -i  enable --include --exclude options
 #           -l  enable syslog output
 #           -m  load an extension module (next argument is <name>)
+#           -n  reserved for mini-bash-lib
 #           -o  source $CEN_ROOT/defaults/$CEN_NAME on startup
 #           -r  do not dispatch action verbs, just call [[run()]]
 #           -s  enable --silent option
@@ -45,7 +46,7 @@
 # Copyright Dr. J. Pfennig (c) 2007-2024
 # ------------------------------------------------------------------------------
 
-declare -g -A CEN_MODULES['_centauri_bash_lib']='1.34:4:1'
+declare -g -A CEN_MODULES['_centauri_bash_lib']='1.40:4:1'
 
 CEN_ACTARR=             # action argument array
 CEN_ACTION=             # action name, see invoke()
@@ -56,7 +57,6 @@ CEN_CMDARGS=            # array of script arguments (options removed)
 CEN_CMDCURR=0           # index in CEN_CMDARGS[] for current action
 CEN_CMDINDX=0           # index in CEN_CMDARGS[] for remaining actions
 CEN_CMDOPTS=            # array of script options
-CEN_CONFIRM=            # result of confirm()
 CEN_DEFAULTS=           # file to be sourced, see CEN_FEATURE_O
 CEN_DISPLAY=            # empty or 'x11' or 'wayland'
 CEN_DEBUG=:             # call debug(), see _centauri_bash_dbg
@@ -64,7 +64,6 @@ CEN_DONE=1              # 0:ignore error  1:quit on error  2:quit now
 CEN_EMBED=              # see --embed option
 CEN_EXIT=0              # exit code
 CEN_FOLDER=             # see folder
-CEN_HISTORY=            # use history/readline in confirm
 CEN_NOTRACE=:           # empty when tracing, see --trace
 CEN_PAGER=              # set at 1st call to syspager if paging is on
 CEN_QUIT_SANE=          # run 'stty sane' in quit
@@ -91,8 +90,9 @@ CEN_OPT_SILENT=         # see --silent
 CEN_OPT_TRACE=          # see --trace
 CEN_OPT_ZOMBIE=         # see --zombie
 
-CEN_RUN_MIN_ARGS=       # run min args (-:=no checks at all)
-CEN_RUN_MAX_ARGS=       # run max args (+:=no limit)
+# variables that may be set before loading:
+# CEN_RUN_MIN_ARGS=     # run min args (-:=no checks at all)
+# CEN_RUN_MAX_ARGS=     # run max args (+:=no limit)
 
 # variables defined by the proxy:
 # CEN_INSTALL=          # installation defaults
@@ -106,6 +106,8 @@ CEN_RUN_MAX_ARGS=       # run max args (+:=no limit)
 # CEN_PACKAGE=          # packaged script flag
 # CEN_IS_SOURCED=       # app is sourced, do not run main/quit
 # CEN_NOBREAK=          # 0: no compactify, 1: no line break, 2: compactify
+
+# CEN_FEATURE_N=        # mini-bash-library, see option --mini
 
 declare -g -A CEN_COMMANDS  # dictionary used by sysfind
 
@@ -153,6 +155,7 @@ while [ "${1::1}" = '-' ] ; do
     -i)   CEN_FEATURE_I=1 ;;
     -l)   CEN_FEATURE_L=1 ; CEN_MODULES['_centauri_bash_svc']= ;;
     -m)   shift ; CEN_MODULES["_centauri_bash_$1"]= ;;
+    -n)   ;;                                # reserved
     -o)   CEN_FEATURE_O=1 ;;
     -r)   CEN_FEATURE_R=1 ; CEN_RUN_MIN_ARGS='+' ;;
     -s)   CEN_FEATURE_S=1 ;;
@@ -164,7 +167,7 @@ while [ "${1::1}" = '-' ] ; do
     esac ; shift
 done
 
-[ "${1:--}" = '-' ] && CEN_NAME="${BASH_SOURCE[2]:-$BASH_SOURCE}" || CEN_NAME="$1"
+[ "${1:--}" = '-' ] && CEN_NAME="$BASH_ARGV0" || CEN_NAME="$1"
 CEN_NAME="${CEN_NAME##*/}"
 if [ -n "$CEN_FEATURE_T" -a -z "$TEXTDOMAIN" ] ; then
     TEXTDOMAIN='_centauri_bash_lib'; TEXTDOMAINDIR="$CEN_ROOT/locale"
@@ -344,7 +347,7 @@ error() {
 
     CEN_AUTOIND=
     [ -n "$_fopt" ] && { $_fopt ${_popt[@]} -- "$@" ; return 1 ; }
-    [ -n "$_fqui" ] && quit ${_popt[@]} ${1:+-e} -- "$@"
+    [ -n "$_fqui" ] && quit ${_popt[@]} -e -- "$@"
     [ -n "$CEN_NOTRACE" ] && [ -z "$_isok" -a -n "$*" ] && message -e ${_popt[@]} -- "$@"
     [ "$CEN_DONE" = 1 ] && CEN_DONE=2
     [ "${CEN_EXIT:-0}" -le 1 ] && CEN_EXIT=2
@@ -387,7 +390,7 @@ fatal() {
         esac ; shift
         done
         [ -z "$_ffmt" ] && _text="$*" || printf -v _text "$@"
-        _cen_abort -2 $"fatal:" "$_text"
+        _cen_abort -2 $"Fatal:" "$_text"
     fi
     CEN_AUTOIND=
     [ -n "$CEN_NOTRACE" ] && message -f -r "$@"
@@ -399,11 +402,13 @@ fatal() {
 #
 # Call:     quit
 #           quit -e|-t|-u [--] [-] <msg>...
-#           quit [-m|-n] [-p] [-r] [-s <code>] [--] <msg>...
+#           quit [-a|-i] [-m|-n] [-p] [-r] [-s <code>] [--] <msg>...
 #           quit -h
 #
-# Options:  -e  error exit, print "Terminated after error" if 1st arg is not '-'
+# Options:  -a  print application name on 1st output, indent otherwise
+#           -e  error exit, print "Terminated after error" if 1st arg is not '-'
 #           -h  just run ''quit'' hook and reset to default (save for subshell)
+#           -i  indent (no program name)
 #           -m  multiple lines, one <arg> per line (short for '-m -p "%s\n"')
 #           -n  print multiple lines (new-line or '\n' separated)
 #           -p  use printf formatting (1st arg is format)
@@ -418,6 +423,7 @@ fatal() {
 #
 #.Examples: quit "Stop here:" "$FUNCNAME"   # stop with message
 #.          quit -e                         # stop with error, default message
+#.          quit -e -                       # stop with error, no message
 #.          quit -e - "sorry"               # ... extra info
 #.          quit -e "sorry for" this        # ... custom message
 #.          quit -t - "connection lost"     # ... prints "Teminated: connection lost"
@@ -465,15 +471,15 @@ quit() {
     [ -n "$CEN_IS_SOURCED" -a -z "$CEN_STAGE" ] && return 0
     exec 1>&$CEN_STDOUT 2>&$CEN_STDERR
 
-    local _flgt _opts=()
+    local _flgt _opts=() _opte
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
+      -a|-i|-n|-m|-p|-r)
+            _opts+=("$1") ;;
       --)   shift ; break ;;
-      -e)   _opts+=("$1") ; [ "$CEN_EXIT" = 0 ] && CEN_EXIT=1
+      -e)   _opte='-e' ; [ "$CEN_EXIT" = 0 ] && CEN_EXIT=1
             _flgt=$"Terminated after error" ;;
       -h)   $CEN_HOOK_QUIT -h ; CEN_HOOK_QUIT=_cen_quit ; return 0 ;;
-      -n|-m|-p|-r)
-            _opts+=("$1") ;;
       -s)   CEN_EXIT="${2:-0}" ; shift ;;
       -t)   CEN_EXIT=4 ; _flgt=$"Terminated" ;;
       -u)   CEN_EXIT=4 ; _flgt=$"Terminated by user" ;;
@@ -484,11 +490,16 @@ quit() {
     done
 
     if [ "$$" != "$BASHPID" ] ; then
-        _cen_abort -n -2 $"quit from subshell" "PID=$BASHPID"
+        _cen_abort -n -2 $"Called 'quit' from subshell" "PID=$BASHPID"
     elif [ -n "$_flgt" ] ; then
-        [ "${1:--}" = '-' ] && set -- "$_flgt""${2:+:}" "${@:2}"
+        if [ "$*" = '-' ] ; then
+            set -- ; _opte=
+        elif [ "${1:--}" = '-' ] ; then
+            set -- "$_flgt""${2:+:}" "${@:2}"
+        fi
     fi || :
-    $CEN_HOOK_QUIT "${_opts[@]}" ${1:+--} "$@" ; exit 2 # exit 2 on hook function failure
+    $CEN_HOOK_QUIT $_opte "${_opts[@]}" ${1:+--} "$@"
+    exit 2                                          # on hook function failure
 }
 
 # called via CEN_HOOK_QUIT: [-h] <mesg>...
@@ -551,7 +562,7 @@ _cen_trap() {
     if [ "$1" = 2 ] ; then
         echo >&2 ; quit -u
     fi
-    quit -t - $"caught signal" "$1"
+    quit -t - $"Caught signal" "$1"
 }
 
 # fatal error with stack trace: [-n|-r] [-<indx>] <mesg>|-|+|=|@ <arg>...
@@ -702,7 +713,7 @@ _cen_shortfmt() {
     else
         _asci="${_temp//[[:alpha:]]/.}"   # this is unicode aware
         printf -v _ugly "$CEN_SHORTFMT" "$_asci"        # get correct padding
-        printf -v "$1" "%s" "${_ugly/$_asci/$_temp}"    # back to unicode
+        printf -v "$1" '%s' "${_ugly/$_asci/$_temp}"    # back to unicode
     fi
 }
 
@@ -775,11 +786,11 @@ apicheck() {
     # check versions
     if [ "${_varr[1]}" \> "${CEN_VERSION[2]}" ] ; then
         local _swho=$"Script" ; [ -n "$_fmod" ] && _swho=$"Module"
-        $_fchk -p $"%s '%s' API version to high (got %s max %s)" \
+        $_fchk -p $"%s '%s' API version to high (wants %s, max %s)" \
                   "$_swho" "$_scal" "${_varr[1]}" "${CEN_VERSION[2]}" ; return 1
     elif [ "${_varr[1]}" \< "${CEN_VERSION[3]}" ] ; then
         local _swho=$"Script" ; [ -n "$_fmod" ] && _swho=$"Module"
-        $_fchk -p $"%s '%s' API version to low (got %s min %s)" \
+        $_fchk -p $"%s '%s' API version to low (wants %s, min %s)" \
                   "$_swho" "$_scal" "${_varr[1]}" "${CEN_VERSION[3]}" ; return 1
     fi
     return 0
@@ -844,254 +855,6 @@ arguments() {
 
     [ -z "$CEN_FEATURE_R" ] && _mesg=$"Action"" '$CEN_ACTION': $_mesg"
     error -r -z "${_mesg^}" ; return 1
-}
-
-# ------------------------------------------------------------------------------
-# confirm - ask for confirmation, get text input
-#
-# Call:     confirm [-a|-i|-l] [-m] [-u] [-w] [-n|-q|-y] [-c <cncl>] [-d <defl>] [-v <list>]
-#                   [-p <text>|-|+] [-s <name>] <msg>...
-#
-# Options:  -a  print application name on 1st output, indent otherwise
-#           -b  bypass for --yes command line option, returns **false**
-#           -i  always indent message
-#           -l  do not print application name
-#           -w  display as a warning
-#
-#           -c  yes/no/cancel, <cncl> may be executed ('-c -' implies -q)
-#           -q  yes/no/quit, same as: **-c quit -p "[y/N/q] ?" -v "yes no quit"**
-#           -n  yes/no (default no),  same as: **-v "yes no" -p " [y/N]? " -d "n"**
-#           -y  yes/no (default yes), same as: **-v "yes no" -p " [Y/n]? " -d "y"**
-#
-#           -d  use <defl> as default reply
-#           -f  do printf formatting (handles \n and \t escapes), 1st argument is format
-#           -m  multiline prompt, one argument per line
-#           -p  override prompt suffix (**+** and **-** values have a special meaning)
-#           -s  save input to variable <name> instead of CEN_CONFIRM
-#           -u  allow uppercase in reply (default is converting to lowercase)
-#           -v  check words, <list> contains space separated words
-#
-# Arguments:<cncl>   command executed on cancel/quit
-#           <defl>   default reply (must be in check word list)
-#           <text>   a prompt string (suffix to <msg>...)
-#           <list>   list of space separated check words
-#           <msg>... prompt text
-#
-# History:  The CEN_HISTORY variable enables the use of readline and history:
-#           +    §   enable readline but don't touch history
-#           -    §   (re)initialize history from check words
-#           <file>   read history from file (on 1st call only) and set to '+'
-#
-#+Return:   Any text result is saved to CEN_CONFIRM. Only if the 1st check word is
-#           matched or for free text input, confirm returns **0**. The 2nd word will
-#           return **1** and so on. Empty free text input also returns **1**.
-#
-# The -y option is implied if none of -c|-d|-n|-p|-q|-y are used.
-#
-#+In windows mode only '-p°+' is interpreted, others will be ignored. Also the -d
-# option value is used to preset the input field. See [[_cen_bash_win]].
-#
-#+For '-p°-' or '-p°+' free text input is allowed (**+** is used for passwords).
-# Any input is converted to lowercase unless -u is specified. Input that is not
-# free text is compared against a list of check words (input can be abbreviated).
-# If no check word (see -v option) is matched, an error message is printed and
-# the prompt is repeated.
-#
-#+The order of check words must be: '<yes>°[<no>]°[<...>]°[<cancel>]' to make
-# return values and gui dialogues work (see [[_centauri_bash_win]].
-#
-# The -t option of [[context()]] is used to catch ^C on input.
-#
-#.Examples: # input allowing only check words
-#.          confirm -n    "yes or no question, no is default"
-#.          confirm -y    "yes or no question, yes is default"
-#.          confirm -n -b "edit file (bypass with --yes)"
-#.          confirm -q    "yes no quit"   # may call [[quit()]]
-#.          confirm -c -  "yes no cancel"
-#
-#.          # free text input
-#.          confirm -u -p - "any input"   # free text, -u allows uppercase
-#.          confirm -u -p + "password"    # don't echo a password
-#.          confirm -f -p - "%-20s:" "First name"
-#
-#.          CEN_HISTORY='-'
-#.          until confirm -n -v "none left right both" -d "none" \
-#.               -p " [left|rigth|both]: " "Which file(s) to edit" ; do
-#.              case "$?" in
-#.                  1) system editor "$1" ;;
-#.                  2) system editor "$2" ;;
-#.                  3) system editor "$1" "$2" ;;
-#.              esac
-#.          done
-# ------------------------------------------------------------------------------
-confirm() {
-    local _imod=0 _ifmt _ipro _idef _iqui _ival=$"yes no"
-    local _sind=2 _snam _smul _uppc _yeno _cncl _dflt _prom _vala _vali _warn _fset='CEN_CONFIRM'
-    while [ "${1::1}" = '-' ] ; do
-      case "$1" in
-      --)   shift ; break ;;
-      -a)   _sind=1 ; [ -z "$CEN_AUTOIND" ] && _sind=2 ;;
-      -b)   [ -n "$CEN_YESNO" ] && return 1 ;;
-      -d)   shift ; _dflt="$1" ;;
-      -f)   _ifmt=1 ;;
-      -i)   _sind=1 ;;
-      -l)   _sind= ;;
-      -m)   _smul=1 ;;
-      -p)   shift ; _prom="$1" ;;
-      -s)   shift ; _fset="$1" ;;
-      -u)   _uppc=1 ;;
-      -v)   shift ; _vali="$1" ;;
-      -w)   _warn='w' ;;
-
-      -c)   ((_imod |=4)) ; shift ; _cncl="$1" ;;
-      -n)   ((_imod |=2)) ;;
-      -q)   ((_imod |=4)) ; _cncl='quit -t' ;;
-      -y)   ((_imod |=1)) ;;
-      *)    _cen_abort - "$1"
-      esac ; shift
-    done
-    local -n _varg="$_fset" ; _varg=
-
-    [ "$_vali$_dflt$_prom$_imod" = 0 ] && _imod=2   # -n is default
-    if [ "$_imod" != 0 ] ; then
-        if [ -n "$CEN_YESNO" ] ; then               # --yes/--no handling ...
-            if [ "$CEN_YESNO" = 'y' ] ; then
-                _varg="${_ival%% *}"
-                $CEN_TRACE -a -c " $_varg" "$@" ; return 0
-            else
-                _varg="${_ival#* }"
-                $CEN_TRACE -a -c " $_varg" "$@" ; return 1
-            fi
-        fi
-        _yeno=2 ; _idef=0                           # 2 buttons
-        case "$_imod" in
-        1)  _ipro=$" [Y/n]? " ; _yeno=1 ;;          # -y  =>  -d 'y'
-        2)  _ipro=$" [y/N]? " ; _idef=1 ;;          # -n  =>  -d 'n'
-        3)  _ipro=$" [y/N]? " ; _idef=1 ;;          # compatibility: -n -y  =>  -d 'n'
-        4)  _ipro=$" [y/n/C]? "
-            _iqui=$" [y/n/Q]? " ; _idef=2 ;;        # -q  =>  -d 'c'
-        6)  _ipro=$" [y/N/c]? "
-            _iqui=$" [y/N/q]? " ; _idef=1 ;;        # -n -q  =>  -d 'n'
-        *)  _ipro=$" [Y/n/c]? "
-            _iqui=$" [Y/n/q]? "                     ;;        # -y -q  =>  -d 'y'
-        esac
-        if [ "$_imod" -lt 4 ] ; then
-            :
-        elif [ "${_cncl%% *}" = 'quit' ] ; then
-            _ival=$"yes no quit" ; _yeno=3 ; _ipro="$_iqui"
-        elif [ -n "$_cncl" ] ; then
-            _ival=$"yes no cancel" ; _yeno=3        # 3 buttons
-        fi
-        [ -z "$_prom" ] && _prom="$_ipro"
-        [ -z "$_vali" ] && _vali="$_ival"
-    fi
-    set -f ; _vala=($_vali) ; set +f
-    if [ -n "$_idef" -a -z "$_dflt" ] ; then
-        [ "$_idef" -ge ${#_vala[@]} ] && _dflt="$_vala" || _dflt="${_vala[_idef]}"
-    fi
-
-    # handle multiline prompt
-    if [ -z "$_smul" ] ; then
-        local _mesg
-        [ -z "$_ifmt" ] && _mesg="$*" || printf -v _mesg "$@"
-        local _sifs="${IFS:-$' \t\n'}" ; IFS=$'\n'
-        if [ -n "$_smul" ] ; then
-            _mesg="${_mesg//\\n/$'\n'}"
-            _mesg="${_mesg//\\t/$'\t'}"
-        fi
-        set -f ; set -- $_mesg ; set +f ; IFS="$_sifs"
-    fi
-    CEN_AUTOIND=1
-
-    # enable readline, set/load history
-    if [ -n "$CEN_HISTORY" -a "$CEN_HISTORY" != '+' ] ; then
-        if [ "$CEN_HISTORY" = '-' ] ; then
-            history -c ; splitjoin -x 'history -s' -d ' ' -i _vali
-        elif [ -r "$CEN_HISTORY" -a -f "$CEN_HISTORY" ] ; then
-            $CEN_TRACE "Reading history:" "$CEN_HISTORY"
-            history -r "$CEN_HISTORY"
-            CEN_HISTORY='+'
-        else
-            $CEN_TRACE "Bad history file:" "$CEN_HISTORY"
-            CEN_HISTORY='+'
-        fi
-    fi
-
-    # loop until we get valid input
-    while : ; do
-        if [ -n "$_sind" ] ; then
-            _snam="${CEN_EMBED:-$CEN_NAME}: "
-            [ "$_sind" = 1 ] && _snam="${_snam//?/ }"
-        fi
-        _varg="$_dflt"
-        if ! $CEN_HOOK_GETLINE "$_fset" "$_warn$_yeno" "$_vali" "$_prom" "$_snam" "$@" ; then
-            [ -z "$_varg" ] && _varg="$_dflt"
-            [ "${_cncl:--}" != '-' ] && eval "$_cncl"
-            return 2
-        fi
-        [ -z "$_varg" ] && _varg="$_dflt"
-        [ -z "$_uppc" ] && _varg="${_varg,,}"
-        if [ -z "$_vali" ] ; then                       # nothing to validate ...
-            [ -n "$_varg" ] && return 0 ; return 1
-        fi
-
-        local _rchk _rval=0 _slen="${#_varg}" _nval=$((${#_vala[@]} - 1))
-        for _rchk in "${_vala[@]}" ; do
-            if [ "${_varg}" = "${_rchk::$_slen}" ] ; then
-                _varg="$_rchk"
-                [ "$_rval" = "$_nval" ] && [ "${_cncl:--}" != '-' ] && eval "$_cncl"
-                return $_rval
-            fi
-            ((_rval += 1))
-        done
-        message -a $"***INVALID INPUT***" $"Please try one of:" "$_vali"
-    done
-}
-
-# ------------------------------------------------------------------------------
-# read line: <vnam> <mode> <vali> <prom> <name> <text>...
-# ------------------------------------------------------------------------------
-#   vnam    result variable name
-#   mode:   w       warning
-#           1|w1    GUI: 2 button: yes/no   default: yes    # not correctly implemented
-#           2|w2    GUI: 2 button: yes/no   default: no
-#           3|w3    GUI: 3 button: yes/no/cancel
-#   prom    choice prompt (GUI: ignored)
-#   name    message prefix (GUI: caption)
-#   text    output text lines
-#
-_cen_getline() {
-    [ -n "$CEN_CONS_MSGLEN" ] && progress
-    [ /dev/fd/0 -ef /dev/null ] && return 1     # failed to read
-
-    local _ssil _vnam="$1" _warn="${2::1}" _prom="$4" _snam="$5" ; shift 5
-    [ "$_prom" = '+' ] && _ssil="-s"
-    [ "$_prom" = '-' -o "$_prom" = "+" ] && _prom=": "
-    local _text="$1" ; shift
-    [ "$_warn" = 'w' ] && _warn=$" ***WARNING***"" "
-    while [ "$#" -gt 0 ] ; do
-        if [ -n "$_text" ] ; then
-            # _smul defined in caller, replace tabs
-            [ -n "$_smul" ] && _text="${_text//\\t/    }"
-            printf '%s\n' "$_snam$_text" 1>&2 ; _snam="${_snam//?/ }"
-        fi
-        _text="$1" ; shift
-    done
-
-    # _smul defined in caller, replace tabs
-    [ -n "$_smul" ] && _text="${_text//\\t/    }"
-    _text="$_snam${_warn:1}$_text$_prom" ; CEN_CONS_MSGLEN="${#_text}"
-
-    context -t + ; CEN_QUIT_SANE="$_ssil"
-    if [ ! -t 0  ] && [ ! -t 2 ] ; then
-        # bash bug? 'read' forgets sometimes to prompt
-        echo -n "$_text" 1>&2 ; _text=
-    fi
-    read $_ssil ${CEN_HISTORY:+-e} -p "$_text" "$_vnam" 1>&2
-    context -t - ; CEN_QUIT_SANE=
-
-    CEN_QUIT_SANE= ; CEN_CONS_MSGLEN=
-    [ -n "$_ssil" ] && echo 1>&2 ; return 0
 }
 
 # ------------------------------------------------------------------------------
@@ -1387,10 +1150,11 @@ context() {
 #
 # Return:   **true** on successs and **false** on failure.
 #
-#+When <path> exists and without -t (truncate) the function returns **true**. The
-# <mode> of an existing folder will never be changed. An existing file will not
-# be modified unless the -t option is used. See [[attributes()]] on how to change
-# modes or owner of an existing file or folder.
+#+When <path> exists and without -a (append) or -t (truncate) the function does
+# nothing and returns **true**. The mode and owner of an existing folder will never
+# be changed, and for an existing file these will not be modified unless the -t
+# option is used. See [[attributes()]] on how to change modes or owner of an
+# existing file or folder.
 #
 #.Examples: create -d /etc/hello 750        # create folder with mode 0750
 #.          create "myfile" 644 root:staff  # create file if non-existent
@@ -1420,9 +1184,9 @@ create() {
       -h)   shift ; _fhdr="$1" ; _fcpy=1
             [ "${_fhdr:--}" = '-' ] && _fhdr="$CEN_NAME" ;;
       -o)   _fout='-' ;;
-      -q)   _oftl=":" ;;
-      -r)   _frun="-r" ;;
-      -s)   _otra=":" ;;
+      -q)   _oftl=':' ;;
+      -r)   _frun='-r' ;;
+      -s)   _otra=':' ;;
       -t)   _ftru=1 ;;
       -v)   shift ; _fvar="$1" ;;
       -w)   _oftl='warning' ;;
@@ -1455,7 +1219,7 @@ create() {
         elif [ "$#" = 1 ] && [ -f "$_fout" -a -w "$_fout" ] ; then
             >"$_fout" || _stat=$?                   # really truncate
         elif [ -e "$1" ] ; then
-            system $_frun -b -e -p -- rm -f -- "$_fout"
+            system $_frun -b -e -p -- rm -f -- "$_fout" || _stat=1
         fi
         _cen_umask -s "$2"                          # set umask for <mode>
 
@@ -1705,9 +1469,7 @@ embed() {
     fi
     [ "$_sexi" = 0 ] && return 0
     [ -n "$_terr" ] && return $_sexi
-    if [ "$_sexi" = 3 -o  "$_sexi" = 4 ] ; then
-        CEN_EXIT="$_sexi" ; quit
-    fi
+    [ "$_sexi" = 3 -o "$_sexi" = 4 ] && quit -s "$_sexi"
     [ "$CEN_DONE" = 1 ] && CEN_DONE=2
     [ "$CEN_EXIT" -le 1 ] && CEN_EXIT=2
     return $_sexi
@@ -1875,7 +1637,7 @@ folder() {
                 *)      _cen_abort - "$1"
             esac ;;
       -v)   local _name="${LOGNAME:-$USER}"
-            [ "$EUID" = 0 ] && _name="root" ; _name="${_name:-uid-$EUID}"
+            [ "$EUID" = 0 ] && _name='root' ; _name="${_name:-uid-$EUID}"
             _tdir="${CEN_PATHS[3]}/tmp"                 # use /var/tmp
             [ -d "$_tdir" ] || _tdir="${CEN_PATHS[4]}"  # fallback to /tmp
             _tdir+="/$CEN_NAME-$_name" ;;
@@ -1900,7 +1662,7 @@ folder() {
     [ -z "$_ogen" ] && while [ ! -d "$_vval" ] ; do
         if [ -n "$_omak" ] ; then
             create -d $_oopt $_rdry -- "$_vval" "$2" "$3" && break
-        elif [ -n "$_tdir" -a "$_ocwd" = ":" ] ; then
+        elif [ -n "$_tdir" -a "$_ocwd" = ':' ] ; then
             return 1                            # do not clear _vval!
         else
             $_oftl $"Not a folder:" "$_vval"
@@ -1914,7 +1676,7 @@ folder() {
         _vval="${_vval//\/\//\/}" ; _vval="${_vval//\/.\//\/}"
         [ "$_vval" -ef "$PWD" ] && _vval="$PWD"
     fi
-    [ "$_ocwd" = ":" ] && return 0
+    [ "$_ocwd" = ':' ] && return 0
     if ! $_ocwd "$_vval" >/dev/null 2>&1 ; then
         $_oftl $"Cannot use folder:" "$_vval"
         _vval= ; return 1
@@ -2083,12 +1845,12 @@ isfunction() {
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
-      -a)   _msg_="_cen_abort" ;;
+      -a)   _msg_='_cen_abort' ;;
       -c)   _run_=1 ;;
-      -e)   _msg_="error -z" ;;
-      -f)   _msg_="fatal" ;;
+      -e)   _msg_='error -z' ;;
+      -f)   _msg_='fatal' ;;
       -t)   _msg_="$CEN_TRACE" ;;
-      -w)   _msg_="warning" ;;
+      -w)   _msg_='warning' ;;
       -x)   _exe_=1 ;;
       -y)   _dmy_=0 ;;
       -z)   _dmy_=1 ;;
@@ -2102,7 +1864,7 @@ isfunction() {
     elif [ "${_nam_/\//}" != "$_nam_" ] ; then      # function names have no /
        _sta_=1
     else                                            # function only (drop PATH)
-        PATH= type -t -- "$_nam_" || _sta_=1
+        PATH=' ' type -t -- "$_nam_" || _sta_=1
     fi >/dev/null
     if [ $_sta_ != 0 ] ; then                       # function not found...
         $_msg_ $"Undefined function:" "$_nam_"
@@ -2112,6 +1874,33 @@ isfunction() {
     [ -z "$_run_" ] && return 0
     $_nam_ "$@"                                     # call function or return
 }
+
+# ------------------------------------------------------------------------------
+# monitor
+#
+# Call:     monitor <tool>[:<scri>]
+#           monitor -e|-l [--] <arg>...
+#
+# Arguments:<tool>     xxx
+#           <scri>     xxx
+#
+# Only the monitoring state of the current script and its future children can be
+# modified.
+#
+# Variables:CEN_MONITOR     global array, use the proxy to preset monitoring for
+#                           an installation
+#           _CEN_MONITOR    set to 'monitor' or ':' if monitoring is off
+#
+# Calls:    cen_monitor_enter   <what> <arg>...
+#           cen_monitor_leave   <what> <stat>
+#
+#           The cen_monitor_enter function return 0 to continue execution or 1
+#           to skip.
+#
+#           for item in "${CEN_MONITOR[@]}" ; do
+#               [ "${item%:*}" = "$CEN_NAME" ] && { monitor "$item" ; break ; }
+#           done
+# ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
 # optarg - command line option checker
@@ -2130,10 +1919,11 @@ isfunction() {
 #           (3)   optarg **-** **-** -i|-x <value>
 #
 # Options:  -f  [default] simple flag, the ''option'' has no value
+#           -h  value must be a hostname, see [[isname()]]
 #           -n  value must be a positive integer
 #           -o  ternary value, <val>:=off|0|on|1|auto|2
 #           -t  allow any text as value
-#           -v  value must be a variable name ([a-zA-Z._-]*)
+#           -v  value must be a variable name, see [[isname()]]
 #
 #           -a  [*] value must be a file path for writing or appending
 #           -d  [*] value is an output directory path, normalize, must exist
@@ -2147,7 +1937,7 @@ isfunction() {
 #           -i  add --include option to CEN_OPT_INCLEXCL, see [[filter()]]
 #           -x  add --exclude option to CEN_OPT_INCLEXCL, see [[filter()]]
 #
-#           [*] These options can only be called from inside [[options()]]
+#           [*] These options can only be used from inside [[options()]]
 #
 # Arguments:<optname>  option name (used for bash input completion)
 #           <varname>  variable to be set (auto-generated if "-")
@@ -2159,7 +1949,7 @@ isfunction() {
 #           CEN_ACTARR    [in] next argument, can be a value
 #           CEN_CMDOPTS   [out] array of processed options
 #
-#+The functions check an ''option'' (usually passed via command line to [[main()]])
+#+The function checks an ''option'' (usually passed via command line to [[main()]])
 # and sets the given <varname>. If the ''option'' has a value, the value gets
 # validated.  When using <varname>**[]** the ''option'' value is added to an array.
 #
@@ -2217,8 +2007,9 @@ optarg() {
     -a|-d|-r|-s|-w)
         embed -r -m '_centauri_bash_iom' ; _cen_optarg_iom "$_expr" "$1" "$_vnam" ;;
     -e) CEN_ACTARR="$2" ; CEN_ARGOPT=0 ; _emsg="$4" ;;
+    -h) isname -h -m _emsg -- "$CEN_ACTARR" ;;
     -f|-)
-        CEN_CMDOPTS+=("--$1") ; printf -v "$_vnam" "%s" "${4:-1}" ; CEN_ARGS=1
+        CEN_CMDOPTS+=("--$1") ; printf -v "$_vnam" '%s' "${4:-1}" ; CEN_ARGS=1
         [ -z "$CEN_ARGOPT" ] && return 0  ; _emsg=$"no argument allowed" ;;
     -i|-x)
        local _temp="$CEN_ACTARR" ; _vnam=
@@ -2233,9 +2024,7 @@ optarg() {
     -m)
         [ "${1:-1}" = 1 ] && return 0 ; shift 3
         error -r $"mutually exclusive options:" "$@" ; CEN_ARGS=1 ; return 1 ;;
-    -n)
-        _expr="${CEN_ACTARR//[0-9]/}"
-        [ -n "$_expr" -a "$_expr" != '-' ] && _emsg=$"must have a numeric value" ;;
+    -n) isnumber -m _emsg -- "$CEN_ACTARR" ;;
     -o)
         case "$CEN_ACTARR" in
             off|0)  CEN_ACTARR=0 ;;
@@ -2244,15 +2033,14 @@ optarg() {
             *)      _emsg=$"value must be 'off|on|auto' or '0|1|2'"
         esac ;;
     -t) ;;
-    -v) _expr="${CEN_ACTARR//[0-9a-zA-Z._-]/}"
-        [ -n "$_expr" -o -z "${CEN_ACTARR##[0-9.-]*}" ] && _emsg=$"not a valid name" ;;
+    -v) isname -v -m _emsg -- "$CEN_ACTARR" ;;
     *)
         [[ $CEN_ACTARR =~ ^($_expr)$ ]] || _emsg=$"has an invalid value" ;;
     esac
 
     if [ -n "$CEN_ARGOPT" ] ; then
         CEN_ARGOPT=
-    elif [ "$_expr" != "-o" ] ; then
+    elif [ "$_expr" != '-o' ] ; then
         case "$CEN_ACTARR" in
         --*|-[a-zA-Z]*|"")
             _emsg=$"must have a value" ; _acnt=1 ; CEN_ACTARR= ;;
@@ -2262,7 +2050,7 @@ optarg() {
     if [ -n "$_emsg" ] ; then
         error -r "Option '--$1=$CEN_ACTARR' $_emsg" ; CEN_ARGS="$_acnt" ; return 1
     fi || :
-    [ -n "$_vnam" ] && printf -v "$_vnam" "%s" "$CEN_ACTARR" ;
+    [ -n "$_vnam" ] && printf -v "$_vnam" '%s' "$CEN_ACTARR" ;
     CEN_CMDOPTS+=("--$1=${CEN_ACTARR:--}") ; CEN_ARGS="$_acnt" ; return 0
 }
 
@@ -2288,7 +2076,7 @@ optarg() {
 #           <del>     delimiter string, used to set IFS
 #           <var>     string variable to receive join result
 #           <inp>     input array (<arg>... will be ignored)
-#           <exec>    function or command, not checks made
+#           <exec>    function or command, no checks made
 #
 #           It is explicitly allowed for <inp> and <arr> to be the same array.
 #
@@ -2373,7 +2161,7 @@ splitjoin() {
         [ -z "$_del_" ] && _del_=$' '
         _buf_="$1" ; shift
         for _spl_ in "$@" ; do _buf_+="$_del_$_spl_" ; done
-        [ "$_nam_" = '-' -a -n "$_buf_" ] && printf "%s" "$_buf_$_lin_"
+        [ "$_nam_" = '-' -a -n "$_buf_" ] && printf '%s' "$_buf_$_lin_"
 
     else                                        # split arguments
         local _ifs_="$IFS" ; set -f
@@ -2389,7 +2177,7 @@ splitjoin() {
             for _spl_ in "${_buf_[@]}" ; do $_exe_ "$_spl_" || break ; done
         elif [ "$_nam_" = '-' -a "${#_buf_[*]}" != 0 ] ; then
             IFS=$'\n' ; [ -z "$_lin_" ] && IFS=' '
-            printf "%s\n" "${_buf_[*]}" ; IFS="$_ifs_"
+            printf '%s\n' "${_buf_[*]}" ; IFS="$_ifs_"
         fi
     fi || :
 }
@@ -2503,7 +2291,7 @@ sysfind() {
                     if BASH_LOADABLES_PATH= enable -a "$_snam" &>/dev/null ; then
                         _scmd="$_snam"
                     # if it's a shell function then try dynamic load
-                    elif PATH= type -t -- "$_snam" >/dev/null ; then
+                    elif PATH=' ' type -t -- "$_snam" >/dev/null ; then
                         [ -n "$CEN_FEATURE_A" ] &&
                             _cen_dyn_builtin "$_snam" >/dev/null && _scmd="$_snam"
                     fi
@@ -2660,8 +2448,8 @@ system() {
       -b)   _bflg='-b' ;;
       -c)   _cpro=1 ;;
       -d)   shift ; [ "$1" = '--' ] && _vdel=(-n) || _vdel=('-d' "$1") ;;
-      -e)   _ferr="-e" ; _ecmd=error ;;
-      -f)   _ferr="-f" ; _ecmd=fatal ;;
+      -e)   _ferr='-e' ; _ecmd=error ;;
+      -f)   _ferr='-f' ; _ecmd=fatal ;;
       -g)   shift ; _good="$1" ;;
       -i)   _mind="-i" ;;
       -m)   _nout=3 ;;
@@ -2761,12 +2549,11 @@ system() {
     elif [ -n "$_ferr" ] ; then
         $_ecmd -p -- $"Running '%s' failed (status %s)" "$_earg" "$_stat"
     fi
-   ### [ -n "$_ferr" ] && CEN_AUTOIND=
     $CEN_NOTRACE set -x ; return $_stat
 }
 
 # ------------------------------------------------------------------------------
-# Return free file handle(s) in range 10..99: <vnam>...
+# Return free file handle(s) in range 10..99: <vnam>
 # ------------------------------------------------------------------------------
 _cen_handle() {
     local _ihan=9
@@ -2892,7 +2679,7 @@ main() {
             _isok="$CEN_FEATURE_S" ; optarg 'silent' - ;;
         -v|--verb*)
             context -v + || :
-            optarg "verbose" CEN_VERB -f "$CEN_VERB" ;;
+            optarg 'verbose' CEN_VERB -f "$CEN_VERB" ;;
         -n|--no)
             _isok="$CEN_FEATURE_Y" ; [ -n "$_isok" ] && optarg 'no'  CEN_YESNO -f 'n' ;;
         -y|--yes)
@@ -2910,6 +2697,8 @@ main() {
             [ "$CEN_EMBED" = "$CEN_NAME" ] && CEN_EMBED= ;;
         --info)
             _oinf=1 ; CEN_FEATURE_D=1 ; CEN_FEATURE_Y=1 ;;
+        --mini*)
+            [ -z "$CEN_FEATURE_N" ] && _isok= ;; #|| optarg 'mini' CEN_FEATURE_N -t ;;
         --pager)
             optarg 'pager' - -t ;;
         --trace)
@@ -2969,7 +2758,7 @@ main() {
                 fi
                 _rarg+=("$_curr")
             done
-            invoke "run" run "$CEN_RUN_MIN_ARGS" "$CEN_RUN_MAX_ARGS" "${_rarg[@]}"
+            invoke 'run' run "$CEN_RUN_MIN_ARGS" "$CEN_RUN_MAX_ARGS" "${_rarg[@]}"
             return 0
         fi
         CEN_STAGE='actions'

@@ -24,7 +24,9 @@
 # Copyright Dr. J. Pfennig (c) 2021-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_tra']='0.11:2'
+CEN_MODULES['_centauri_bash_tra']='0.12:4'
+
+embed -c '_centauri_bash_cfm'   # for confirm()
 
 CEN_OPT_TRASH=                  # see --trash
 

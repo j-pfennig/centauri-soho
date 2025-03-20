@@ -21,7 +21,7 @@
 # Copyright Dr. J. Pfennig (c) 2020-2024
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_mnt']='0.12:3'
+CEN_MODULES['_centauri_bash_mnt']='0.13:4'
 
 embed -c '_centauri_bash_utl'   # import on demand, see timer()
 
@@ -107,8 +107,8 @@ automount() {
     _desc="$1"
 
     # output method
-    if [ "${_olvl:-auto}" = "auto" ] ; then
-        _olvl="message"
+    if [ "${_olvl:-auto}" = 'auto' ] ; then
+        _olvl='message'
         if [ -n "$CEN_OPT_SILENT" ] ; then
             _olvl="$CEN_TRACE"
         elif isfunction -c windows ; then
@@ -116,20 +116,20 @@ automount() {
         fi
     fi
 
-    local _ofun="$CEN_TRACE" _efun="error" _emsg _pfun _wmsg
+    local _ofun="$CEN_TRACE" _efun='error' _emsg _pfun _wmsg
     case "$_olvl" in
-    qui*)      _ofun=":" ; _efun=":" ;;
-    mes*|msg)  _ofun="message"  ;;
+    qui*)      _ofun=':' ; _efun=':' ;;
+    mes*|msg)  _ofun='message'  ;;
     pro*)      if isfunction -c console || isfunction -c windows ; then
-                    _pfun="progress"
+                    _pfun='progress'
                else
-                    _ofun="message"
+                    _ofun='message'
                fi ;;
-    err*)      _ofun=":" ;;
+    err*)      _ofun=':' ;;
     esac
 
     # is mount argument a label?
-    if [ "${_desc::5}" = "/dev/" ] ; then
+    if [ "${_desc::5}" = '/dev/' ] ; then
         _labl= ; _lmsg=$"device"
     elif [ "${_desc::1}" = '/' ] ; then
         _labl= ; _lmsg=$"path"
@@ -200,7 +200,7 @@ automount() {
         # label or device not found
         [ -n "$CEN_MOUNT_DEV" ] && break        # device found
         if [ -n "$_fwai" ] ; then
-            if [ "$_umnt" = "0" ] ; then
+            if [ "$_umnt" = 0 ] ; then
                 _cen_automount_mesg -i $"Waiting for" ; continue
             elif [ "$_umnt" != '-' ] ; then
                 _cen_automount_mesg -w ; timer -w "$_umnt" ; continue
@@ -253,7 +253,7 @@ automount() {
 #
 _cen_automount_mesg() {
     # _kind _desc _lmsg
-    [ "$_efun" = ":" ] && return 0              # quiet mode
+    [ "$_efun" = ':' ] && return 0              # quiet mode
     local _fout="$_ofun -a" _fcon _fpro _long
 
     while [ "${1::1}" = '-' ] ; do
@@ -264,8 +264,8 @@ _cen_automount_mesg() {
         -f)   _long=2 ;;
         -i)   _fpro=1 ;;
         -l)   _long=1 ;;
-        -m)   [ -n "$_pfun" ] && _fout="message -a" ;;
-        -p)   [ -n "$_pfun" ] && _fout="message -a -d +3" ;;
+        -m)   [ -n "$_pfun" ] && _fout='message -a' ;;
+        -p)   [ -n "$_pfun" ] && _fout='message -a -d +3' ;;
         -w)   _fpro=2 ;;
         *)    _cen_abort - "$1"
         esac ; shift
@@ -273,7 +273,7 @@ _cen_automount_mesg() {
     local _msg1="$1" _msg2="$2" _mesg
 
     # handle -w
-    if [ "$_fpro" = "2" ] ; then
+    if [ "$_fpro" = 2 ] ; then
         if [ -n "$_pfun" ] ; then
             $_pfun "."
         elif [ -z "$_wmsg" ] ; then
@@ -291,16 +291,16 @@ _cen_automount_mesg() {
             else
                 _long= ; _msg1+=$"by #L '#A' "
                 _fout="$_pfun -a"
-                [ "$_fpro" = "1" ] && _fout+=" -c 0 -t"
+                [ "$_fpro" = 1 ] && _fout+=' -c 0 -t'
             fi
         fi
     fi
 
     # Short message: xxxxxx <kind> '<descr>' yyyyyy
     # Long  message: xxxxxx <kind> (<dtype> '<descr>' device <dev>) yyyyyy
-    [ "$_long" = "1" -a "$_desc" = "$CEN_MOUNT_DEV" ] && _long=2
-    [ "$_long" = "1" ] && _msg1+=$" (#L '#A' device '#D')"
-    [ "$_long" = "2" ] && _msg1+=$" (#L '#A' folder '#F')"
+    [ "$_long" = 1 -a "$_desc" = "$CEN_MOUNT_DEV" ] && _long=2
+    [ "$_long" = 1 ] && _msg1+=$" (#L '#A' device '#D')"
+    [ "$_long" = 2 ] && _msg1+=$" (#L '#A' folder '#F')"
     _msg1="${_msg1//#K/$_kind}" ; _msg1="${_msg1//#L/$_lmsg}" ; _msg1="${_msg1//#A/$_desc}"
     _msg1="${_msg1//#D/${CEN_MOUNT_DEV:-<none>}}" ; _msg1="${_msg1//#F/${CEN_MOUNT_DIR:-<none>}}"
 
@@ -368,13 +368,13 @@ blkdevice() {
         --)   shift ; break ;;
         -a)   shift ; _anam="$1" ;;
         -d)   _fblk=1 ;;
-        -e)   _oerr="error" ;;
+        -e)   _oerr='error' ;;
         -f)   _oerr="fatal" ;;
         -i)   _fimg=1 ;;
         -m)   _fmnt=1 ;;
         -n)   shift ; _npar="$1" ;;
         -p)   _fpar=1 ;;
-        -s)   _otra=":" ;;
+        -s)   _otra=':' ;;
         -x)   _fexi=1 ;;
         *)    _cen_abort - "$1"
         esac ; shift
@@ -441,7 +441,7 @@ blkdevice() {
         $_otra $"Using partition:" "$_path"
     elif [ -e "$_item" ] ; then
         _varr[1]=
-        _varr[2]="0"
+        _varr[2]=0
         if [ -z "$_fblk" ] ; then
             $_oerr $"Cannot use a block device:" "$_path" ; return 1
         fi

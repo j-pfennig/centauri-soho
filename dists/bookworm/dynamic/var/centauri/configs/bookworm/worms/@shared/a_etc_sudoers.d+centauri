@@ -10,6 +10,8 @@ local	ALL=(ALL:ALL)	NOPASSWD: ALL
 # allow hass user to start/stop service
 homeassistant ALL=NOPASSWD: /usr/bin/systemctl start centaurihass
 homeassistant ALL=NOPASSWD: /usr/bin/systemctl stop  centaurihass
+weewx ALL=NOPASSWD: /usr/bin/systemctl start centauriweewx
+weewx ALL=NOPASSWD: /usr/bin/systemctl stop  centauriweewx
 
 # this is for kiosk:
 %kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- vterm
@@ -30,6 +32,8 @@ homeassistant ALL=NOPASSWD: /usr/bin/systemctl stop  centaurihass
 # this is for virtualbox:
 %vboxusers ALL=NOPASSWD: /usr/bin/systemctl start virtualbox
 %vboxusers ALL=(vbox)NOPASSWD: SETENV: /usr/lib/virtualbox/*
+%vboxusers ALL=NOPASSWD: /usr/bin/mount -l -r -- /var/centauri/vbox/*
+%vboxusers ALL=NOPASSWD: /usr/bin/mount -l -r -o subvol=/ -- /var/centauri/vbox/*
 %vboxusers ALL=NOPASSWD: /usr/bin/mount -l -- /var/centauri/vbox/*
 %vboxusers ALL=NOPASSWD: /usr/bin/mount -l -o subvol=/ -- /var/centauri/vbox/*
 %vboxusers ALL=NOPASSWD: /usr/bin/umount -- /var/centauri/vbox/*

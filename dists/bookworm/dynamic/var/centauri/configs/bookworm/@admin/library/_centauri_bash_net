@@ -334,60 +334,98 @@ netgetip() {
 }
 
 # ------------------------------------------------------------------------------
-# nethost - Search a host network configuration entry
+# nethost - Search a host entry in network host configuration table
 #
-# Call:    nethost [-c|-s] [--] <host>|<addr>
+# Call:    nethost [-e|-f] [-c|-n|-s] [--] <host>|<addr>|<mac>|-
 #
 # Options:  -c  do not match a configured server
+#           -e  report errors
+#           -f  make errors fatal
+#           -n  check for name syntax only
 #           -s  only match a configured server
 #
 # Arguments:<host>  a host name (optionally fully qualified)
 #           <addr>  an IPv4 address like **10.21.2.11**
+#           <mac>   a mac address
+#
+#           All input must be in lowercase
 #
 # Variables:**_nethost_name**   array of host names/aliases
+#           **_nethost_dom**    domain name stripped from <host> arugment
 #           **_nethost_mac**    the mac address    (or '-' if unknown)
 #           **_nethost_ip**     the ipv4 address   (or '-' if unknown)
 #
 # Return:  **true** if <host> was found or **false** on failure
 #
-#+         The **_nethost_mac** **_nethost_ip** and **_nethost_name** variables are
-#          set on success or cleared on failure.
+#+         This routine can either check for a valid name synstax (-n option)
+#          or search the CEN_NET_HOSTS configuration table.
+#
+#+         The **_nethost_mac**, **_nethost_ip**, **_nethost_dom** and **_nethost_name**
+#          variables are set on success or cleared on failure. Any domain name
+#          is removed from **_nethost_name[0]** and saved in **_nethost_dom**.
+#
 # ------------------------------------------------------------------------------
 _nethost_mac=
 _nethost_ip=
 _nethost_name=()
+_nethost_domain=
 nethost() {
-    local _only
+    local _only _oerr _onam
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
-      --)   shift ; break ;;
-      -c)   _only='c' ;;
-      -s)   _only='s' ;;
-      *)    _cen_abort - "$1"
+      -)     break ;;
+      --)    shift ; break ;;
+      -c)    _only='c' ;;
+      -e|-f) _oerr="$1" ;;
+      -n)    _onam=1 ;;
+      -s)    _only='s' ;;
+      *)     _cen_abort - "$1"
       esac ; shift
     done
 
-    _nethost_mac= ; _nethost_ip= ; _nethost_name=()
-    netconfig || return 1
+    _nethost_mac= ; _nethost_ip= ; _nethost_name=() ; _nethost_domain=
+    netconfig $_oerr || return 1
 
     local host snam sdom name="${1:--}"
-    [ "$name" = '-' ] && return 1
 
-    if [ "${name//[0-9]/}" != '...' ] ; then            # not an ipv4 address...
+    if [ "${name//[0-9]/}" = '...' ] ; then             # is an ipv4 address...
+        _nethost_ip="$name"
+    elif [ "${name//[0-9a-f]/}" = ':::::' ] ; then      # is a mac address...
+        _nethost_mac="$name"
+    else
         snam="${name%%.*}" ; sdom="${name#*.}"
-        [ "$name" = "$sdom" ] && sdom=
-        [ "$sdom" = "$CEN_NET_DOMAIN" ] && name="$snam" # no local dom in hosts
+        if [ "${name:--}" = '-' ] ; then
+            [ -n "$_oerr" ] && error $_oerr $"Missing hostname" ; return 1
+        elif [ -n "${name//[a-z0-9_-]/}" ] ; then
+            [ -n "$_oerr" ] && error $_oerr $"Invalid hostname:" "$name" ; return 1
+        fi
+        _net_host_name="$name"
+        if [ "$name" = "$sdom" ] ; then                 # no domain specified
+            sdom=
+        elif [ "$sdom" = "$CEN_NET_DOMAIN" ] ; then
+            sdom= ; name="$snam"                        # no local dom in hosts
+        else
+            if [ -n "$_onam" ] ; then                   # name check only
+                _nethost_domain="$sdom" ; return 0
+            fi
+            [ -n "$_oerr" ] && error $_oerr $"Domain mismatch:" "$name" ; return 1
+        fi
     fi
+    [ -n "$_onam" ] && return 0                         # name check only
+
+    # loop over host table
 
     for host in "${CEN_NET_HOSTS[@]}" '-' ; do
-        if [ "$host" = '-' ] ; then                     # no find
-            _nethost_mac= ; _nethost_ip= ; return 1
+        if [ "$host" = '-' ] ; then                     # nothing found
+            [ -n "$_oerr" ] && error $_oerr $"Host not found:" "$name"
+            _nethost_mac= ; _nethost_ip= ; _nethost_name=() ; return 1
         fi
         [ "${host/$name/}" = "$host" ] && continue      # quick pre-check
         set -- $host
         _nethost_mac="$1" ; shift
         _nethost_ip="$1"  ; shift
-        if [ "$name" = "$_nethost_ip" ] ; then          # match by ip address
+        if [ "$name" = "$_nethost_ip" -o \
+             "$name" = "$_nethost_mac" ] ; then         # match by ip/mac address
             _nethost_name=("$@") ; break
         fi
         [ -z "$snam" ] && continue                      # no name to search
@@ -563,7 +601,7 @@ netiface() {
     esac
 
     [ "$_mapm" = 'k' ] && _rslt="$_path$_cen_netiface_kern" || _rslt="$_path$_cen_netiface_name"
-    [ -z "$_vnam" ] && _netiface="$_rslt" || printf -v "$_vnam" "%s" "$_rslt"
+    [ -z "$_vnam" ] && _netiface="$_rslt" || printf -v "$_vnam" '%s' "$_rslt"
     [ -z "$_exst" ] && return 0
     [ -n "$_cen_netiface_kern" ] && [ -e "/sys/class/net/$_cen_netiface_kern" ] && return 0
     $_oerr $"No such interface:" "$_cen_netiface_name ($_cen_netiface_kern)"
@@ -589,11 +627,11 @@ _cen_net_maptest() {
         _name="$1" ; shift
         [ -e "$_name" ] || continue
         case "${_name##*/}" in
-        en?p?)  ((_vote += 1)) ;;
-        wl?p?)  ((_vote += 1)) ;;
-        end?)   ((_vote += 1)) ;;
-        eth?)   ((_vote -= 1)) ;;
-        wlan?)  ((_vote -= 1)) ;;
+        en*[su]*)   ((_vote += 1)) ;;
+        wl*[su]*)   ((_vote += 1)) ;;
+        end?)       ((_vote += 1)) ;;
+        eth?)       ((_vote -= 1)) ;;
+        wlan?)      ((_vote -= 1)) ;;
         esac
     done
     $CEN_TRACE2 -a -c "interface votes" "$_vote"
@@ -622,20 +660,14 @@ _cen_net_mapinit()  {
         local _item _more=()
         for _item in /sys/class/net/en* ; do
             case "${_item##*/}" in
-            *u?)    [ -e "$_item" ] && _cen_net_mapiadd 'usb' "${_item##*/}" ;;
-            end?)   [ -e "$_item" ] && _cen_net_mapiadd 'eth' "${_item##*/}" ;;
+            en*u*)  [ -e "$_item" ] && _cen_net_mapiadd 'usb' "${_item##*/}" ;;
+            end*)   [ -e "$_item" ] && _cen_net_mapiadd 'eth' "${_item##*/}" ;;
             *)      [ -e "$_item" ] && _more+=("$_item")
             esac
         done
         for _item in "${_more[@]}" ; do
             case "${_item##*/}" in
-            enp?s?) _cen_net_mapiadd 'eth' "${_item##*/}"
-            esac
-        done
-        for _item in "${_more[@]}" ; do
-            case "${_item##*/}" in
-            enp?s?) ;;
-            *)      _cen_net_mapiadd 'eth' "${_item##*/}"
+            en*s*) _cen_net_mapiadd 'eth' "${_item##*/}"
             esac
         done
         for _item in /sys/class/net/wlp* /sys/class/net/wl[!p]* ; do
@@ -699,7 +731,7 @@ _cen_net_mapping() {
         case "$_mapn" in
         wlan*)  _cen_net_mapsysd "$_mapn" /sys/class/net/wlp* /sys/class/net/wl[!p]* ;;
         usb*)   _cen_net_mapsysd "$_mapn" /sys/class/net/enp*u? ;;
-        *)      _cen_net_mapsysd "$_mapn" /sys/class/net/enp* /sys/class/net/en[!p]* ;;
+        *)      _cen_net_mapsysd "$_mapn" /sys/class/net/enp*[!u]? /sys/class/net/en[!p]* ;;
         esac
         _cen_net_mapsysd "$_mapn"
     fi
@@ -797,7 +829,7 @@ _cen_net_mapiadd() {
 #
 # Options:  -e  error if network not found
 #           -f  fatal error if network not found
-#           -s  save result to named variable
+#           -s  save network entry to named variable
 #
 # Arguments:<name>  network name, see below
 #           <indx>  index to CEN_NET_NETWORKS array
@@ -868,10 +900,11 @@ netindex() {
 # ------------------------------------------------------------------------------
 # netmask - check if address is part of a sub-net
 #
-# Call:    (1) netmask [-e|-f] <base>/<bits>        # is base address valid?
-#          (2) netmask [-e|-f] <base>/<bits> <addr> # is <addr> in base net?
+# Call:    (1) netmask [-e|-f] [-a] <base>/<bits>        # is base address valid?
+#          (2) netmask [-e|-f] [-a] <base>/<bits> <addr> # is <addr> in base net?
 #
-# Options:  -e  report syntax errors
+# Options:  -a  accept invalid netmask
+#           -e  report syntax errors
 #           -f  make syntax errors fatal
 #
 # Arguments:<base>  sub-net base address
@@ -888,10 +921,11 @@ _netmask_addr=                          # current binary address
 _netmask_curr=                          # current argument
 _netmask_mask=                          # mask high bits
 netmask() {
-    local _oerr
+    local _oerr _oain
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)       shift ; break ;;
+      -a)       _oain=1 ;;
       -e|-f)    _oerr="$1" ;;
       *)        _cen_abort - "$1"
       esac ; shift
@@ -910,12 +944,15 @@ netmask() {
     fi
 
     if [ "${2:--}" = '-' ] ; then               # check for valid subnet
+        [ -n "$_oain" ] && return 0
         [ $((_netmask_addr & ~_netmask_mask)) = 0 ] && return 0
         [ -n "$_oerr" ] && error $_oerr $"Invalid sub-net specification:" "$1"
         return 2
     fi
 
+#local _bit1="$_netparse_bits"
     netparse -a $_oerr -n "$2" || return 1
+#[ "$_netparse_bits" != "$_bit1" ] && trace -a -c " mask#2" "$_bit1 $_netparse_bits"
     netconv -b "$_netparse_addr" || return 1
     $CEN_TRACE2 -a -c -p " check" "%-14s -> %x" "$2" "$_netconv"
     [ $((_netconv & _netmask_mask)) = "$_netmask_addr" ]
@@ -987,14 +1024,16 @@ netoption() {
 # ------------------------------------------------------------------------------
 # netparse - Parse an IPv4 address and/or netmask
 #
-# Call:     netparse [-a] [-b] [-e|-f] [-n] [<ipaddr>][/<maskbits>]
-#           netparse [-b] [-e|-f] [-n] <maskbits>
+# Call:     netparse [-a] [-b] [-e|-f] [-n] [-r] [<ipaddr>][/<maskbits>]
+#           netparse [-b] [-e|-f] [-n] [-r] <maskbits>
 #
 # Options:  -a  address must be present
 #           -b  netmask bits must be present
 #           -e  report errors
 #           -f  make errors fatal
 #           -n  do not fill _netparse_mask, just clear it
+#           -r  check min/max of mask bits (minimum is 16, maximum is 21)
+#               also check network address class if <ipaddr> is passed
 #
 # Arguments:<ipaddr>   a dotted 4-part IPv4 address -or- a network reference
 #           <maskbits> number of maskbit as decimal number
@@ -1038,6 +1077,7 @@ netparse() {
       -e)   _oerr='error' ;;
       -f)   _oerr='fatal' ;;
       -n)   _onom=1 ;;
+      -r)   _orng=1 ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done
@@ -1067,13 +1107,31 @@ netparse() {
         $_oerr $"Address has invalid syntax:" "$1" ; return 5
     fi
 
+    # check bitmask limits and network class
+    if [ -n "$_orng" -a -n "$_netparse_bits" ] ; then
+        local _mmin=0
+        case "$1" in
+        192.168.*)  _mmin=16 ;;
+        172.16.[0-9].*|172.16.1[0-5].*)
+                    _mmin=20 ;;
+        10.*)       _mmin=16
+        esac
+        if [ "$_mmin" = 0 ] ; then
+            warning -p $"Address '%s' is in a public IPv4 range"
+        elif [ "$_netparse_bits" -gt 21 ] ; then
+            $_oerr -p $"Netmask is too long (max %s): %s" 21 "$1" ; return 6
+        elif [ "$_netparse_bits" -lt "$_mmin" ] ; then
+            $_oerr -p $"Netmask is too short (min %s): %s" "$_mmin" "$1" ; return 7
+        fi
+    fi
+
     # make netmask
     if [ -n "$_onom" ] ; then
         _netparse_mask=
     elif netconv -d $((((1 << 32) - 1) & ~((1 << (32 - _netparse_bits)) - 1))) ; then
         _netparse_mask="$_netconv"
     else
-        _netparse_mask='0.0.0.0' ; return 1
+        _netparse_mask='0.0.0.0' ; return 8
     fi
     return 0
 }
@@ -1986,7 +2044,8 @@ CEN_NET_MASTER='$CEN_NET_MASTER'
 #           an interface to exist. Form (4) runs **ip**°<what> and can insert <dev>
 #           after <cmd>. Any tool can be run using form (5).
 #
-#+          Form (6) sets or checks "/proc/sys/net/ipv?/conf/.../disable_ipv?"
+#+          Form (6) sets or checks "/proc/sys/net/ipv?/conf/.../disable_ipv?" to enable
+#           or disable the IPv6 protocol stack.
 #
 # Options:  -4  [*] use ipv4 (adds option -4 when running a tool)
 #           -6  use ipv6 (adds option -6 when running a tool)
@@ -2020,21 +2079,21 @@ CEN_NET_MASTER='$CEN_NET_MASTER'
 #.          nettool -d wlan0 -w -t iw dev wlan0 set 4addr on
 # ------------------------------------------------------------------------------
 nettool() {
-    local _ifce _fipv _ferr='-e -p' _oerr=error _orun _labl _tool _carr _cmnd _mode _temp _what _stat
+    local _ifce _fipv _ferr='-e -p' _oerr='error' _orun _labl _tool _carr _cmnd _mode _temp _what _stat
     while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)     shift ; break ;;
         -4|-6)  _fipv="$1" ;;
-        -a)     _tool=ip ; _what='address' ;;
+        -a)     _tool='ip' ; _what='address' ;;
         -c)     _carr=1 ;;
         -d)     shift ; _ifce="$1" ;;
-        -f)     _ferr='-f -p' ; _oerr=fatal ;;
+        -f)     _ferr='-f -p' ; _oerr='fatal' ;;
         -i)     shift ; _tool='ip' ; _what="$1" ;;
         -o)     _tool='ip' ; _what='route' ;;
         -q)     _ferr='-q' ; _oerr=: ;;
         -r)     _orun='-r' ;;
         -t)     shift ; _tool="$1" ;;
-        -w)     _ferr='-w -p' ; _oerr=warning ;;
+        -w)     _ferr='-w -p' ; _oerr='warning' ;;
         *)      _cen_abort - "$1"
         esac ; shift
     done
@@ -2112,7 +2171,7 @@ nettool() {
                 [ "$_cmnd" = 'isu' ] && return 1
                 [ "$_cmnd" = 'dow' ] && return 0
                 [ "$_cmnd" = 'exi' ] && return 0
-                if sysrun -q ifquery "/dev/$_ifce" ; then       # managed by ifup ...
+                if sysrun -q ifquery "$_ifce" ; then            # managed by ifup ...
                     _tool='ifup' ; set -- '--force' "$_ifce"
                 else
                     _tool='ip' ; set -- link set up "$_ifce"

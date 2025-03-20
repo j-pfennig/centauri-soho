@@ -4,7 +4,7 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2024; BSD License"
 CEN_TITLE="Create the autoload module _centauri_bash_dyn"
 
 # we cannot use '-a' here ...
-PATH+=":${0%/*}" . _centauri_bash_lib -m ext -m iom -m utl -r - '0.25:3' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -m ext -m iom -m utl -r - '0.26:4' || exit 2
 
 CEN_OPT_BUILTIN=                # see --builtin
 CEN_OPT_PATH=                   # see --path
@@ -143,7 +143,7 @@ run() {
 # enable loadable bash builtins.
 # ------------------------------------------------------------------------------
 
-CEN_MODULES["_centauri_bash_dyn"]="$CEN_VERSION"
+CEN_MODULES['_centauri_bash_dyn']="$CEN_VERSION"
 
 # ------------------------------------------------------------------------------
 # Dynamic loading + Dynamic loading of centauri-bash-lib modules
@@ -160,7 +160,7 @@ CEN_MODULES["_centauri_bash_dyn"]="$CEN_VERSION"
 #       (4) explicit loading via [[embed()]] option -m
 #
 # Examples: Loading [[_centauri_bash_win]] using method (1):
-#.          PATH+=":\${0%/*}" . _centauri_bash_lib -m win "\$0" "0.00" || exit 2
+#.          PATH+=":\${0%/*}" . _centauri_bash_lib -m win - '0.00' || exit 2
 #
 #           Explicitly loading [[_centauri_bash_win]] using method (4):
 #.          embed -m _centauri_bash_win
@@ -268,7 +268,7 @@ CEN_MODULES["_centauri_bash_dyn"]="$CEN_VERSION"
 # Example:  See [[centauricreate]] and **\$CEN_TOOLS/templates/_custom_module_usr**
 # ------------------------------------------------------------------------------
 
-[ "\$1" = "-f" ] ||
+[ "\$1" = '-f' ] ||
     fatal "Cannot load '_centauri_bash_dyn' via embed, use '_centauri_bash_lib -a'"
 !EOF
 

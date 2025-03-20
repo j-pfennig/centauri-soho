@@ -129,7 +129,8 @@ condition
     # see /etc/xdg/centauri-disabled
     remove  /etc/xdg/autostart  geoclue-demo-agent.desktop hplip-systray.desktop lxqt-qlipper-autostart.desktop at-spi-dbus-bus.desktop solaar.desktop
 
-    shared  /etc/X11            Xmodmap Xwrapper.config
+    #shared  /etc/X11            Xmodmap Xwrapper.config
+    shared  /etc/X11            Xmodmap 
     shared  /etc/X11/Xreset.d   50centauri
     shared  /etc/X11/Xsession.d 60centauri
     shared  /etc/X11/xinit      xinitrc
@@ -148,7 +149,7 @@ condition dist raspbian
 condition family debian
     shared  /etc/default        -avahi-daemon -wsdd networking
 
-    shared  /etc/default        console-setup
+   # shared  /etc/default        console-setup
 
     shared  /etc/apt            apt.conf.client apt.conf.local
 
@@ -372,7 +373,8 @@ condition                      /usr/sbin/squid
 
             ### sddm ###
 condition                      /etc/sddm.conf
-    private /etc               sddm.conf sddm.locale
+    #private /etc               sddm.conf sddm.locale
+    private /etc                sddm.locale
 
             ### tinyproxy ###
 condition                      /etc/tinyproxy

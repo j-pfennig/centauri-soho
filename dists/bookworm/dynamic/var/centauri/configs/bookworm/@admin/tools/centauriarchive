@@ -89,7 +89,7 @@ convert_age() {
     declare -n nvar="$1"
     local pack="${nvar//-/}"
     if [ "$pack" = "$nvar" ] ; then
-        system -s nvar -f -p -- date --date "$nvar days ago"  +%Y%m%d
+        system -r -s nvar -f -p -- date --date "$nvar days ago"  +%Y%m%d
     else
         nvar="$pack"
     fi
@@ -804,43 +804,43 @@ options() {
 
     # HACK to mount the 'Private' fs if running upload as batch
     "")
-        CEN_FEATURE_F="-f --force           replace existing destinations"
-        [ "${CEN_OPT_BATCH:-none}" != "none" -a "${CEN_CMDARGS[0]::3}" = "upl" ] &&
+        CEN_FEATURE_F="-f --force § replace existing destinations"
+        [ "${CEN_OPT_BATCH:-none}" != 'none' -a "${CEN_CMDARGS[0]::3}" = 'upl' ] &&
            [ -h ~/.ssh -a ! -e ~/.ssh/id_rsa ] && embed centauriencfs -q mount -
         ;;
 
     -B|--min*)
-        optarg 'minage' -                 "$APP_DAT_VALAGE" ;;
+        optarg 'minage' -               "$APP_DAT_VALAGE" ;;
     -C|--con*)
-        optarg 'cond'   -                 'wee(k)?|mon[a-z]*|qua[a-z]*|hal(f)?|yea(r)?' ;;
+        optarg 'cond'   -               'wee(k)?|mon[a-z]*|qua[a-z]*|hal(f)?|yea(r)?' ;;
     -E|--max*)
-        optarg 'maxage' CEN_OPT_MAXAGE    "$APP_DAT_VALAGE" ;;
+        optarg 'maxage' -               "$APP_DAT_VALAGE" ;;
     -F|--fol*)
-        optarg "folder" CEN_OPT_FOLDER  -t ;;
+        optarg 'folder' -               -t ;;
     -H|--hos*)
-        optarg "host"   CEN_OPT_HOST    -v ;;
+        optarg 'host'   -               -v ;;
     -L|--loc*)
-        optarg "local"  CEN_OPT_LOCAL   - "$HOSTNAME" ;;
+        optarg 'local'  -               - "$HOSTNAME" ;;
     -N|--not)
-        optarg "not"    CEN_OPT_NOT        ;;
+        optarg 'not'    -                  ;;
     -O|--out*)
-        optarg "output" CEN_OPT_OUTPUT  -t ;;
+        optarg 'output' -               -t ;;
     -P|--par*)
-        optarg "parity" CEN_OPT_PARITY  "odd|even|any" ;;
+        optarg 'parity' -               "odd|even|any" ;;
     -R|--rev*)
-        optarg "reverse" CEN_OPT_REVERSE   ;;
+        optarg 'reverse' -                 ;;
        --sil*)
-        optarg "silent" CEN_OPT_SILENT     ;;
+        optarg 'silent' -                  ;;
     -S|--siz*)
-        optarg "size"   CEN_OPT_SIZE    "[bBkKmMgGhH]" ;;
+        optarg 'size'   -               "[bBkKmMgGhH]" ;;
     -T|--tag)
-        optarg "tag"    CEN_OPT_TAG[]   "[a-z\-]+|\+" ;;
+        optarg 'tag'    []              "[a-z\-]+|\+" ;;
     -V|--lev*)
-        optarg "level"  CEN_OPT_LEVEL   -n ;;
+        optarg 'level'  -               -n ;;
     -W|--wri*)
-        optarg "write"  CEN_OPT_WRITE   -t ;;
+        optarg 'write'  -               -t ;;
     -X|--exe*)
-        optarg "exec"   CEN_OPT_EXEC    -t ;;
+        optarg 'exec'   -               -t ;;
     esac
 }
 

@@ -4,7 +4,7 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2018-2024; BSD License"
 CEN_TITLE="Repository Management and Synchronisation Tool"
 
 # ATTENTION: PATH is set non-standard to allow action 'setup' as described in help
-PATH="${0%/*}:$PATH" . _centauri_bash_lib -a -d -f -m sys -y - '0.33:3' || exit 2
+PATH="${0%/*}:$PATH" . _centauri_bash_lib -a -d -f -m sys -y - '0.35:4' || exit 2
 
 CEN_OPT_ALL=                    # see --all
 CEN_OPT_CONFIG=                 # see --config
@@ -17,6 +17,7 @@ CEN_OPT_CLIENT=                 # see --host
 CEN_OPT_MASTER=                 # see --master
 CEN_OPT_NICKNAME=               # see --nickname
 CEN_OPT_OVERRIDE=               # see --override
+CEN_OPT_PASSWD=                 # see --passwd
 CEN_OPT_PRIVATE=                # see --private
 CEN_OPT_ROLE=                   # see --role
 CEN_OPT_ROOT=                   # see --root
@@ -107,7 +108,43 @@ do_orphans() {
     done
 }
 
+# ------------------------------------------------------------------------------
+# get server and module from CEN_OPT_REPO: <vdis>|- <vcfg>|- <vsvr>|- <vsyn>|-
+# ------------------------------------------------------------------------------
+#       vdis    name of variable for dist nickname      (see --nickname)
+#       vcfg    ...              for config name        (see --domain)
+#       vsvr    ...              for rsync server       (DAT_NET_NICK)
+#       vsyn    ...              for rsync module       (CEN_RSYNC_MODULE secret)
+#
+#       distribution         the distribution's nickname     --nickname
+#       configuration        the repository domain/realm     --domain
+#       rsync server         the master-repository server    --repository
+#       rsync module         sync module for authorization   --repository
+# ------------------------------------------------------------------------------
+do_optrepo() {
+    # split repository string (module is optional)
+    local _rsvr="${CEN_OPT_REPO%%:*}" _rmod="${CEN_OPT_REPO#*:}"
+    [ "$_rsvr" = "$CEN_OPT_REPO" ] && _rmod="$CEN_RSYNC_MODULE"
+    [ "${_rsvr:--}" = '-' ] && _rsvr="$DAT_NET_NICK"
+    [ "${_rsvr%.*}" = "$_rsvr" ] && _rsvr+=".$CEN_NET_DOMAIN"
+
+    local _rdis="$DAT_NICKNAME" _rcfg="${CEN_OPT_DOMAIN:-$CEN_NET_CONFIG}"
+    if [ "${_rmod:--}" = '-' ] ; then
+        _rmod="$_rcfg" ; [ -z "$CEN_OPT_MASTER" ] && _rmod+="-${CEN_OPT_HOST:-$HOSTNAME}"
+    fi
+
+#    [ "${_rsvr:--}" = '-' ] && error "Please use '--repository=' to specify the server name"
+#    [ "${_rmod:--}" = '-' ] && error "Please use '--repository=' to specify the repository name"
+
+    [ "$1" != '-' ] && printf -v "$1" '%s' "$_rdis"     # dist
+    [ "$2" != '-' ] && printf -v "$2" '%s' "$_rcfg"     # config
+    [ "$3" != '-' ] && printf -v "$3" '%s' "$_rsvr"     # server
+    [ "$4" != '-' ] && printf -v "$4" '%s' "$_rmod"     # module
+}
+
+# ------------------------------------------------------------------------------
 # setup paths (after option parsing): [-h|-r]
+# ------------------------------------------------------------------------------
 do_setup() {
     local hopt ropt
     [ "$1" = '-h' ] && hopt=1
@@ -241,7 +278,7 @@ do_repository() {
     ___repo_setup() {
         trace -a -c "Create symlink" "$2 => $DAT_ROOT/$1"
         folder -f -m -- "$2"
-        symlink -m -f -r -s -- "$2" "$DAT_ROOT/$1"
+        symlink -m -f -l -s -- "$2" "$DAT_ROOT/$1"
     }
 
     trace -a -c "Check folders at" "$DAT_REPOSIT"
@@ -661,10 +698,10 @@ actionCleanup() {
 # ------------------------------------------------------------------------------
 actionLocal() {
     local over                              # set be 'override' action
-    local cmdc="cp -abu --dereference"
-    local cmdd="rm -f"
-    local cmdl="/usr/bin/ln -f -r -s"       # no bash built-in
-    [ -n "$CEN_OPT_FORCE" ] && cmdc="cp -preserve=mode,ownership --dereference"
+    local cmdc='cp -abu --dereference'
+    local cmdd='rm -f'
+    local cmdl='/usr/bin/ln -f -r -s'       # no bash built-in
+    [ -n "$CEN_OPT_FORCE" ] && cmdc='cp -preserve=mode,ownership --dereference'
     CEN_HISTORY='-'
 
     # setup the repository
@@ -863,32 +900,26 @@ actionLocal() {
 # ------------------------------------------------------------------------------
 actionServer() {
 
-    # helper to run rsync: rget|rput (using rnam, rmod, rcon)
+    # helper to run rsync: rget|rput
+    #   rdis := distribution
+    #   rcfg := configuration
     #   rnam := remote server
     #   rmod := repository module (domain)
-    #   rcon := configuration (distro)
     ___run_rsync() {
-        # override server and module
-        local pdom="${CEN_OPT_DOMAIN:-$DAT_NET_DOMAIN}"
-        local psrv pnam="${rnam:-$DAT_NET_NICK}" pmod="${rmod:-$pdom}"
-        [ "${pnam:--}" = '-' ] && error "Please use '--repository=' to specify the server name"
-        [ "${pmod:--}" = '-' ] && error "Please use '--repository=' to specify the repository name"
-        [ -d "$DAT_ROOT" ] || fatal "DAT_ROOT is invalid: $DAT_ROOT"
-        [ -n "$rcon" ] || fatal "DAT_NICKNAME not set"
 
-        folder -m "$DAT_ROOT/$bdir/$pmod"
+        folder -m "$DAT_ROOT/$bdir/$rcfg"
         error -t || return
 
-        local opts=(--silent)
-        opts+=( --exclude="/$bdir/***" --all --exclude=".*" --exclude="*~" --exclude="*.pyc"
-                --exclude="__pycache__/***" --exclude="README.html" --exclude="library/*.?" )
+        local psrv pnam="${rnam%%.*}" opts=(--silent)
+        opts+=( --exclude "/$bdir/***" --all --exclude '.*' --exclude '*~' --exclude '*.pyc'
+                --exclude '__pycache__/***' --exclude 'README.html' --exclude 'library/*.?' )
 
         # protect server against rget/rput (using $HOSTNAME)
-        if [ "$DAT_NET_ROLE" = "PRIMARY" -o "$DAT_NET_ROLE" = "SECONDARY" ] && \
+        if [ "$DAT_NET_ROLE" = 'PRIMARY' -o "$DAT_NET_ROLE" = 'SECONDARY' ] && \
            [ "$DAT_NET_MODE" != 'SLAVE' ] ; then
-            if [ "$1" = "rget" ] ; then
+            if [ "$1" = 'rget' ] ; then
                 if [ "$pnam" = "$HOSTNAME" -o "$pnam" = "$DAT_NET_NICK" ] ; then
-                    message "Ignoring 'rget' on $DAT_NET_ROLE server of '$pmod'"
+                    message "Ignoring 'rget' on $DAT_NET_ROLE server of '$rcfg'"
                     return
                 fi
             elif [ "$pnam" = "$HOSTNAME" -o "$pnam" = "$DAT_NET_NICK" ] ; then
@@ -896,41 +927,41 @@ actionServer() {
                 return
             fi
             opts+=( --include="^/$adir/$"
-                    --include="^/$adir/$pmod/***" )
+                    --include="^/$adir/$rcfg/***" )
         # add client's archive path to rsync
         elif [ -d "$DAT_ROOT/$adir" ] ; then
             opts+=( --include="^/$adir/$"
-                    --include="^/$adir/$pmod/$"
-                    --include="^/$adir/$pmod/$DAT_NET_HOST$" )
+                    --include="^/$adir/$rcfg/$"
+                    --include="^/$adir/$rcfg/$DAT_NET_HOST$" )
         fi
 
         # exclude library proxy (should be auto updated via config)
-        opts+=( --exclude="^/$cdir/$rcon/@admin/tools/_centauri_bash_lib$" )
+        opts+=( --exclude="^/$cdir/$rdis/@admin/tools/_centauri_bash_lib$" )
 
         # data to copy
         opts+=( --include="^/$cdir/$"
-                --include="^/$cdir/$rcon/$"
-                --include="^/$cdir/$rcon/@admin/***" )
+                --include="^/$cdir/$rdis/$"
+                --include="^/$cdir/$rdis/@admin/***" )
         if [ -n "$CEN_OPT_GLOBAL" ] ; then
-            opts+=( --include="^/$cdir/$rcon/$pmod/***"
-                    --include="^/$cdir/$rcon/@soho/***" )
+            opts+=( --include="^/$cdir/$rdis/$rcfg/***"
+                    --include="^/$cdir/$rdis/@soho/***" )
          else
-            opts+=( --include="^/$cdir/$rcon/$pmod/$"
-                    --include="^/$cdir/$rcon/$pmod/@shared/***"
-                    --include="^/$cdir/$rcon/$pmod/$DAT_NET_HOST/***" )
+            opts+=( --include="^/$cdir/$rdis/$rcfg/$"
+                    --include="^/$cdir/$rdis/$rcfg/@shared/***"
+                    --include="^/$cdir/$rdis/$rcfg/$DAT_NET_HOST/***" )
         fi
-        opts+=( --exclude="*" )
+        opts+=( --exclude='*' )
 
         # proxy and repository
         [ -n "$CEN_OPT_PROXY" ] && opts+=( --proxy="$CEN_OPT_PROXY" )
-        printf -v psrv "root@%s::@%s" "$pnam" "${CEN_RSYNC_MODULE:-$pmod}"
-        if [ -n "$CEN_RSYNC_PASSWD" ] ; then
-            export RSYNC_PASSWORD="$CEN_RSYNC_PASSWD"
-        else
-            opts+=( --passsword=+ )
-        fi
-        [ "$1" = "rget" ] && opts+=( --backup="$DAT_ROOT/$bdir/$pmod" sync "$psrv" "$DAT_ROOT" )
-        [ "$1" = "rput" ] && opts+=( --backup="$bdir/$pmod" sync "$DAT_ROOT" "$psrv" )
+        printf -v psrv 'root@%s::@%s' "$rnam" "$rmod"
+
+        # for CEN_RSYNC_xxx see: secrets/import/repository.conf
+        export RSYNC_PASSWORD
+        password -e -x -m 4 -u 'rsync' RSYNC_PASSWORD "$CEN_OPT_PASSWD" CEN_RSYNC_PASSWD || quit
+
+        [ "$1" = 'rget' ] && opts+=( --backup="$DAT_ROOT/$bdir/$rcfg" sync "$psrv" "$DAT_ROOT" )
+        [ "$1" = 'rput' ] && opts+=( --backup="$bdir/$rcfg" sync "$DAT_ROOT" "$psrv" )
 
         # encfs start for centauricopy (--password disables internal check)
         if [ -n "$CEN_OPT_PROXY" ] ; then
@@ -938,7 +969,6 @@ actionServer() {
         fi
 
         # copy configs
-        #quit "DEBUG centauricopy ${opts[*]}"
         embed -z -v centauricopy "${opts[@]}"
     }
 
@@ -949,23 +979,30 @@ actionServer() {
     local bdir='backup'
     local adir='archived'
 
-    # split repository string (module is optional)
-    local rnam="${CEN_OPT_REPO%%:*}" rmod="${CEN_OPT_REPO#*:}" rcon="$DAT_NICKNAME"
-    [ "$rnam" = "$CEN_OPT_REPO" ] && rmod=
+    local rdis      # distribution nickname
+    local rcfg      # configuration
+    local rnam      # rsync repository server
+    local rmod      # rsync repository module
+    do_optrepo rdis rcfg rnam rmod
+
+    [ -d "$DAT_ROOT" ] || fatal "DAT_ROOT is invalid:" "$DAT_ROOT"
+    [ -n "$rdis" ] || fatal "DAT_NICKNAME not set"
 
     # get PACKAGES list, sync with server
-    if [ "$CEN_ACTION" = "rput" ] ; then
-        if [ "$DAT_FAMILY" = "debian" ] ; then
+    if [ "$CEN_ACTION" = 'rput' ] ; then
+        if [ "$DAT_FAMILY" = 'debian' ] ; then
             local dest="$DAT_PRIVATE/PACKAGES"
-            dryrun "create package list: $dest" ||
+            dryrun "create package list:" "$dest" ||
                 system -e -p -z -- dpkg --get-selections > "$dest"
         fi
         [ "$DAT_NET_MODE" = 'SLAVE' -o "$DAT_NET_ROLE" = 'WORKSTATION' ] && ___run_rsync rput
     else
         [ "$DAT_NET_MODE" = 'SLAVE' -o "$DAT_NET_ROLE" = 'WORKSTATION' ] && ___run_rsync rget
-        local dadm="$DAT_ROOT/$cdir/$rcon/@admin"
-        [ -d "$dadm" ] && symlink -m -r "$dadm" "$DAT_ROOT/admin"
+        local dadm="$DAT_ROOT/$cdir/$rdis/@admin"
+        [ -d "$dadm" ] && symlink -m -l "$dadm" "$DAT_ROOT/admin"
     fi
+
+    ### TODO message for no action, -R secondary
 }
 
 # ------------------------------------------------------------------------------
@@ -983,7 +1020,7 @@ actionSync() {
     CEN_ACTION='put'     ; actionLocal $carg
     CEN_ACTION='get'     ; actionLocal $carg
 
-    CEN_ACTION="rput"    ; actionServer
+    CEN_ACTION='rput'    ; actionServer
 
     if [ -n "$DAT_OVERRIDE" ] ; then
         warning -a "Using repository overrides - no implicit '$CEN_NAME autorun'"
@@ -998,24 +1035,26 @@ actionSync() {
 # ------------------------------------------------------------------------------
 actionInfo() {
     [ "$CEN_VERB" -lt 1 ] && return
-    local tab=$'\t'
-    echo "\
+    local sdis scfg ssvr smod ; do_optrepo sdis scfg ssvr smod
 
-Domain${tab}$DAT_NET_DOMAIN
-Host${tab}$DAT_NET_HOST
-Server${tab}$DAT_NET_NICK
-Role${tab}$DAT_NET_ROLE
-
-Distro${tab}$DAT_DISTRO
-Family${tab}$DAT_FAMILY
-Nick${tab}$DAT_NICKNAME
-Keys${tab}${DAT_KEYS[*]}
-
-Root${tab}$DAT_ROOT
-Config${tab}$DAT_CONFIG
-Private${tab}$DAT_PRIVATE
-Shared${tab}$DAT_SHARED
-"
+    local ikey ival item list=()
+    local rpri="$CEN_ROOT/configs/$sdis/$scfg/$CEN_OPT_HOST"
+    local rsha="$CEN_ROOT/configs/$sdis/$scfg/@shared"
+    for item in 'Distribution:sdis' 'Configuration:scfg' 'Server:ssvr' 'Module:smod' '' \
+                'Host:DAT_NET_HOST' 'Role:DAT_NET_ROLE' 'Family:DAT_FAMILY' \
+                'Nickname:DAT_NICKNAME' 'Keys:{DAT_KEYS[*]}' '' \
+                'Root:DAT_ROOT' 'Config:DAT_CONFIG' \
+                'Private:rpri' 'Shared:rsha' ; do
+        if [ "${item:-}" = '-' ] ; then
+            list+=('')
+        else
+            splitkeyval "$item" ikey ival ':'
+            [ -n "$ival" ] && eval "ival=\"\$$ival\""
+            printf -v item '    %-14s %s' "$ikey" "$ival"
+            list+=("$item")
+        fi
+    done
+    splitjoin -s - -l -i list
 }
 
 # ------------------------------------------------------------------------------
@@ -1196,7 +1235,7 @@ actionCheck() {
             ;;
         esac
     done
-message "dist $DAT_DISTRO"
+
     if [ "$nrep" = 0 ] ; then
         message -p "No errors found"
     else
@@ -1387,39 +1426,41 @@ actionMerge() {
 options() {
     case "$CEN_ACTION" in
     -A|--all)
-        optarg "all"       -                  ;;            # flag
+        optarg 'all'       -                  ;;            # flag
     -C|--con*)
-        optarg "config"    -               -t ;;            # text
+        optarg 'config'    -               -t ;;            # text
     -D|--dis*)
-        optarg "distro"    -               -t ;;            # text
+        optarg 'distro'    -               -t ;;            # text
     -E|--ext*)
-        optarg "extra"     -                  ;;            # flag
+        optarg 'extra'     -                  ;;            # flag
     -F|--fam*)
-        optarg "family"    -               -t ;;            # text
+        optarg 'family'    -               -t ;;            # text
     -G|--glo*)
-        optarg "global"    -                  ;;            # flag
+        optarg 'global'    -                  ;;            # flag
     -H|--hos|--host)
-        optarg "host"      CEN_OPT_CLIENT  -t ;;            # text
+        optarg 'host'      CEN_OPT_CLIENT  -t ;;            # text
     -I|--dom*)
-        optarg "domain"    -               -t ;;            # text
+        optarg 'domain'    -               -t ;;            # text
     -M|--mas*)
-        optarg "master"    -                  ;;            # text
+        optarg 'master'    -                  ;;            # flag
     -N|--nic*)
-        optarg "nickname"  -               -t ;;            # text
+        optarg 'nickname'  -               -t ;;            # text
     -O|--roo|--root)
-        optarg "root"      -               -d ;;            # folder
+        optarg 'root'      -               -d ;;            # folder
     -P|--pri*)
         optarg 'private'   -               -d ;;            # folder
     -R|--rol|--role)
-        optarg "role"      -               "pri.*|sec.*|wor.*" ;;
+        optarg 'role'      -               'pri.*|sec.*|wor.*' ;;
     -S|--sha*)
         optarg 'shared'    -               -d ;;            # folder
     -V|--ove*)
         optarg 'override'  -               -o ;;            # ternary
+    -W|-pas*)
+        optarg 'passwd'    -               -t ;;            # text
     -X|--pro*)
-        optarg "proxy"     -               -t ;;            # text
+        optarg 'proxy'     -               -t ;;            # text
     -Y|--rep*)
-        optarg "repository" CEN_OPT_REPO   -t ;;            # text
+        optarg 'repository' CEN_OPT_REPO   -t ;;            # text
     esac
 }
 
@@ -1436,32 +1477,32 @@ actions() {
 
     case "$CEN_ACTION" in
     aut*)
-        ___invoke 'autorun' -          0 ;;
+        ___invoke 'autorun' -             0 ;;
     che*)
-        ___invoke 'check'   -          0 ;;
+        ___invoke 'check'   -             0 ;;
     cron|sync)
-        ___invoke  -     actionSync    0 ;;
+        ___invoke  -        actionSync    0 ;;
     dif|diff)
-        ___invoke 'diff' actionList  0 1 ;;
+        ___invoke 'diff'    actionList  0 1 ;;
     fix)
-        ___invoke 'fix'  actionCheck   0 ;;
+        ___invoke 'fix'     actionCheck   0 ;;
     get|put)
-        ___invoke  -     actionLocal 0 1 ;;
+        ___invoke  -        actionLocal 0 1 ;;
     inf|info)
-        ___invoke 'info'  -            0 ;;
+        ___invoke 'info'    -             0 ;;
     ite*)
-        ___invoke 'items' -          0 1 ;;
+        ___invoke 'items'   -           0 1 ;;
     lis|list)
-        ___invoke 'list'  -          0 1 ;;
+        ___invoke 'list'    -           0 1 ;;
     rget|rput)
-        ___invoke  -     actionServer  0 ;;
+        ___invoke  -        actionServer  0 ;;
 
     cle*)
-        invoke -r 'cleanup' -          0 ;;
+        invoke -r 'cleanup' -             0 ;;
     set*)
-        invoke -r 'setup' -          0 2 ;;
+        invoke -r 'setup'   -           0 2 ;;
     mer*)
-        invoke -r 'merge' -            2 ;;
+        invoke -r 'merge'   -             2 ;;
     esac
 }
 
@@ -1496,6 +1537,7 @@ $CEN_USE_OPTIONS
 
        -E --extra           select non-installed extra files
        -G --global          update all hosts (for administrative use only)
+       -W --passw   <pasw>  rsync password for repository
        -X --proxy   <host>  use "ssh <host> nc %H 873" as rsync connection prog
        -Y --repos   <repo>  modifies server and module
 
@@ -1533,7 +1575,26 @@ arguments:
        <role>               computer role: primary|secodary|workstation
        <repo>               [<server>[:<module>]  for example '$_repa'
 
-setup: Use the following commands for an initial setup:
+tools: This script uses 'centauricopy' (for rsync) and 'centauridiff'. The
+       absence of option '--master' uses staging on the server side, see
+       'centaurimachines'. Defaults for the 'rsync' password/module to be
+       used are loaded be 'centaurisecrets' at network start time in file
+       'secrets/import/repository.conf'.
+
+terms: Using options to override the defaults:
+
+    distribution         the distribution's nickname     --nickname
+    configuration        the repository domain/realm     --domain
+    rsync server         the master-repository server    --repository
+    rsync module         sync module for authorization   --repository
+
+    Per default the 'rsync server' is the primary domain server and the
+    'rsync module' is taken from the secrets data read from the server
+    via 'centaurisecrets' or <config>-<hostname> if not available. Use
+    opition '--master' to override this as <config> to bypass staging
+    (see 'centaurimachines' for details).
+
+setup: Use the following commands for an initial client setup:
 
        mkdir -p /tmp/xxx/library /tmp/xxx/tools
        scp -p $_repo/library/"*_???" /tmp/xxx/library

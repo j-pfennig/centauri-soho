@@ -1,296 +1,340 @@
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
-#: /var/centauri/tools/centaurikerberos:31
+#: /var/centauri/tools/centaurikerberos:32
 msgid "needs an output file, use '--output'"
 msgstr "Ausgabedatei erforderlich, mit '--output' angeben"
 
-#: /var/centauri/tools/centaurikerberos:35
+#: /var/centauri/tools/centaurikerberos:36
 msgid "Cannot use spaces in output file name"
 msgstr "Name der Ausgabedatei darf keine Leerzeichen enthalten"
 
-#: /var/centauri/tools/centaurikerberos:39
+#: /var/centauri/tools/centaurikerberos:40
 msgid "Replace existing output file"
 msgstr "Bestehende Ausgabedatei ersetzen"
 
-#: /var/centauri/tools/centaurikerberos:53
+#: /var/centauri/tools/centaurikerberos:54
 msgid "invalid verb '%s'"
 msgstr "Ungültiges Verb '%s'"
 
-#: /var/centauri/tools/centaurikerberos:87
+#: /var/centauri/tools/centaurikerberos:88
 msgid "must be run at the MASTER server"
 msgstr "nur auf dem MASTER Server ausführbar"
 
-#: /var/centauri/tools/centaurikerberos:118
+#: /var/centauri/tools/centaurikerberos:119
 msgid "Enter password for '$user'  "
 msgstr "Passwort für Benutzer '$user' eingeben  "
 
-#: /var/centauri/tools/centaurikerberos:125
+#: /var/centauri/tools/centaurikerberos:126
 msgid "Confirm password for '$user'"
 msgstr "Passwort für Benutzer '$user' bestätigen"
 
-#: /var/centauri/tools/centaurikerberos:127
+#: /var/centauri/tools/centaurikerberos:128
 msgid "Password not changed"
 msgstr "Passwort nicht geändert"
 
-#: /var/centauri/tools/centaurikerberos:129
+#: /var/centauri/tools/centaurikerberos:130
 msgid "Passwords are different"
 msgstr "Passwörter sind unterschiedlich"
 
-#: /var/centauri/tools/centaurikerberos:255
+#: /var/centauri/tools/centaurikerberos:265
 msgid "Kerberos support not implemented"
 msgstr "Kerberos Unterstützung nicht implementiert"
 
-#: /var/centauri/tools/centaurikerberos:261
+#: /var/centauri/tools/centaurikerberos:271
 msgid "Install tools"
 msgstr "Werkzeuge Installieren"
 
-#: /var/centauri/tools/centaurikerberos:266
+#: /var/centauri/tools/centaurikerberos:275
 msgid "This computer is a server, nothing to join or register"
 msgstr "Dieser Rechner ist ein Server, nichts zu tun"
 
-#: /var/centauri/tools/centaurikerberos:289
-msgid "Missing public SSH key of server"
-msgstr "Öffentlicher Server SSH-Schlüssel fehlt"
+#: /var/centauri/tools/centaurikerberos:300
+msgid "Missing public SSH key of server, will ask for password"
+msgstr "Öffentlicher Server SSH-Schlüssel fehlt, frage nach Passwort"
 
-#: /var/centauri/tools/centaurikerberos:296
+#: /var/centauri/tools/centaurikerberos:307
 msgid "samba-tool not found"
 msgstr "samba-tool nicht gefunden"
 
-#: /var/centauri/tools/centaurikerberos:296
+#: /var/centauri/tools/centaurikerberos:307
 msgid "samba is not installed"
 msgstr "Samba ist nicht installiert"
 
-#: /var/centauri/tools/centaurikerberos:299
+#: /var/centauri/tools/centaurikerberos:310
 msgid "Register computer"
 msgstr "Rechner registrieren"
 
-#: /var/centauri/tools/centaurikerberos:306
+#: /var/centauri/tools/centaurikerberos:318
 msgid "Restarting sssd service"
 msgstr "Service sssd neu staten"
 
-#: /var/centauri/tools/centaurikerberos:318
-#: /var/centauri/tools/centaurikerberos:1113
+#: /var/centauri/tools/centaurikerberos:323
+msgid "Not restarting sssd service (empty keytab)"
+msgstr "Service 'sssd' nicht neu staten (leere keytab)"
+
+#: /var/centauri/tools/centaurikerberos:333
+#: /var/centauri/tools/centaurikerberos:1163
 msgid "Missing kerberos tools - do nothing"
 msgstr "Kerberos Werkzeuge fehlen - mache nichts"
 
-#: /var/centauri/tools/centaurikerberos:340
+#: /var/centauri/tools/centaurikerberos:343
 msgid "kerberos does not manage DNS records"
 msgstr "Kerberos kennt keine DNS Einträge"
 
-#: /var/centauri/tools/centaurikerberos:440
+#: /var/centauri/tools/centaurikerberos:454
 msgid "Remove '%s'"
 msgstr "Entferne '%s'"
 
-#: /var/centauri/tools/centaurikerberos:442
+#: /var/centauri/tools/centaurikerberos:456
 msgid "Remove '%-12s' '%s'"
 msgstr "Entferne '%-12s' '%s'"
 
-#: /var/centauri/tools/centaurikerberos:459
+#: /var/centauri/tools/centaurikerberos:473
 msgid "Host name is unknown"
 msgstr "Rechnername unbekannt"
 
-#: /var/centauri/tools/centaurikerberos:461
+#: /var/centauri/tools/centaurikerberos:475
 msgid "Expected an IPv4 or IPv6 address as argument"
 msgstr "IPV4 oder IPv6 Adresse als Argument erwartet"
 
-#: /var/centauri/tools/centaurikerberos:477
+#: /var/centauri/tools/centaurikerberos:491
 msgid "Using native samba-tool command:"
 msgstr "Benutze direkten 'samba-tool' Befehl:"
 
-#: /var/centauri/tools/centaurikerberos:486
+#: /var/centauri/tools/centaurikerberos:500
 msgid "kerberos does not manage groups"
 msgstr "Kerberos kennt keine Gruppen"
 
-#: /var/centauri/tools/centaurikerberos:502
+#: /var/centauri/tools/centaurikerberos:516
 msgid "missing unix gid"
 msgstr "UNIX gid fehlt"
 
-#: /var/centauri/tools/centaurikerberos:515
-#: /var/centauri/tools/centaurikerberos:579
-#: /var/centauri/tools/centaurikerberos:694
-#: /var/centauri/tools/centaurikerberos:1229
+#: /var/centauri/tools/centaurikerberos:529
+#: /var/centauri/tools/centaurikerberos:593
+#: /var/centauri/tools/centaurikerberos:708
+#: /var/centauri/tools/centaurikerberos:1279
 msgid "verb '%s' not implemented"
 msgstr "Verb '%s' nicht implementiert"
 
-#: /var/centauri/tools/centaurikerberos:527
+#: /var/centauri/tools/centaurikerberos:541
 msgid "kerberos does not manage hosts"
 msgstr "Kerberos kennt keine Hosts"
 
-#: /var/centauri/tools/centaurikerberos:540
+#: /var/centauri/tools/centaurikerberos:554
 msgid "verb '%s' can't find an IPv4 address"
 msgstr "Verb '%s' kann keine IPv4 Adresse finden"
 
-#: /var/centauri/tools/centaurikerberos:554
+#: /var/centauri/tools/centaurikerberos:568
 msgid "'%s' - host already existing"
 msgstr "'%s' - Rechner existiert schon"
 
-#: /var/centauri/tools/centaurikerberos:566
+#: /var/centauri/tools/centaurikerberos:580
 msgid "'%s' - host does not exist"
 msgstr "'%s' - Rechner existiert nicht"
 
-#: /var/centauri/tools/centaurikerberos:605
+#: /var/centauri/tools/centaurikerberos:619
 msgid "Join samba domain"
 msgstr "Samba Domäne beitreten"
 
-#: /var/centauri/tools/centaurikerberos:656
+#: /var/centauri/tools/centaurikerberos:670
 msgid "processing failed, got no output"
 msgstr "Fehler bei Verarbeitung, habe keine Ausgabe"
 
-#: /var/centauri/tools/centaurikerberos:683
+#: /var/centauri/tools/centaurikerberos:697
 msgid "'%s' - machine account does not exist"
 msgstr "Maschinenkonto '%s' existiert nicht"
 
-#: /var/centauri/tools/centaurikerberos:734
+#: /var/centauri/tools/centaurikerberos:748
 msgid "'%s' - machine could not be deleted"
 msgstr "'%s' - Maschine konnte nicht gelöscht werden"
 
-#: /var/centauri/tools/centaurikerberos:738
+#: /var/centauri/tools/centaurikerberos:752
 msgid "'%s' - machine account not created"
 msgstr "Maschinenkonto '%s' nicht erstellt"
 
-#: /var/centauri/tools/centaurikerberos:754
-#: /var/centauri/tools/centaurikerberos:1223
+#: /var/centauri/tools/centaurikerberos:768
+#: /var/centauri/tools/centaurikerberos:1273
 msgid "'%s' - user does not exist"
 msgstr "Benutzerkonto '%s' existiert nicht"
 
-#: /var/centauri/tools/centaurikerberos:779
+#: /var/centauri/tools/centaurikerberos:793
 msgid "'%s' - password change failed"
 msgstr "'%s' - Passwortänderung fehlgeschlagen"
 
-#: /var/centauri/tools/centaurikerberos:790
+#: /var/centauri/tools/centaurikerberos:804
 msgid "Must not use --kerberos"
 msgstr "Darf --kerberos nicht verwenden"
 
-#: /var/centauri/tools/centaurikerberos:801
+#: /var/centauri/tools/centaurikerberos:815
 msgid "This command will reset all Samba AD/DC data!"
 msgstr "Dieser Befehle setzt alle Samba AD/DC Daten zurück!"
 
-#: /var/centauri/tools/centaurikerberos:802
+#: /var/centauri/tools/centaurikerberos:816
 msgid "No Samba tool must be running. Continue"
 msgstr "Es darf kein Samba Prozess laufen. Weiter"
 
-#: /var/centauri/tools/centaurikerberos:810
+#: /var/centauri/tools/centaurikerberos:824
 msgid "shows running tools. Ignore"
 msgstr "laufende Prozesse gefunden. Ignorieren"
 
-#: /var/centauri/tools/centaurikerberos:822
+#: /var/centauri/tools/centaurikerberos:836
 msgid "To be deleted"
 msgstr "Zu Löschen"
 
-#: /var/centauri/tools/centaurikerberos:828
+#: /var/centauri/tools/centaurikerberos:842
 msgid "Delete the listed files/folder"
 msgstr "Lösche Dateien/Verzeichnisse in Liste"
 
-#: /var/centauri/tools/centaurikerberos:835
+#: /var/centauri/tools/centaurikerberos:849
 msgid "Cleared samba config/state"
 msgstr "Samba Konfiguration/Status zurückgesetzt"
 
-#: /var/centauri/tools/centaurikerberos:874
+#: /var/centauri/tools/centaurikerberos:888
 msgid "Renewed via ticket cache:"
 msgstr "Über Ticket-Zwischenspeicher erneuert:"
 
-#: /var/centauri/tools/centaurikerberos:877
+#: /var/centauri/tools/centaurikerberos:891
 msgid "Deleted ticket cache:"
 msgstr "Ticket-Zwischenspeicher gelöscht:"
 
-#: /var/centauri/tools/centaurikerberos:882
-#: /var/centauri/tools/centaurikerberos:1118
+#: /var/centauri/tools/centaurikerberos:896
+#: /var/centauri/tools/centaurikerberos:1168
 msgid "Renewed existing kerberos ticket"
 msgstr "Existierendes Kerberos Ticket erneuert"
 
-#: /var/centauri/tools/centaurikerberos:952
+#: /var/centauri/tools/centaurikerberos:966
 msgid "Install '%s' on local host"
 msgstr "Installiere '%s' auf lokalem Rechner"
 
-#: /var/centauri/tools/centaurikerberos:957
+#: /var/centauri/tools/centaurikerberos:971
 msgid "Send '%s' to host '%s'"
 msgstr "Sende '%s' an Rechner '%s'"
 
-#: /var/centauri/tools/centaurikerberos:974
+#: /var/centauri/tools/centaurikerberos:988
 msgid "Invalid operation: %s"
 msgstr "Ungültiges Operation: '%s'"
 
-#: /var/centauri/tools/centaurikerberos:1040
+#: /var/centauri/tools/centaurikerberos:1054
 msgid "Create empty keytab"
-msgstr "Erzeuge leere 'keytab' Datei"
+msgstr "Erzeuge leere Schlüsseltabelle"
 
-#: /var/centauri/tools/centaurikerberos:1121
+#: /var/centauri/tools/centaurikerberos:1120
+msgid "<unknown>"
+msgstr "<unbekannt>"
+
+#: /var/centauri/tools/centaurikerberos:1122
+msgid "Missing keytab:"
+msgstr "Schlüsseltabelle fehlt:"
+
+#: /var/centauri/tools/centaurikerberos:1125
+msgid "Kerberos key table:"
+msgstr "Kerberos Schlüsseltabelle:"
+
+#: /var/centauri/tools/centaurikerberos:1130
+msgid "Kerberos ticket:"
+msgstr "Kerberos Ticket:"
+
+#: /var/centauri/tools/centaurikerberos:1136
+msgid "Samba status:"
+msgstr "Samba Status:"
+
+#: /var/centauri/tools/centaurikerberos:1137
+msgid "Installed name:"
+msgstr "Name der Installation:"
+
+#: /var/centauri/tools/centaurikerberos:1138
+msgid "...       type:"
+msgstr "Servertyp ...        :"
+
+#: /var/centauri/tools/centaurikerberos:1141
+msgid "Server renamed, samba-ad-dc must be re-provisioned"
+msgstr "Server umbenannt, samba muß neu eingerichtet werden"
+
+#: /var/centauri/tools/centaurikerberos:1143
+msgid "Client renamed, please run:"
+msgstr "Client umbenannt, reparieren mit:"
+
+#: /var/centauri/tools/centaurikerberos:1147
+msgid "Created samba status file"
+msgstr "Samba Statusdatei erstellt"
+
+#: /var/centauri/tools/centaurikerberos:1171
 msgid "Valid kerberos ticket found - will continue (see --force)"
 msgstr "Habe gültiges Kerberos Ticket - mache weiter (wegen --force)"
 
-#: /var/centauri/tools/centaurikerberos:1123
+#: /var/centauri/tools/centaurikerberos:1173
 msgid "Valid kerberos ticket found - do nothing"
 msgstr "Habe gültiges Kerberos Ticket - mache nichts"
 
-#: /var/centauri/tools/centaurikerberos:1129
+#: /var/centauri/tools/centaurikerberos:1179
 msgid "Missing kerberos configuration - do nothing"
 msgstr "Kerberos Konfiguration fehlt - mache nichts"
 
-#: /var/centauri/tools/centaurikerberos:1136
+#: /var/centauri/tools/centaurikerberos:1186
 msgid "Ignoring non-readable cache:"
 msgstr "Unlesbarer Zwischenspeicher ignoriert:"
 
-#: /var/centauri/tools/centaurikerberos:1140
+#: /var/centauri/tools/centaurikerberos:1190
 msgid "Unknown cache type:"
 msgstr "Unbekannter Zwischenspeichertyp:"
 
-#: /var/centauri/tools/centaurikerberos:1145
+#: /var/centauri/tools/centaurikerberos:1195
 msgid "Cannot get a kerberos ticket - no server available"
 msgstr "Kann kein Kerberos Ticket bekommen - kein verfügbarer Server"
 
-#: /var/centauri/tools/centaurikerberos:1155
+#: /var/centauri/tools/centaurikerberos:1205
 msgid "Got kerberos ticket for '%s' via keytab"
 msgstr "Kerberos Ticket für '%s' über 'keytab' Datei erhalten"
 
-#: /var/centauri/tools/centaurikerberos:1166
+#: /var/centauri/tools/centaurikerberos:1216
 msgid "Cannot get a default kerberos ticket"
 msgstr "Kann kein Platzhalter Kerberos Ticket bekommen"
 
-#: /var/centauri/tools/centaurikerberos:1177
+#: /var/centauri/tools/centaurikerberos:1227
 msgid "No valid kerberos ticket found - trying with principal"
 msgstr "Kein gültiges Kerberos Ticket gefunden - wird mit Principal versucht"
 
-#: /var/centauri/tools/centaurikerberos:1179
+#: /var/centauri/tools/centaurikerberos:1229
 msgid "Please enter your kerberos password (user"
 msgstr "Bitte Ihr Kerberos Passwort eingeben (Benutzer"
 
-#: /var/centauri/tools/centaurikerberos:1183
+#: /var/centauri/tools/centaurikerberos:1233
 msgid "Got kerberos ticket for '%s' via password"
 msgstr "Habe Kerberos Ticket für '%s' über Passwort erhalten"
 
-#: /var/centauri/tools/centaurikerberos:1185
+#: /var/centauri/tools/centaurikerberos:1235
 msgid "Failed to get kerberos ticket - tried principal"
 msgstr "Konnte kein Kerberos Ticket bekommen - versucht mit Principal"
 
-#: /var/centauri/tools/centaurikerberos:1217
+#: /var/centauri/tools/centaurikerberos:1267
 msgid "'%s' - user already existing"
 msgstr "'%s' - Benutzerkonto existiert schon"
 
-#: /var/centauri/tools/centaurikerberos:1268
+#: /var/centauri/tools/centaurikerberos:1318
 msgid "'%s' - user not created"
 msgstr "'%s' - Benutzerkonto nicht erstellt"
 
-#: /var/centauri/tools/centaurikerberos:1274
+#: /var/centauri/tools/centaurikerberos:1324
 msgid "'%s' - user not deleted"
 msgstr "'%s' - Benutzerkonto nicht gelöscht"
 
-#: /var/centauri/tools/centaurikerberos:1371
+#: /var/centauri/tools/centaurikerberos:1423
 msgid "get passwords from seed file"
 msgstr "Passwörter aus Saat-Datein nehmen"
 
-#: /var/centauri/tools/centaurikerberos:1372
+#: /var/centauri/tools/centaurikerberos:1424
 msgid "use native Kerberos (default is Samba-AD)"
 msgstr "wirklich Kerberos verwenden (Voreinstellung ist Samba AD)"
 
-#: /var/centauri/tools/centaurikerberos:1373
+#: /var/centauri/tools/centaurikerberos:1425
 msgid "output file"
 msgstr "Ausgabedatei"
 
-#: /var/centauri/tools/centaurikerberos:1374
+#: /var/centauri/tools/centaurikerberos:1426
 msgid "password for system/AD authorization"
 msgstr "Passwort für System/AD Authorisierung"
 
-#: /var/centauri/tools/centaurikerberos:1375
+#: /var/centauri/tools/centaurikerberos:1427
 msgid "run at MASTER server"
 msgstr "Auf MASTER Server ausführen"

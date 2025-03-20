@@ -1,82 +1,126 @@
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
-#: /var/centauri/library/_centauri_bash_utl:162
-msgid "Not a decimal integer number:"
-msgstr "Keine Dezimalzahl:"
+#: /var/centauri/library/_centauri_bash_utl:50
+msgid "Name"
+msgstr "Name"
 
-#: /var/centauri/library/_centauri_bash_utl:164
-msgid "Not an unsigned decimal number:"
-msgstr "Keine vorzeichenlose Dezimalzahl:"
+#: /var/centauri/library/_centauri_bash_utl:56
+msgid "Hostname"
+msgstr "Rechnername"
 
-#: /var/centauri/library/_centauri_bash_utl:173
-msgid "Unexpected text data, not a number:"
-msgstr "Unpassende Zeichen, keine Zahl:"
+#: /var/centauri/library/_centauri_bash_utl:58
+msgid "Variable name"
+msgstr "Variablenname"
 
-#: /var/centauri/library/_centauri_bash_utl:177
-msgid "Value to small (min is %s):"
-msgstr "Wert zu klein (Min. ist %s):"
+#: /var/centauri/library/_centauri_bash_utl:64
+msgid "%s missing"
+msgstr "%s fehlt"
 
-#: /var/centauri/library/_centauri_bash_utl:179
-msgid "Value to large (max is %s):"
-msgstr "Wert zu gross (Max. ist %s):"
+#: /var/centauri/library/_centauri_bash_utl:66
+msgid "%s contains space characters"
+msgstr "%s enthält Leerzeichen"
 
-#: /var/centauri/library/_centauri_bash_utl:265
+#: /var/centauri/library/_centauri_bash_utl:69
+msgid "%s contains invalid characters"
+msgstr "%s enthält ungültige Zeichen"
+
+#: /var/centauri/library/_centauri_bash_utl:71
+msgid "%s 1st char must be a letter or '_'"
+msgstr "%s muss mit Buchstabe oder '-' anfangen"
+
+#: /var/centauri/library/_centauri_bash_utl:73
+msgid "%s must be lower case"
+msgstr "%s erlaubt nur Kleinschreibung"
+
+#: /var/centauri/library/_centauri_bash_utl:131
+msgid "Not a decimal integer number"
+msgstr "Keine Dezimalzahl"
+
+#: /var/centauri/library/_centauri_bash_utl:133
+msgid "Not an unsigned decimal number"
+msgstr "Keine vorzeichenlose Dezimalzahl"
+
+#: /var/centauri/library/_centauri_bash_utl:142
+msgid "Unexpected text data, not a number"
+msgstr "Unpassende Zeichen, keine Zahl"
+
+#: /var/centauri/library/_centauri_bash_utl:146
+msgid "Value to small (min is %s)"
+msgstr "Wert zu klein (Min. ist %s)"
+
+#: /var/centauri/library/_centauri_bash_utl:148
+msgid "Value to large (max is %s)"
+msgstr "Wert zu gross (Max. ist %s)"
+
+#: /var/centauri/library/_centauri_bash_utl:334
 msgid "unknown option:"
 msgstr "Unbekannte Option:"
 
-#: /var/centauri/library/_centauri_bash_utl:389
+#: /var/centauri/library/_centauri_bash_utl:458
 msgid "zero"
 msgstr "kein|keine"
 
-#: /var/centauri/library/_centauri_bash_utl:394
+#: /var/centauri/library/_centauri_bash_utl:463
 msgid "one"
 msgstr "ein|eine"
 
-#: /var/centauri/library/_centauri_bash_utl:401
+#: /var/centauri/library/_centauri_bash_utl:470
 msgid "s"
 msgstr "n"
 
-#: /var/centauri/library/_centauri_bash_utl:406
+#: /var/centauri/library/_centauri_bash_utl:475
 msgid "line"
 msgstr "Zeile|-g"
 
-#: /var/centauri/library/_centauri_bash_utl:406
+#: /var/centauri/library/_centauri_bash_utl:475
 msgid "lines"
 msgstr "Zeilen|-g"
 
-#: /var/centauri/library/_centauri_bash_utl:406
+#: /var/centauri/library/_centauri_bash_utl:475
 msgid "file"
 msgstr "Datei"
 
-#: /var/centauri/library/_centauri_bash_utl:406
+#: /var/centauri/library/_centauri_bash_utl:475
 msgid "files"
 msgstr "Dateien|-g"
 
-#: /var/centauri/library/_centauri_bash_utl:406
+#: /var/centauri/library/_centauri_bash_utl:475
 msgid "folder"
 msgstr "Verzeichnis"
 
-#: /var/centauri/library/_centauri_bash_utl:406
+#: /var/centauri/library/_centauri_bash_utl:475
 msgid "folders"
 msgstr "Verzeichnisse|-g"
 
-#: /var/centauri/library/_centauri_bash_utl:406
+#: /var/centauri/library/_centauri_bash_utl:475
 msgid "error"
 msgstr "Fehler"
 
-#: /var/centauri/library/_centauri_bash_utl:406
+#: /var/centauri/library/_centauri_bash_utl:475
 msgid "errors"
 msgstr "Fehler"
 
-#: /var/centauri/library/_centauri_bash_utl:518
+#: /var/centauri/library/_centauri_bash_utl:587
 msgid "No '@' in arguments array:"
 msgstr "Kein '@' im Argumentfeld:"
 
-#: /var/centauri/library/_centauri_bash_utl:540
+#: /var/centauri/library/_centauri_bash_utl:609
 msgid "invalid 'wait' result"
 msgstr "Ungültiges 'wait' Ergebnis"
 
-#: /var/centauri/library/_centauri_bash_utl:782
+#: /var/centauri/library/_centauri_bash_utl:851
 msgid "Elapsed time: %s [ms]"
 msgstr "Vergangene Zeit: %s [ms]"
+
+#~ msgid "Enter password"
+#~ msgstr "Passwort eingeben"
+
+#~ msgid "Enter '%s' password"
+#~ msgstr "Passwort für '%s' eingeben"
+
+#~ msgid "Password too short (min %s chars)"
+#~ msgstr "Passwort zu kurz (min %s Zeichen)"
+
+#~ msgid "Password required"
+#~ msgstr "Passwort nötig"

@@ -1,9 +1,9 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # ------------------------------------------------------------------------------
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2018-2024; BSD License"
 CEN_TITLE="Helper to manage script translations"
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m con - '0.13:3' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m con - '0.14:4' || exit 2
 
 # Options
 
@@ -30,20 +30,20 @@ find_script() {
 }
 
 # ------------------------------------------------------------------------------
-#
+# Search 'fuzzy' marks and empty translations
 # ------------------------------------------------------------------------------
 run_check() {
     local mkey mval skip nemp=0 nstr=0 nfuz=0
     while read mkey mval ; do
-        if [ "$mkey" = "msgid" -a "$mval" = "\"\"" ] ; then
+        if [ "$mkey" = 'msgid' -a "$mval" = '""' ] ; then
             skip=1
-        elif  [ "$mkey" = "msgstr" -a -n "$skip" ] ; then
+        elif  [ "$mkey" = 'msgstr' -a -n "$skip" ] ; then
             skip=
-        elif  [ "$mkey" = "msgstr" ] ; then
-            [ "$mval" = "\"\"" ] && nemp=$((nemp + 1))
+        elif  [ "$mkey" = 'msgstr' ] ; then
+            [ "$mval" = '""' ] && ((nemp += 1))
             nstr=$((nstr + 1))
-        elif  [ "${mkey::1}" = "#" -a "${mval##* }" = "fuzzy" ] ; then
-            ((nfuz++))
+        elif  [ "${mkey::1}" = '#' -a "${mval##* }" = 'fuzzy' ] ; then
+            ((nfuz += 1))
         fi
     done < "$1"
     if [ "$nemp" = 0 -a "$nfuz" = 0 ] ; then
@@ -236,23 +236,23 @@ actionJoin() {
 actions() {
     case "$CEN_ACTION" in
 
-    "")
+    '')
         system -c -e msgcat msgfmt msgmerge msguniq ||
             error -i "Please install the GNU gettext-tools" ;;
 
     cou*)
-        invoke "country" -          1 ;;                    # one arg
+        invoke 'country' -          1 ;;                    # one arg
 
     pre*)
-        invoke "prepare" -          1 ;;                    # one arg
+        invoke 'prepare' -          1 ;;                    # one arg
     dum|dump)
-        invoke "dump"    -          1 ;;                    # one arg
+        invoke 'dump'    -          1 ;;                    # one arg
     bui*)
-        invoke "build"   -          1 ;;                    # one arg
+        invoke 'build'   -          1 ;;                    # one arg
     upd*)
-        invoke "update"  -          0 ;;                    # no args
+        invoke 'update'  -          0 ;;                    # no args
     joi|join)
-        invoke "join"    -        2 + ;;                    # 2 or more args
+        invoke 'join'    -        2 + ;;                    # 2 or more args
 
     esac
 }
@@ -264,9 +264,9 @@ options() {
     case "$1" in
 
     -I|--inp*)
-        optarg "input"  []  -s  ;;      # get input folder(s)
+        optarg 'input'  []  -s  ;;      # get input folder(s)
     -O|--out*)
-        optarg "output" -   -d  ;;      # get output folder
+        optarg 'output' -   -d  ;;      # get output folder
 
     esac
 }
@@ -327,21 +327,22 @@ timestamps:
        Unless option --force is used, the tool only acts on updates. The **build** and
        **update** actions set the timestamps of the scripts and their .po file to the
        time of the resulting .mo file. If the .mo file for one language is updated,
-       the correnponding .mo file timestamps for other languages are also set.
+       the corresponding .mo file timestamps for other languages are also set.
 
 external:
        To localize scripts that are not part of \$CEN_ROOT, option --input and
        --output should be used. While --input adds folders to the script search list,
        --output sets the destination locale folder; no timestamp updates are done:
 
-           $ cd \$CEN_ROOT/locale/<country>
-           $ ./$CEN_NAME country <country> --output=<fldr>
-           $ ./$CEN_NAME prep <name> --input=<fldr> --output=<fldr>/locale/<country>
+           $ cd <project>                           # project base folder
+           $ vi <sdir>/<name>                       # script to translate
 
-           $ cd \$CEN_ROOT/locale/<country>
-           $ ./$CEN_NAME dump <name> --input=<fldr> --output=<fldr>/locale/<country>
-           $ edit <fldr>/<name>.po
-           $ ./$CEN_NAME join <name>... --input=<fldr> --out=<fldr>/locale/<country>
+           $ ./$CEN_NAME country <country> --output=.
+           $ ./$CEN_NAME prep <name> --input=<sdir> --output=locale/<country>
+                                                    # update translations
+           $ ./$CEN_NAME dump <name> --input=<sdir> --output=locale/<country>
+           $ edit locale/<country>/<name>.po
+           $ ./$CEN_NAME build --out=locale/<country>
 !EOF
 }
 

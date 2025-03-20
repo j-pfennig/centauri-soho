@@ -850,10 +850,44 @@ rules_global() {
     )
 
     # by port
-    local sext
-    if netoption 'other' && netindex -s sext 'other' ; then
-        warning "Sub-net '<other>' is external, dhcp gets blocked" "$sext"
-        do_tables -a udp_always_drop -- -A INPUT -p udp @dport -s "$sext" -j DROP
+    if [ "${CEN_NET_EXTERNAL:--}" != '-' ] ; then
+
+        if netmask "$CEN_NET_EXTERNAL" "$CEN_NET_NETWORKS" ; then
+            warning -p "External network: dhcp allowed from '%s' only" "$CEN_NET_NETWORKS"
+            do_tables -a udp_always_drop -- -A INPUT -p udp @dport -s "$CEN_NET_NETWORKS" -j ACCEPT
+        else
+            warning -p "External network: dhcp from '%s' gets blocked" "$CEN_NET_EXTERNAL"
+        fi
+        do_tables -a udp_always_drop -- -A INPUT -p udp @dport -s "$CEN_NET_EXTERNAL" -j DROP
+
+# base          external      mask              route  dhcp   config    opt 'other'
+# ------------  ------------  ---- -----------  -----  -----  --------  -----------
+# 10.21.0.0/19  10.21.0.7/19  19   same net     -      -                no
+# 10.21.0.0/19  10.21.0.7/19  19   same net     -      block            explicitly
+# ------------  ------------  ---- -----------  -----  -----  --------  -----------
+# 10.21.0.0/19  10.21.8.0/21  19   ext subnet   no     block  centauri  forced
+# 10.21.8.0/21  10.21.0.0/19  19   base subnet  yes    block  worms     forced
+# ------------  ------------  ---- -----------  -----  -----  --------  -----------
+# 10.21.0.0/19  10.22.0.0/19  n/a  separate     yes    block            forced
+# ------------  ------------  ---- -----------  -----  -----  --------  -----------
+
+# die sachen sind redundant:
+#       option other                wirkt blöde
+#       CEN_NET_EXTERNAL
+#       netmask test auf subnet     langsam
+
+# der Rechner im inneren netz braucht keine Routen aber dhcp blocking
+
+        # external is sub-net of base
+        #   - ignore dhcp input from external
+
+        # base is subnet of external
+        #   - ignore dhcp input from base
+
+        # no overlap
+
+        ### TODO code in centauriroute
+
     fi
     if [ "$DAT_RUN_MODE" = 'home' ] ; then
         do_tables -a udp_always_accept -- -A INPUT -p udp @dport -j ACCEPT

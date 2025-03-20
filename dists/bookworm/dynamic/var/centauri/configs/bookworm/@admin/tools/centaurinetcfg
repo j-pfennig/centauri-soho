@@ -254,10 +254,12 @@ do_config() {
 
     # check for valid network (need netmask bits): <indx> <nnam> <addr>
     ___arg_network() {
-        local indx="$1" nnam="$2" addr="$3" emsg
+        local indx="$1" nnam="$2" addr="$3" emsg # aopt
         if [ -z "$indx" ] ; then
             emsg="Invalid network name:"
         else
+#            [ "$indx" = 0 -o "$indx" = 7 ] && aopt='-a'
+#            netmask $aopt -- "$addr"            # also sets _netparse_addr amd bits
             netmask -- "$addr"                  # also sets _netparse_addr amd bits
             case $? in
             0)  netconv -d -- "$_netmask_mask"  # need to convert to dec -> dotted
@@ -320,10 +322,10 @@ do_config() {
         if [ "${#apar[@]}" -gt 4 ] ; then
             ___error "Too many fields: $1 (dport|sport|daddr|saddr)"
         else
-            ___filter_chk_port "${apar[0]}" "destination" &&
-            ___filter_chk_port "${apar[1]}" "source" &&
-            ___filter_chk_addr "${apar[2]}" "destination" &&
-            ___filter_chk_addr "${apar[3]}" "source" && return 0
+            ___filter_chk_port "${apar[0]}" 'destination' &&
+            ___filter_chk_port "${apar[1]}" 'source' &&
+            ___filter_chk_addr "${apar[2]}" 'destination' &&
+            ___filter_chk_addr "${apar[3]}" 'source' && return 0
         fi
         return 1
     }
@@ -427,7 +429,7 @@ do_config() {
     }
 
     ___config_homedns() {
-        ___arg_rng_chk $# 2 3 "homedns" || return 1
+        ___arg_rng_chk $# 2 3 'homedns' || return 1
         hdns+=("$1 $2 ${3:-$2}")
         ___message "%-10s %s %s %s" 'homedns' "$1" "$2" "${3:-$2}"
     }
@@ -439,20 +441,20 @@ do_config() {
         local ip4a="$1" ; shift
         local name="$1"
 
-        if [ "$maca" = '+' ] ; then             # allow duplicated host entry
-            if [ -n "${DAT_MAP_IP[$name]}" ] ; then
-                ___message "%-10s %-18s %-18s %s   # ignored " 'host' "$maca" "$ip4a" "$name"
-                return
-            fi
-            maca='-'
-        fi
-
         if [ "$ip4a" = '+' ] ; then
             ip4a="${_netparse_addr##*.}" ; ((ip4a += 1))
             ip4a="${_netparse_addr%.*}.$ip4a"
             _netparse_addr="$ip4a"
         elif [ "$ip4a" != '-' ] ; then
             ___arg_address "$ip4a" ; ip4a="$_netparse_addr"
+        fi
+
+        if [ "$maca" = '+' ] ; then             # allow duplicated host entry
+            if [ -n "${DAT_MAP_IP[$name]}" ] || [ -n "${DAT_MAP_NAME[$ip4a]}" ] ; then
+                ___message "%-10s %-18s %-18s %s   # ignored " 'host' "$maca" "$ip4a" "$name"
+                return
+            fi
+            maca='-'
         fi
 
         if [ "$name" = "$CEN_NET_SERVER_GEN" ] ; then
@@ -468,7 +470,7 @@ do_config() {
     }
 
     ___config_iface() {
-        ___arg_rng_chk $# 3 3 "iface" || return 1
+        ___arg_rng_chk $# 3 3 'iface' || return 1
         case "$1" in
         eth[01]|wlan[01])   ;;
         *)      ___error "Invalid interface name:" "$1"
@@ -485,35 +487,45 @@ do_config() {
 
     ___config_network() {
         ___arg_rng_chk $# 2 2 'network' || return 1
+        [ "$2" = '-' ] && return 0
+
         local indx
         case "$1" in
         *.*)        indx=0 ; CEN_NET_DOMAIN="$1" ;;
-        external)   [ "${2:--}" = '-' ] && return   # conditional override ...
-                    netindex 'other' -f ; indx="$_netindex"
-                    CEN_NET_NETWORKS[indx]= ;;      # allow to override
+        external)   indx=7 ;;
         *)          netindex "$1" && indx="$_netindex"
         esac
-        [ "$2" = '-' ] && return 0
-
         ___arg_network "$indx" "$1" "$2" || quit -e
+
         if [ "$indx" = 0 ] ; then
             CEN_NET_NETWORKS=("$_netparse_addr/$_netparse_bits")
             CEN_NET_NETMASK="$_netparse_mask"
             CEN_NET_NETBITS="$_netparse_bits"
         elif [ -z "$CEN_NET_NETWORKS" ] ; then
-            ___error "No base network defined:" "$1" || quit -e
+             ___error "No base network defined:" "$1" || quit -e
+        elif [ "$1" = 'external' ] ; then
+               if [ "$_netparse_bits" -lt "$CEN_NET_NETBITS" ] ; then
+                    CEN_NET_NETBITS="$_netparse_bits"
+                    CEN_NET_NETMASK="$_netparse_mask"
+               fi
+               local over=0
+               CEN_NET_EXTERNAL="$_netparse_addr/$_netparse_bits"
+               netmask "$CEN_NET_NETWORKS" "$CEN_NET_EXTERNAL" && ((over += 1))
+               netmask "$CEN_NET_EXTERNAL" "$CEN_NET_NETWORKS" && ((over += 2))
+               case "$over" in
+               1)   message -p $"External network '%s' is sub-net of base '%s'" \
+                               "$CEN_NET_EXTERNAL" "$CEN_NET_NETWORKS" ;;
+               2)   message -p $"Base network '%s' is sub-net of external '%s'" \
+                               "$CEN_NET_NETWORKS" "$CEN_NET_EXTERNAL" ;;
+               3)   __error $"Base and external are the same network" ;;
+               *)   __error $"Base and external network must overlap completely"
+               esac
+               CEN_NET_NETWORKS[7]="$CEN_NET_EXTERNAL"
         elif [ -n "${CEN_NET_NETWORKS[indx]}" ] ; then
             ___error "Network already defined:" "$1"
         elif ! netmask -- "$CEN_NET_NETWORKS" "$2" ; then
-            if [ "$indx" = 7 ] ; then
-                message -a "Using external sub-net:" "$2"
-                CEN_NET_EXTERNAL="$2"
-                CEN_NET_NETWORKS[indx]="$_netparse_addr/$_netparse_bits"
-            else
-                ___error "Sub-net not in base network:" "$1"
-            fi
+            ___error "Sub-net not in base network:" "$1"
         else
-            ___arg_network "$indx" "$1" "$2"
             CEN_NET_NETWORKS[indx]="$_netparse_addr/$_netparse_bits"
         fi
         ___message "%-10s %-16s %s" 'network' "$1" "$2"
@@ -1629,7 +1641,7 @@ actionStatus() {
 
     ___status_print() {
         local idnt
-        [ "$1" = "-i" ] && idnt="\n                            " && shift
+        [ "$1" = '-i' ] && idnt="\n                            " && shift
         printf "$idnt%-15s %-15s %-15s %-15s" "$@"
     }
 
@@ -1652,7 +1664,7 @@ actionStatus() {
     ___status_homedns() {
         local name opti
         for name in "${CEN_NET_HOMEDNS[@]}" ; do
-            ___status_print $opti $name ; opti="-i"
+            ___status_print $opti $name ; opti='-i'
         done
     }
 
@@ -1669,6 +1681,17 @@ actionStatus() {
         CEN_NET_ADDR_IPLIST $(___status_print ${CEN_NET_ADDR_IPLIST[@]})
 
 !EOF
+    if [ -n "$CEN_NET_NETWORKS" ] ; then
+        local inet iext
+        netmask "$CEN_NET_NETWORKS" "${CEN_NET_EXTERNAL%/*}" && iext="(subnet)"
+        netmask "$CEN_NET_EXTERNAL" "${CEN_NET_NETWORKS%/*}" && inet="(subnet)"
+        create -c <<!EOF
+        CEN_NET_NETWORKS    $(___status_print "$CEN_NET_NETWORKS" "$inet")
+        CEN_NET_EXTERNAL    $(___status_print "$CEN_NET_EXTERNAL" "$iext")
+
+!EOF
+    fi
+
     if ! netserver ; then
         echo -e "    No network status file: $CEN_NET_FILE_STAT\n"
         return
@@ -1713,8 +1736,8 @@ actionSwitch() {
         else
             netlink -k -m '/etc/nsswitch.conf' '.' "$snam"
         fi
-        [ $? = 0 -a -n "$_netlink" ] && nscd="-f"
-        [ -n "$nscd" ] && message "nsswitch.conf switched to: $_netlink_suff"
+        [ $? = 0 -a -n "$_netlink" ] && nscd='-f'
+        [ -n "$nscd" ] && message -c "nsswitch.conf switched to" "$_netlink_suff"
     fi
 
     # switch /etc/hosts and (re)create resolv.conf
@@ -1740,16 +1763,17 @@ actionValidate() {
     cac*)   coca=1 ;;
     lis*)   DAT_LIST=1 ;;
     noc*)   ;;
-    *)      set -x ; invoke -a 'cache|nocache|list' ; return
+    *)      invoke -a 'cache|nocache|list' ; return
     esac
     do_config -v
-    error -t || args="Error(s) found"
     [ -n "$DAT_LIST" ] && return
+
+    error -t || args="Error(s) found"
+    message "File '$CEN_OPT_CONFIG' [$DAT_CONFIG_LINES lines]: $args"
+    error -t || return
 
     local name="'${CFG_SERVER_DEF}.$CEN_NET_DOMAIN'"
     [ -n "$CFG_SERVER_DEF" ] || name="(none)"
-    message "File '$CEN_OPT_CONFIG' [$DAT_CONFIG_LINES lines]: $args"
-    error -t || return
     message -i -p "Server %-10s =>  %s" "'$CEN_NET_SERVER_GEN'" "$name"
     message -i -p "Router %-10s =>  '%s'" "'$CEN_NET_ROUTER_GEN'" "${CEN_NET_ROUTER_DEF}.$CEN_NET_DOMAIN"
     [ -n "$coca" ] && do_coca

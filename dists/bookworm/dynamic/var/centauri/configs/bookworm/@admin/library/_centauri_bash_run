@@ -566,7 +566,7 @@ launcher() {
 
     $CEN_TRACE2 -c ' exec' -- "$_name  =>  ${_vres[*]}"
     [ -n "$_onot" ] && return 0
-    _cen_run_command  $_oerr "${_orun[@]}" $_odsk -- "${_vres[@]}" || return $?
+    _cen_run_command $_oerr "${_orun[@]}" $_odsk -- "${_vres[@]}" || return $?
     return 0
 }
 
@@ -1169,7 +1169,7 @@ terminal() {
         while [ -n "$CEN_DISPLAY" ] ; do
             local _pcmd="/proc/$_ppid/cmdline" ; [ -r "$_pcmd" ] || break
             read -r -d '' _pcmd <"$_pcmd"
-            [ "${_pcmd::1}" = "/" -o "${_pcmd::2}" = "./" ] && _pcmd="${_pcmd##*/}" ;
+            [ "${_pcmd::1}" = '/' -o "${_pcmd::2}" = './' ] && _pcmd="${_pcmd##*/}" ;
             $CEN_TRACE2 -a -c " parent" -- "$_pcmd"
 
             # login: no emulator needed
@@ -1285,9 +1285,8 @@ _cen_run_command() {
         *)          _opts+=("$1") ;;
         esac ; shift
     done
-
     case "$_mode${1::1}" in
-    0/) system -n "${_opts[@]}" -- "$@" || _stat=$?
+    0/) system -n $_oerr -- "$@" || _stat=$?
         ;;
     1/) quit -h                             # must run hooks before exec
         system $_oerr -n -q -x -- "$@" || _stat=$?
