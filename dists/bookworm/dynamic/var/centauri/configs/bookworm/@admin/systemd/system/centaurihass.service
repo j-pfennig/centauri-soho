@@ -11,12 +11,16 @@ ConditionPathExists=/opt/HomeAssistant/homeassistant/service-enabled
 
 [Service]
 User=homeassistant
-#MemoryMax=500M
 TimeoutSec=60
 IgnoreSIGPIPE=no
 KillMode=process
 GuessMainPID=no
 RemainAfterExit=no
+
+Nice=-10
+IOSchedulingClass=realtime
+#IOSchedulingClass=best-effort
+IOSchedulingPriority=3
 ExecStart=/opt/HomeAssistant/homeassistant/bin/hass
 
 Restart=on-failure

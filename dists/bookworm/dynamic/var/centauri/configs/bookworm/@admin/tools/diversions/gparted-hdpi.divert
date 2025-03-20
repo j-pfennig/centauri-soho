@@ -1,8 +1,8 @@
-status=off
+status=scale
 target=/usr/sbin/gparted
 
 divert() {
     # read GDK_DPI_SCALE
-    [ -r /etc/bash.local ] && . /etc/bash.local
+    [ -r /etc/centauridisplay ] && . /etc/centauridisplay
     exec /usr/sbin/gparted.distrib "$@"
 }

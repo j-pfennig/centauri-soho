@@ -7,7 +7,7 @@ CEN_TITLE="Session configuration script"
 PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t -m sys -y - '0.18:4' 2 || exit 2
 
 # Data
-# context -v 2      ##### DEBUG
+#context -v 2      ##### DEBUG
 
 # KDE paths (_centauri_bash_sys loaded via '-m sys' sets version)
 if [ "${CEN_SYS_KDEVERS::3}" = '004' ] ; then
@@ -65,7 +65,7 @@ ___xlat_find() {
 }
 
 # ------------------------------------------------------------------------------
-# autologin helper: [<user> [ntty>]]
+# autologin helper: [<user> [<ntty>]]
 # ------------------------------------------------------------------------------
 actionAutologin() {
     local word wrds home user="${1:-}" ntty="${2:-6}"
@@ -91,25 +91,19 @@ actionAutologin() {
 # Bash login at tty[3-6]: -no arg-
 # ------------------------------------------------------------------------------
 actionBashrc() {
+    # /dev/null can be used to disable starting a display server
     local auto="$HOME/$DAT_AUTOLOGIN"
+    [ "$auto" -ef '/dev/null' ] && return           # disabled, do nothing
 
     # tty6 is used via centauriautologin service
     if [ "$XDG_VTNR" = 6 ] && [ -x "$auto" ] ; then
-        system -e -- chvt 6
         system -e -x -- "$auto"
-        error -s 127 ; return           # used by /etc/bash.centauri: no logout
-
-    # /dev/null can be used to disable starting a display server
-    elif ! [ "$auto" -ef '/dev/null' ] ; then
-        embed -x centauridisplay -q -C0
-        if [ $? = 127 ] ; then
-            error -s 127 ; return       # used by /etc/bash.centauri: no logout
-        fi
+    # start a display server
     else
-        error -s 127 ; return           # used by /etc/bash.centauri: no logout
+        embed -x centauridisplay -q -C0 -M- 
     fi
 
-    error -t || timer -w 5              # pause after error
+    timer -w 5                                      # pause after error
 }
 
 # ------------------------------------------------------------------------------
@@ -548,7 +542,7 @@ actionLogin() {
         folder -m '.config/pulse' && symlink -m '/etc/pulse/cookie' '.config/pulse/cookie'
     fi
 
-    # setup folders, get kerberos ticket
+    # setup folders
     actionRoaming
 
     # pending issue?

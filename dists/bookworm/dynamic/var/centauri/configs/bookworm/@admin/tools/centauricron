@@ -1,13 +1,13 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
 CEN_TITLE="Tool to run Centauri Cron Jobs"
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2025; BSD License"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.34:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.35:4' || exit 2
 
 # Data
-DAT_LOGDIR="/var/log"
+DAT_LOGDIR='/var/log'
 DAT_MIDNIGHT=
 DAT_TRIM_FLAG=
 DAT_UNMOUNT_FLAG=
@@ -17,6 +17,7 @@ DAT_OFS_OUTPUT=0                        # initial file size
 DAT_QUIT_LIST=                          # for exit_hook
 DAT_KEEP_PIDFILE=                       # don't delete pidfile
 DAT_ROLE=                               # from CEN_NET_ROLE
+DAT_RUNLEVEL=                           # see runlevel_check
 
 # data for extra options
 CEN_OPT_APPEND=                         # see --append
@@ -37,19 +38,19 @@ export PATH="$CEN_TOOLS:$PATH"
 default_hourly() {
     ### update private repositories
     [ -e "$CEN_ROOT/machines/rsyncd.conf" ] &&
-        execute -s 3 centaurimachines -U -s
+        execute -r 4 -s 3 centaurimachines -U -s
 
     if [ "$DAT_ROLE" != 'UNKNOWN' ] ; then
 
         ### process mail send queue
-        execute -s 2 centaurimail --silent queue
+        execute -r 4 -s 2 centaurimail --silent queue
     fi
 
     ### update network folder
-    execute -s 2 centauridata update
+    execute -r 4 -s 2 centauridata update
 
     ### umount stale encfs
-    execute -s 2 centauriencfs cleanup
+    execute -r 4 -s 2 centauriencfs cleanup
 
     ### umount autofs volumes and spindown disks
     DAT_UNMOUNT_FLAG=1
@@ -80,13 +81,13 @@ default_daily() {
         header "Update Mail and Repository"
 
         ### run a cyrus db check
-        execute -s 5 centaurimail --silent backup
+        execute -r 4 -s 5 centaurimail --silent backup
 
         ### process mail send queue
-        execute -s 5 centaurimail --silent queue
+        execute -r 4 -s 5 centaurimail --silent queue
 
         ### fetch mail, prune delivery
-        execute -s 5 centaurimail --zombie --silent fetch -- prune -- index
+        execute -r 4 -s 5 centaurimail --zombie --silent fetch -- prune -- index
 
         ### synchronize config files
         execute -s 5 centauriconfig cron
@@ -114,7 +115,7 @@ default_weekly() {
     execute -s 5 centauridata week
 
     ### run short or long selftests
-    execute -s 6 centaurismart -s test run
+    execute -r 4 -s 6 centaurismart -s test run
 
     # repeat some daily actions ...
 
@@ -137,7 +138,7 @@ default_monthly() {
     execute -s 5 centauridata month
 
     ### set flag for long selftests
-    execute -s 6 centaurismart -s test long
+    execute -r 4 -s 6 centaurismart -s test long
 
     # repeat some daily actions ...
 
@@ -198,24 +199,32 @@ nodefault() {
 }
 
 header() {
-    [ "$CEN_ACTION" = "hourly" ] && return
-    [ -z "$CEN_AUTOIND" ] && message -i " "
+    [ "$CEN_ACTION" = 'hourly' ] && return
+    #[ -z "$CEN_AUTOIND" ] &&
+    message -i ' '
     message -- "=== $* (status $CEN_EXIT) ==="
-    message -a " " ; CEN_AUTOIND=
+    message -i ; CEN_AUTOIND=
 }
 
-# find a script and run: [-c|-s <status>] <name> <arg>...
+# find a script and run: [-c|-s <status>] [-o] [-r <minl>] <name> <arg>...
 execute() {
-    local stat=9 sbak="$CEN_EXIT" path fopt
-    while [ "${1::1}" = "-" ] ; do
+    local stat=9 sbak="$CEN_EXIT" path fopt minl
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -c)   stat='-' ;;                           # ignore error
         -o)   fopt=1 ;;
+        -r)   shift ; minl="$1" ;;
         -s)   shift ; stat="$1" ;;                  # status to set on error
         *)    _cen_abort - "$1"
         esac ; shift
     done
+
+    # check minimum runlevel
+    if [ "${minl:--}" != '-' ] && ! runlevel_check "$minl" ; then
+        trace -c "Runlevel to low" "$*"
+        return 1
+    fi
 
     # use the PATH variable to locate a centauri script for embedding
     if sysfind -s path -p "$CEN_TOOLS:$CEN_TOOLS/utilities" -- "$1" ; then
@@ -232,7 +241,7 @@ execute() {
     [ -z "$stat" ] && return 0
     if [ "$stat" = '-' ] ; then                     # reset error
         CEN_EXIT="$sbak"
-        [ "$CEN_EXIT" = "0" ] && error -c
+        [ "$CEN_EXIT" = 0 ] && error -c
     else
         status "$stat" "$path"
     fi
@@ -257,7 +266,7 @@ status() {
 # ------------------------------------------------------------------------------
 logger_mesg() {
     local fqui fsta mesg faci="cron.info"
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -q)   fqui=1 ;;
@@ -333,7 +342,7 @@ list_function() {
     }
 
     # used recursively for user and default function
-    if [ "$1" != "-" ] ; then
+    if [ "$1" != '-' ] ; then
         [ -n "$2" ] && message "The user hook implementation is:"
         local line sifs="$IFS" ; IFS=$'\n'
         while read line ; do
@@ -345,9 +354,17 @@ $(___list "$1")
     fi
 
     # default function
-    [ "${2:--}" = "-" ] && return
+    [ "${2:--}" = '-' ] && return
     message "The default implementation is:"
     list_function "$2"
+}
+
+# check for a minimum runlevel: <minl>
+runlevel_check() {
+    if [ -z "$DAT_RUNLEVEL" ] ; then
+        runservice level ; DAT_RUNLEVEL="$CEN_RUNSERVICE"
+    fi
+    [ "$1" -le "$DAT_RUNLEVEL" ]                # return status
 }
 
 # ------------------------------------------------------------------------------
@@ -444,7 +461,7 @@ trimssd() {
         trace -a "Mounted: $irun -> $CEN_MOUNT_DEV ($idev)"
 
         [ -r "/sys/block/$idev/queue/rotational" ] || continue
-        [ "$(</sys/block/$idev/queue/rotational)" = "0" ] || continue
+        [ "$(</sys/block/$idev/queue/rotational)" = 0 ] || continue
         ((icnt += 1)) ; ivol+=("$irun")
     done
 
@@ -577,13 +594,13 @@ options() {
         trace -a -c "network role" "$DAT_ROLE" ;;
 
     -A|--app*)
-        optarg "append"     CEN_OPT_APPEND ;;               # a simple flag
+        optarg 'append'     -                 ;;            # a simple flag
     -C|--con*)
-        optarg "config"     CEN_OPT_CONFIG -t ;;            # any text
+        optarg 'config'     -              -t ;;            # any text
     -L|--log*)
-        optarg "logmax"     CEN_OPT_LOGMAX -n ;;            # a number
+        optarg 'logmax'     -              -n ;;            # a number
     -O|--out*)
-        optarg "output"     CEN_OPT_OUTPUT -t ;;            # any text
+        optarg 'output'     -              -t ;;            # any text
 
     esac
 }
@@ -595,7 +612,7 @@ actions() {
     case "$CEN_ACTION" in
 
     # before 1st action ...
-    "") context -r
+    '') context -r
         [ -r "$CEN_OPT_CONFIG" ] || fatal "Cannot read: $CEN_OPT_CONFIG"
         . "$CEN_OPT_CONFIG" || fatal "Failed to load: $CEN_OPT_CONFIG"
         DAT_QUIT_LIST="$CEN_HOOK_QUIT" ; CEN_HOOK_QUIT=exit_hook
@@ -610,7 +627,7 @@ actions() {
         CEN_OPT_SYSLOG=0                        # disable auto syslog output
 
         # where to write
-        if [ "$CEN_OPT_OUTPUT" = "-"  -o -n "$CEN_OPT_DRYRUN" ] ; then
+        if [ "$CEN_OPT_OUTPUT" = '-'  -o -n "$CEN_OPT_DRYRUN" ] ; then
             CEN_OPT_OUTPUT=
         elif [ -z "$CEN_OPT_OUTPUT" ] ; then
             system -f -p -s CEN_OPT_OUTPUT -- mktemp --tmpdir "${CEN_NAME}_XXXXXX"
@@ -622,27 +639,27 @@ actions() {
         fi ;;
 
     hou*)
-        invoke "hourly"    actionCron 0 ;;      # no args
+        invoke 'hourly'    actionCron 0 ;;      # no args
     da[iy]*)
-        invoke "daily"     actionCron 0 ;;      # no args
+        invoke 'daily'     actionCron 0 ;;      # no args
     wee*)
-        invoke "weekly"    actionCron 0 ;;      # no args
+        invoke 'weekly'    actionCron 0 ;;      # no args
     mon*)
-        invoke "monthly"   actionCron 0 ;;      # no args
+        invoke 'monthly'   actionCron 0 ;;      # no args
 
     boo*|reb*)
-        invoke "boot"      actionCron 0 ;;      # no args
+        invoke 'boot'      actionCron 0 ;;      # no args
     mid*)
-        invoke "midnight"  actionCron 0 ;;      # no args
+        invoke 'midnight'  actionCron 0 ;;      # no args
     shu*)
-        invoke "shutdown"  -        0 1 ;;      # optional arg
+        invoke 'shutdown'  -        0 1 ;;      # optional arg
     wai*)
-        invoke "wait"      -        0 1 ;;
+        invoke 'wait'      -        0 1 ;;
 
     spi*)
-        invoke "spindown"  spindown   0 ;;      # DEBUG
+        invoke 'spindown'  spindown   0 ;;      # DEBUG
     tri*)
-        invoke "trimssd"   trimssd    0 ;;      # DEBUG
+        invoke 'trimssd'   trimssd    0 ;;      # DEBUG
     esac
 }
 

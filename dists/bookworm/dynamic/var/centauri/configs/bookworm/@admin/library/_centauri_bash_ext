@@ -772,6 +772,11 @@ writeline() {
 #.          echo two >&$fhan                # second output line
 #.          redirect -v fhan                # closes handle from fhan
 #
+#.          redirect -h 1 -x "logfile"      # stdout to file, truncate
+#.          exec 1>&2                       # stderr to file
+#.          echo stdout ; echo stderr >&2
+#           redirect -h 1 ; redirect -h 2   # back to stdout/stderr
+#
 #+The function can attempt to find a free file handle, but this is not
 # thread-safe (bash subshell or co-process).
 #
@@ -787,7 +792,7 @@ redirect() {
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
-      -a)   shift ; _sout="${1:--}" ; _oapp="-a" _oaop=">>" ;;
+      -a)   shift ; _sout="${1:--}" ; _oapp='-a' ; _oaop='>>' ;;
       -f)   shift ; ((_ocnt += 1)) ; _osav="${1:--}" ; _ofnd=1 ;;
       -h)   shift ; ((_ocnt += 1)) ; _hndl="$1" ;;
       -i)   shift ; _sinp="${1:--}" ;;
@@ -795,11 +800,11 @@ redirect() {
       -q)   _oerr="$CEN_TRACE" ;;
       -s)   _otra=: ;;
       -v)   shift ; ((_ocnt += 1)) ; _osav="${1:--}" ;;
-      -x)   shift ; _sout="${1:--}" ; _oapp="-a" _oaop=">" ;;
+      -x)   shift ; _sout="${1:--}" ; _oapp='-a' ; _oaop='>' ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done
-    [ "$_ocnt" = 1 ] || _cen_abort - '-f|-h|-v'
+    [ "$_ocnt" = 1 ] || _cen_abort @ '-f|-h|-v'
     local -n _ovar ; [ -n "$_osav" ] && _ovar="$_osav"
 
     # close handle
@@ -810,9 +815,13 @@ redirect() {
         CEN_REDIRECT=
         [ -z "$_hndl" ] && return 0
         [ -e "/dev/fd/$_hndl" ] || return 0
-        $_otra -a "redirect:" $"closing file handle:" "$_hndl"
+        $_otra -a  -c ' ' $"closing file handle:" "$_hndl"
         [ "$CEN_VERB" -gt 2 ] && dryrun -r "exec $_hndl>&-"
-        eval exec "$_hndl>&-" ; return
+        case "$_hndl" in
+        1) exec 1>&$CEN_STDOUT ;;
+        2) exec 2>&$CEN_STDERR ;;
+        *) eval exec "$_hndl>&-"
+        esac ; return
     fi
 
     # search free handle
@@ -826,7 +835,7 @@ redirect() {
             $_oerr $"Got no variable to save file handle" ; return 1
         else
             _cen_handle _hndl
-            $_otra -a "redirect:" $"found file handle:" "$_hndl" "${_sinp:-$_sout}"
+            $_otra -a -c ' ' $"found file handle:" "$_hndl" "${_sinp:-$_sout}"
             _ovar="$_hndl" ; [ -n "$_ofnd" ] && return 0
         fi
     fi
@@ -1074,7 +1083,7 @@ resolve() {
       -a)   shift ; _vset= ; local -n _vvaa="$1" ; _vvaa=() ;;
       -c)   _ocan='-e' ;;
       -e)   _xchk=1 ;;
-      -f)   _xerr=fatal ; _osys="-f -p" ;;
+      -f)   _xerr=fatal ; _osys='-f -p' ;;
       -l)   _olnk='-l' ;;
       -m)   _ocan='-m' ;;
       -p)   _pret=1 ;;
@@ -1094,24 +1103,16 @@ resolve() {
 
     # get executable - use _centauri_bash_lib paths and resolve argv0 if needed
     if [ -n "$_oexe" ] ; then
-        local _logi _self="$CEN_TOOLS:$CEN_LIBRARY:${BASH_ARGV0%/*}"
-        [ -n "$1" ] && PATH="$PATH:$_self" sysrun -q -r -a _logi -- type -f -p -- "$1"
-        if [ -z "$_logi" ] ; then
-            [ -h "$BASH_ARGV0" ] && _cen_path_realp -c "$BASH_ARGV0" || _logi="$BASH_ARGV0"
-            case "$_logi" in
-            /*/*)   _self="${_logi%/*}" ;;
-            /*)     _self='/' ;;
-            */*)    _self="$PWD/${_logi%/*}" ;;
-            *)      _self="$PWD"
-            esac
-            set -- "$_self${1:+/}$1"
-            if [ "$_oexe" = 1 ] ; then
-                [ -x "$1" ] || _nret=1
-            else
-                [ -e "$1" ] || _nret=1
-            fi
+        local _logi
+        [ -n "$1" ] && PATH+="$CEN_TOOLS:$CEN_LIBRARY:${BASH_ARGV0%/*}" \
+                       sysrun -q -r -a _logi -- type -f -p -- "$1"
+        [ -z "$_logi" ] && _logi="$BASH_ARGV0"
+        [ -h "$_logi" ] && _cen_path_realp -c "$_logi"
+        set -- "$_logi"
+        if [ "$_oexe" = 1 ] ; then
+            [ -x "$1" ] || _nret=1
         else
-            set -- "$_logi"
+            [ -e "$1" ] || _nret=1
         fi
     fi
 
@@ -1157,7 +1158,7 @@ resolve() {
 
     # join array into string and return status
     if [ -n "$_vset" ] ; then
-        splitjoin -j "$_vset" -d "\n" -- "$@"
+        splitjoin -j "$_vset" -d '\n' -- "$@"
     else
         _vvaa=("$@")
     fi
@@ -1702,7 +1703,7 @@ sysrun() {
                         _xtmp="$_xcmd"
                     # if it's a shell function then try dynamic load
                     elif PATH= type -t -- "$_xcmd" >/dev/null ; then
-                        [ -n "${CEN_MODULES["_centauri_bash_dyn"]}" ] &&
+                        [ -n "${CEN_MODULES['_centauri_bash_dyn']}" ] &&
                             _cen_dyn_builtin "$_xcmd" >/dev/null && _xtmp="$_xcmd"
                     fi
                 fi
@@ -1725,7 +1726,7 @@ sysrun() {
         if [ -n "$_opre" ] ; then
             local _afix=()
             while [ $# -gt 0 ] ; do
-                if [ "$1" == "--" ] ; then
+                if [ "$1" == '--' ] ; then
                     if [ "${2::1}" = '-' ] ; then
                         _afix+=("./$2") ; shift
                     fi

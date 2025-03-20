@@ -39,7 +39,7 @@ condition cget any
 condition cput family debian
 
     shared  /etc/default        centauriconfig centaurinetcfg centauriusers
-    private /etc/default        centauriinfo centaurisysinit
+    private /etc/default        centauriinfo centauristartup centaurisysinit
     shared  /usr/lib/sysusers.d centauri.conf
 
 # ------------------------------------------------------------------------------

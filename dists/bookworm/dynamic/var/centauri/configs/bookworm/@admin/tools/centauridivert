@@ -1,12 +1,13 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2018-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2018-2025; BSD License"
 CEN_TITLE="Helper for dpkg-divert"
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f - '0.13:2' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f - '0.14:4' || exit 2
 
 # Data
 DAT_CONFIG_DIR="$CEN_TOOLS/diversions"
+DAT_DISPLAY='/etc/centauridisplay'
 
 # ------------------------------------------------------------------------------
 # helpers
@@ -37,8 +38,17 @@ get_state() {
     # update
     _state=
     local divert="$2" status="${3:-on}" item="$4"
-    [ "$status" = "on"  -a "$CEN_ACTION" = "remove" ] && status="off"
-    [ "$status" = "off" -a "$CEN_ACTION" = "add"    ] && status="on"
+
+    case "$status" in
+    scale1)
+        [ "$GDK_SCALE" = 1 ] && status='on' || status='off' ;;
+    scale2)
+        [ "$GDK_SCALE" = 2 ] && status='on' || status='off' ;;
+    scale*)
+        [ -n "$GDK_SCALE" ] && status='on' || status='off' ;;
+    esac
+    [ "$status" = 'on'  -a "$CEN_ACTION" = 'remove' ] && status='off'
+    [ "$status" = 'off' -a "$CEN_ACTION" = 'add'    ] && status='on'
 
     if [ "$status" = "ignore" ] ; then
         _state="ignore" ; return
@@ -51,24 +61,26 @@ get_state() {
         _state="error" ; return
     fi
     if [ -e "$1.distrib" ] ; then
-        _state="on"
-        if [ "$status" = "off" ] ; then
-            _state="remove"
+        _state='on'
+        if [ "$status" = 'off' ] ; then
+            _state='remove'
         elif [ -z "$divert" ] && [ "$item" -nt "$1" ] ; then
             _state="update"
         fi
     else
         _state="pending"
-        [ "$status" = "off" ] && _state="off"
+        [ "$status" = 'off' ] && _state='off'
     fi
 }
 
 # loop over items: <callback>
 run_configs() {
+    [ -z "$GDK_SCALE" ] && [ -r "$DAT_DISPLAY" ] &&
+        source "$DAT_DISPLAY"
     local item divert target status
     for item in "${_configs[@]}" ; do
         target= ; divert= ; status= ; unset -f divert
-        . "$item"
+        source "$item"
 
         if [ -z "$target" ] ; then
             error "Missing 'target=' in: $item"
@@ -168,7 +180,7 @@ actionDelete() {
     if [ ! -e "$file" ] ; then
         invoke -w "Diversion '$1' not configured" ; return
     fi
-    unset -f divert ; . "$file"
+    unset -f divert ; source "$file"
 
     run_remove "$1" - "$target"             # remove diversion
     remove -- "$file"                       # remove divert file
@@ -199,16 +211,16 @@ actionUpdate() {
         local name item="$1" divert="$2" target="$3" status="$4"
         name="${item##*/}" ; name="${name%.*}"
         get_state "$target" "$divert" "$status" "$item"
-        if   [ "$_state" = "broken" ] ; then
+        if   [ "$_state" = 'broken' ] ; then
             run_remove "$@"
-            [ "$CEN_ACTION" = "remove" ] || run_add "$@"
-        elif [ "$_state" = "pending" ] ; then
-            [ "$CEN_ACTION" = "remove" ] || run_add "$@"
-        elif [ "$_state" = "remove" ] ; then
-            [ "$CEN_ACTION" = "add" ] || run_remove "$@"
-        elif [ "$_state" = "update" ] ; then
-            [ "$CEN_ACTION" = "add" ] || run_remove "$@"
-            [ "$CEN_ACTION" = "remove" ] || run_add "$@"
+            [ "$CEN_ACTION" = 'remove' ] || run_add "$@"
+        elif [ "$_state" = 'pending' ] ; then
+            [ "$CEN_ACTION" = 'remove' ] || run_add "$@"
+        elif [ "$_state" = 'remove' ] ; then
+            [ "$CEN_ACTION" = 'add' ] || run_remove "$@"
+        elif [ "$_state" = 'update' ] ; then
+            [ "$CEN_ACTION" = 'add' ] || run_remove "$@"
+            [ "$CEN_ACTION" = 'remove' ] || run_add "$@"
         fi
     }
     get_configs "$1"
@@ -226,18 +238,18 @@ actions() {
         folder -f -c "$DAT_CONFIG_DIR" ;;
 
     add)
-        invoke -r "add"    actionUpdate 0 1 ;;              # one arg
+        invoke -r 'add'    actionUpdate 0 1 ;;              # one arg
     rem*)
-        invoke -r "remove" actionUpdate 0 1 ;;              # one arg
+        invoke -r 'remove' actionUpdate 0 1 ;;              # one arg
     upd*)
-        invoke -r "update" -            0 1 ;;              # no args
+        invoke -r 'update' -            0 1 ;;              # no args
 
     cre*)
-        invoke -r "create" -            1 2 ;;              # 1 or 2 args
+        invoke -r 'create' -            1 2 ;;              # 1 or 2 args
     del*)
-        invoke -r "delete" -            1   ;;              # one arg
+        invoke -r 'delete' -            1   ;;              # one arg
     sho|show)
-        invoke    "show"   -            0 1 ;;              # 0..1 arg
+        invoke    'show'   -            0 1 ;;              # 0..1 arg
 
     esac
 }

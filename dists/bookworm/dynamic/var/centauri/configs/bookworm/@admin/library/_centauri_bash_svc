@@ -116,10 +116,10 @@
 #.          myservice setup status
 #.          myservice setup uninstall
 #
-# Copyright Dr. J. Pfennig (c) 2015-2024
+# Copyright Dr. J. Pfennig (c) 2015-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_svc']='0.37:4'
+CEN_MODULES['_centauri_bash_svc']='0.38:4'
 
 CEN_IS_SERVICE=                 # used by _cen_svc_action (internal)
 
@@ -330,23 +330,25 @@ inhibit() {
 # ------------------------------------------------------------------------------
 # pidfile - create/delete PID file, check status, terminate process
 #
-# Call:     (1) pidfile -w <pid>|- [--] [[<path>/]<name>]
-#           (2) pidfile [-c|-d|-n] [-s vnam] [--] [[<path>/]<name>]
-#           (3) pidfile [-d] -k <signal> [-s vpid] [--] [[<path>/]<name>]
+# Call:     (1) pidfile [-f <file>] -w <pid>|- [--] [[<path>/]<prog>]
+#           (2) pidfile [-f <file>] [-c|-d|-n] [-s vnam] [--] [[<path>/]<prog>]
+#           (3) pidfile [-f <file>] [-d] -k <signal>|- [--] [[<path>/]<prog>]
 #
 #+          Form (1) creates a pid file, form (2) returns pid file information or
 #           deletes a pid file. A signal can be sent to a process using form (3).
 #
 # Options:  -c  check if saved PID is still running
 #           -d  delete the PID file
+#           -f  PID file path to be used
 #           -k  send a signal to the saved PID
 #           -n  get PID file name and return
 #           -r  use extension .run instead of .pid
 #           -s  save the PID (empty string on error)
 #           -w  create a PID file
 #
-# Arguments:<name>    PID file name (default is $CEN_NAME)
-#           <path>    path starting with "/", enables validation
+# Arguments:<file>    overrides the automatically generated PID file path
+#           <prog>    executable file name (default is $CEN_NAME)
+#           <path>    executable path (absolute path enables validation)
 #           <pid>     PID of main process or "0" for oneshot
 #           <signal>  signal name/number to be sent (default is SIGTERM)
 #           <vnam>    variable name
@@ -360,31 +362,40 @@ inhibit() {
 #
 #+This function implements the standard PID file actions and is used to
 # implement service state handling. The function itself does not register
-# any hook to catch signals or to remove the pidfile.
+# any hook to catch signals or to remove the PID file.
 #
 #+Using a full path as program name argument enables a validation against the
 # process name to prevent killing a process using a stale pid file. The code
 # checks if "/proc/<pid>/exe" is the same file as the given path. For bash all
 # paths will match.
+#
+#.Examples: system -f -p -- some_tool &
+#.          pidfile -w $? -- some_tool      # create some_tool.pid file
+#.          ...
+#.          pidfile -d -k HUP -- some_tool  # send signal, delete pid file
+#
+#.          system -f -p -- other_tool --pidfile /tmp/pid-file
+#.          ...
+#.          pidfile -d -f /tmp/pid-file -k  # send SIGTERM, delete pid file
 # ------------------------------------------------------------------------------
 CEN_PIDFILE=
 pidfile() {
     CEN_PIDFILE=
-    local _flgd _flgs _flgw _fsav _fext=".pid"
+    local _file _flgd _flgs _flgw _fsav _fext='.pid'
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -c)   ;;
       -d)   _flgd=1 ;;
+      -f)   shift ; _file="$1" ;;
       -k)   shift ; _flgs="${1:--}" ;;
       -n)   _flgw='-' ;;
-      -r)   _fext=".run" ;;
-      -s)   shift ; _fsav="${1:--}" ; printf -v "$_fsav" '0' ;;
-### TODO -u for user/private pid
+      -r)   _fext='.run' ;;
+      -s)   shift ; _fsav="${1:--}" ; printf -v "$_fsav" 0 ;;
       -w)   shift ; _flgw="${1:--}" ; [ "$_flgw" = '-' ] && _flgw=$$ ;;
 
       # internal use: <pid> <program> <pidfile>
-      -v)   shift ; [ "${2::1}" = "/" ] || return 0     # no check
+      -v)   shift ; [ "${2::1}" = '/' ] || return 0     # no check
             [ "${1:-0}" = 0 ] && return 0               # nothing to check
             [ "/proc/$1/exe" -ef "$2" ] && return 0     # success
             [ "/proc/$1/exe" -ef "$BASH" ] && return 0
@@ -395,10 +406,13 @@ pidfile() {
       esac ; shift
     done
 
-    local _name="${1:-$CEN_NAME}" _file="$CEN_ROOT/transient" _temp
-    [ -w "$_file" ] || _file="/run"
-    [ -w "$_file" ] || _file="${TMPDIR:-$TMP}"
-    _file+="/${_name##*/}$_fext"
+    local _name="${1:-$CEN_NAME}" _kpid
+    if [ "${_file:--}" = '-' ] ; then
+        _file="$CEN_ROOT/transient"
+        [ -w "$_file" ] || _file='/run'
+        [ -w "$_file" ] || _file="${TMPDIR:-$TMP}"
+        _file+="/${_name##*/}$_fext"
+    fi
 
     if [ -n "$_flgw" ] ; then                           # write pid file...
         if [ "$_flgw" != '-' ] ; then
@@ -411,29 +425,29 @@ pidfile() {
         $CEN_TRACE "pidfile: no file:" "$_file"
         return 1
     elif [ -z "$_flgd" -o -n "$_flgs" ] ; then            # read PID file
-        if ! read _temp 2>/dev/null <"$_file" ; then
+        if ! read _kpid 2>/dev/null <"$_file" ; then
             $CEN_TRACE "pidfile: cannot read:" "$_file"
             return 1
         fi
-        [ "$_fsav" ] && printf -v "$_fsav" '%s' "$_temp"
+        [ "$_fsav" ] && printf -v "$_fsav" '%s' "$_kpid"
     fi
 
     if [ -n "$_flgd" -o -n "$_flgs" ] ; then
-        pidfile -v "$_temp" "$_name" "$_file" || return 3   # wrong process
+        pidfile -v "$_kpid" "$_name" "$_file" || return 3   # wrong process
         [ -n "$_flgd" ] && remove -r -- "$_file"
-        [ "${_temp:-0}" = 0 ] && return 0               # nothing to kill
-        [ "${_flgs:--}" = '-' ] && _flgs="SIGTERM"
-        $CEN_TRACE "pidfile: send signal:" "$_flgs $_temp"
+        [ "${_kpid:-0}" = 0 ] && return 0               # nothing to kill
+        [ "${_flgs:--}" = '-' ] && _flgs='SIGTERM'
+        $CEN_TRACE "pidfile: send signal:" "$_flgs $_kpid"
         [ -z "${_flgs//[0-9]/}" ] && _flgs="-n $_flgs" || _flgs="-s $_flgs"
-        kill $_flgs $_temp 2>/dev/null ; return        # return status
+        kill $_flgs $_kpid 2>/dev/null ; return         # return status
     fi
 
-    [ -z "$_temp" ] && return 1                         # no PID file
-    if [ "$_temp" != 0 ] ; then
-        if ! kill -0 "$_temp" 2>/dev/null ; then        # PID not valid
+    [ -z "$_kpid" ] && return 1                         # no PID file
+    if [ "$_kpid" != 0 ] ; then
+        if ! kill -0 "$_kpid" 2>/dev/null ; then        # PID not valid
             remove -r -- "$_file" ; return 2            # delete stale pid file
         fi
-        pidfile -v "$_temp" "$_name" "$_file" || return 3   # wrong process
+        pidfile -v "$_kpid" "$_name" "$_file" || return 3   # wrong process
     fi
     CEN_PIDFILE="$_file"; return 0                      # return ok
 }
@@ -731,6 +745,8 @@ runsysddir() {
 #           runservice [-u] [-e|-f] [-v] **sytemd** <name>...   # systemd services
 #           runservice [-u] [-e|-f] [-v] **masked** <name>...   # masked services
 #
+#           runservice **level** [<lmin>]                       # get/check runlevel
+#
 # Options:  -d  run as a daemon, needs no root priviledge or service install
 #           -e  report errors
 #           -f  make errors fatal
@@ -742,6 +758,7 @@ runsysddir() {
 #
 # Arguments:<verb>  **start**|**stop**|**reload**|**restart**
 #           <name>  A service, target or unit name (**NOT** a path)
+#           <lmin>  Check for a minimum runlevel
 #
 #+Return:   The **status** command returns **true** if the service is active. On
 #           error a status bit mask is returned, see below.
@@ -753,6 +770,10 @@ runsysddir() {
 #           masked. On error a status bit mask is returned, see below. The **systemd**
 #           and **masked** commands behave like **test** but check for a systemd unit
 #           or a systemd masked symlink instead.
+#
+#+          **runlevel** saves the current level into RUN_SERVICE. The implementation
+#           uses 'systemd is-active runlevelN.target'. It returns **true** if <lmin> is
+#           less or equal the current level (<lmin> defaults to 1).
 #
 #+          All other verbs return **true** on success or a status bit mask otherwise,
 #           see below.
@@ -820,14 +841,23 @@ runservice() {
 
     # check verb
     case "$_scmd" in
-    start|stop|restart|reload|status|enabled)  ;;
-    systemd|masked) [ "$_oerr" = 'trace' ] && _oerr=':'
-                    _ssys=1 ;;                      # systemd only
-    test)           [ "$_oerr" = 'trace' ] && _oerr=':' ;;
-    *)
-        [ $# = 0 ] || _cen_abort - "$_scmd"
-        # single argument: assume "test"
-        set -- "$_scmd" ; _scmd='test'
+    start|stop|restart|reload|status|enabled)
+            ;;
+    systemd|masked)
+            [ "$_oerr" = 'trace' ] && _oerr=':'
+            _ssys=1                                     # systemd only
+            ;;
+    test)   [ "$_oerr" = 'trace' ] && _oerr=':'
+            ;;
+    level)  for CEN_RUNSERVICE in 5 4 3 2 1 0 ; do
+                [ "$CEN_RUNSERVICE" = 0 ] && return 1
+                sysrun -q -r systemctl is-active "runlevel$CEN_RUNSERVICE.target" && break
+            done
+            [ "${1:-1}" -le "$CEN_RUNSERVICE" ] ; return  # return status
+            ;;
+    *)      [ $# = 0 ] || _cen_abort - "$_scmd"
+            # single argument: assume "test"
+            set -- "$_scmd" ; _scmd='test'
     esac
 
     # test if services exist and are not masked

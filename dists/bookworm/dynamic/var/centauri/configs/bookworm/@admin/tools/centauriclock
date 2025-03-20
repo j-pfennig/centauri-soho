@@ -6,6 +6,8 @@ CEN_TITLE=$"Template using command line verbs (action syntax)"
 # Import the bash library
 PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g - '0.10:3' || exit 2
 
+#context -v 2                       # debug output
+
 # Data
 CEN_OPT_INVERT=                     # coordinate inversion
 DAT_DPMS_OFF=                       # see actionTimer
@@ -31,7 +33,8 @@ actionRun() {
                                 'Coordinate Transformation Matrix' 0 -1 1  0 -1 1  0 0 1
 
     if system -c unclutter ; then
-        sysrun -e unclutter &
+        # beware: only system() can be used in a sub-shell
+        system -e -x unclutter &
     else
         warning "Please install 'unclutter' to hide the mouse cursor"
     fi
@@ -44,10 +47,8 @@ actionRun() {
         embed -x -v -z centaurilauncher --gui=1 clock
     fi
 
-    # ... other user
-    embed -v -z centauripower --force dpms off
-    embed -v -z centaurilauncher --gui=1 clock
-    embed -v -z centauripower --force dpms on
+    # ... other user (no background, no timer)
+    embed -v -z centaurilauncher --terminal clock
 }
 
 # ------------------------------------------------------------------------------

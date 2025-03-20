@@ -1,0 +1,22 @@
+# jpf@centauri: smbpass.conf.master for centauri: 2009-12-18
+
+# This file is for pam_smbpass and some samba utilities.  While the
+# smb.conf file must not reference the ldap backend (being a domain
+# member server all authentication is handled by the domain controller),
+# the pam module or tools need this info to update the passwords ...
+
+# The 'master' version of the file allows the server to manage Machine
+# accounts be assigning an admin dn that has more priviledges than the
+# 'client' version would grant.
+
+[global]
+	passdb backend = ldapsam:ldap://%G%.%D%
+	ldap admin dn = uid=domain,ou=Users,ou=samba,dc=%D1%,dc=%D0%
+	ldap suffix = ou=samba,dc=%D1%,dc=%D0%
+	ldap user suffix = ou=Users
+	ldap group suffix = ou=Groups
+	ldap machine suffix = ou=Computers
+	ldap passwd sync = yes
+	ldap ssl = start_tls
+
+# Done

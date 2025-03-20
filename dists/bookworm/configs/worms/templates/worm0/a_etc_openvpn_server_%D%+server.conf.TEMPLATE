@@ -1,0 +1,57 @@
+# server.conf - centauri openvpn config - (c) J.Pfennig 2014-2025
+
+cd          /etc/openvpn/server/%D1%
+
+# scrips to manage forwarding (down script needs sudo):
+script-security 2
+up          updown
+#down       updown
+
+# server config
+port        1194
+proto       udp
+#proto       udp6
+dev         tun
+tun-mtu     1400
+
+user        nobody
+group       nogroup
+
+# get certs and keys
+ca          ca.crt
+cert        server.crt
+key         server.key
+dh          dh.pem
+
+# extras
+tls-version-min         1.2
+tls-auth                ta.key
+crl-verify              crl.pem
+data-ciphers-fallback   AES-128-GCM
+data-ciphers            AES-256-GCM:AES-128-GCM
+
+# IP4/6 config (see updown script for netmask other than 24, 16 or 8)
+server      %V4% 255.255.255.0      
+#server-ipv6 %V6%
+keepalive   10 120
+
+# DNS quirk: samba-ad will not respond unless a query is sent via VPN sub-net...
+push        "dns server 1 address %V3%.1"
+#push        "dns server 1 address %V3%.1 %V9%01"
+push        "dns search-domains %D%"
+push        "route %B% %B7%"
+#push        "route-ipv6 %B5%"
+push        "explicit-exit-notify 3"
+
+# miscellaneous
+comp-lzo
+persist-key
+persist-tun
+
+# enable inter client communication
+#client-to-client
+
+# allow duplicated client certs
+duplicate-cn
+
+# end

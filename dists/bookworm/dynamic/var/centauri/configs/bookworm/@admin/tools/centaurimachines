@@ -1,9 +1,9 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. J. Pfennig (c) 2020-2024; BSD License"
+CEN_LEGAL="Dr. J. Pfennig (c) 2020-2025; BSD License"
 CEN_TITLE=$"Manage repository staging and samba-ad/ntfs integration"
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -r -s -y - '0.17:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -r -s -y - '0.18:4' || exit 2
 
 # Data
 CEN_OPT_DOMAIN=                 # see --domain
@@ -85,7 +85,11 @@ do_update() {
 }
 
 do_merge() {
-    embed -t -v -y centauridiff ${CEN_OPT_SILENT:+-s} --merge "$2/$1" "$3/$1"
+    if [ -n "$CEN_OPT_FORCE" ] ; then
+        system -e -n -p -t -- cp -a -u --reflink "$2/$1" "$3"
+    else
+        embed -t -v -y centauridiff ${CEN_OPT_SILENT:+-s} --merge "$2/$1" "$3/$1"
+    fi
 }
 
 # ------------------------------------------------------------------------------

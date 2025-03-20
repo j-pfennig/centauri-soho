@@ -246,8 +246,8 @@ actionApply() {
     if [ "$1" = '+' ] ; then
         currentFile +
         local mask="${CEN_OPT_SELECT/0/7}"
-        ((mask & 2)) && ___apply "$CURRENT_FILE" '.kde'
-        ((mask & 1)) && ___apply "$CURRENT_MOZI" '.mozilla'
+        ((mask & 1)) && ___apply "$CURRENT_FILE" '.kde'
+        ((mask & 2)) && ___apply "$CURRENT_MOZI" '.mozilla'
         ((mask & 4)) && ___apply "$CURRENT_LXQT" '.config/lxqt'
     elif currentFile -z "$1" ; then
         ___apply "$CURRENT_FILE"
@@ -744,7 +744,7 @@ actions:
        cleanup              delete 'old' and 'new' folders
 
 arguments:
-       <mode>               0:= all  1:=ignore mozilla  2:=mozilla  4:=lxqt
+       <mode>               0:= all  1:=kde  2:=mozilla  4:=lxqt
        <user>               user name (action save may not work if roaming)
        <file>               a path or -:=to use local file  +:=to use profile
 

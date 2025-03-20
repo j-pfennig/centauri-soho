@@ -1,0 +1,9 @@
+[Unit]
+ConditionPathExists=/etc/openvpn/server/%i/ca.crt
+ConditionPathExists=/etc/openvpn/server/%i/server.conf
+
+[Service]
+WorkingDirectory=/etc/openvpn/server/%i
+ExecStart=
+ExecStart=/usr/sbin/openvpn --daemon ovpn-%i --status /run/openvpn/%i.status 10 --cd /etc/openvpn --config server.conf --writepid /run/openvpn/%i.pid
+RestartSec=120s

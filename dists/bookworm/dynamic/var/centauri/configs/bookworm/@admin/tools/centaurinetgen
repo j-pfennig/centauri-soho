@@ -43,7 +43,7 @@ do_dhcp_range() {
 # Create dnsmasq folder:  <mode> | -d <list>
 # ------------------------------------------------------------------------------
 do_dnsmasq() {
-    local base="$DAT_ETCDIR/dnsmasq.d"
+    local base="$DAT_ETCDIR/dnsmasq.d" domn="${CEN_NET_DOMAIN%%.*}"
     if [ "$1" = '-d' ] ; then
         shift
         if [ -z "$CEN_OPT_KEEP" ] ; then
@@ -52,7 +52,8 @@ do_dnsmasq() {
             for name in "$@" ; do
                 listsearch -c -i DAT_CREATED -- "$name" && continue
                 [ -d "$base.$name" ] || continue
-                [ -e "$base.$name/centauri_static" ] && return
+            #### TODO continue?
+                [ -e "$base.$name/${domn}_static" ] && return
                 message -c "unused folder" -- "$base.$name"
             done
         fi
@@ -61,7 +62,7 @@ do_dnsmasq() {
     fi
 
     name="$1" ; DAT_CREATED+=("$name")
-    [ -e "$base.$name/centauri_static" ] && return
+    [ -e "$base.$name/${domn}_static" ] && return
     if [ "$name" = 'local' ] && [ ! -d "$base.local" ] ; then
         [ -d "$base" ] && [ ! -h "$base" ] && return
     fi
@@ -97,7 +98,7 @@ do_dnsmasq() {
     trace -a -c 'dnsmasq dhcp' "router: $rout  range: $drng"
 
     if [ "$name" = 'local' ] ; then
-        netfile -h -- "$base.$name/centauri_$name" <<!EOF
+        netfile -h -- "$base.$name/${domn}_$name" <<!EOF
 # Rename this file to 'centauri_static' to prevent this folder from
 # being modified or deleted by '$CEN_NAME'
 
@@ -115,7 +116,7 @@ bogus-priv
 #end
 !EOF
     else
-        netfile -h -- "$base.$name/centauri_$name" <<!EOF
+        netfile -h -- "$base.$name/${domn}_$name" <<!EOF
 # Rename this file to 'centauri_static' to prevent this folder from
 # being modified or deleted by '$CEN_NAME'
 
@@ -144,10 +145,9 @@ ${hnoh}dhcp-option=option:router,$rout
 $dnss
 #end
 !EOF
-        netfile -h -- "$base.$name/centauri_dnsserv" <<!EOF
+        netfile -h -- "$base.$name/${domn}_dnsserv" <<!EOF
 # Rename this file to 'centauri_static' to prevent this folder from
 # being modified or deleted by '$CEN_NAME'
-#end
 !EOF
     fi
 }
@@ -1518,7 +1518,7 @@ actionNmconn() {
     [ "$enet" = '-' ] || do_nmconnect 'Ethernet' "$enet" "$host-0"
     [ "$ssid" = '-' ] && return
 
-    if [ -z "$DAT_WLAN_PASW" ] ; then               # generate random pwd
+    if [ "${DAT_WLAN_PASW:--}" = '-' ] ; then       # generate random pwd
         printf -v DAT_WLAN_PASW "%4.4x-%4.4x" "$RANDOM" "$RANDOM"
     elif [ "${#DAT_WLAN_PASW}" -lt 8 ] ; then
         invoke -e "Minimum password length is 8" ; return

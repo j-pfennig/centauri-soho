@@ -62,33 +62,29 @@ msgid "Input and output are equal"
 msgstr ""
 
 #: /var/centauri/tools/centaurimedia:187
-msgid "Copy data"
-msgstr "Daten kopieren"
-
-#: /var/centauri/tools/centaurimedia:187
-msgid " '$from  ->  $dest'"
-msgstr ""
+msgid "Copy data: %s -> %s"
+msgstr "Daten kopieren: %s -> %s"
 
 #: /var/centauri/tools/centaurimedia:205
 msgid "Running 'dd' failed (status %s)"
-msgstr ""
+msgstr "Ausführen von 'dd' fehlgeschlagen (Status %s)"
 
 #: /var/centauri/tools/centaurimedia:217
 msgid "Done."
-msgstr ""
+msgstr "Fertig."
 
 #: /var/centauri/tools/centaurimedia:248
 msgid "Flags for partition #%s: %s"
-msgstr ""
+msgstr "Flags für Partition #%s: %s"
 
 #: /var/centauri/tools/centaurimedia:327 /var/centauri/tools/centaurimedia:720
 msgid "No filesystem type specified"
-msgstr ""
+msgstr "Kein Dateisystemtyp angegeben"
 
 #: /var/centauri/tools/centaurimedia:329 /var/centauri/tools/centaurimedia:461
 #: /var/centauri/tools/centaurimedia:722
 msgid "Unsupported filesystem: %s"
-msgstr ""
+msgstr "Nicht unterstütztes Dateisystem: %s"
 
 #: /var/centauri/tools/centaurimedia:360
 msgid "Creating '%s' filesystem on '%s', label '%s'"
@@ -284,83 +280,87 @@ msgid "'efi' 'boot' 'bios_grub'"
 msgstr ""
 
 #: /var/centauri/tools/centaurimedia:876
-msgid "kind of partition table: msdos|gpt"
+msgid "input path (use '-' for /dev/stdin)"
 msgstr ""
 
 #: /var/centauri/tools/centaurimedia:877
+msgid "kind of partition table: msdos|gpt"
+msgstr ""
+
+#: /var/centauri/tools/centaurimedia:878
 msgid "label text"
 msgstr "Label Text"
 
-#: /var/centauri/tools/centaurimedia:878
+#: /var/centauri/tools/centaurimedia:879
 msgid "a partition number"
 msgstr "Eine Partitions-Nummer"
 
-#: /var/centauri/tools/centaurimedia:879
+#: /var/centauri/tools/centaurimedia:880
 msgid "sector size in bytes"
 msgstr "Sektorgröße in Bytes"
 
-#: /var/centauri/tools/centaurimedia:880
+#: /var/centauri/tools/centaurimedia:881
 msgid "size of partition: <number><M|G|T>"
 msgstr ""
 
-#: /var/centauri/tools/centaurimedia:881
+#: /var/centauri/tools/centaurimedia:882
 msgid "the last size can be '+' to use all space"
 msgstr ""
 
-#: /var/centauri/tools/centaurimedia:882
+#: /var/centauri/tools/centaurimedia:883
 msgid "file system type: swap,fat,ext4,exfat,ntfs,fs2fs, btrfs or"
 msgstr ""
 
-#: /var/centauri/tools/centaurimedia:883
+#: /var/centauri/tools/centaurimedia:884
 msgid "'volume' or 'system' to create btrfs with subvolume tree"
 msgstr ""
 
-#: /var/centauri/tools/centaurimedia:886
+#: /var/centauri/tools/centaurimedia:887
 msgid "# EFI btrfs boot disk"
 msgstr ""
 
-#: /var/centauri/tools/centaurimedia:887
+#: /var/centauri/tools/centaurimedia:888
 msgid "# raspi btrfs boot disk"
 msgstr ""
 
-#: /var/centauri/tools/centaurimedia:889
-msgid "# create 2 partitions"
-msgstr ""
-
 #: /var/centauri/tools/centaurimedia:890
-msgid "# 2 filesystems"
-msgstr ""
+msgid "# create 2 partitions"
+msgstr "# zwei Partitionen erstellen"
 
 #: /var/centauri/tools/centaurimedia:891
+msgid "# 2 filesystems"
+msgstr "# zwei Dateisysteme"
+
+#: /var/centauri/tools/centaurimedia:892
 msgid "# zerofill partition"
 msgstr ""
 
-#: /var/centauri/tools/centaurimedia:893
+#: /var/centauri/tools/centaurimedia:894
 msgid "# entire medium"
 msgstr ""
 
-#: /var/centauri/tools/centaurimedia:894
+#: /var/centauri/tools/centaurimedia:895
 msgid "# system disk"
 msgstr ""
 
-#: /var/centauri/tools/centaurimedia:896
+#: /var/centauri/tools/centaurimedia:897
 msgid "automount"
 msgstr ""
 
-#: /var/centauri/tools/centaurimedia:897
+#: /var/centauri/tools/centaurimedia:898
 msgid ""
 "The udisk2 automount problem can be circumvented by launching a bash-shell"
 msgstr ""
 
-#: /var/centauri/tools/centaurimedia:898
+#: /var/centauri/tools/centaurimedia:899
 msgid "that disables device polling via udisk2-inhibit. No partition detection"
 msgstr ""
 
-#: /var/centauri/tools/centaurimedia:899
+#: /var/centauri/tools/centaurimedia:900
 msgid "or automount should happen until the shell terminates. See 'inhibit'."
 msgstr ""
 
-#: /var/centauri/tools/centaurimedia:902
+#: /var/centauri/tools/centaurimedia:903
 msgid "Only the 'format' action can be used with <dev> being an image file."
 msgstr ""
 

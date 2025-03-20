@@ -181,7 +181,20 @@ to auto start at boot time. The following steps are recommended:
 
     2. Run 'centaurihass auto on' to enable auto start at boot time.
 
-    3. Reboot your computer
+    3. Reboot your computer.
+
+# ------------------------------------------------------------------------------
+[weewx]
+# ------------------------------------------------------------------------------
+
+The 'weewx' daemon is installed now, but neither configured not enabled. The
+steps are needed:
+
+    1. Run 'centauriweewx edit' to fix the configuration.
+
+    2. Run 'cemtauriweewx auto on' to enable auto start at boot time.
+
+    3. Reboot your computer.
 
 # ------------------------------------------------------------------------------
 [passwords]
@@ -286,29 +299,40 @@ Template patterns for simple names:
     %H%     host name                       ...       'worm8'
     %I%     public internet server name     ...       'myself.mydyndns.org'
     %M%     machine name prefix             ...       'machine'
-    %N%     short domain name               ...       'worms'
     %O%     configuration name              ...       'centauri'
     %P%     primary server                  ...       'worm0'
     %R%     router                          ...       'router'
     %S%     secondary server                ...       'worm1'
-    %T%     top level domain                ...       'home'
+    %T%     iot network                     ...       '10.10.1.0/19'
+    %U%     trusted network                 ...       '10.10.2.0/19'
     %W%     wlan client ssid                default:   %N% (short domain name)
+    %V%     VPN network                     ...       '10.10.6.0/19'
+    %X%     repeater network                ...       '10.10.5.0/19'
+    %Y%     dhcp/dynamic network            ...       '10.10.4.0/19'
     %Z%     distribution name               ...       'bookworm'
+
+Domain name:
+
+    %D1%    short domain name               ...       'worms'
+    %D0%    top level domain                ...       'home'
 
 Network IP:
 
-    %D4%    domain network                  example:  '10.10.0.0'
+    %B4%    base network                    example:  '10.10.0.0'
     %E4%    external network                ...       '10.01.0.0'
-    %V4%    VPN network                     ...       '10.10.4.0'
+    %T4%    iot network                     ...       '10.21.1.0'
+    %U4%    trusted network                 ...       '10.21.2.0'
+    %V4%    VPN network                     ...       '10.10.6.0'
     %X4%    repeater network                ...       '10.10.5.0'
+    %Y4%    dynamic network                 ...       '10.10.4.0'
 
     note: instead of '4' other suffixes are supported, see below
 
 Network bitmask (no IPv6 versions):
 
-    %B4%    netmask bits (internal)         example:  '22'
-    %E4%    netmask bits (external)         ...       '22'
-    %N4%    netmask (internal only)         ...       '255.255.252.0'
+    %B0%    netmask bits (internal)         example:  '22'
+    %E0%    netmask bits (external)         ...       '22'
+    %B7%    netmask (internal only)         ...       '255.255.252.0'
 
 IP for special hosts:
 

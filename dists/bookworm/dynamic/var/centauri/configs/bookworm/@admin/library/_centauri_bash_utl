@@ -127,12 +127,12 @@ isnumber() {
     _oerr+=("$_narg")
 
     case "$_narg" in
-    ''|-|0[0-9xX]*)
+    ''|-|0[0-9xX]*|-0[0-9xX]*)
             "${_oerr[@]}" $"Not a decimal integer number" ; return 3 ;;
     -*)     if [ -n "$_ouns" ] ; then
                 "${_oerr[@]}" $"Not an unsigned decimal number" ; return 3
             fi
-            _nabs="${_narg:1}" ;;
+            _nabs="${_narg:1}" ; [ "$_narg" = '-0' ] && _narg=0 ;;
     *)      _nabs="$_narg"
     esac
     if [ -n "$_orea" ] ; then

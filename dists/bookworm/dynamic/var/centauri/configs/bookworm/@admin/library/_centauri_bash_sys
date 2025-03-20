@@ -326,7 +326,9 @@ syssetup() {
     fi || :
 
     # sysconfig, is called twice during setup as the config file may have changed
-    sysconfig || return 1
+    if ! sysconfig ; then
+        [ -z "$_remv" -a "$_updt" != '-t' ] && return 1
+    fi
 
     local _root="$CEN_ROOT" _base="$CEN_TOOLS" _libr="$CEN_LIBRARY"
     CEN_ROOT="$CEN_PATHS$CEN_ROOTDEFS"
@@ -334,9 +336,8 @@ syssetup() {
     splitjoin -j CEN_INSTALL -d ':' -i CEN_ROOTDEFS
     $CEN_TRACE -a $"Installation configuration:" "${CEN_INSTALL[@]#$CEN_PATHS}"
 
-    {   _cen_ins_library $_remv $_updt $_usrv       # run update/install
-        _stat=$? ; [ "$_stat" = 128 ] && return 128 # cancelled
-    } || :
+    _cen_ins_library $_remv $_updt $_usrv       # run update/install
+     _stat=$? ; [ "$_stat" = 128 ] && return 128 # cancelled
 
     if [ -z "$_remv" -a "$_updt" != '-t' ] ; then
         local _fold="$PWD"
@@ -579,7 +580,7 @@ sysconfig() {
 
 [ "$1" = '-n' ] && return 0                     # no init
 
-# the proxy does a 'embed -m _centauri_bash_sys' if the caller is root and the
+# The proxy does 'embed -m _centauri_bash_sys' if the caller is root and the
 # cache dir is missing to trigger a minimal setup ...
 if  [ "$EUID" = 0 ] ; then
     if [ ! -d "$CEN_SYS_CACHE_DIR" ] ; then

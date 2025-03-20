@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. Jürgen Pfennig (c) 2021-2024; "$"BSD License"
+CEN_LEGAL="Dr. Jürgen Pfennig (c) 2021-2025; "$"BSD License"
 CEN_TITLE=$"Centauri initialization and launcher for appliances"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -t -v -y - '0.12:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -t -v -y - '0.13:4' || exit 2
 
 CEN_SVC_WANTED_BY='sysinit.target'
 
@@ -28,69 +28,59 @@ fi
 # appliances configuration support
 # ------------------------------------------------------------------------------
 
-# array filled in get_appliances() ...
+# arrays filled in get_appliances() ...
 DAT_APPL_LABEL=
 DAT_APPL_LEVEL=
 DAT_APPL_MODE=
 DAT_APPL_CONF=
 DAT_APPL_ARGS=
 DAT_APPL_AUTO=
-# see apptimers() ...
-DAT_APPL_TIMERS=
-# see appusers() ...
-DAT_APPL_USERS=                     # TODO remove this
 
 # homeassistant user
 DAT_APPL_HASS='homeassistant'
 
 # dummy functions to skip 'appliance' config lines
-appliance() { : ; }     # <label> <runlevel> <mode> <conf> <param>...
+appliance() { : ; }                 # TODO: legacy, remove
 apptimers() { : ; }
 appusers()  { : ; }
 
 # get home folder: <name>
 get_home() {
-    local home ; eval home=~"$1"
-    [ -d "$home" ] || return 2
-    [ -e "$home/$DAT_AUTOLOGIN" ] || return 3
-    [ "$home/$DAT_AUTOLOGIN" -ef '/dev/null' ] && return 4
-    return 0
+    [ "${1:--}" = '-' ] && return 0             # network appliance
+    local stat home ; eval home=~"$1"
+    if [ -d "$home" ] ; then
+        if [ -e "$home/$DAT_AUTOLOGIN" ] ; then
+            [ "$home/$DAT_AUTOLOGIN" -ef '/dev/null' ] &&
+                stat=$"'$DAT_AUTOLOGIN' is a symlink to '/dev/null'"
+        else
+            stat=$"Missing '$DAT_AUTOLOGIN' file"
+        fi
+    else
+        stat=$"No home folder"
+    fi
+    [ -z "$stat" ] && return 0
+    trace -a -c -p "Appliance ignored" "$1 - $stat" ; return 1
 }
 
+# appliance definitions are provided by centauristartup...
 get_appliances() {
     [ -n "$DAT_APPL_LABEL" ] && return 0        # already loaded
-
-    ___appl_reader() {                          # reader callback
-        [ "${1::3}" = 'app' ] || return 0
-        set -f ; eval set -- $1 ; set +f
-        case "$1" in
-        appliance) ;;
-        apptimers) shift ; DAT_APPL_TIMERS=("$@") ; return 0 ;;
-        appusers)  shift ; DAT_APPL_USERS=("$@") ; return 0 ;;
-        *)         return 0
-        esac
-
-        # user kiosk or homeassistant must exist for these appliances
-        local auto stat
-        if [[ "$6" == *centaurilogin=* ]] ; then
-             auto="${6#*centaurilogin=}" ; auto="${auto%% *}"
-             get_home "$auto" ; stat="$?"
-             if [ "$stat" != 0 ] ; then
-                trace -a -c -p "Appliance ignored" "status %d - %s" "$stat" "$6"
-            #    return 0
-                set -- - "$2"
-             fi
-        fi
-
-        DAT_APPL_LABEL+=("$2") ; DAT_APPL_LEVEL+=("$3")
-        DAT_APPL_MODE+=("$4") ; DAT_APPL_CONF+=("$5")
-        DAT_APPL_ARGS+=("$6") ; DAT_APPL_AUTO+=("$auto")
-    }
-
     DAT_APPL_LABEL=() ; DAT_APPL_LEVEL=()
     DAT_APPL_MODE=() ; DAT_APPL_CONF=()
     DAT_APPL_ARGS=() ; DAT_APPL_AUTO=()
-    configfile -r ___appl_reader || return 1
+
+    local list entr flds auto
+    embed -r -a list -d '\n' -- centauristartup list
+    for entr in "${list[@]}" ; do
+        splitjoin -s flds -i entr
+        auto="${flds[1]}"
+        if ! get_home "$auto" ; then
+            flds[3]= ; flds[4]= ; flds[5]= ; flds[6]=
+        fi
+        DAT_APPL_LABEL+=("${flds[2]}") ; DAT_APPL_LEVEL+=("${flds[3]}")
+        DAT_APPL_MODE+=("${flds[4]}") ; DAT_APPL_CONF+=("${flds[5]}")
+        DAT_APPL_ARGS+=("${flds[6]}") ; DAT_APPL_AUTO+=("$auto")
+    done
     [ -n "$DAT_APPL_LABEL" ] && return 0
     invoke -w $"Found no 'appliance' definitions" ; return 1
 }
@@ -184,6 +174,22 @@ cfg_appliances() {
 # ------------------------------------------------------------------------------
 # called at service start
 # ------------------------------------------------------------------------------
+# Appliances are started only in runlevel2 or 3 (see systemd.unit kernel param).
+#
+# *** Network Appliances ***
+#
+#   When kernel argument centaurilogin=<user> is NOT present, this routine does
+#   nothing, network appliances use the centauriswitch configuration to start
+#   services.
+#
+# *** Display Appliances ***
+#
+# For runlevel2 the services networking and inetd are started unless networking
+# is disabled via centauriswitch=disabled|manual.
+#
+# Display appliances are handled by service centauriautologin which is started
+# here. In turn this causes centauristartup to run.
+# ------------------------------------------------------------------------------
 run_appliances() {
     # undo /etc/XWrapper.conf config override (see centauridisplay)
     local wrap="${CEN_PATHS[2]}/X11/Xwrapper.config"
@@ -202,54 +208,44 @@ run_appliances() {
 
     listsearch -g -m word -i wrds -- 'centauriswitch=*'
     netw="${word#*=}"
-    trace -a -c "centauriswitch" -- "$netw"
+    trace -a -c 'centauriswitch' -- "$netw"
 
     listsearch -g -m word -i wrds -- 'centaurilogin=*'
     auto="${word#*=}"
-    trace -a -c "centaurilogin" -- "$auto"
+    trace -a -c 'centaurilogin' -- "$auto"
+
+    [ -z "$auto" ] && return    # no display appliance to run
 
     case "$netw" in
-        router:*)   ;;
-        switch:*)   ;;
-        *)          [ -z "$auto" ] && return    # no appliance to run
-                    netw=                       # no network services
+        disab*) netw= ;;
+        manual) netw= ;;
     esac
     message -a -c $"Appliance mode" "${netw:-$auto}"
 
-    if [ -z "$netw" ] ; then
-        :
-    elif [ "$levl" = 'runlevel2' ] ; then
-        # networking is not configured in runlevel2
+    if [ -n "$netw" -a "$levl" = 'runlevel2' ] ; then
+        # networking is not default in runlevel2
+        message -a -c $"Starting network" networking inetd
         system -e -p -- systemctl --no-block start networking inetd
     fi
 
-    # centaurilogin action ...
-    if [ -n "$auto" ] ; then
-        local hdir ; eval hdir=~$auto
-        if [ "$auto" = "$DAT_APPL_HASS" ] && [ -d "$hdir" ] ; then
-            message -a -c $"Start service" 'centaurihass'
-            embed -v centaurihass -f start
-        fi
-        if [ -e "$hdir/$DAT_AUTOLOGIN" ] && [ "$hdir/$DAT_AUTOLOGIN" != '/dev/null' ] ; then
-            message -a -c $"Autologin user" "$auto"
+    # run service centauriautologin
+    local hdir ; eval hdir=~$auto
+    if [ -e "$hdir/$DAT_AUTOLOGIN" ] ; then
+        if [ "$hdir/$DAT_AUTOLOGIN" = '/dev/null' ] ; then
+            message -a -c $"Autologin user" "$auto" $"Disabled via symlink to '/dev/null'"
+            system -q -- plymouth quit
+        else
+            message -a -c $"Autologin user" "$auto" $"Starting up"
             system -e -p -- systemctl --no-block start centauriautologin@"$auto"
         fi
+    elif [ "$auto" = 'local' ] ; then
+        symlink -n -- "$CEN_TOOLS/centauristartup" "$hdir/$DAT_AUTOLOGIN"
+        message -a -c $"Autologin user" "$auto" $"Enabled by default"
+        system -e -p -- systemctl --no-block start centauriautologin@"$auto"
+    else
+        message -a -c $"Autologin user" $"Not enabled, try 'centauristartup install $auto'"
+        system -q -- plymouth quit
     fi
-
-    # 'timers' config statement
-    get_appliances
-    local item list=()
-    for item in "${DAT_APPL_TIMERS[@]}" 'centauriswap.service' ; do
-        [ "${item%.*}" = "$item" ] && item+='.timer'
-        [ -e "/usr/lib/systemd/system/$item" -o  -e "/etc/systemd/system/$item" ] || continue
-        list+=("$item")
-
-    done
-    # enable timers and swap ...
-    [ -n "$list" ] && system -w -p -- systemctl --no-block start "${list[@]}"
-
-    # finally stop plymouth daemon
-    timer -w 10 ; system -q plymouth quit
 }
 
 # ------------------------------------------------------------------------------
@@ -280,15 +276,13 @@ run_netconfig() {
     fi
 }
 
+# ------------------------------------------------------------------------------
+# Called when running as a service or by action mode
+# ------------------------------------------------------------------------------
 run() {
     if [ -w '/dev/console' ] ; then
         echo "System startup..." >/dev/console
     fi
-
-    # migrate centauristartx to centauridisplay
-
-    symlink -n "$CEN_TOOLS/centauridisplay" '/usr/local/bin/centauridisplay'
-    symlink -n "$CEN_TOOLS/centauridisplay" '/usr/local/bin/centauristartx'
 
     # update networking
     run_netconfig
@@ -459,10 +453,10 @@ actionIssue() {
 }
 
 # ------------------------------------------------------------------------------
-#
+# Start appliance
 # ------------------------------------------------------------------------------
 actionMode() {
-    run "centauriswitch=$1" "centauriautologin=$2" "systemd.unit=runlevel$3.target"
+    run_appliances "centauriswitch=$1" "centauriautologin=$2" "systemd.unit=runlevel$3.target"
 }
 
 # ------------------------------------------------------------------------------
@@ -499,7 +493,7 @@ usage() {
         -a '••• '$"Appliance actions"' •••' - \
         -a 'list'                $"list configured appliances" \
         -a 'mode     <netw> <user> <rlvl>' - \
-        -a -                     $"enter an appliace mode" \
+        -a -                     $"enter an appliance mode" \
         -a 'default  [<appl>]'   $"[*] set/remove a boot default" \
         -a 'disable  <appl>'     $"[*] disable an appliance in boot menu" \
         -a 'enable   <appl>'     $"[*] enable an appliance in boot menu" \

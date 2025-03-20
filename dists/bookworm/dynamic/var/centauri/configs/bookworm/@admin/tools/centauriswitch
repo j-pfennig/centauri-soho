@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2015-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2015-2025; BSD License"
 CEN_TITLE="Network Configuration Switching"
 
 ### BEGIN INIT INFO
@@ -130,7 +130,7 @@ CEN_TITLE="Network Configuration Switching"
 # ------------------------------------------------------------------------------
 
 # Import the bash library, set name and version
-PATH+=":/usr/local/bin:${0%/*}" . _centauri_bash_lib -a -d -f -v -y - '0.42:4' || exit 2
+PATH+=":/usr/local/bin:${0%/*}" . _centauri_bash_lib -a -d -f -v -y - '0.44:4' || exit 2
 
 CEN_SVC_NOROOT=1        # allow non-root user actions
 
@@ -144,11 +144,11 @@ CEN_OPT_OUTPUT=     # see --output, '-' for stdout or an existing folder
 CEN_OPT_NOHOOK=     # see --nohook
 
 # Data (@ replaced by server name, + replaced by effective config)
-DAT_SUFF_LOCAL="+ local client"
-DAT_SUFF_GUEST="+ @ guest local"
-DAT_SUFF_CLIENT="+ @ client local"
-DAT_SUFF_MASTER="@ master client local"
-DAT_SUFF_SLAVE="@ slave master client local"
+DAT_SUFF_LOCAL='+ local client'
+DAT_SUFF_GUEST='+ @ guest local'
+DAT_SUFF_CLIENT='+ @ client local'
+DAT_SUFF_MASTER='@ master client local'
+DAT_SUFF_SLAVE='@ slave master client local'
 
 DAT_DOSERVICE_CNT=      # counter for do_service
 
@@ -348,7 +348,7 @@ do_remove() {
 # Return:  0=ok, state changed   1=ok, no state change   2=failure
 # ------------------------------------------------------------------------------
 do_secrets() {
-trace "do_secrets CEN_OPT_NOHOOK=$CEN_OPT_NOHOOK: $*"
+    $CEN_TRACE2 -c ' ' "CEN_OPT_NOHOOK=$CEN_OPT_NOHOOK: $*"
     local actn="${1:-client}"
     local iopt ; [ -n "$2" ] && iopt="--interface $2"
     local curr=' - '
@@ -368,8 +368,8 @@ trace "do_secrets CEN_OPT_NOHOOK=$CEN_OPT_NOHOOK: $*"
         return 0
     fi
 
-    # call centaurisecrets and get status
-    embed -v centaurisecrets --nohook $iopt $actn
+    # call centaurisecrets and get status (--force to ignore override file)
+    embed -v centaurisecrets ${CEN_OPT_FORCE:+--force} --nohook $iopt $actn
     if ! [ -e "$_nettemp" ] ; then
         error "No status file after centaurisecrets: $actn"
         return 2
@@ -394,9 +394,9 @@ do_server() {
 
     # Am I a server?
     if   [ "$HOSTNAME" = "${CEN_NET_SERVERS[0]}" ] ; then
-        CEN_NET_ROLE="PRIMARY"
+        CEN_NET_ROLE='PRIMARY'
     elif [ "$HOSTNAME" = "${CEN_NET_SERVERS[1]}" ] ; then
-        CEN_NET_ROLE="SECONDARY"
+        CEN_NET_ROLE='SECONDARY'
     else
         trace -a "Not master/slave - I am not a server"
         return 1
@@ -412,26 +412,26 @@ do_server() {
     # Am I a master or slave?
     local hnam="${1%%.*}"
     local hdom ; [ "$hnam" = "$1" ] || hdom="${1#*.}"
-    [ "$hnam" = "localhost" ] && hnam="$HOSTNAME"
+    [ "$hnam" = 'localhost' ] && hnam="$HOSTNAME"
 
     # name must match to be a master
     if [ "$hnam" != "$HOSTNAME" ] ; then
         message -a "I am slave of '$hnam'"
-        CEN_NET_MODE="SLAVE"
+        CEN_NET_MODE='SLAVE'
 
     # cannot be a master if the domain does not match
     elif [ -n "$hdom" -a "$hdom" != "$CEN_NET_DOMAIN" ] ; then
         trace -a "Not master of '$hnam.$hdom' - domain mismatch"
-        CEN_NET_MODE="SLAVE"
+        CEN_NET_MODE='SLAVE'
 
     # yes, this is a master
     else
         message -a "I am master of '$hnam' - role=$CEN_NET_ROLE"
-        CEN_NET_MODE="MASTER"
+        CEN_NET_MODE='MASTER'
         # attach generic server address
         nethost "$CEN_NET_SERVER_GEN"
         if [ "${_nethost_ip:--}" != '-' ] ; then
-            nettemp && . $_nettemp
+            nettemp -s
             embed -v centauriroute -t addr add "$CEN_NET_SERVER_GEN"
         fi
     fi
@@ -587,7 +587,7 @@ do_service() {
 # ------------------------------------------------------------------------------
 do_switch() {
     local netm conf="${1:--}" suff="${2:-$DAT_SUFF_LOCAL}"
-    [ "$conf" = "localhost" ] && conf="$HOSTNAME"
+    [ "$conf" = 'localhost' ] && conf="$HOSTNAME"
     [ "$conf" = '-' ] && conf="local"
     message "Switch configurations to: $conf"
 
@@ -623,10 +623,10 @@ do_switch() {
         imax=0
 
     # start/stop server services
-    elif [ "$CEN_NET_MODE" = "MASTER" ] ; then
+    elif [ "$CEN_NET_MODE" = 'MASTER' ] ; then
         do_service stop  - "${DAT_SWITCH_SLAVE[@]}"
         do_service start + "${DAT_SWITCH_MASTER[@]}" & CEN_QUIT_WSUB=1
-    elif [ "$CEN_NET_MODE" = "SLAVE" ] ; then
+    elif [ "$CEN_NET_MODE" = 'SLAVE' ] ; then
         do_service stop  - "${DAT_SWITCH_MASTER[@]}"
         do_service start + "${DAT_SWITCH_SLAVE[@]}" & CEN_QUIT_WSUB=1
 
@@ -702,7 +702,7 @@ do_update() {
         CEN_NET_MODE= ; CEN_NET_ROLE=
     elif [ -n "$1" ] ; then             # take state from args
         CEN_NET_SERVER="$1" ; CEN_NET_MASTER=
-        [ "$CEN_NET_SERVER" = "localhost" ] && CEN_NET_SERVER="$HOSTNAME.$CEN_NET_DOMAIN"
+        [ "$CEN_NET_SERVER" = 'localhost' ] && CEN_NET_SERVER="$HOSTNAME.$CEN_NET_DOMAIN"
         [ "$2" = "GUEST" ] || CEN_NET_MASTER="$CEN_NET_SERVER"
         CEN_NET_MODE="$2" ; CEN_NET_ROLE=
     else                                # (re-)read status file
@@ -761,7 +761,7 @@ do_update() {
 # ------------------------------------------------------------------------------
 actionCountry() {
     [ "${1:--}" != '-' ] && DAT_WLAN_COUNTRY="$1"
-    [ -z "$DAT_WLAN_COUNTRY" ] && nettemp && . "$_nettemp"  # read config
+    [ -z "$DAT_WLAN_COUNTRY" ] && nettemp -s    # read config
     if [ "${DAT_WLAN_COUNTRY:--}" = '-' ] ; then
         message "Not setting wlan regulatory domain" ; return
     else
@@ -783,8 +783,7 @@ actionDhcp() {
     ___carrier() {
         [ "${1::1}" = 'e' ] || return 0                 # only check ethernet
         nettool -d "$1" -i link set up || return 0      # cannot check
-        #for tick in 0.2 0.2 0.3 0.3 0.5 1 1 2 2 3 3 '' ; do     # give it some time to settle
-        for tick in 0.2 0.2 0.3 0.3 0.5 1 1 2  '' ; do     # give it some time to settle
+        for tick in 0.2 0.2 0.3 0.3 0.5 1 1 2  '' ; do  # give it some time to settle
             [ -z "$tick" ] && break
             timer -w "$tick"
             readline -e -i "/sys/class/net/$1/carrier" || return
@@ -797,7 +796,10 @@ actionDhcp() {
     ___dhclient() {
         local tick mesg="$1" opts=('-nw') ; shift
         if [ "$1" = '-x' ] ; then
-            system -q dhclient -x -pf "$pref.pid" -lf "$pref.leases"
+            # the '-x' does not work, may be because ifce is down when called
+            # system -q dhclient -x -pf "$pref.pid" "$ifce"
+            # kill manually ...
+            pidfile -f "$pref.pid" -k
             remove "$pref".*
         else
             remove "$pref.pid"
@@ -857,7 +859,7 @@ actionDhcp() {
             fi
 
             # for a wlan iface we might have to set a country code
-            nettemp && . "$_nettemp"                # read config
+            nettemp -s                              # read config
             [ "${2::2}" = 'wl' ] && do_country
 
             # dhcp up can be called very early at boot time via ifup/interfaces
@@ -879,7 +881,7 @@ actionDhcp() {
             ;;
     *)      invoke -e "Invalid argument:" "$1" ; return ;;
     esac
-    error -c                            # make ifup/ifdown happy
+    error -c                                        # make ifup/ifdown happy
 }
 
 # ------------------------------------------------------------------------------
@@ -888,7 +890,7 @@ actionDhcp() {
 actionEnter() {
     local mode="${1%%:*}" conf="${1#*:}" rrou rsec rfil oset
     [ "$conf" = "$1" ] && conf="$2"
-    nettemp && . "$_nettemp"
+    nettemp -s                                      # read config
     case "$mode" in
     dis*)   mode='disabled' ; rfil=1 ; oset='-r' ;;
     sta*)   mode='static'   ; rsec=1 ; oset='-r' ; [ -n "$conf" ] && frou=1 ;;
@@ -982,7 +984,7 @@ actionMonitor() {
 # start/stop master services: <command> [<wait>|-|+] <service>...
 # ------------------------------------------------------------------------------
 actionService() {
-    nettemp && . "$_nettemp"
+    nettemp -s                                      # read config
     do_service "$@"
 }
 
@@ -1006,7 +1008,7 @@ actionStart() {
 
     # parse centauriswitch kernel arg, create centauriswitch status file
     embed -v centauriroute -t init "$@" || return
-    nettemp && . "$_nettemp"
+    nettemp -s
 
     if [ -e "$DAT_SERVER_SETUP" ] ; then
         message "Starting in server-setup mode, not deleting override files"
@@ -1078,9 +1080,9 @@ actionStart() {
 actionStop() {
     nettemp -r
     if [ -z "$CEN_SVC_SYSD" ] ; then
-        nettemp -r "centaurifilter-disable"
-        nettemp -r "centaurisecrets-disable"
-        nettemp -r "centauriroute-disable"
+        nettemp -r 'centaurifilter-disable'
+        nettemp -r 'centaurisecrets-disable'
+        nettemp -r 'centauriroute-disable'
     fi
 }
 
@@ -1129,7 +1131,7 @@ actionStatus() {
 # switch action    [<master> [<role>]]
 # ------------------------------------------------------------------------------
 actionSwitch() {
-    nettemp && . "$_nettemp"
+    nettemp -s                                      # read config
 
     case "$CEN_ACTION" in
     auto)       do_secrets 'auto' && do_update '-'
@@ -1138,7 +1140,7 @@ actionSwitch() {
                 ;;
     client)     do_update "$1" "CLIENT" "$2"
                 ;;
-    master)     do_update "$1" "MASTER" "$2"
+    master)     do_update "$1" 'MASTER' "$2"
                 ;;
     local)      netserver
                 if [ "$CEN_NET_MODE" = 'SINGLE' ] ; then
@@ -1171,14 +1173,20 @@ actionUpDown() {
         return
     fi
 
-    nettemp && . "$_nettemp"                    # config saved by centauriroute
+    nettemp -s                                  # config saved by centauriroute
 
     # run only for configured interfaces
     local item ifce="$1"
     for item in $DAT_SWITCH_IFACES - ; do
         [ "$ifce" = "$item" ] && break
-        [ "${ifce%[0-9]}+" = "$item" ] && break
-        [ "${ifce%[a-z][0-9][a-z][0-9]}+" = "$item" ] && break
+        case "$item" in
+        [a-z][a-z][a-z][a-z]+)
+            [ "$item" = "${ifce::4}+" ] && break ;;
+        [a-z][a-z][a-z]+)
+            [ "$item" = "${ifce::3}+" ] && break ;;
+        [a-z][a-z]+)
+            [ "$item" = "${ifce::2}+" ] && break ;;
+        esac
     done
     if [ "$item" = '-' ] ; then
         if [ -z "$DAT_SWITCH_IFACES" ] ; then

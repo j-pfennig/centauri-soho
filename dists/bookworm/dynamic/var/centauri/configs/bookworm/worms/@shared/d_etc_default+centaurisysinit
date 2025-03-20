@@ -1,38 +1,4 @@
 # -----------------------------------------------------------------------------
-# Appliances are special boot options for computers that have no default linux
-# network and service configuration.
-#
-#   <runlevel>  2       # minimal networking and centauriswitch services started
-#               3       # all linux networking services get started
-#   <mode>      ...     # any network mode, auto selected if empty
-#   <conf>      ...     # optional network configuration
-#   <arg>       ...     # any kernel boot parameters
-#
-# centaurisysinit starts in appliance mode if runlevel is 2 or 3 and if either
-# the network mode is "(switch|router):.*" or 'centauriautlogin' is defined.
-#
-# For runlevel 2 centaurisysinit handles starting networking and centauriswitch
-# if kernel boot parameters match the definition of an appliance. All further
-# steps are handled by centauriswitch. See /etc/default/centauriswitch
-# -----------------------------------------------------------------------------
-
-# List of appliances:
-#         Label                  runlevel   mode     conf       kernel boot params
-appliance "Network: Menu Mode"          2   disabled -          'centaurilogin=local'
-appliance "Network: Switch Mode"        2   switch          
-
-appliance "Network: Router Mode"        3   router          
-appliance "Network: Extender Mode"      3   switch   extender          
-appliance "Network: Repeater Mode"      3   router   repeater
-
-appliance "Display: Digital Clock"      2   simple   -         'centaurilogin=clock'
-appliance "Display: Homeassistant GUI"  2   smart    -         'centaurilogin=homeassistant' 
-appliance "Display: Kiosk Mode"         2   simple   -         'centaurilogin=kiosk'
-
-# timers to be started in appliance modes 
-apptimers   anacron apt-daily apt-daily-upgrade  exin4-base logrotate systemd-tmpfile-clean
-
-# -----------------------------------------------------------------------------
 # This is a bash script that is sourced by service 'centaurisysinit' at early
 # boot. It can be used for things that could have been placed in 'rc.local'.
 # It also handles starting of appliances. The 'centauri-bash-lib' is initialized 

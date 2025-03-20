@@ -1,11 +1,11 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL='Dr. Jürgen Pfennig (c) 2023-2024; '$"BSD License"
+CEN_LEGAL='Dr. Jürgen Pfennig (c) 2023-2025; '$"BSD License"
 CEN_TITLE=$"Installer tool for centaurisoho linux machines"
 
 # Import the bash library
 if [ -z "$CEN_NAME" ] ; then
-    PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m con -t -y - '0.20:3' || exit 2
+    PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m con -t -y - '0.21:3' || exit 2
 fi
 
 # Variable naming scopes ...
@@ -565,7 +565,7 @@ get_repository() {
     fi
 
     if [ -n "$DAT_REPOSITORY" ] ; then
-        [ "$1" = '-l' ] && symlink -f -- "$DAT_REPOSITORY/@shared" "$CEN_ROOT/shared"
+        [ "$1" = '-l' ] && symlink -f -n -- "$DAT_REPOSITORY/@shared" "$CEN_ROOT/shared"
         trace -a -c " $1" "$DAT_REPOSITORY" ; return 0
     elif [ "$1" != '-e' -a "$1" != '-l' ] ; then
         error -n "Missing '$CEN_ROOT/shared', please create manually by" \
@@ -806,58 +806,80 @@ samba_check() {
 # ------------------------------------------------------------------------------
 # template substitution helpers
 # ------------------------------------------------------------------------------
+# netindex domain   0: whole IPv4 address range (all subnets)
+#          iot      1: non-trusted address range for gadgets
+#          trusted  2: trusted address range
+#          guest    3: less-trusted address range
+#          dynamic  4: addresses assigned by DHCP to unknown MAC addresses
+#          repeater 5: used by repeater NAT subnet
+#          vpn      6: used by VPN
+#          other    7: not used by centauri, user defined
+# ------------------------------------------------------------------------------
 templ_subst_name() {
     case "$DAT_SOHO_SUB" in
     A)  DAT_SOHO_SUB="$SOHO_NET_APNT" ;;
     B)  DAT_SOHO_SUB="$SOHO_NET_BASE" ;;
+    #C
     D)  DAT_SOHO_SUB="$SOHO_DOMAIN" ;;
     E)  DAT_SOHO_SUB="${SOHO_NET_EXTERN:--}" ;;
+    #F
     G)  DAT_SOHO_SUB="$SOHO_GENAME" ;;
     H)  DAT_SOHO_SUB="${SOHO_HOST:-$HOSTNAME}" ;;
     I)  DAT_SOHO_SUB="$SOHO_NET_PUBLIC" ;;
+    #JKL
     M)  DAT_SOHO_SUB="$SOHO_SONAME" ;;
-    N)  DAT_SOHO_SUB="$SOHO_DNAME" ;;
+    #N
     O)  DAT_SOHO_SUB="${CEN_NET_CONFIG:-$SOHO_CONFIG}" ;;
     P)  DAT_SOHO_SUB="$SOHO_SERVER" ;;
+    #Q
     R)  DAT_SOHO_SUB="${SOHO_ROUTERS%%[[:space:]]*}" ;;
     S)  DAT_SOHO_SUB="$SOHO_SECOND" ;;
-    T)  DAT_SOHO_SUB="${SOHO_DOMAIN#*.}" ;;
+    T)  DAT_SOHO_SUB="${CEN_NET_NETWORKS[1]:--}" ;;             # iot
+    U)  DAT_SOHO_SUB="${CEN_NET_NETWORKS[2]:--}" ;;             # trusted
+    V)  DAT_SOHO_SUB="${CEN_NET_NETWORKS[6]:--}" ;;             # vpn
     W)  DAT_SOHO_SUB="$SOHO_NET_WLAN" ;;
+    X)  DAT_SOHO_SUB="${CEN_NET_NETWORKS[5]:--}" ;;             # repeater
+    Y)  DAT_SOHO_SUB="${CEN_NET_NETWORKS[4]:--}" ;;             # dynamic
     Z)  DAT_SOHO_SUB="$SOHO_DISTRO" ;;
+    *)  templ_warning ;;
     esac
 }
 
 templ_subst_ipv4() {
     case "$DAT_SOHO_SUB" in
-    B)  DAT_SOHO_SUB="$CEN_NET_NETBITS" ; return ;;
-    N)  DAT_SOHO_SUB="$CEN_NET_NETMASK" ; return ;;
-
-    D)  DAT_SOHO_SUB="${CEN_NET_NETWORKS%/*}" ;;
-    E)  DAT_SOHO_SUB="${SOHO_NET_EXTERN%/*}" ;;
+    B)  DAT_SOHO_SUB="$CEN_NET_NETWORKS" ;;
+    D)  case "$1" in
+        0)  DAT_SOHO_SUB="${SOHO_DOMAIN#*.}" ;;         # top level
+        1)  DAT_SOHO_SUB="${SOHO_DOMAIN%%.*}" ;;        # short domain
+        *)  templ_warning
+        esac ; return ;;
+    E)  DAT_SOHO_SUB="$SOHO_NET_EXTERN" ;;
     G)  nethost -- "$CEN_NET_SERVER_GEN" ; DAT_SOHO_SUB="$_nethost_ip" ;;
     H)  DAT_SOHO_SUB="$CEN_NET_ADDR_IPLIST" ;;
     P)  nethost -- "${CEN_NET_SERVERS[0]}" ; DAT_SOHO_SUB="$_nethost_ip" ;;
     R)  DAT_SOHO_SUB="$SOHO_NET_ROUTER_IP4" ;;
     S)  nethost -- "${CEN_NET_SERVERS[1]}" ; DAT_SOHO_SUB="$_nethost_ip" ;;
-
-    V)  DAT_SOHO_SUB="${CEN_NET_NETWORKS[1]}" ; DAT_SOHO_SUB="${DAT_SOHO_SUB%/*}" ;;
-    X)  DAT_SOHO_SUB="${CEN_NET_NETWORKS[2]}" ; DAT_SOHO_SUB="${DAT_SOHO_SUB%/*}" ;;
-
-    *)  DAT_SOHO_SUB='[ERROR]' ; return ;;
+    T)  DAT_SOHO_SUB="${CEN_NET_NETWORKS[1]}" ;;                # iot
+    U)  DAT_SOHO_SUB="${CEN_NET_NETWORKS[2]}" ;;                # trusted
+    V)  DAT_SOHO_SUB="${CEN_NET_NETWORKS[6]}" ;;                # vpn
+    X)  DAT_SOHO_SUB="${CEN_NET_NETWORKS[5]}" ;;                # repeater
+    Y)  DAT_SOHO_SUB="${CEN_NET_NETWORKS[4]}" ;;                # dynamic
+    *)  templ_warning ; return ;;
     esac
 
     case "$1" in
     9)  netconv -u "${DAT_SOHO_SUB%/*}" ; DAT_SOHO_SUB="${_netconv%[0-9]}"
         DAT_SOHO_SUB="${DAT_SOHO_SUB%[0-9]}" ;;
     8)  netconv -u "${DAT_SOHO_SUB%/*}" ; DAT_SOHO_SUB="${_netconv%:*}:" ;;
+    7)  DAT_SOHO_SUB="$CEN_NET_NETMASK" ;;
     6)  netconv -u "$DAT_SOHO_SUB" ; DAT_SOHO_SUB="$_netconv" ;;
     5)  netconv -u "${DAT_SOHO_SUB%/*}" ; DAT_SOHO_SUB="$_netconv" ;;
     4)  DAT_SOHO_SUB="${DAT_SOHO_SUB%/*}" ;;
     3)  DAT_SOHO_SUB="${DAT_SOHO_SUB%/*}" ; DAT_SOHO_SUB="${DAT_SOHO_SUB%.*}" ;;
     2)  DAT_SOHO_SUB="${DAT_SOHO_SUB%/*}" ; DAT_SOHO_SUB="${DAT_SOHO_SUB%.*.*}" ;;
     1)  DAT_SOHO_SUB="${DAT_SOHO_SUB%/*}" ; DAT_SOHO_SUB="${DAT_SOHO_SUB%.*.*.*}" ;;
-    0)  ;;
-    *)  DAT_SOHO_SUB='[ERROR]' ;;
+    0)  DAT_SOHO_SUB="${DAT_SOHO_SUB##*/}" ;;
+    *)  templ_warning ;;
     esac
 }
 
@@ -870,24 +892,37 @@ templ_subst() {
     # Have any %... string? If not just print (regexp are slow)
     local lead="${text%%%*}"
     [ "$lead" = "$text" ] && { printf '%s\n' "$text" ; return ; }
-    local subs="${text:${#lead}}" tail xkey xsuf xres
+    local subs="${text:${#lead}}" tail xkey xsuf xcas xres
 
     # loop over %...% fragments
-    while [[ "${subs}" =~ (.*)%([ABDEGHIMNOPRSTVWXZ])(\^\^|\^|[1-689])?%(.*) ]] ; do
+    while [[ "${subs}" =~ (.*)%([A-Z])([0-9])?(\^\^|\^)?%(.*) ]] ; do
         subs="${BASH_REMATCH[1]}"       # not yet parsed
         xkey="${BASH_REMATCH[2]}"       # key
-        xsuf="${BASH_REMATCH[3]}"       # suffix
-        tail="${BASH_REMATCH[4]}$tail"  # already parsed
+        xsuf="${BASH_REMATCH[3]}"       # numeric suffix
+        xcas="${BASH_REMATCH[4]}"       # case suffix
+        tail="${BASH_REMATCH[5]}$tail"  # already parsed
         DAT_SOHO_SUB="$xkey"            # substitute this now ...
-        case "$xsuf" in
-        '')     templ_subst_name ; tail="${DAT_SOHO_SUB}$tail" ;;
-        '^')    templ_subst_name ; tail="${DAT_SOHO_SUB^}$tail" ;;
-        '^^')   templ_subst_name ; tail="${DAT_SOHO_SUB^^}$tail" ;;
-        *)      templ_subst_ipv4 "$xsuf" ; tail="${DAT_SOHO_SUB}$tail" ;;
+        case "$xsuf-$xcas" in
+        -)     templ_subst_name ; tail="${DAT_SOHO_SUB}$tail" ;;
+        -^)    templ_subst_name ; tail="${DAT_SOHO_SUB^}$tail" ;;
+        -^^)   templ_subst_name ; tail="${DAT_SOHO_SUB^^}$tail" ;;
+        ?-^)   templ_subst_ipv4 "$xsuf" ; tail="${DAT_SOHO_SUB^}$tail" ;;
+        ?-^^)  templ_subst_ipv4 "$xsuf" ; tail="${DAT_SOHO_SUB^^}$tail" ;;
+        *)     templ_subst_ipv4 "$xsuf" ; tail="${DAT_SOHO_SUB}$tail" ;;
         esac
     done
     printf '%s\n' "$lead$subs$tail"
     return 0
+}
+
+# ------------------------------------------------------------------------------
+# template substitution warning
+# ------------------------------------------------------------------------------
+templ_warning() {
+    trimjoin -- "$text"
+    DAT_SOHO_SUB='[ERROR]'
+    warning -m "Invalid template substitution: ""%$xkey$xsuf%" \
+               "Line: ""$CEN_TRIMJOIN" "File: ""${tmpl##*templates/}"
 }
 
 # ------------------------------------------------------------------------------
@@ -917,11 +952,15 @@ templ_update() {
 # expand a single template: [-x] <path> [<dest>]
 # ------------------------------------------------------------------------------
 templ_expand() {
-    allowInstall                                # check permission to install
-    get_config || return 1                      # get SOHO_xxx vars and netcfg
-
     local fexi
     [ "$1" = '-x' ] && { fexi=1 ; shift ; }
+    [ "$2" = '-' ] || allowInstall              # check permission to install
+    get_config || return 1                      # get SOHO_xxx vars and netcfg
+    while [ "$1" = '-' ] ; do
+        CEN_HISTORY='+' confirm -p - -u "Template expression" || return
+        templ_subst "$CEN_CONFIRM"
+    done
+
     local dest tmpl="${1%.TEMPLATE}.TEMPLATE"
     if [ -f "$tmpl" ] ; then
         :
@@ -931,6 +970,8 @@ templ_expand() {
         tmpl="$SOHO_WORKSPACE/templates/${SOHO_HOST:-$HOSTNAME}/$tmpl"
     elif [ -f "$SOHO_WORKSPACE/templates/@shared/$tmpl" ] ; then
         tmpl="$SOHO_WORKSPACE/templates/@shared/$tmpl"
+    elif [ "$CEN_ACTION" = 'template' ] ; then
+        error "Not a template: $tmpl" ; return 1
     else
         trace -a -c "Not a template" "$tmpl" ; return 1
     fi
@@ -964,6 +1005,11 @@ templ_expand() {
 #       (2) copyFromRepo -c <host>                      # check host
 #       (3) copyFromRepo [-u] <path> [<dest> [<dflt>]]  # extract file
 #       (4) copyFromRepo -l [-u] <path> <link>          # also make a symlink
+#
+#   Uses <dflt> when file is not found in repo
+#       ''      (no default) error message
+#       -       return 1
+#       <file>  copy this file file
 # ------------------------------------------------------------------------------
 copyFromRepo() {
     allowInstall                                        # check permission to install
@@ -1168,6 +1214,7 @@ actionBackup() {
     for item in 'boot' 'root' 'usr' 'home' 'export' 'shared' ; do
         printf -v file "%s_%s_%(%Y-%m-%d)T.tar.$algo" "$host" "$item" -1
         system -q sync
+        error -t || return
         if [ -s "$curr/$file" ] ; then
             trace -a -c "Skip existing" "$file"
         elif [ "$item" = 'boot' ] ; then

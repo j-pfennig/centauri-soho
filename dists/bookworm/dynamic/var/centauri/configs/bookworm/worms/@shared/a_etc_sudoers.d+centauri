@@ -7,24 +7,22 @@ local	ALL=(ALL:ALL)	NOPASSWD: ALL
 %centauri ALL=NOPASSWD: /sbin/shutdown
 %centauri ALL=NOPASSWD: /sbin/reboot
 
-# allow hass user to start/stop service
+# allow hass or weewx user to start/stop the service
 homeassistant ALL=NOPASSWD: /usr/bin/systemctl start centaurihass
 homeassistant ALL=NOPASSWD: /usr/bin/systemctl stop  centaurihass
 weewx ALL=NOPASSWD: /usr/bin/systemctl start centauriweewx
 weewx ALL=NOPASSWD: /usr/bin/systemctl stop  centauriweewx
 
-# this is for kiosk:
-%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- vterm
-%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- vterm 0
-%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- clock 
-%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- homeassistant
-%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- kiosk
-%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- reboot
-%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup -- shutdown
+# this is for autologin of kiosk users:
+%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup --- desktop * 
+%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup --- reboot
+%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup --- shutdown
+%kiosk  ALL=NOPASSWD: /var/centauri/tools/centauristartup --embed=centauristartup --- vterm *
 
 %kiosk  ALL=NOPASSWD: /usr/bin/fgconsole
 %kiosk  ALL=NOPASSWD: /usr/bin/chvt *
 %kiosk  ALL=NOPASSWD: /usr/bin/systemctl start --no-ask-password centauriissue
+%kiosk  ALL=NOPASSWD: /usr/bin/systemctl start --no-ask-password networking inetd
 
 %kiosk  ALL=NOPASSWD: /usr/bin/chgrp video '/sys/class/backlight'/*/brightness 
 %kiosk  ALL=NOPASSWD: /usr/bin/chmod 664   '/sys/class/backlight'/*/brightness 

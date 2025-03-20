@@ -1,11 +1,11 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. J. Pfennig (c) 2022-2024; BSD License"
+CEN_LEGAL="Dr. J. Pfennig (c) 2022-2025; BSD License"
 CEN_TITLE=$"Launcher for GUI or Console Applications"
 CEN_UTL_STIME="$EPOCHREALTIME"
 
 # Import the bash library
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g -t - '0.20:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g -t - '0.21:4' || exit 2
 
 embed -m _centauri_bash_dbg
 embed -c _centauri_bash_run         # dependency for standalone build
@@ -17,6 +17,7 @@ CEN_OPT_GEOMETRY=                   # see --geometry
 CEN_OPT_HOST=                       # see --host
 CEN_OPT_MODE=                       # see --mode
 CEN_OPT_PORT=                       # see --port
+CEN_OPT_TERMINAL=                   # see --terminal
 
 #declare -A x_args _pars
 
@@ -528,6 +529,7 @@ Window {
         focus: true
         zoomFactor: $_zoom
         onJavaScriptConsoleMessage: {
+            if (message == 'EXIT') Qt.exit(1);
             if (message == 'QUIT') Qt.quit();
             console.log(message);
         }
@@ -773,6 +775,22 @@ quit_hook() {
 }
 
 # ------------------------------------------------------------------------------
+# terminal mode: -b|-e
+# ------------------------------------------------------------------------------
+terminal_mode() {
+    [ -z "$CEN_OPT_TERMINAL" ] && return
+    case "$1" in
+    -b) context -g 1                        # window mode
+        DAT_GEOM=('+' '+')                  # full-screen
+        embed -v -z centauripower --force dpms on
+        ;;
+    -e)
+        embed -v -z centauripower --force dpms off
+        ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
 # list: [<mode>]
 # ------------------------------------------------------------------------------
 actionList() {
@@ -790,7 +808,7 @@ actionList() {
         splitjoin -s flds -d $'\a' -- "$item"
         if [ -n "$help" ] ; then
             printf -v item "%-8s <arg>...    %s" "${flds[0]}" "${flds[3]}"
-            usageset -t "$item"
+            usageset -a "$item"
         else
             printf "%-12s  %-6s  %-40s: %s\n" "${flds[@]::4}"
         fi
@@ -822,7 +840,8 @@ options() {
         optarg 'mode'       - '[0-3]' ;;        # regex
     -P|--por|--port)
         optarg 'port'       -      -n ;;        # number argument
-
+    -T|--ter*)
+        optarg 'terminal'   -      -f ;;        # flag
     esac
 }
 
@@ -863,7 +882,9 @@ actions() {
         done
 
         # this calls launcher() as an action
+        terminal_mode -b
         invoke "$actn" 'launcher' - - "${list[@]}" -- "$actn" "${CEN_CMDARGS[@]:1}"
+        terminal_mode -e
         ;;
     esac
 }
@@ -873,20 +894,24 @@ actions() {
 # ------------------------------------------------------------------------------
 usage() {
     usageset \
-        -o "" \
-        -o "-M --mode    <mode>  "$"start mode (run in background)" \
-        -o "-D --desktop <desk>  "$"override desktop configuration to use" \
+        -o '' \
+        -o '-D --desktop <desk>'  $"Override desktop configuration to use" \
+        -o '-F --folder  <fldr>'  $"x" \
+        -o '-G --geom    <geom>'  $"Size of browser window" \
+        -o '-H --host    <host>'  $"x" \
+        -o '-M --mode    <mode>'  $"Start mode (run in background)" \
+        -o '-P --port    <port>'  $"x" \
+        -o '-T --terminal'        $"Full-Screen, no DPMS" \
 
     usageset \
-        -l $"actions" ; actionList -h ; usageset \
-        -t '' \
-        -t "list     <info>      "$"show detailed information about actions" \
+        -a 'list     <info>'      $"show detailed information about actions" \
+        -a '' ; actionList -h
 
     usageset \
-        -l $"arguments" \
-        -t "<desk>         "$"a desktop name like: tty kde lxqt gnome" \
-        -t "<info>         "$"one out of:"' all session executable' \
-        -t "<mode>         "$"0:wait (default)  1:exec  2:background  3:disown" \
+        -p '<desk>'        $"a desktop name like: tty kde lxqt gnome" \
+        -p '<geom>'        $"width/height colon separated ('+' for max)" \
+        -p '<info>'        $"one out of:"' all session executable' \
+        -p '<mode>'        $"0:wait (default)  1:exec  2:background  3:disown" \
 
 }
 

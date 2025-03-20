@@ -128,9 +128,10 @@ Subsystem	sftp	/usr/lib/openssh/sftp-server
 # -----------------------------------------------------------------------------
 # jpf@centauri - make X11 work with ipv6 disabled
 X11UseLocalhost no
+##AddressFamily inet
 # jpf@centauri
 AcceptEnv LANG LC_* PULSE_SERVER XDG_CURRENT_DESKTOP
-###AcceptEnv PULSE_SERVER XDG_CURRENT_DESKTOP
+# GDK_DPI_SCALE
 HostbasedAuthentication no
 IgnoreRhosts yes
 LogLevel INFO
@@ -146,5 +147,5 @@ X11DisplayOffset 10
 #UsePrivilegeSeparation yes
 # jpf@centauri make android-fx happy with openssh 8.8
 HostKeyAlgorithms=+ssh-rsa,ssh-rsa-cert-v01@openssh.com
-PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-rsa-cert-v01@openssh.com
+#PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-rsa-cert-v01@openssh.com
 # -----------------------------------------------------------------------------

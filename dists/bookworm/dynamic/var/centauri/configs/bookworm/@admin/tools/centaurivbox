@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2025; BSD License"
 CEN_TITLE="Run VirtualBox commands using the 'vbox' proxy user"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g -y - '0.43:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g -y - '0.44:4' || exit 2
 
 # Data
 
@@ -38,6 +38,8 @@ do_drive() {
     *)      matchpath -s _disk -e -o -- "${DAT_CONFIG%/*}/$2.vdi" "$DAT_DRIVES/$2.vdi"
     esac
     printf -v "$1" "$_disk"
+    [ -n "$_disk" ] && return 0
+    error "Disk image not found:" "$2" ; return 1
 }
 
 # ------------------------------------------------------------------------------
@@ -222,24 +224,44 @@ actionAttach() {
     execute -m -v -- "$1" || return                 # check machine
 
     local disk size used
-    case "$2" in
-    -)      disk='none' ;;
-    */*)    disk="$2" ;;
-    *.*)    matchpath -s disk -e -o -- "${DAT_CONFIG%/*}/$2" "$DAT_DRIVES/$2" ;;
-    +)      inpfile -s disk -l -x 'vdi' + ;;
-    *)      matchpath -s disk -e -o -- "${DAT_CONFIG%/*}/$2.vdi" "$DAT_DRIVES/$2.vdi"
-    esac
+    do_drive disk "$2" || return
+#do_driveinfo "$disk" used size ; quit xxx $? $size ${used[*]%% *}
 
     local ferr='-e'
     local opts=(--storagectl SATA --type hdd --medium "$disk" --port "${3:-0}")
     if [ "$disk" = 'none' ] ; then
         ferr='-q'
     else
-#do_driveinfo "$disk" used size ; quit xxx $? $size ${used[*]%% *}
-#        system -q -z VBoxManage showmediuminfo disk "$disk"
         opts+=(--nonrotational on --discard on)
     fi
     system $ferr VBoxManage storageattach "$DAT_NAME" "${opts[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# run shell or command as user 'vbox': [<cmd> ...]
+# ------------------------------------------------------------------------------
+actionCmd() {
+    if [ "$USER" = 'vbox' ] ; then
+        if [ $# = 0 ] ; then
+            invoke -w $"Not lauching a shell for user 'vbox'"
+        else
+            system -e -- "$@"
+        fi
+    else
+        execute -v
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# compact - discard empty blocks: <driv>
+# ------------------------------------------------------------------------------
+actionCompact() {
+    [ "$1" = '-' ] && return
+    execute -v || return
+    local disk
+    do_drive disk "$1" || return
+    message "Compacting drive:" "$disk"
+    system -e -z vboxmanage modifymedium --compact "$disk"
 }
 
 # ------------------------------------------------------------------------------
@@ -257,21 +279,6 @@ actionDrive() {
         system -e VBoxManage closemedium disk "$CEN_OUTFILE" --delete
     else
         system -e VBoxManage createmedium disk --filename="$CEN_OUTFILE" --size="$2"
-    fi
-}
-
-# ------------------------------------------------------------------------------
-# run shell or command as user 'vbox': [<cmd> ...]
-# ------------------------------------------------------------------------------
-actionCmd() {
-    if [ "$USER" = 'vbox' ] ; then
-        if [ $# = 0 ] ; then
-            invoke -w $"Not lauching a shell for user 'vbox'"
-        else
-            system -e -- "$@"
-        fi
-    else
-        execute -v
     fi
 }
 
@@ -297,6 +304,11 @@ actionExport() {
 # ------------------------------------------------------------------------------
 actionGui() {
     execute -k -v || return
+    embed -b /etc/centauridisplay
+    # embed -e centauridisplay --run qt5 VirtualBox
+    #   qt5
+    #   qt6
+    #   x11
     system -e -- VirtualBox
 }
 
@@ -410,14 +422,18 @@ actionMount() {
     matchpath -a list -e -- "$base"/vol? || return
     if [ $# = 0 ] ; then
         case "${#list[*]}" in
-        4)  set -- + - - / ;;
-        3)  set -- + - / ;;
-        2)  set -- + / ;;
+        4)  set -- + - - / ;;       # has bios partition
+        3)  set -- + - / ;;         # boot and root
+        2)  set -- + - ;;           # root and swap
+        1)  set -- + ;;             # root only
+        *)  error -p "Found %s partitions, need explicit specifications" "${#list[*]}"
+            return ;;
         esac
     fi
     for part in "${list[@]}" ; do
         item="${base}_${part##*/}"
-        mopt=('-l')
+        # with readonly mount option -l does not work
+        mopt=('-l') ; [ -z "$fwri" ] && mopt+=('-r')
         case "${1:-+}" in
         +)  ;;
         -)  message -a -p "Skipping '%s'" "$item" ; shift ; continue ;;
@@ -593,10 +609,11 @@ execute() {
     # re-run via sudo
     if [ -n "$ousr" -a "$USER" != 'vbox' ] ; then
         message -a -d +3 $"Run as user 'vbox' ..."
+        local opts=(-u vbox --preserve-env=PULSE_SERVER,QT_SCALE_FACTOR,GDK_DPI_SCALE,GDK_SCALE)
         if [ "$CEN_ACTION" = 'cmd' ] ; then
-            system -e sudo -i -u vbox -H PULSE_SERVER=localhost
+            system -e sudo -i "${opts[@]}"
         else
-            local opts=(-u vbox -H PULSE_SERVER=localhost "$CEN_NAME" '--local')
+            opts+=(-H "$CEN_NAME" '--local')
             do_opts opts
             system -e -r -x sudo "${opts[@]}" "${CEN_CMDARGS[@]:CEN_CMDCURR}"
         fi
@@ -652,6 +669,8 @@ actions() {
         invoke    'batch'  actionStart 0 1 ;;
     cmd)
         invoke -c -        -               ;;
+    com*)
+        invoke    'compact' -            1 ;;
     cre*)
         invoke    'create' actionDrive   2 ;;
     del*)
@@ -706,6 +725,7 @@ actions:
                             attach a disk, use '-' to detach
        batch   [<name>]     start a virtual machine without gui
        cmd                  open a shell for user 'vbox'
+       compact <name>       discard empty blocks from disk image
        create  <disk> [<size>]
                             create a disk image (size in MByte)
        delete  <disk>       delete a disk image
@@ -729,9 +749,9 @@ arguments:
        <disk>               name of a registered vbox disk image
        <mdir>               mount directory (default is $HOME/Mount)
        <part>               partition selector (- skip, + mount, /... subvol)
-       <port>               x
-       <size>               x
-       <snam>               x
+       <port>               disk controller port 0,1,...
+       <size>               disk image size in MByte
+       <snap>               snapshot name
 !EOF
 }
 

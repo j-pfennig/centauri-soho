@@ -1,10 +1,15 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL='Dr. J. Pfenig (c) 2023-2024; '$"BSD License"
+CEN_LEGAL='Dr. J. Pfennig (c) 2023-2025; '$"BSD License"
 CEN_TITLE=$"Tool to (un)install and run Homeassistant Core"
 
+# ------------------------------------------------------------------------------
+# Note: this tool implements service actions like start/stop/status but does not
+#       use the _centauri_bash_svc module. So using opt -g with the proxy is OK.
+# ------------------------------------------------------------------------------
+
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -y - '0.20:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -g -s -y - '0.22:4' || exit 2
 
 # Data
 DAT_BASE='/opt/HomeAssistant'
@@ -13,26 +18,40 @@ DAT_VENV="$DAT_BASE/homeassistant"
 DAT_ENAB="$DAT_VENV/service-enabled"    # see autorun
 DAT_SERV="$CEN_NAME"                    # service name
 
+DAT_NAME='homeassistant'
 DAT_VERSION_311='2024.3.3'              # last python 3.11 version
-DAT_VERSION_312='2024.9.3'              # known working python 3.11 version
+DAT_VERSION_312='2025.1.4'              # known working python 3.12 version
+DAT_VERSION_313='2025.2.3'              # known working python 3.13 version
+
+# map HA version to python version
+DAT_VERSIONS=("$DAT_VERSION_311" '3.11' # debian bookworm
+              "$DAT_VERSION_312" '3.12'
+              -                  '3.13'
+              )
+DAT_HAVER="${DAT_VERSIONS[0]}"
+DAT_PYVER="${DAT_VERSIONS[1]}"          # the debian version, see vers_quirk
 
 # data for extra options
 CEN_OPT_QUIRK=                          # installation quirks
-CEN_OPT_USER='homeassistant'
-CEN_OPT_VERSION="$DAT_VERSION_312"
+CEN_OPT_USER="$DAT_NAME"
+CEN_OPT_VERSION=
 
 # ------------------------------------------------------------------------------
 # Is HA installed at all?
 # ------------------------------------------------------------------------------
 check_installed() {
     [ -d "$DAT_VENV/bin" ] && return 0
-    message "Homeassistant not found, run '$CEN_NAME install' to install it"
+    message - $"Homeassistant not found, run '%s' to install it" "$CEN_NAME install"
     error -s 2                          # set exit code
     return 1
 }
 
 # ------------------------------------------------------------------------------
-#
+# python version compare: <syst> <want>
+# ------------------------------------------------------------------------------
+#   returns:    2   syst  >  want
+#               1   syst  <  want
+#               0   syst  == want
 # ------------------------------------------------------------------------------
 vers_compare() {
     local arg1=(${1//./ } 0 0 0) arg2=(${2//./ } 0 0 0)
@@ -51,17 +70,33 @@ vers_compare() {
 vers_quirk() {
     system -f -c python
 
-    if [ -z "$CEN_OPT_QUIRK" ] ; then
-        CEN_OPT_QUIRK=0
-        vers_compare "$CEN_OPT_VERSION" "$DAT_VERSION_311"
-        if [ $? = 2 ] ; then
-            local vers ; system -q -r -s vers -- python -V ; vers="${vers#* }"
-            vers_compare "$vers" '3.12.0'
-            if [ $? = 1 ] ; then
-                warning -p $"Installed python is '%s' - activating --quirk=1" "$vers"
-                ((CEN_OPT_QUIRK |= 1))
-            fi
+    # find required version from HA version
+    if [ "${CEN_OPT_VERSION:--}" = '-' ] ; then
+        if [ "$CEN_OPT_QUIRK" = 0 ] ; then          # limit to distribution vers
+            trace -a $"Using distribution versions"
+        else                                        # latest version
+            trace -a $"Using latest known versions"
+            DAT_PYVER="${DAT_VERSIONS[${#DAT_VERSIONS[@]}-1]}"
+            DAT_HAVER="${DAT_VERSIONS[${#DAT_VERSIONS[@]}-2]}"
         fi
+    else
+        local want="$CEN_OPT_VERSION" vers indx=0
+        while [ "$indx" -lt "${#DAT_VERSIONS[@]}" ] ; do
+            vers="${DAT_VERSIONS[indx]}"
+            [ "${vers:--}" = '-' ] && break
+            vers_compare "$want" "$vers"
+            [ $? = 2 ] || break
+            ((indx += 2)) ; vers=
+        done
+        if [ "${vers:--}" = '-' ] ; then
+            DAT_PYVER="${DAT_VERSIONS[${#DAT_VERSIONS[@]}-1]}"
+        else
+            DAT_PYVER="${DAT_VERSIONS[indx+1]}"
+        fi
+    fi
+    if [ "$DAT_PYVER" != "${DAT_VERSIONS[1]}" ] ; then
+        ((CEN_OPT_QUIRK |= 1))
+        warning -a -p $"Need custom python '%s', activate --quirk=1 " "$DAT_PYVER"
     fi
 
     ((CEN_OPT_QUIRK & $1))                      # get status
@@ -73,13 +108,13 @@ vers_quirk() {
 vers_setup() {
     if [ "$1" = '-c' ] ; then
         while [ -e "$DAT_VENV" ] ; do
-            confirm -y $"Remove existing python environment (recommended)" || break
+            confirm -n -b $"Remove existing python environment (recommended)" || break
             remove -d -- "$DAT_VENV"
             error -t || return 1 ; break
         done
 
         if vers_quirk 1 ; then
-            system -p -- python3.12 -m venv "$DAT_VENV" || return 1
+            system -p -- "python$DAT_PYVER" -m venv "$DAT_VENV" || return 1
         else
             system -p -- virtualenv "$DAT_VENV" || return 1
         fi
@@ -134,14 +169,15 @@ actionDeps() {
 
         fi
         error -t || return 1
-        create -c ${CEN_OPT_FORCE:+-t} -- '/etc/apt/sources.list.d/pascalroeleven.sources' <<!EOF
+        create -c -t -- '/etc/apt/sources.list.d/pascalroeleven.sources' <<!EOF
 Types: deb
-URIs: http://deb.pascalroeleven.nl/python3.12
+URIs: http://deb.pascalroeleven.nl/python$DAT_PYVER
 Suites: bookworm-backports
 Components: main
 Signed-By: /etc/apt/keyrings/deb-pascalroeleven.gpg
 !EOF
-        embed -t -v -y centauripackage -s -y -I -T -X -U1 python3.12 python3.12-venv python3.12-dev
+        embed -t -v -y centauripackage -s -y -I -T -X -U1 \
+            "python$DAT_PYVER" "python$DAT_PYVER"-venv "python$DAT_PYVER"-dev
         error -t || return 1
     fi
 
@@ -162,11 +198,6 @@ actionInstall() {
     if system -q -r -- getent passwd "$CEN_OPT_USER" ; then
         system -e -p -- adduser "$CEN_OPT_USER" bluetooth
         system -e -p -- adduser "$CEN_OPT_USER" dialout
-        if [ ! -d "$DAT_HOME" ] ; then
-            folder -f -m -- "$DAT_HOME"
-            copy -a "${CEN_PATHS[2]}/skel/".* "$DAT_HOME"
-            system chown -R "$CEN_OPT_USER:" "$DAT_HOME" ; system chmod 775 "$DAT_HOME"
-        fi
     else
        system -e -p -- useradd -rm "$CEN_OPT_USER" -d "$DAT_HOME" -G dialout,bluetooth
     fi
@@ -174,24 +205,31 @@ actionInstall() {
 
     # install HA
 
+    if [ ! -d "$DAT_HOME" ] ; then
+        folder -f -m -- "$DAT_HOME"
+        copy -a "${CEN_PATHS[2]}/skel/".* "$DAT_HOME"
+        system chown -R "$CEN_OPT_USER:" "$DAT_HOME" ; system chmod 775 "$DAT_HOME"
+    fi
+    folder -m "$CEN_ROOT/home" 775
     symlink "$DAT_HOME" "$CEN_ROOT/home/$CEN_OPT_USER"
+    error -t || return
+
     attributes -d -m - -o "$CEN_OPT_USER:staff" -- "$DAT_BASE"
     system -c virtualenv || actionDeps
-    embed -r -t -u "$CEN_OPT_USER" -v -y -z -- \
-                   "$CEN_NAME" --version="$CEN_OPT_VERSION" setup install
+    embed -r -t -u "$CEN_OPT_USER" -v -y -z -- "$CEN_NAME" ${CEN_OPT_SILENT:+--silent} \
+                   --version="${CEN_OPT_VERSION:--}" setup install
+    error -t || return
 
     # install mosquitto
 
     local mosq
-    runservice enabled mosquitto
-    case $? in
-    0)  ;;
-    2)  warning $"The 'mosquittoo' mqtt broker service is masked" ;;
-    8)  warning $"The 'mosquittoo' mqtt broker service is disabled" ;;
-    64) confirm -y $"Also install 'mosquitto' mqtt broker" && mosq=1 ;;
-    *)  warning $"The 'mosquittoo' mqtt broker service may be broken"
+    LANG=C system -s mosq -q systemctl is-enabled 'mosquitto.service'
+    case "$mosq" in
+    enabl*) return ;;
+    diabl*) warning $"The 'mosquitto' mqtt broker service is disabled" ; return ;;
+    masked) warning $"The 'mosquitto' mqtt broker service is masked" ; return ;;
     esac
-    [ -n "$mosq" ] || return
+    confirm -y $"Also install 'mosquitto' mqtt broker" || return
     embed -v -y centauripackage -s -y -I -T mosquitto mosquitto-clients
 }
 
@@ -202,28 +240,43 @@ actionSetup() {
     if [ "$USER" != "$CEN_OPT_USER" ] ; then
         invoke -e $"The current user must be '%s'" "$CEN_OPT_USER" ; return
     fi
+    if system -q -- systemctl is-active "$CEN_NAME" ; then
+        invoke -e $"Please stop the service and retry" ; return
+    fi
 
     folder -c -f "$DAT_BASE"
+
+    local   slnt
+    [ -n "$CEN_OPT_SILENT" ] && slnt='-q'
 
     if [ "$1" = 'install' ] ; then
         vers_setup -c || return
         system -e -q -- python3 -m pip install wheel
         error -t || return
 
-        message -i ' '
-        message -n $'\n'"Ready to install homeassistant.  This can take a very long time." \
-                $'\n'"You can stop the installation now and continue later by running:" $'\n' \
-                $'\n'"    sudo $CEN_NAME --version='$CEN_OPT_VERSION' install" $'\n'" "
+        if [ -z "$slnt" ] ; then
+            message -i ' '
+            message -n $'\n'"Ready to install $DAT_NAME.  This can take a very long time." \
+                    $'\n'"You can stop the installation now and continue later by running:" $'\n' \
+                    $'\n'"    sudo $CEN_NAME --version='$DAT_HAVER' install" $'\n'" "
+        fi
+        confirm -y $"Continue to install $DAT_NAME" || return
 
-        confirm -y $"Continue to install homeassistant" || return
-
-        system -e -- pip3 install homeassistant=="$CEN_OPT_VERSION"
-
+        [ -n "$slnt" ] && progress -a -l -- $"Installing..."
+        ((CEN_OPT_QUIRK & 1)) && system -e -- pip3 $slnt install --upgrade pip
+        if [ "${DAT_HAVER:--}" = '-' ] ; then
+            system -e -- pip3 $slnt install "$DAT_NAME"
+        else
+            system -e -- pip3 $slnt install "$DAT_NAME==$DAT_HAVER"
+        fi
      else
         vers_setup || return
-        confirm -y $"Continue to upgrade homeassistant" || return
-        system -e -- pip3 install --upgrade homeassistant
+        confirm -y $"Continue to upgrade $DAT_NAME" || return
+        [ -n "$slnt" ] && progress -a -l -- $"Upgrading..."
+        ((CEN_OPT_QUIRK & 1)) && system -e -- pip3 $slnt install --upgrade pip
+        system -e -- pip3 $slnt install --upgrade "$DAT_NAME"
      fi
+     [ -n "$slnt" ] && error -t && message -a -- $"Done."
 }
 
 # ------------------------------------------------------------------------------
@@ -292,10 +345,10 @@ actionSystemctl() {
 # ------------------------------------------------------------------------------
 actionUninst() {
     if [ ! -d "$DAT_VENV" ] ; then
-        warning $"No known 'homeassistant' installation" ; return
+        warning $"No known '$DAT_NAME' installation" ; return
     fi
     folder -c -f "$DAT_VENV"
-    confirm -n $"Uninstall homeassistant" || return
+    confirm -n $"Uninstall $DAT_NAME" || return
     remove -d -- bin/ cache/ include/ lib/ share/ pyvenv.cfg LICENSE
     actionAutorun off
     message -a -p $"Please remove folder '%s' and user '%s' manually" "$DAT_VENV" "$CEN_OPT_USER"
@@ -306,7 +359,16 @@ actionUninst() {
 # ------------------------------------------------------------------------------
 actionUpgrade() {
     check_installed || return
-    embed -r -t -u "$CEN_OPT_USER" -v -y -z -- "$CEN_NAME" setup upgrade
+    embed -r -t -u "$CEN_OPT_USER" -v -y -z -- "$CEN_NAME" \
+                    ${CEN_OPT_SILENT:+--silent} setup upgrade
+}
+
+# ------------------------------------------------------------------------------
+# Get version info
+# ------------------------------------------------------------------------------
+actionVersion() {
+    vers_quirk 0
+    message -p $"Versions: %s (HomeAssistant)  %s (Python)" "$DAT_HAVER" "$DAT_PYVER"
 }
 
 # ------------------------------------------------------------------------------
@@ -315,22 +377,36 @@ actionUpgrade() {
 actionWeb() {
     context -g 1                                # always try gui mode
     local wurl="${1:--}" mode
-    if [ "$wurl" = '-' ] ; then
-        if [ -f "$DAT_ENAB" ] && system -q systemctl is-enabled "$DAT_SERV" ; then
+
+    case "$wurl" in
+    http://*:[0-9]*)
+        ;;
+    https://*:[0-9]*)
+        ;;
+    http://*)
+        wurl+=':8123'
+        ;;
+    https://*)
+        wurl+=':8123'
+        ;;
+    *:[0-9]*)
+        wurl="http://$wurl"
+        ;;
+    -)  if [ -f "$DAT_ENAB" ] && system -q systemctl is-enabled "$DAT_SERV" ; then
             if ! embed centauriroute wait localhost 8123 30 ; then
-                error $"Local 'homeassistant' instance not responding" ; return
+                error $"Local '$DAT_NAME' instance not responding" ; return
             fi
             wurl="http://localhost:8123"
-        elif nethost 'homeassistant' || nethost 'hass' ; then
+        elif nethost "$DAT_NAME" || nethost 'hass' ; then
             wurl="http://$_nethost_ip:8123"
         else
-            invoke -e $"Please specify the 'homeassistant' URL to use" ; return
+            invoke -e $"Please specify the '$DAT_NAME' URL to use" ; return
         fi
-    fi
+        ;;
+    *)  wurl="http://$wurl:8123"
+    esac
 
-#    [ "$USER" = "$CEN_OPT_USER" ] && mode='kiosk' || mode='view'
-#    embed -x -v centaurilauncher --gui=1 --port=8123 "$mode" "$wurl"
-    embed -x -v centaurilauncher --gui=1 --geom=+:+ view "$wurl"
+    embed -x -v centaurilauncher --terminal view "$wurl"
 }
 
 # ------------------------------------------------------------------------------
@@ -339,12 +415,12 @@ actionWeb() {
 options() {
     case "$1" in
 
-    -Q|--qui*)
+    -Q|--quir|--quirk)
         optarg 'quirk'      -       -n ;;       # numeric arg
     -U|--use|--user)
         optarg 'user'       -       -t ;;       # any text
     -V|--vers*)
-        optarg 'version'    -       -t ;;       # any text
+        optarg 'version'    -       '(20[0-9][0-9]\.[0-9]+\.[0-9])|-' ;;
 
     esac
 }
@@ -374,6 +450,9 @@ actions() {
     web)
         invoke    'web'     -        0 1 ;;     # one optional arg
 
+    ver*)
+        invoke    'version' -          0 ;;
+
     status)
         invoke    -         -          0 ;;     # no args
     start|stop|restart)
@@ -388,19 +467,19 @@ usage() {
     usageset \
         -o - \
         -o '-Q --quirk   <bits>'  $"a bit mask of quirks to be applied" \
-        -o '-U --user    <user>'  $"specify a different user (default: homeassistant)" \
-        -o '-V --version <vers>'  $"homeassistant version (default: $CEN_OPT_VERSION)" \
+        -o '-U --user    <user>'  $"specify a different user (default: $DAT_NAME)" \
+        -o '-V --version <vers>'  $"$DAT_NAME version (default: $CEN_OPT_VERSION)" \
 
     usageset \
         -a 'autorun      <auto>'  $"behaviour of service '$DAT_SERV'" \
         -a 'deps'                 $"install build dependencies" \
-        -a 'install'              $"install homeassistant core" \
-        -a 'run'                  $"run homeassistant 'hass' binary" \
+        -a 'install'              $"install $DAT_NAME core" \
+        -a 'run'                  $"run $DAT_NAME 'hass' binary" \
         -a 'setup        <what>'  $"[internal] called by 'install' and 'upgrade'" \
-        -a 'shell'                $"open a shell as user homeassistant" \
-        -a 'uninstall'            $"uninstall homeassistant" \
-        -a 'upgrade'              $"upgrade homeassistant" \
-        -a 'web         [<url>]'  $"show homeassistant web interface" \
+        -a 'shell'                $"open a shell as user $DAT_NAME" \
+        -a 'uninstall'            $"uninstall $DAT_NAME" \
+        -a 'upgrade'              $"upgrade $DAT_NAME" \
+        -a 'web         [<url>]'  $"show $DAT_NAME web interface" \
         -a - \
         -a 'start'                $"run ""'systemctl start $DAT_SERV'" \
         -a 'status'               $"... ""'systemctl status $DAT_SERV'" \
@@ -408,10 +487,10 @@ usage() {
 
     usageset \
         -p '<auto>'               $"one of: on off status" \
-        -p '<bits>'               $"1 - https://github.com/pascallj/python3.12-backport'" \
+        -p '<bits>'               $"1 - https://github.com/pascallj/python3.x-backport'" \
         -p '<user>'               $"linux user name" \
         -p '<url>'                $"something like 'http://your-host:8123'" \
-        -p '<vers>'               $"homeassistant version to install" \
+        -p '<vers>'               $"$DAT_NAME version to install" \
 
     usageset \
         -t $"To start Homeassistant Core at boot time as a service enter:"\
@@ -422,8 +501,8 @@ usage() {
         -t $"Action 'autorun' also creates or removes the '${DAT_ENAB##*/}'" \
         -t $"file that is checked by the service as a start condition." \
         -t - \
-        -t $"Run 'centausysinit default homeassistant' if you want your machine to" \
-        -t $"start in kiosk mode with homeassistant web interface at boot time." \
+        -t $"Run 'centaurisysinit default $DAT_NAME' if you want your machine to" \
+        -t $"start in kiosk mode with $DAT_NAME web interface at boot time." \
 
     usageset \
         -e $"# A full build on a raspberry pi can take about one hour, in particular" \

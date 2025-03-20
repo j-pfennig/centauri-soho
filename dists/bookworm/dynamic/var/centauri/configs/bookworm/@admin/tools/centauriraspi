@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2009-2024; "$"BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2009-2025; "$"BSD License"
 CEN_TITLE=$"Tool to manage 'Raspberry Pi' boot configurations"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m mnt -t -y - '0.25:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m mnt -t -y - '0.26:4' || exit 2
 
 # Data
 
@@ -189,15 +189,15 @@ actionConfig() {
         fini=2
     # legacy kernel may be using a custom initrd
     elif [ -n "$fini" ] ; then
-        [ -s "initrd.img" ] || warning "Configured initrd use but no 'initrd.img' file found"
+        [ -s 'initrd.img' ] || warning $"Configured initrd use but no 'initrd.img' file found"
         if [ -n "$slbl" ] ; then
             if [ -b "/dev/disk/by-label/$slbl" ] ; then
-                message -a "Using initrd with LABEL '$slbl'"
+                message -a $"Using initrd with label:" "$slbl"
             else
-                warning "Using initrd with unknown LABEL '$slbl'"
+                warning $"Using initrd with unknown label:" "$slbl"
             fi
         elif [ -z "$puid" ] ; then
-            warning "Found no 'root=LABEL' in kernel command line"
+            warning $"Found no 'root=LABEL' in kernel command line"
         fi
     elif [ -n "$slbl" ] ; then
         [ -z "$sini" ] && warning "Using 'root=LABEL=<label>' but 'initrd=<addr>' is missing"
@@ -222,8 +222,9 @@ actionConfig() {
     # warn if label does not match HOSTNAME
     if [ -n "$slbl" -a -z "$CEN_OPT_NOCHECK" ] ; then
         if [ "${slbl%_*}" != "$CEN_OPT_HOST" ] ; then
-            warning "Label '$slbl' does not match hostname"
-            actionRoot
+            warning -p $"Label '%s' does not match hostname" "$slbl"
+            slbl="${CEN_OPT_HOST}_${slbl#*_}"
+            CEN_OPT_NOCHECK=1 ; actionRoot . "$slbl" ; CEN_OPT_NOCHECK=
         fi
     fi
 }
@@ -269,7 +270,7 @@ actionEntry() {
         for name in 'router' 'repeater' 'switch' 'extender' ; do
             netoption "$name" "$CEN_OPT_HOST" && actionEntry "$name" "${args[@]}"
         done
-        message -a "Created 'cmdline-<name>.txt' entries in '/boot/firmware'"
+        message -a $"Created 'cmdline-<name>.txt' entries in '/boot/firmware'"
         return
     fi
 
@@ -284,7 +285,7 @@ actionEntry() {
     fi
 
     if [ "$args" = 'root=-' ] ; then                # generate no root=
-        do_ask_quit "Not creating a 'root=' boot parameter. Really continue"
+        do_ask_quit $"Not creating a 'root=' boot parameter. Really continue"
         args=()
     elif [ "$args" = 'root=+' ] ; then              # autodetect root
         local fsty
@@ -293,9 +294,9 @@ actionEntry() {
         elif [ -b "/dev/disk/by-label/${CEN_OPT_HOST}_root" ] ; then
             fsty='ext4' ; args=("root=LABEL=${CEN_OPT_HOST}_root")
         else
-            invoke -e "Cannot autodetect root, please specify as argument" ; return
+            invoke -e $"Cannot autodetect root, please specify as argument" ; return
         fi
-        do_ask_quit -f "Booting '%s' from '%s' filesystem. Continue" "$CEN_OPT_HOST" "$fsty"
+        do_ask_quit -f $"Booting '%s' from '%s' filesystem. Continue" "$CEN_OPT_HOST" "$fsty"
     fi
     args+=('fsck.repair=yes')
 
@@ -340,18 +341,26 @@ actionEntry() {
         adef=(centauriswitch=static systemd.unit=graphical.target) ;;
     apoint)                                             # wlan does no wds
         adef=(centauriswitch=static:apoint systemd.unit=graphical.target) ;;
+
     router)
         adef=(centauriswitch=router systemd.unit=runlevel3.target) ;;
     repeater)
-        adef=(centauriswitch=router:repeater systemd.unit=runlevel2.target) ;;
+        adef=(centauriswitch=router:repeater systemd.unit=runlevel3.target) ;;
     switch)
         adef=(centauriswitch=switch systemd.unit=runlevel3.target) ;;
     extender)                                           # wlan does no wds
-        adef=(centauriswitch=switch:extender systemd.unit=runlevel2.target) ;;
-    *menu|boot*)
-        adef=(centauriswitch=disabled systemd.unit=runlevel2.target centaurilogin=local) ;;
+        adef=(centauriswitch=switch:extender systemd.unit=runlevel3.target) ;;
+
+    boot*|*menu)
+        adef=(centauriswitch=manual systemd.unit=runlevel2.target centaurilogin=local) ;;
+    clock)
+        adef=(centauriswitch=smart systemd.unit=runlevel2.target centaurilogin=clock) ;;
+    home*|hass*)
+        adef=(centauriswitch=smart systemd.unit=runlevel2.target centaurilogin=homeassistant) ;;
     kiosk)
-        adef=(centauriswitch=simple systemd.unit=runlevel3.target centaurilogin=kiosk) ;;
+        adef=(centauriswitch=smart systemd.unit=runlevel2.target centaurilogin=kiosk) ;;
+    weewx)
+        adef=(centauriswitch=smart systemd.unit=runlevel2.target centaurilogin=weewx) ;;
     esac
 
     for item in "${adef[@]}" ; do
@@ -415,6 +424,33 @@ actionInitrd() {
     upd*)   do_initrd "$2" ;;
     *)      invoke -e $"Invalid event: %s" "$1"
     esac
+}
+
+# ------------------------------------------------------------------------------
+# list config file: [<file>|cmd|conf]
+# ------------------------------------------------------------------------------
+actionList() {
+    local file list line
+    do_folder -n
+    case "$1" in
+    '')     file='cmdline.txt' ;;
+    *.txt)  file="$1" ;;
+    cmd*)   file='cmdline.txt' ;;
+    con*)   file='config.txt' ;;
+    *)      invoke -e $"Invalid file argument: %s" "$1" ; return
+    esac
+    inpdata -a list -- "$file" || return
+    if [ "${file::3}" = 'cmd' ] ; then
+        splitjoin -d ' ' -l -s - -- "$list"
+        return
+    fi
+    for line in "${list[@]}" ; do
+        case "$line" in
+        ''|\#*) ;;
+        [*)     printf '%s\n' "$line" ;;
+        *)      printf '    %s\n' "$line"
+        esac
+    done
 }
 
 # ------------------------------------------------------------------------------
@@ -507,7 +543,7 @@ actionRoot() {
     PARTUUID=*) puid="${iden#*=}" ;;
     *_*)        labl="$iden" ; iden="LABEL=$iden" ;;
     *)          if [ -n "${iden//[-a-fA-F0-9]/}" ] ; then
-                    invoke -e "Invalid boot parameter:" "$iden" ; return
+                    invoke -e $"Invalid boot parameter:" "$iden" ; return
                 fi
                 puid="$iden" ; iden="PARTUUID=$iden"
     esac
@@ -519,10 +555,10 @@ actionRoot() {
 
     if [ "$karg" = "root=$iden" ] ; then
         message -a -p $"Boot configuration '%s' not modified" "${karg#root=}"
-    elif confirm -n -f "Use '%s' as boot contfiguration" "$iden" ; then
-        karg="root=$iden"
-        echo create -t -v kcmd -- "$conf"
-        message -a "Updated:" "$conf"
+    elif confirm -n -f $"Use '%s' as boot configuration" "$iden" ; then
+        karg="root=$iden" ; item="${karg[*]}"
+        create -t -v item -- "$conf"
+        message -a $"Updated:" "$conf  ==>  $karg"
     fi
 }
 
@@ -533,8 +569,8 @@ actionShow() {
     do_folder
 
     ___show() {
-        local mark="   " ; [ "$3" = 0 ] && mark="==>"
-        message -i -p "%s %s" "$mark" "$2"
+        local mark='   ' ; [ "$3" = 0 ] && mark='==>'
+        message -i -p '%s %s' "$mark" "$2"
     }
 
     message -a $"Kernel command line configs:"
@@ -584,6 +620,8 @@ actions() {
         invoke -r 'entry'             -   1 + ;;        # at least one arg
     ini*)
         invoke -r 'initrd'            -   1 2 ;;        # 1..2 args
+    lis|list)
+        invoke -r 'list'              -   0 1 ;;        # optional arg
     rem*)
         invoke -r 'remove'            -     1 ;;        # one arg
     roo|root)
@@ -617,6 +655,8 @@ usage() {
        -a -                     $"create a cmdline boot entry (use '-' to disable adding" \
        -a -                     $"default parameters and 'nosplash' to disable plymouth)" \
        -a 'initrd <event>'      $"(booted system) manage initrd file" \
+       -a 'list   [<file>|cmd|conf]' \
+       -a -                     $"pretty-print configuration data" \
        -a 'remove <config>'     $"remove the given configuration" \
        -a 'root   [<config>|-|. [<label>|<host>|<uuid>|-|.]]' \
        -a -                     $"set 'root=' in kernel command line. Use '-' for default" \

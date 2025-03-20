@@ -680,7 +680,7 @@ _cen_net_mapinit()  {
 _cen_net_mappers()  {
     if [ "$1" = '-w' ] ; then
         if [ "$EUID" != 0 ] ; then
-            CEN_TRACE2 "ifnames not persisted for non-root user"
+            $CEN_TRACE2 "ifnames not persisted for non-root user"
             return 0
         fi
         local _imap="${CEN_NET_IFMAP[@]@A}" ; _imap="${_imap#declare -* }"
@@ -844,12 +844,12 @@ _cen_net_mapiadd() {
 #          indexes are hard-coded in the function but nowhere else.
 #
 #          domain   0: whole IPv4 address range (all subnets)
-#          repeater 1: used by repeater NAT subnet
-#          vpn      2: used by VPN
-#          iot      3: non-trusted address range for gadgets
-#          trusted  4: trusted address range
-#          guest    5: less-trusted address range
-#          dynamic  6: addresses assigned by DHCP to unknown MAC addresses
+#          iot      1: non-trusted address range for gadgets
+#          trusted  2: trusted address range
+#          guest    3: less-trusted address range
+#          dynamic  4: addresses assigned by DHCP to unknown MAC addresses
+#          repeater 5: used by repeater NAT subnet
+#          vpn      6: used by VPN
 #          other    7: not used by centauri, user defined
 #
 #+CEN_NET_NETWORKS and so this function use IPv4 addresses. IPv6 addressing is
@@ -876,7 +876,7 @@ netindex() {
     dyn*)   _netindex=4 ;;
     rep*)   _netindex=5 ;;
     vpn)    _netindex=6 ;;
-    oth*)   _netindex=7 ;;
+    oth*)   _netindex=7 ;;          # external network
 
     [0-7])  _netindex="$1" ;;
 
@@ -950,9 +950,7 @@ netmask() {
         return 2
     fi
 
-#local _bit1="$_netparse_bits"
     netparse -a $_oerr -n "$2" || return 1
-#[ "$_netparse_bits" != "$_bit1" ] && trace -a -c " mask#2" "$_bit1 $_netparse_bits"
     netconv -b "$_netparse_addr" || return 1
     $CEN_TRACE2 -a -c -p " check" "%-14s -> %x" "$2" "$_netconv"
     [ $((_netconv & _netmask_mask)) = "$_netmask_addr" ]
@@ -1222,33 +1220,31 @@ nettemp() {
     fi
 
     # option and arguments
-    local lopt
+    local _lopt
     if [ "${1::1}" = '-' -a "$1" != '-' ] ; then
-        lopt=$1 ; shift
+        _lopt=$1 ; shift
     fi
-    local arg1="${1:--}" arg2="${2:--}"
-    [ "$arg1" = '-' ] && arg1="${CEN_NAME:-$0}"
+    local _arg1="${1:--}" _arg2="${2:--}" _argp="$_nettemp"
+    [ "$_arg1" = '-' ] && _arg1="${CEN_NAME:-$0}"
+    [ "$_arg1" != '.' ] && _argp+="/$_arg1"
 
-    case "$lopt" in
+    case "$_lopt" in
     ''|--)                                      # make name, return status
-                [ "$arg1" != '.' ] && _nettemp+="/$arg1"
-                [ -e "$_nettemp" ] ;;
-    -c)                                         # create file
-                _nettemp+="/$arg1"
-                create -w "$_nettemp" 664 ;;    # warning on failure
+                _nettemp="$_argp" ; [ -e "$_argp" ] ;;
+    -c)                                         # create file, warn on failure
+                _nettemp="$_argp" ; create -w "$_argp" 664 ;;
     -l)                                         # create link
-                [ "$arg2" = '-' ] && arg2="${CEN_NAME:-$0}"
-                _cen_net_symlink "$arg1" "$_nettemp/$arg2"
+                [ "$_arg2" = '-' ] && _arg2="${CEN_NAME:-$0}"
+                _cen_net_symlink "$_arg1" "$_nettemp/$_arg2"
                 ;;
     -r)                                         # remove file
-                _cen_net_remove "$_nettemp/$arg1" ;;
+                _cen_net_remove "$_argp" ;;
     -s)                                         # source file
-                _nettemp+="/$arg1"
-                _cen_source "$_nettemp" ;;
+                _nettemp="$_argp" ; _cen_source "$_argp" ;;
     -w)                                         # write file
-                _nettemp+="/$arg1" ; netfile -h "$_nettemp" ;;
+                _nettemp="$_argp" ; netfile -h "$_argp" ;;
     *)                                          # error
-                _cen_abort - "$lopt" ;;
+                _cen_abort - "$_lopt" ;;
     esac
 }
 

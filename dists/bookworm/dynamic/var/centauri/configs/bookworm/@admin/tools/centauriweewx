@@ -1,0 +1,385 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+CEN_LEGAL='Dr. J. Pfennig (c) 2024-2025; '$"BSD License"
+CEN_TITLE=$"Tool to (un)install and run WeeWx"
+
+# Import the bash library, set name and version
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -g -y - '0.02:4' || exit 2
+
+# Data
+DAT_BASE='/opt/WeeWx'
+DAT_HOME="$DAT_BASE/home"
+DAT_VENV="$DAT_BASE/weewx"
+DAT_ENAB="$DAT_VENV/service-enabled"    # see autorun
+DAT_SERV="$CEN_NAME"                    # service name
+DAT_NAME='weewx'
+DAT_EXEC="$DAT_BASE/weewx/bin/weewxd"
+#DAT_CONFIG='/etc/weewx/weewx-data/weewx.conf'
+DAT_CONFIG="$DAT_HOME/weewx-data/weewx.conf"
+DAT_HTML="$DAT_HOME/weewx-data/public_html"
+DAT_WEBSVR="/var/www/html"
+
+# data for extra options
+CEN_OPT_USER='weewx'
+CEN_OPT_VERSION='5.1.0'                 # see https://pypi.org/search
+
+# ------------------------------------------------------------------------------
+# Is WeeWx installed at all?
+# ------------------------------------------------------------------------------
+check_installed() {
+    [ -d "$DAT_VENV/bin" ] && return 0
+    message "WeeWx not found, run '$CEN_NAME install' to install it"
+    error -s 2                          # set exit code
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+vers_setup() {
+    if [ "$1" = '-c' ] ; then
+        while [ -e "$DAT_VENV" ] ; do
+            confirm -y $"Remove existing python environment (recommended)" || break
+            remove -d -- "$DAT_VENV"
+            error -t || return 1 ; break
+        done
+
+        system -p -- python -m venv "$DAT_VENV" || return 1
+        message -a $"Created python environment:" "$DAT_VENV"
+    fi
+
+    [ -e "$DAT_VENV/bin/activate" ] && _cen_source "$DAT_VENV/bin/activate" && return 0
+    error $"Failed to activate python environment:" "$venv"
+}
+
+# ------------------------------------------------------------------------------
+# WeeWx service: on|off|status
+# ------------------------------------------------------------------------------
+actionAutorun() {
+    check_installed || return
+    local word vsee="# This file is a start condition for '$DAT_SERV.service'"
+
+    if ! listsearch -u -m word -- "${1:-status}" 'on' 'off' 'status' ; then
+        invoke -a 'on off status' ; return
+    fi
+
+    # we use 'service-enabled' to control if WeeWx should run or not. This is why
+    # we only enable the service but never disable it. The service unit checks
+    # for file 'service-enabled'.
+
+    # The 'centaurisysinit' service starts '$DAT_SERV', even if not
+    # enabled, when kernel parameter 'centaurilogin=weewx' is set.
+
+    case "$word" in
+    on)     create -- "$DAT_ENAB"
+            system -q systemctl is-enabled "$DAT_SERV" || system -e -p \
+                systemctl enable "$CEN_ROOT/systemd/system/$DAT_SERV.service"  ;;
+    off)    remove -- "$DAT_ENAB" ;;
+    *)      actionStatus
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# WeeWx dependencies: -no args-
+# ------------------------------------------------------------------------------
+actionDeps() {
+    embed -v -y centauripackage -s -y -I -L -T -X python3 python3-venv
+    error -t || return 1
+    message -a $"Build dependencies are installed"
+}
+
+# ------------------------------------------------------------------------------
+# Launch tty editor
+# ------------------------------------------------------------------------------
+actionEdit() {
+    check_installed || return
+    folder -c -f "$DAT_BASE/home"
+    if [ -e "$DAT_CONFIG" ] ; then
+        if system -c 'editor' ; then
+            # in a debian system we can run 'editor' directly
+            system -e -u "$CEN_OPT_USER" -- editor "$DAT_CONFIG"
+        else
+            system -e -u "$CEN_OPT_USER" -- centaurilauncher --desk=tty editor "$DAT_CONFIG"
+        fi
+    else
+        error -p $"Missing configuration, did you run '%s'?" "$CEN_NAME install"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# install Home weewx step 1: -no args-
+#
+#   step 1: create folder, python, create user (needs root)
+#   step 2: build python stuff (must run as weewx)
+# ------------------------------------------------------------------------------
+actionInstall() {
+
+    # create HA user, add to dialout and bluetooth groups
+
+    if system -q -r -- getent passwd "$CEN_OPT_USER" ; then
+       # system -e -p -- adduser "$CEN_OPT_USER" bluetooth
+       # system -e -p -- adduser "$CEN_OPT_USER" dialout
+       :
+    else
+       system -e -p -- useradd -rm "$CEN_OPT_USER" -d "$DAT_HOME" # -G dialout,bluetooth
+    fi
+    error -t || return
+
+    # install it
+
+    if [ ! -d "$DAT_HOME" ] ; then
+        folder -f -m -- "$DAT_HOME"
+        copy -a "${CEN_PATHS[2]}/skel/".* "$DAT_HOME"
+        system chown -R "$CEN_OPT_USER:" "$DAT_HOME" ; system chmod 775 "$DAT_HOME"
+    fi
+    folder -m "$CEN_ROOT/home" 775
+    symlink "$DAT_HOME" "$CEN_ROOT/home/$CEN_OPT_USER"
+    folder -f -m -- "$DAT_HTML" 775 "$CEN_OPT_USER"
+    [ -d "$DAT_WEBSVR" ] && symlink "$DAT_HTML" "$DAT_WEBSVR/$DAT_NAME"
+    error -t || return
+
+    attributes -d -m - -o "$CEN_OPT_USER:staff" -- "$DAT_BASE"
+    system -c virtualenv || actionDeps
+
+    embed -r -t -u "$CEN_OPT_USER" -v -y -z -- \
+                   "$CEN_NAME" --version="$CEN_OPT_VERSION" setup install
+}
+
+# ------------------------------------------------------------------------------
+# install/update weewx step 2: install|update
+# ------------------------------------------------------------------------------
+actionSetup() {
+    if [ "$USER" != "$CEN_OPT_USER" ] ; then
+        invoke -e $"The current user must be '%s'" "$CEN_OPT_USER" ; return
+    fi
+
+    folder -c -f "$DAT_BASE"
+
+    if [ "$1" = 'install' ] ; then
+        vers_setup -c || return                     # create and activate venv
+        system -e -q -- python3 -m pip install wheel
+        error -t || return
+
+        message -i ' '
+
+        confirm -y $"Continue to install '$DAT_NAME'" || return
+
+        system -e -- pip3 install $DAT_NAME=="$CEN_OPT_VERSION" || return
+        system -e -- weectl station create
+     else
+        vers_setup || return                        # activate venv
+        confirm -y $"Continue to upgrade '$DAT_NAME'" || return
+        system -e -- pip3 install --upgrade $DAT_NAME
+     fi
+}
+
+# ------------------------------------------------------------------------------
+# run WeeWx: -no args-
+# ------------------------------------------------------------------------------
+actionRun() {
+    check_installed || return
+    local verb ; [ "$CEN_VERB" -gt 1 ] && verb='-v'
+    system -e -n -u "$CEN_OPT_USER" -x -- "$DAT_EXEC" $verb "$DAT_CONFIG"
+}
+
+# ------------------------------------------------------------------------------
+# WeeWx shell: -no args-
+# ------------------------------------------------------------------------------
+actionShell() {
+    check_installed || return
+    folder -c -f "$DAT_BASE/home"
+    system -e sudo -u "$CEN_OPT_USER" -H -s
+}
+
+# ------------------------------------------------------------------------------
+# show status: -no args-
+# ------------------------------------------------------------------------------
+actionStatus() {
+    check_installed || return
+    local word sise enab
+
+    system -q systemctl is-enabled "$DAT_SERV" && enab=1
+
+    [ -n "$enab" ] && sise=$"enabled" || sise=$"not enabled"
+    [ -f "$DAT_ENAB" ] && word=$"on" || word=$"off"
+    message -a -p $"Autorun: %s   Service: %s" "$word" "$sise"
+
+    [ -z "$enab" ] && return
+    message -a
+    system -e systemctl status "$DAT_SERV"
+}
+
+# ------------------------------------------------------------------------------
+# run systemctl: -no args-
+# ------------------------------------------------------------------------------
+actionSystemctl() {
+    check_installed || return
+
+    # centaurisysinit uses 'centauriweewx --quiet --force start' ...
+    local temp
+    if [ -n "$CEN_OPT_FORCE" ] ; then
+        if [ "$CEN_ACTION" = 'start' ] && [ ! -e "$DAT_ENAB" ] ; then
+            temp=1 ; create -- "$DAT_ENAB"          # enable temporarily
+        fi
+    elif [ ! -e "$DAT_ENAB" ] ; then
+        error -m "Service '$DAT_SERV' is not enabled. Please" \
+                 "run '$CEN_NAME auto on' to enable or use option '--force'"
+        return
+    fi
+
+    local list=("$DAT_SERV") coun=30
+    trace -a -c "Start services" "${list[*]}"
+    system -e -p -z systemctl --no-block "$CEN_ACTION" "${list[@]}"
+    [ -n "$temp" ] && remove -- "$DAT_ENAB"
+}
+
+# ------------------------------------------------------------------------------
+# uninstall WeeWx: -no args-
+# ------------------------------------------------------------------------------
+actionUninst() {
+    if [ ! -d "$DAT_VENV" ] ; then
+        warning $"No known '$DAT_NAME' installation" ; return
+    fi
+    folder -c -f "$DAT_VENV"
+    confirm -n $"Uninstall '$DAT_NAME'" || return
+    remove -d -- bin/ cache/ include/ lib/ share/ pyvenv.cfg LICENSE
+    actionAutorun off
+    message -a -p $"Please remove folder '%s' and user '%s' manually" "$DAT_VENV" "$CEN_OPT_USER"
+}
+
+# ------------------------------------------------------------------------------
+# upgrade WeeWx: -no args-
+# ------------------------------------------------------------------------------
+actionUpgrade() {
+    check_installed || return
+    embed -r -t -u "$CEN_OPT_USER" -v -y -z -- "$CEN_NAME" setup upgrade
+}
+
+# ------------------------------------------------------------------------------
+# Show web interface: [<url>]
+# ------------------------------------------------------------------------------
+actionWeb() {
+    context -g 1                                # always try gui mode
+    local wurl="${1:--}" mode
+    case "$wurl" in
+    http://*|https://*)
+        ;;
+    -)  if [ -f "$DAT_ENAB" ] && system -q systemctl is-enabled "$DAT_SERV" ; then
+            wurl="$DAT_HTML/index.html"
+            if [ -r "$wurl" ] ; then
+                :
+            elif ! embed centauriroute wait localhost 80 30 ; then
+                error $"Local '$DAT_NAME' instance not responding" ; return
+            fi
+            wurl="http://localhost/$DAT_NAME"
+        elif nethost "$DAT_NAME" || nethost 'weewx' ; then
+            wurl="http://$_nethost_ip/$DAT_NAME"
+        else
+            invoke -e $"Please specify the '$DAT_NAME' URL to use" ; return
+        fi
+        ;;
+    *)  wurl="http://$wurl/$DAT_NAME"
+    esac
+
+    embed -x -v centaurilauncher --gui=1 --geom=+:+ view "$wurl"
+}
+
+# ------------------------------------------------------------------------------
+# option parsing: <option> [<argument>]
+# ------------------------------------------------------------------------------
+options() {
+    case "$1" in
+
+    -Q|--quir|--quirk)
+        optarg 'quirk'      -       -n ;;       # numeric arg
+    -U|--use|--user)
+        optarg 'user'       -       -t ;;       # any text
+    -V|--vers*)
+        optarg 'version'    -       -t ;;       # any text
+
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# action parsing: <verb> <argument>...
+# ------------------------------------------------------------------------------
+actions() {
+    case "$1" in
+
+    aut*)
+        invoke -r 'autorun' -        0 1 ;;     # one optional arg
+    dep*)
+        invoke -r 'deps'    -          0 ;;     # no args
+    edi|edit)
+        invoke    'edit'    -          0 ;;
+    ins*)
+        invoke -r 'install' -          0 ;;     # no args
+    run)
+        invoke -r 'run'     -          0 ;;     # no args
+    set*)
+        invoke    'setup'   -          1 ;;     # one optional arg
+    sh*|log*)
+        invoke    'shell'   -          0 ;;     # no args
+    uni*)
+        invoke -r 'uninst'  -          0 ;;     # no args
+    upg*)
+        invoke    'upgrade' -          0 ;;     # no args
+    web)
+        invoke    'web'     -        0 1 ;;     # one optional arg
+
+    status)
+        invoke    -         -          0 ;;     # no args
+    start|stop|restart)
+        invoke -r -  actionSystemctl   0 ;;     # no args
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# usage info
+# ------------------------------------------------------------------------------
+usage() {
+    usageset \
+        -o - \
+        -o '-U --user    <user>'  $"specify a different user (default: $CEN_OPT_USER)" \
+        -o '-V --version <vers>'  $"$DAT_NAME version (default: $CEN_OPT_VERSION)" \
+
+    usageset \
+        -a 'autorun      <auto>'  $"behaviour of service '$DAT_SERV'" \
+        -a 'deps'                 $"install build dependencies" \
+        -a 'install'              $"install '$DAT_NAME'" \
+        -a 'run'                  $"run the '$DAT_NAME' binary" \
+        -a 'setup        <what>'  $"[internal] called by 'install' and 'upgrade'" \
+        -a 'shell'                $"open a shell as user '$CEN_OPT_USER'" \
+        -a 'uninstall'            $"uninstall '$DAT_NAME'" \
+        -a 'web         [<url>]'  $"show '$DAT_NAME' web interface" \
+        -a - \
+        -a 'start'                $"run ""'systemctl start $DAT_SERV'" \
+        -a 'status'               $"... ""'systemctl status $DAT_SERV'" \
+        -a 'stop'                 $"... ""'systemctl stop $DAT_SERV'" \
+
+    usageset \
+        -p '<auto>'               $"one of: on off status" \
+        -p '<user>'               $"linux user name" \
+        -p '<url>'                $"something like 'http://your-host'" \
+        -p '<vers>'               $"'$DAT_NAME' version to install" \
+
+    usageset \
+        -t $"To start '$DAT_NAME' at boot time as a service enter:"\
+        -t - \
+        -t "°   $CEN_NAME autorun on        # "$"enable service" \
+        -t "°   $CEN_NAME autorun off       # "$"disable service" \
+        -t - \
+        -t $"Action 'autorun' also creates or removes the '${DAT_ENAB##*/}'" \
+        -t $"file that is checked by the service as a start condition." \
+        -t - \
+        -t $"Run 'centaurisysinit default $DAT_NAME' if you want your machine to" \
+        -t $"start in kiosk mode with '$DAT_NAME' web interface at boot time." \
+
+}
+
+# ------------------------------------------------------------------------------
+# Finally call the library to execute the script
+# ------------------------------------------------------------------------------
+main "$@" ; quit
+
+# the end

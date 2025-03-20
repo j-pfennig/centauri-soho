@@ -1,0 +1,8 @@
+[Unit]
+ConditionPathExists=/etc/openvpn/client/%i/ca.crt
+ConditionPathExists=/etc/openvpn/client/%i/client.conf
+
+[Service]
+WorkingDirectory=/etc/openvpn/client/%i
+ExecStart=
+ExecStart=/usr/sbin/openvpn --suppress-timestamps --nobind --config client.conf

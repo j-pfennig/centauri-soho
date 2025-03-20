@@ -16,7 +16,7 @@ CEN_SVC_SHORT="Firewall and Masquerade Service"
 ### END INIT INFO
 
 # Import the bash library, set name and version
-PATH+=":/usr/local/bin"
+PATH+=':/usr/local/bin'
 PATH+=":${0%/*}" . _centauri_bash_lib -d -f -s -v - '0.54:4' || exit 2
 
 embed -m _centauri_bash_net -n  # Load centaurinetcfg support
@@ -29,6 +29,7 @@ CEN_OPT_NFTABLES=               # see --nft
 CEN_OPT_TEST=
 
 # Data
+DAT_DYNAMIC=49151:65535         # dynamic ports for MS RPC
 DAT_MAX_PORT=9999               # end of protected port range
 DAT_RUN_MODE=                   # new security level, see do_level
 DAT_RUN_CURR=                   # current security level
@@ -64,18 +65,18 @@ do_addrule() {
 # ------------------------------------------------------------------------------
 # Handle ephemeral ports: [-m] [-u] <chain> <jump>
 #
-# Options:  -m      apply for Microsoft's dynamic ports (default is linux)
-#           -u      for udp only
+# Options:  -m      apply for Microsoft's dynamic ports
+#           -u      apply for udp
 #
-# If <chain> is givem, ephemeral port data is sent that chain.
+# If <chain> is given, ephemeral port data is sent to that chain.
 # ------------------------------------------------------------------------------
 do_dynamic() {
     local ldyn=49151                            # microsoft max port
-    local odyn oudp maxp="$DAT_MAX_PORT" jump
+    local odyn oudp jump
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
-      -m)   [ "$ldyn" -lt "$maxp" ] && odyn="$ldyn" ;;
+      -m)   odyn=1 ;;
       -u)   oudp=1 ;;
       *)    fatal -t - "$1"
       esac ; shift
@@ -83,6 +84,8 @@ do_dynamic() {
 
     [ -z "$oudp" ] && do_tables -- -A "$1" -p tcp ! --dport 1:$DAT_MAX_PORT -j "$2"
     do_tables -- -A "$1" -p udp ! --dport 1:$DAT_MAX_PORT -j "$2"
+
+    [ -n "$odyn" ] && do_tables -- -A "$1" -p tcp --dport $DAT_DYNAMIC -j "$2"
 }
 
 # ------------------------------------------------------------------------------
@@ -818,7 +821,7 @@ rules_track() {
 
         # accept packets in established connections
         do_tables -- -A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
-        # always enable ephemeral udp ports
+        # always enable ephemeral udp ports and dynamic ports
         do_dynamic -m -u INPUT ACCEPT
         # broadcasts
         do_tables -i -- -A INPUT -p udp --sport 1900 ! --dport 1:$DAT_MAX_PORT -j ACCEPT

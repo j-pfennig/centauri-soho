@@ -30,6 +30,7 @@ StartLimitIntervalSec=120
 StartLimitBurst=4
 
 [Service]
+EnvironmentFile=/etc/default/locale
 ExecStart=/var/centauri/tools/centaurisession autologin %I 6
 Type=idle
 Restart=always

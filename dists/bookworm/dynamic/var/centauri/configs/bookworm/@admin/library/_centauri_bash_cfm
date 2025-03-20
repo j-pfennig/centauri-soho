@@ -1,0 +1,358 @@
+#!/usr/bin/bash
+# ------------------------------------------------------------------------------
+# _centauri_bash_cfm = centauri-bash-lib: console text input
+#
+# Call:     . _centauri_bash_cfm
+#
+# Copyright Dr. J. Pfennig (c) 2024
+# ------------------------------------------------------------------------------
+
+CEN_MODULES['_centauri_bash_cfm']='0.01:4'
+
+CEN_CONFIRM=            # result of confirm()
+
+# CEN_HISTORY=          # use history/readline in confirm
+
+# ------------------------------------------------------------------------------
+# confirm - ask for confirmation, get text input
+#
+# Call:     confirm [-a|-i|-l] [-m] [-u] [-w] [-n|-q|-y] [-c <cncl>] [-d <defl>] [-v <list>]
+#                   [-p <text>|-|+] [-s <name>] <msg>...
+#
+# Options:  -a  print application name on 1st output, indent otherwise
+#           -b  bypass for --yes command line option, returns **false**
+#           -i  always indent message
+#           -l  do not print application name
+#           -w  display as a warning
+#
+#           -c  yes/no/cancel, <cncl> may be executed ('-c -' implies -q)
+#           -q  yes/no/quit, same as: **-c quit -p "[y/N/q] ?" -v "yes no quit"**
+#           -n  yes/no (default no),  same as: **-v "yes no" -p " [y/N]? " -d "n"**
+#           -y  yes/no (default yes), same as: **-v "yes no" -p " [Y/n]? " -d "y"**
+#
+#           -d  use <defl> as default reply
+#           -f  do printf formatting (handles \n and \t escapes), 1st argument is format
+#           -m  multiline prompt, one argument per line
+#           -p  override prompt suffix (**+** and **-** values have a special meaning)
+#           -s  save input to variable <name> instead of CEN_CONFIRM
+#           -u  allow uppercase in reply (default is converting to lowercase)
+#           -v  check words, <list> contains space separated words
+#
+# Arguments:<cncl>   command executed on cancel/quit
+#           <defl>   default reply (must be in check word list)
+#           <text>   a prompt string (suffix to <msg>...)
+#           <list>   list of space separated check words
+#           <msg>... prompt text
+#
+# History:  The CEN_HISTORY variable enables the use of readline and history:
+#           +    §   enable readline but don't touch history
+#           -    §   (re)initialize history from check words
+#           <file>   read history from file (on 1st call only) and set to '+'
+#
+#+Return:   Any text result is saved to CEN_CONFIRM. Only if the 1st check word is
+#           matched or for free text input, confirm returns **0**. The 2nd word will
+#           return **1** and so on. Empty free text input also returns **1**.
+#
+# The -y option is implied if none of -c|-d|-n|-p|-q|-y are used.
+#
+#+In windows mode only '-p°+' is interpreted, others will be ignored. Also the -d
+# option value is used to preset the input field. See [[_cen_bash_win]].
+#
+#+For '-p°-' or '-p°+' free text input is allowed (**+** is used for passwords).
+# Any input is converted to lowercase unless -u is specified. Input that is not
+# free text is compared against a list of check words (input can be abbreviated).
+# If no check word (see -v option) is matched, an error message is printed and
+# the prompt is repeated.
+#
+#+The order of check words must be: '<yes>°[<no>]°[<...>]°[<cancel>]' to make
+# return values and gui dialogues work (see [[_centauri_bash_win]].
+#
+# The -t option of [[context()]] is used to catch ^C on input.
+#
+#.Examples: # input allowing only check words
+#.          confirm -n    "yes or no question, no is default"
+#.          confirm -y    "yes or no question, yes is default"
+#.          confirm -n -b "edit file (bypass with --yes)"
+#.          confirm -q    "yes no quit"   # may call [[quit()]]
+#.          confirm -c -  "yes no cancel"
+#
+#.          # free text input
+#.          confirm -u -p - "any input"   # free text, -u allows uppercase
+#.          confirm -u -p + "password"    # don't echo a password
+#.          confirm -f -p - "%-20s:" "First name"
+#
+#.          CEN_HISTORY='-'
+#.          until confirm -n -v "none left right both" -d "none" \
+#.               -p " [left|rigth|both]: " "Which file(s) to edit" ; do
+#.              case "$?" in
+#.                  1) system editor "$1" ;;
+#.                  2) system editor "$2" ;;
+#.                  3) system editor "$1" "$2" ;;
+#.              esac
+#.          done
+# ------------------------------------------------------------------------------
+confirm() {
+    local _imod=0 _ifmt _ipro _idef _iqui _ival=$"yes no"
+    local _sind=2 _snam _smul _uppc _yeno _cncl _dflt _prom _vala _vali _warn _fset='CEN_CONFIRM'
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -a)   _sind=1 ; [ -z "$CEN_AUTOIND" ] && _sind=2 ;;
+      -b)   [ -n "$CEN_YESNO" ] && return 1 ;;
+      -d)   shift ; _dflt="$1" ;;
+      -f)   _ifmt=1 ;;
+      -i)   _sind=1 ;;
+      -l)   _sind= ;;
+      -m)   _smul=1 ;;
+      -p)   shift ; _prom="$1" ;;
+      -s)   shift ; _fset="$1" ;;
+      -u)   _uppc=1 ;;
+      -v)   shift ; _vali="$1" ;;
+      -w)   _warn='w' ;;
+
+      -c)   ((_imod |=4)) ; shift ; _cncl="$1" ;;
+      -n)   ((_imod |=2)) ;;
+      -q)   ((_imod |=4)) ; _cncl='quit -t' ;;
+      -y)   ((_imod |=1)) ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    local -n _varg="$_fset" ; _varg=
+
+    [ "$_vali$_dflt$_prom$_imod" = 0 ] && _imod=2   # -n is default
+    if [ "$_imod" != 0 ] ; then
+        if [ -n "$CEN_YESNO" ] ; then               # --yes/--no handling ...
+            if [ "$CEN_YESNO" = 'y' ] ; then
+                _varg="${_ival%% *}"
+                $CEN_TRACE -a -c " $_varg" "$@" ; return 0
+            else
+                _varg="${_ival#* }"
+                $CEN_TRACE -a -c " $_varg" "$@" ; return 1
+            fi
+        fi
+        _yeno=2 ; _idef=0                           # 2 buttons
+        case "$_imod" in
+        1)  _ipro=$" [Y/n]? " ; _yeno=1 ;;          # -y  =>  -d 'y'
+        2)  _ipro=$" [y/N]? " ; _idef=1 ;;          # -n  =>  -d 'n'
+        3)  _ipro=$" [y/N]? " ; _idef=1 ;;          # compatibility: -n -y  =>  -d 'n'
+        4)  _ipro=$" [y/n/C]? "
+            _iqui=$" [y/n/Q]? " ; _idef=2 ;;        # -q  =>  -d 'c'
+        6)  _ipro=$" [y/N/c]? "
+            _iqui=$" [y/N/q]? " ; _idef=1 ;;        # -n -q  =>  -d 'n'
+        *)  _ipro=$" [Y/n/c]? "
+            _iqui=$" [Y/n/q]? "                     ;;        # -y -q  =>  -d 'y'
+        esac
+        if [ "$_imod" -lt 4 ] ; then
+            :
+        elif [ "${_cncl%% *}" = 'quit' ] ; then
+            _ival=$"yes no quit" ; _yeno=3 ; _ipro="$_iqui"
+        elif [ -n "$_cncl" ] ; then
+            _ival=$"yes no cancel" ; _yeno=3        # 3 buttons
+        fi
+        [ -z "$_prom" ] && _prom="$_ipro"
+        [ -z "$_vali" ] && _vali="$_ival"
+    fi
+    set -f ; _vala=($_vali) ; set +f
+    if [ -n "$_idef" -a -z "$_dflt" ] ; then
+        [ "$_idef" -ge ${#_vala[@]} ] && _dflt="$_vala" || _dflt="${_vala[_idef]}"
+    fi
+
+    # handle multiline prompt
+    if [ -z "$_smul" ] ; then
+        local _mesg
+        [ -z "$_ifmt" ] && _mesg="$*" || printf -v _mesg "$@"
+        local _sifs="${IFS:-$' \t\n'}" ; IFS=$'\n'
+        if [ -n "$_smul" ] ; then
+            _mesg="${_mesg//\\n/$'\n'}"
+            _mesg="${_mesg//\\t/$'\t'}"
+        fi
+        set -f ; set -- $_mesg ; set +f ; IFS="$_sifs"
+    fi
+    CEN_AUTOIND=1
+
+    # enable readline, set/load history
+    if [ -n "$CEN_HISTORY" -a "$CEN_HISTORY" != '+' ] ; then
+        if [ "$CEN_HISTORY" = '-' ] ; then
+            history -c ; splitjoin -x 'history -s' -d ' ' -i _vali
+        elif [ -r "$CEN_HISTORY" -a -f "$CEN_HISTORY" ] ; then
+            $CEN_TRACE "Reading history:" "$CEN_HISTORY"
+            history -r "$CEN_HISTORY"
+            CEN_HISTORY='+'
+        else
+            $CEN_TRACE "Bad history file:" "$CEN_HISTORY"
+            CEN_HISTORY='+'
+        fi
+    fi
+
+    # loop until we get valid input
+    while : ; do
+        if [ -n "$_sind" ] ; then
+            _snam="${CEN_EMBED:-$CEN_NAME}: "
+            [ "$_sind" = 1 ] && _snam="${_snam//?/ }"
+        fi
+        _varg="$_dflt"
+        if ! $CEN_HOOK_GETLINE "$_fset" "$_warn$_yeno" "$_vali" "$_prom" "$_snam" "$@" ; then
+            [ -z "$_varg" ] && _varg="$_dflt"
+            [ "${_cncl:--}" != '-' ] && eval "$_cncl"
+            return 2
+        fi
+        [ -z "$_varg" ] && _varg="$_dflt"
+        [ -z "$_uppc" ] && _varg="${_varg,,}"
+        if [ -z "$_vali" ] ; then                       # nothing to validate ...
+            [ -n "$_varg" ] && return 0 ; return 1
+        fi
+
+        local _rchk _rval=0 _slen="${#_varg}" _nval=$((${#_vala[@]} - 1))
+        for _rchk in "${_vala[@]}" ; do
+            if [ "${_varg}" = "${_rchk::$_slen}" ] ; then
+                _varg="$_rchk"
+                [ "$_rval" = "$_nval" ] && [ "${_cncl:--}" != '-' ] && eval "$_cncl"
+                return $_rval
+            fi
+            ((_rval += 1))
+        done
+        message -a $"***INVALID INPUT***" $"Please try one of:" "$_vali"
+    done
+}
+
+# ------------------------------------------------------------------------------
+# read line: <vnam> <mode> <vali> <prom> <name> <text>...
+# ------------------------------------------------------------------------------
+#   vnam    result variable name
+#   mode:   w       warning
+#           1|w1    GUI: 2 button: yes/no   default: yes    # not correctly implemented
+#           2|w2    GUI: 2 button: yes/no   default: no
+#           3|w3    GUI: 3 button: yes/no/cancel
+#   prom    choice prompt (GUI: ignored)
+#   name    message prefix (GUI: caption)
+#   text    output text lines
+#
+_cen_getline() {
+    [ -n "$CEN_CONS_MSGLEN" ] && progress
+    [ /dev/fd/0 -ef /dev/null ] && return 1     # failed to read
+
+    local _ssil _vnam="$1" _warn="${2::1}" _prom="$4" _snam="$5" ; shift 5
+    [ "$_prom" = '+' ] && _ssil="-s"
+    [ "$_prom" = '-' -o "$_prom" = "+" ] && _prom=": "
+    local _text="$1" ; shift
+    [ "$_warn" = 'w' ] && _warn=$" ***WARNING***"" "
+    while [ "$#" -gt 0 ] ; do
+        if [ -n "$_text" ] ; then
+            # _smul defined in caller, replace tabs
+            [ -n "$_smul" ] && _text="${_text//\\t/    }"
+            printf '%s\n' "$_snam$_text" 1>&2 ; _snam="${_snam//?/ }"
+        fi
+        _text="$1" ; shift
+    done
+
+    # _smul defined in caller, replace tabs
+    [ -n "$_smul" ] && _text="${_text//\\t/    }"
+    _text="$_snam${_warn:1}$_text$_prom" ; CEN_CONS_MSGLEN="${#_text}"
+
+    context -t + ; CEN_QUIT_SANE="$_ssil"
+    if [ ! -t 0  ] && [ ! -t 2 ] ; then
+        # bash bug? 'read' forgets sometimes to prompt
+        echo -n "$_text" 1>&2 ; _text=
+    fi
+    read $_ssil ${CEN_HISTORY:+-e} -p "$_text" "$_vnam" 1>&2
+    context -t - ; CEN_QUIT_SANE=
+
+    CEN_QUIT_SANE= ; CEN_CONS_MSGLEN=
+    [ -n "$_ssil" ] && echo 1>&2 ; return 0
+}
+
+
+# ------------------------------------------------------------------------------
+# password - get a password
+#
+# Call:     password [-e|-f] [-m <minc>] [-l] [-n] [-u <user>|-] [-x|-z] [--]
+#                    <vpwd> [<seed>|- [<envn>|- [<mesg>|-]]]
+#
+#           Get a password via [[confirm()]] or an environment variable
+#
+# Options:  -e  generate error messages
+#           -f  make errors fatal
+#           -l  repeat prompt until valid input was entered
+#           -m  minimal chars needed (default is 0)
+#           -n  never prompt on console (overrides test for stdin/stdout)
+#           -u  user name for <mesg> prompt (replaces '%s')
+#           -x  message on empty password and return **false**
+#           -z  accept an empty password and return **true**
+#
+# Arguments:<vpwd>  name of a variable to save the password
+#           <seed>  returned as password if not empty or '-'
+#           <envn>  name of an environment variable to use if <seed> fails
+#           <mesg>  override default prompt text
+#           <minc>  positive integer
+#           <user>  any string, can be empty or '-'
+#
+# The function 1st tries the <seed> value and if empty or '-' the environment variable
+# specified by <envn>.
+#
+# If the result is still empty or '-' it tries to prompt a console user for input, but
+# only if stdin are stderr are via tty. Input will not be read from a file or a pipe.
+#
+# Passwords read from console get trimmed.
+#
+# Return:   **true** at success or **false** otherwise.
+#
+#           A '-' password causes a return value of  **false**. Unless option '-z'
+#           is used an empty password also causes **false** to be returned.
+#
+#.Example:  password -l -m 4 my_pasw "$CEN_OPT_PASSWORD" PASSWORD || quit -t
+#.          message "Password is:" "$my_pasw"
+# ------------------------------------------------------------------------------
+password() {
+    local _oerr='message -a' _vpwd _pasw _oloo _omin _onop _ousr _ozer
+    local _mesg=$"Enter password"
+    while [ "${1::1}" = '-' ] ; do
+        case "$1" in
+        -)  break ;;
+        --) shift ; break ;;
+        -e) _oerr='error' ;;
+        -f) _oerr='fatal' ;;
+        -l) _oloo=1 ;;
+        -m) shift ; _omin="$1" ;;
+        -n) _onop=1 ;;
+        -u) shift ; _ousr="${1:--}"
+            [ "$_ousr" != '-' ] && _mesg=$"Enter '%s' password" ;;
+        -x) _ozer=2 ;;
+        -z) _ozer=1 ;;
+        *)  _cen_abort - "$1"
+        esac ; shift
+    done
+
+    while [ "${_pasw:--}" = '-' ] ; do
+        if [ -z "$_pasw" ] ; then                   # initial pass ...
+            _pasw="${2:--}"
+            [ "$_pasw" = '-' -a "${3:--}" != '-' ] && eval "_pasw=\"\$$3\""
+            [ "${4:--}" != '-' ] && _mesg="$4"
+        fi
+        if  [ "${_pasw:--}" = '-' ] ; then          # read from console ...
+            [ -z "$_onop" ] && [ -t 0 ] && [ -t 2 ] && _onop=0
+            [ "$_onop" = 0 ] || break               # no console IO
+            if [ -z "$_ousr" ] ; then
+                confirm -s _pasw -u -p + "$_mesg"
+            else
+                confirm -f -s _pasw -u -p + "$_mesg" "$_ousr"
+            fi
+            [ -n "$_ozer" -a -z "$_pasw" ] && break # allow empty passw
+        fi
+        if [ -z "$_omin" ] ; then
+            break
+        else
+            [ "${#_pasw}" -ge "$_omin" ] && break
+            _pasw='-'
+            $_oerr -p $"Password too short (min %s chars)" "$_omin"
+        fi
+        [ -z "$_oloo" ] && break
+    done
+
+    printf -v "$1" '%s' "$_pasw"
+    if [ "$_ozer" = 2 -a "${_pasw:--}" = '-' ] ; then
+        $_oerr -p $"Password required" ; return 1
+    fi
+    [ -n "$_ozer" -a -z "$_pasw" ] && return 0      # allow empty passw
+    [ "${_pasw:--}" != '-' ]                        # return status
+}
+

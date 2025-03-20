@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2015-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2015-2025; BSD License"
 CEN_TITLE="Interface/Route Configuration Tool and Service"
 CEN_SVC_SHORT="Interface/Route Configuration"
 
@@ -703,18 +703,18 @@ do_homedns() {
     splitkeyval "$DAT_OPEN_HOME" okey oval '@'
     if [ "$okey" = 'local' ] ; then             # use generic address
         if [ "${#CEN_NET_ADDR_IPLIST[@]}" -lt 2 ] ; then
-            [ "$1" = 'add' ] && warning "No generic 'home' address"
+            [ "$1" = 'add' ] && warning "No generic 'homedns' address"
             return
         fi
         _nethost_ip="$CEN_NET_ADDR_IPLIST"
         _nethost_name="$HOSTNAME"
     elif ! nethost "$okey" ; then      # valid address?
-        [ "$1" = 'add' ] && warning "Unknown 'home' host:" "$okey"
+        [ "$1" = 'add' ] && warning "Unknown 'homedns' host:" "$okey"
         return
     fi
     [ -n "$oval" ] || oval="$2"
     if [ "${oval:--}" = '-' ] ; then
-        error "Missing 'home' interface" ; return
+        warning "Unknown 'homedns' interface" ; return
     fi
     trace -p "%s 'home' address: %s@%s" "${1^}" "$_nethost_name" "$oval"
     do_address "$1" "$_nethost_name" "$_nethost_ip" "$_nethost_mac" "$oval"
@@ -1174,7 +1174,7 @@ do_open() {
     local ibri="${DAT_OPEN_BRIDGE:-none}" ilis=(${DAT_OPEN_BRIDGE[@]:1})
     local iprx=("${DAT_OPEN_PROXY[@]}") ; [ -z "$iprx" ] && iprx=('none')
     [ "$ibri" = 'none' ] && ilis=('none')
-    message -a -p "Opening %s mode: bridge='%s'  switch='%s'" "$DAT_SWITCH_MODE" "${ilis[*]}" "${iprx[*]}"
+    message -a -p "Opening %s mode: bridge='%s'  switch='%s'" "$DAT_SWITCH_MODE" "$ibri" "${iprx[*]}"
     if [ "$DAT_SWITCH_MODE" = 'router' ] ; then
         netoption 'dns'  || error "Mode 'router' depends on 'option dns'"
         netoption 'dhcp' || error "Mode 'router' depends on 'option dhcp'"
@@ -1188,23 +1188,27 @@ do_open() {
 
     # bring down/up the bridge
     if [ "$ibri" != 'none' ] ; then
-        trace -a -c "Init bridge" "$ibri"
-        nettool -d "$ibri" down
-        if ! nettool -d "$ibri" -q up ; then
-            error "Failed to bring up '$ibri', ignore bridge"
-            ibri='none'
-        else
-            # get active interfaces, bring them down (to allow add to bridge)
-            for ifce in "${ilis[@]}" ; do
-                nettool -d "$ifce" exists || continue
-                iuse+=("$ifce")
-                nettool -q -d "$ifce" down
-            done
-            message -i -c "Active interfaces" "${iuse[*]}"
+        #if ! nettool -d "$ibri" exists ; then
+        #    error "Bridge iface '$ibri' not found, ignore bridge"
+        #    ibri='none'
+        #else
+            trace -a -c "Init bridge" "$ibri"
+            nettool -d "$ibri" down
+            if ! nettool -d "$ibri" -q up ; then
+                error "Failed to bring up '$ibri', ignore bridge"
+                ibri='none'
+            fi
+        #fi
+        # get active interfaces, bring them down (to allow add to bridge)
+        for ifce in "${ilis[@]}" ; do
+            nettool -d "$ifce" exists || continue
+            iuse+=("$ifce")
+            [ "$ibri" != 'none' ] && nettool -q -d "$ifce" down
+        done
+        message -i -c "Active ifaces" "${iuse[*]}"
 
-            [ -n "$CEN_NET_EXTERNAL" ] &&
-                netoption 'other' "$HOSTNAME" && do_external "$HOSTNAME" "$ibri"
-        fi
+        [ -n "$CEN_NET_EXTERNAL" -a "$ibri" != 'none' ] &&
+            netoption 'other' "$HOSTNAME" && do_external "$HOSTNAME" "$ibri"
     fi
     DAT_ROUTE_OPEN="$DAT_SWITCH_MODE"
     do_status -w
@@ -1222,7 +1226,7 @@ do_open() {
     if [ "$ibri" = 'none' ] ; then
         if [ "$DAT_SWITCH_MODE" = 'switch' -o "$DAT_SWITCH_MODE" = 'router' ] ; then
             trace -a "Bridge disabled by configuration"
-            do_homedns add                          # add an extra homedns address
+            do_homedns add "$iuse"              # add an extra homedns address
         fi
     else
         for ifce in "${iuse[@]}" ; do
@@ -1423,6 +1427,7 @@ do_dial() {
         timer -w 1                      # extra time to get ready
     }
 
+    # broken code, retained for fiber modem via ppp
     ___dial_gsm() {
         message -a "Dialing '$dcfg' interface: $DAT_OPEN_PPP"
 
@@ -1462,7 +1467,7 @@ do_dial() {
 
         if [ "${dcfg[0]}" = '-' ] ; then
             if ! ___dial_droute "$ddev" dcfg[0] ; then
-                dial='-no gateway-' ; return 5
+                dial='-no gateway-' ; return 6
             fi
             message -a "Found gateway:" "${dcfg[0]} ($ddev)"
         fi
@@ -1632,10 +1637,8 @@ do_hangup() {
     local devb="$DAT_OPEN_BRIDGE"
     local ddev="${DAT_ROUTE_DIAL%% *}"
 
-    if [ "${ddev::3}" = 'eth' -o "${ddev::3}" = 'usb' ] ; then
-        message -a "Bring down interface: $ddev"
-        [ "${ddev::3}" = 'usb' ] && embed -v centauriswitch dhcp down "$ddev"
-    else
+    case "$ddev" in
+    gsm*|ppp*)                                  # broken code, retained for fiber modem
         if [ -e "${DAT_PID}wvdial" ] ; then
             message -a "Stopping wvdial"
             sysrun -e -p pkill -x wvdial
@@ -1645,8 +1648,12 @@ do_hangup() {
             [ -r "${DAT_PID}wpasuppl" ] && sysrun -e -p kill $(<"${DAT_PID}wpasuppl")
             [ -r "${DAT_PID}dhclient" ] && sysrun -e -p dhclient -pf "${DAT_PID}dhclient" -x
         fi
-        remove -- "${DAT_PID}"*
-    fi
+        remove -- "${DAT_PID}"* ;;
+    *)
+        message -a "Bring down interface:" "$ddev"
+        #[ "${ddev::3}" = 'usb' ] &&
+        embed -v centauriswitch dhcp down "$ddev"
+    esac
 
     netiface -e -k "$ddev" && nettool -d "$_netiface" down
 

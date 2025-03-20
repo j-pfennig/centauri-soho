@@ -184,7 +184,7 @@ actionCopy() {
         invoke -e $"Input and output are equal" ; return 1
      fi
 
-     message $"Copy data"$" '$from  ->  $dest'"
+     message -p $"Copy data: %s -> %s" "$from" "$dest"
      if [ "$CEN_VERB" != 1 ] || dryrun ; then
         if [ "$CEN_VERB" = 0 ] ; then
             system -e -q -- dd if="$from" of="$dest" bs=1M
@@ -864,7 +864,7 @@ usage() {
              -a 'umount'              $"unmount all partitions of the given device" \
              -a - \
              -a $"••• other/helpers •••" \
-             -a 'copy      [<from>|-] <dest>|- [<cmpr>]' \
+             -a 'copy      [<from>|-] <dest>|-' \
              -a -                     $"run 'dd' to copy from stdin/file/device" \
              -a 'inhibit'             $"run a bash-shell using udisks2-inhibit" \
              -a 'probe'               $"re-read the partition table" \
@@ -873,6 +873,7 @@ usage() {
              -p '<dev>'      $"a dev name or path (like 'sda' or '/dev/sdb')" \
              -p '<dlab>'     $"volume or partition label (like 'raspi4' or 'worm1_boot')" \
              -p '<flag>'     $"'efi' 'boot' 'bios_grub'" \
+             -p '<from>'     $"input path (use '-' for /dev/stdin)" \
              -p '<kind>'     $"kind of partition table: msdos|gpt" \
              -p '<label>'    $"label text" \
              -p '<part>'     $"a partition number" \

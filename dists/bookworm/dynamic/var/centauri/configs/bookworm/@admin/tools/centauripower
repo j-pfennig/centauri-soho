@@ -14,11 +14,11 @@ case "$CEN_NAME" in
     #    [ "$3" = "close" ] || exit 0
     #    set "lidclose" ; CEN_NAME="centauripower" ;;
     powerbtn-acpi-support.sh)
-        set "powerbutton" ; CEN_NAME="centauripower" ;;
+        set 'powerbutton' ; CEN_NAME='centauripower' ;;
     brightness-acpi-support.sh)
-        set "brightness" "$@" ; CEN_NAME="centauripower" ;;
+        set 'brightness' "$@" ; CEN_NAME='centauripower' ;;
     centauri-sleep)
-        set "systemsleep" "$1" ; CEN_NAME="centauripower" ;;
+        set 'systemsleep' "$1" ; CEN_NAME='centauripower' ;;
 esac
 
 # options
@@ -411,7 +411,7 @@ actionBrightness() {
         trace -a "No backlight device found" ; return
     fi
     if [ ! -w "$bdev" ] ; then
-        message "Trying to fix permissions:" "$bdev"
+        message -l "Trying to fix permissions:" "$bdev"
         system -e -p -u - -- "$BASH" -c "chgrp video $bdev ; chmod 664 $bdev"
     fi
 

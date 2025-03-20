@@ -137,7 +137,7 @@ get_secret() {
     local -n _vsec="$1" ; _vsec=
     [ -r "$DAT_DIR_SECRETS/$2" ] || return 1
     while read pasw ; do
-        [ "${pasw::9}" = "password=" ] || continue
+        [ "${pasw::9}" = 'password=' ] || continue
         _vsec="${pasw:9}" ; return 0
     done <"$DAT_DIR_SECRETS/$2" ; return 1
 }
@@ -170,7 +170,7 @@ list_hosts() {
         fsta=1 ; shift
     fi
     local pasw="$1" ; shift
-    local rslt item name glob="${1,,}" ; [ "$glob" = "-" ] && glob=
+    local rslt item name glob="${1,,}" ; [ "$glob" = '-' ] && glob=
     system -e -p -a rslt -r -- samba-tool dns query "$DAT_SERVER" "${DAT_SERVER[1]}" \
                                           @ ALL --user "$pasw"
     for item in "${rslt[@]}" ; do
@@ -200,7 +200,7 @@ list_users() {
     if [ "$1" = '-m' ] ; then
         shift ; mach=1
     fi
-    local glob="$1" ; [ "$glob" = "-" ] && glob=
+    local glob="$1" ; [ "$glob" = '-' ] && glob=
 
     if [ -n "$CEN_OPT_KERBEROS" ] ; then
         local list line
@@ -271,7 +271,8 @@ actionClient() {
             confirm -a -q $"Install tools"" (${gssm[*]})" &&
                 embed -v -z centauripackage --silent --tool --update=2 --yes "${gpak[@]}"
         fi
-        if netquery server ; then
+
+        if netquery server &&[ "$HOSTNAME" = "${CEN_NET_SERVERS[0]}" ] ; then
             message -a $"This computer is a server, nothing to join or register"
             return
         fi
@@ -283,6 +284,13 @@ actionClient() {
             create -f -- '/root/.ssh/authorized_keys' 600
         elif [ ! -w '/root/.ssh/authorized_keys' ] ; then
             warning "Cannot access root's authorized_keys"
+        fi
+
+        # make sure to have an ssh id key
+        [ -e ~/.ssh/id_rsa ] || system -t -e -p ssh-keygen -q -N '' -f ~/.ssh/id_rsa
+        trace -a "Copy ssh id to master"
+        if ! system -q ssh-copy-id "${CEN_NET_SERVERS[0]}" ; then
+            confirm -n "Failed to copy ssh id to master. Continue anyhow" || quit -s 1
         fi
 
         if [ -e "$CEN_ROOT/secrets/ssh_server_key.pub" ] ; then
@@ -301,13 +309,14 @@ actionClient() {
         fi
 
         if [ -n "$1" ] ; then
+            embed -v centaurisecrets $opts register -- client ; sleep 2
+            embed -v centauriswitch --force auto    # --force to ignore override
             if system -c samba-tool ; then
                 actionJoin "$1"
             else
                 warning -c $"samba-tool not found" $"samba is not installed"
             fi
-            embed -v centaurisecrets $opts register -- client ; sleep 2
-        elif confirm -n -y $"Register computer" ; then
+        elif confirm -n -y $"Register at server" ; then
             embed -v centaurisecrets $opts register -- client ; sleep 2
         fi
 
@@ -598,7 +607,7 @@ actionHost() {
 # Get ticket for user (gui version): [<user>]
 # ------------------------------------------------------------------------------
 actionInit() {
-    [ "$CEN_ACTION" = "renew" ] && DAT_RUN_INIT=2 || DAT_RUN_INIT=1
+    [ "$CEN_ACTION" = 'renew' ] && DAT_RUN_INIT=2 || DAT_RUN_INIT=1
     embed -m _centauri_bash_win
     windows -i 2
     actionTicket "${1:-+}"
@@ -614,20 +623,35 @@ actionJoin() {
     # ------------------------------ pre-condition -----------------------------
     check_tools || return
     server_info
-    local pasw sdom="${DAT_SERVER[1]^^}" user="${1:--}"
+    local serv pasw user="${1:--}"
     [ "$user" = '-' ] && user='Administrator'
-    confirm -n -y $"Join samba domain" || return
-    get_paswd pasw "$user" || return
 
-    # -------------------------------- kerberos --------------------------------
-    if [ -n "$CEN_OPT_KERBEROS" ] ; then
-        system -m -- net rpc join member --user "$pasw"
-
-    # ---------------------------------- samba ---------------------------------
+    if netquery server ; then
+        serv=1
+        confirm -n -y $"Join samba AD domain as a controller" || quit -s 1
     else
-        # must use 'net ads join' to become a member server
-        system -m -- net ads join --no-dns-updates --user "$pasw"
+        confirm -n -y $"Join samba AD domain, enable NFS" || quit -s 1
     fi
+
+    while : ; do
+        get_paswd pasw "$user" || return
+
+        # ---------------------------- controller ------------------------------
+        if [ -n "$serv" ] ; then
+            system -e -p samba-tool domain join "${DAT_SERVER[1]}" DC --user "$pasw" && break
+
+        # ---------------------------- kerberos --------------------------------
+        elif [ -n "$CEN_OPT_KERBEROS" ] ; then
+            system -m -- net rpc join member --user "$pasw" && break
+
+        # ------------------------------ samba ---------------------------------
+        else
+            # must use 'net ads join' to become a member server
+            system -m -- net ads join --no-dns-updates --user "$pasw" && break
+        fi
+        confirm -y "Something went wrong, try again" || quit -s 1
+        CEN_OPT_SEED=
+    done
 }
 
 # ------------------------------------------------------------------------------
@@ -669,6 +693,30 @@ actionKeytab() {
     else
         invoke -e $"processing failed, got no output"
     fi
+}
+
+# ------------------------------------------------------------------------------
+# Leave AD/DC domain
+# ------------------------------------------------------------------------------
+actionLeave() {
+    if [ -n "$CEN_OPT_KERBEROS" ] ; then
+        invoke -e $"Must not use --kerberos" ; return
+    fi
+    check_tools || return
+    server_info
+    local arem pasw user="${1:--}"
+    [ "$user" = '-' ] && user='Administrator'
+    confirm -n -y $"Leave samba AD domain" || quit -s 1
+
+    while : ; do
+        get_paswd pasw "$user" || return
+        #system -m -- net ads leave --user "$pasw" && break
+        system -w -p -t samba-tool domain leave --user "$pasw" && break
+        confirm -y $"Something went wrong, try again" || break # quit -s 1
+    done
+    matchpath -a arem -e -- '/var/lib/samba/'secrets.* || return
+    confirm -n -y $"Remove samba db secrets.*" || return
+    remove -- "${arem[@]}"
 }
 
 # ------------------------------------------------------------------------------
@@ -769,7 +817,7 @@ actionPasswd() {
         return
     fi
 
-    if [ "$pasw" = "-" ] ; then             # get passwd via stdin ...
+    if [ "$pasw" = '-' ] ; then             # get passwd via stdin ...
         get_paswd -c pasw "$user" || return
     fi
 
@@ -813,7 +861,7 @@ actionProvision() {
     # This implements: https://wiki.samba.org/index.php/Setting_up_Samba_as_an_Active_Directory_Domain_Controller
 
     warning $"This command will reset all Samba AD/DC data!"
-    confirm -q -a $"No Samba tool must be running. Continue" || return
+    confirm -q -a $"No Samba tool must be running. Continue" || quit -s 1
 
     # -s don't report invalid service
     runservice -s stop krb5-admin-server.service krb5-kdc.service samba smbd nmbd samba-ad-dc winbind
@@ -821,7 +869,7 @@ actionProvision() {
     system -a dlis -q -r -- pgrep "samba|smbd|nmbd|winbindd"
     if [ -n "$dlis" ] ; then
         confirm -q -a "'pgrep \"samba|smbd|nmbd|winbindd\"'" \
-                      $"shows running tools. Ignore" || return
+                      $"shows running tools. Ignore" || quit -s 1
     fi
 
     system -a dlis -e -p -r -- eval 'smbd -b | egrep "CONFIGFILE|SMB_PASSWD_FILE|LOCKDIR|STATEDIR|CACHEDIR|PRIVATE_DIR"'
@@ -907,7 +955,7 @@ actionRestore() {
     check_tools 'tar' || return
     actionProvision -
     error -t || return
-    confirm -n -y "Overwrite existing SAMBA/krb5 configuration" || return
+    confirm -n -y "Overwrite existing SAMBA/krb5 configuration" || quit -s 1
     system -e -p -- tar --directory=/ -xaf "$CEN_INPFILE"
 }
 
@@ -952,7 +1000,7 @@ actionSave() {
 # ------------------------------------------------------------------------------
 actionSend() {
     local pmsg fdel host="${1:--}"
-    [ "$host" = "-" ] && host="$HOSTNAME"
+    [ "$host" = '-' ] && host="$HOSTNAME"
 
     if [ -z "$CEN_OPT_OUTPUT" ] ; then
         folder -t ; fdel=1
@@ -971,7 +1019,7 @@ actionSend() {
         printf -v pmsg $"Send '%s' to host '%s'" "$CEN_OPT_OUTPUT" "$host"
         # use quit to keep keytab without sending
         confirm -a -q "$pmsg" &&
-            embed -v -i centaurissh copy "$CEN_OPT_OUTPUT" "$host:$DAT_KEYTAB"
+            embed -v -i centaurissh -f copy "$CEN_OPT_OUTPUT" "$host:$DAT_KEYTAB"
     fi
     [ -n "$fdel" ] && remove -- "$CEN_OPT_OUTPUT"
 }
@@ -1060,8 +1108,9 @@ actionSetup() {
 
     if [ -n "$fsss" ] ; then
         folder -f -m '/var/log/sssd' 640
+        folder -f -m '/var/lib/sss' 755
         folder -f -m '/etc/sssd' 711
-        create $ftru -c -- '/etc/sssd/sssd.conf' 600 <<!EOF
+        create $ftru -c -h --- '/etc/sssd/sssd.conf' 600 <<!EOF
 [sssd]
 #debug_level = 5
 config_file_version = 2
@@ -1158,13 +1207,13 @@ actionStatus() {
 #        (4) if <user> is given or '+' ask for password
 # ------------------------------------------------------------------------------
 actionTicket() {
-    local deco="-a" ; [ -n "$DAT_RUN_INIT" ] && windows && deco="-d +3"
+    local deco='-a' ; [ -n "$DAT_RUN_INIT" ] && windows && deco='-d +3'
     if ! system -c kinit klist ; then
         message -a $"Missing kerberos tools - do nothing" ; return
     fi
 
     # do we have a valid ticket
-    if [ "$DAT_RUN_INIT" = "2" ] && system -q -- krenew ; then
+    if [ "$DAT_RUN_INIT" = 2 ] && system -q -- krenew ; then
         message $deco $"Renewed existing kerberos ticket" ; return
     elif system -q -- klist -s ; then
         if [ -n "$CEN_OPT_FORCE" ] ; then
@@ -1175,15 +1224,16 @@ actionTicket() {
     fi
 
     # check kerberos config
-    if [ ! -e "/etc/krb5.conf" ] ; then
+    if [ ! -e '/etc/krb5.conf' ] ; then
         message -a $"Missing kerberos configuration - do nothing" ; return
     fi
 
-    case "$KRB5CCNAME" in                       # usually not set
+    case "$KRB5CCNAME" in                       # usually not set, see sudo
     '')     ;;
     FILE:*) local file="${KRB5CCNAME#*:}"
             if [ ! -r "$file" ] ; then
-                error -a $"Ignoring non-readable cache:" "$KRB5CCNAME"
+                [ -z "$SUDO_USER" ] &&
+                    warning -a $"Ignoring non-readable cache:" "$KRB5CCNAME"
                 unset KRB5CCNAME
             fi
             ;;
@@ -1197,17 +1247,17 @@ actionTicket() {
     fi
 
     # user might be in keytab
-    local kopt="-l 60h -r 8d"                   # options for kinit
+    local kopt='-l 60h -r 8d'                   # options for kinit
     local user="${1:--}"
-    [ "$user" = "-" -o  "$user" = "+" ] && user="${USER:-$LOGNAME}"
-    [ "$user" = "root" ] && user="local"
+    [ "$user" = '-' -o  "$user" = '+' ] && user="${USER:-$LOGNAME}"
+    [ "$user" = 'root' ] && user='local'
     if system -q -- kinit $kopt -k "$user" ; then
         message $deco -p $"Got kerberos ticket for '%s' via keytab" "$user" ; return
     fi
     local prin="$user" pasw
 
     # try smbtrust/smbworld via $DAT_DIR_SECRETS data
-    if [ "$1" = "-" ] ; then
+    if [ "$1" = '-' ] ; then
         if get_secret pasw 'samba_trusted' ; then
             prin='smbtrust'
         elif get_secret pasw 'samba_public' ; then
@@ -1215,9 +1265,9 @@ actionTicket() {
         else
             trace -a $"Cannot get a default kerberos ticket" ; return
         fi
-    elif [ "$prin" = "smbtrust" ] ; then
+    elif [ "$prin" = 'smbtrust' ] ; then
         get_secret pasw 'samba_trusted'
-    elif [ "$prin" = "smbworld" ] ; then
+    elif [ "$prin" = 'smbworld' ] ; then
         get_secret pasw 'samba_public'
     else
         prin="$user"
@@ -1338,15 +1388,15 @@ options() {
     case "$CEN_ACTION" in
 
     -E|--seed)
-        optarg  'seed'      -              -r ;;        # path
+        optarg 'seed'       -              -r ;;        # path
     -K|--kerberos)
-        optarg "kerberos"   -                 ;;        # flag
+        optarg 'kerberos'   -                 ;;        # flag
     -O|--out*)
-        optarg "output"     -              -t ;;        # any text
+        optarg 'output'     -              -t ;;        # any text
     -P|--pas*)
-        optarg "password"   -              -t ;;        # any text
-    -S)
-        optarg "server"     -                 ;;        # flag
+        optarg 'password'   -              -t ;;        # any text
+    -S|--ser*)
+        optarg 'server'     -                 ;;        # flag
     esac
 }
 
@@ -1367,7 +1417,7 @@ actions() {
                 esac
             done
             opts+=("${CEN_CMDARGS[@]}")
-            embed -r -x centaurissh -C -S0 exec --- "$CEN_NAME" "${opts[@]}"
+            embed -r -x centaurissh -f -C -S0 exec --- "$CEN_NAME" "${opts[@]}"
         fi
         ;;
 
@@ -1389,6 +1439,8 @@ actions() {
         invoke -r 'join'      -        0 1 ;;
     key*)
         invoke -r 'keytab'    -        1   ;;
+    lea*)
+        invoke -r 'leave'     -        0 1 ;;
     mac*)
         invoke -r 'machine'   -        2 2 ;;
     pas*)
@@ -1444,6 +1496,7 @@ actions:
        ••• directory actions •••
        client    [<admn>]   (join AD/DC) make this computer a NFS client
        join      [<admn>]   join this computer into a Samba-AD domain
+       leave     [<admn>]   let this computer leave a Samba-AD domain
        provision <pasw>|-   samba (un-)provisioning as an AD/DC server
                             use <pasw> '-' to unprovision
        restore  <file>      restore saved samba stare from tar file

@@ -51,11 +51,17 @@ if $MINIMAL ; then #############################################################
 # ------------------------------------------------------------------------------
 # Packed mini-bash-lib
 # ------------------------------------------------------------------------------
+if [ -z "$CEN_HOOK_MESSAGE" ];then
 {
+{
+CEN_HOOK_MESSAGE='message'
+CEN_STDOUT=41
+CEN_STDERR=42
+eval exec "$CEN_STDOUT>&1" "$CEN_STDERR>&2"
 CEN_EXIT=0
 CEN_HOOK_QUIT=
 CEN_IDNT=
-CEN_MINI_VERSION='0.01'
+CEN_MINI_VERSION='0.03'
 CEN_ARGS=
 CEN_ARGOPT=
 CEN_ACTARR=
@@ -171,12 +177,8 @@ esac;shift
 done
 dryrun $_rdry 'create' "$@"&&return 1
 [ "${1:--}" = - ]&&_fout='/dev/stdout'||_fout="$1"
-if [ "${_fout::5}" != '/dev/' ]&&[ -e "$_fout" ];then
-if [ -z "$_rtru" ];then
+if [ -z "$_rtru" ]&&[ "${_fout::5}" != '/dev/' ]&&[ -e "$_fout" ];then
 error $"Existing file:" "$_fout";return 1
-elif ! [ -f "$_fout" -a -w "$_fout" ];then
-remove $_rdry -- "$_fout"||return 1
-fi
 fi
 _cen_create_file "$_fout"||return 1
 [ -z "$_vnam" ]&&return 0
@@ -204,18 +206,18 @@ fi
 message -a -c $"Skip" "$@";return 0
 }
 embed(){
-local _opts=('--embed' "$CEN_NAME")
-[ -n "$CEN_OPT_DRYRUN" ]&&_opts+=('--dryrun')
+local _stat _opts=()
 while [ "${1::1}" = - ];do
 case "$1" in
 --)shift;break;;
 -m)return 0;;
 -a|-s)_opts+=("$1" "$2");shift;;
-*)_opts+=("$1")
+-*)_opts+=("$1")
 esac;shift
 done
-local _prog="$1" _stat;shift
-system -r "$_prog" "${_opts[@]}" -- "$@";_stat="$?"
+_opts+=('--' "$1" "--embed=${CEN_NAME@Q}");shift
+[ -n "$CEN_OPT_DRYRUN" ]&&_opts+=('--dryrun')
+system -r "${_opts[@]}" "$@";_stat="$?"
 [ "$_stat" = 3 ]&&quit -s 3;return "$_stat"
 }
 folder(){
@@ -234,7 +236,7 @@ if [ ! -d "$1" ];then
 if [ -n "$_omak" ];then
 system -e -p -- mkdir -p "$1"||return 1
 else
-$_oerr $"Is not a folder:" "$1"||return 1
+$_oerr $"Not a folder:" "$1"||return 1
 fi
 fi
 [ -z "$_ochg" ]&&return 0
@@ -263,7 +265,7 @@ esac;return 0
 copy(){ _cen_simple_cmd 'cp' "$@";}
 rename(){ _cen_simple_cmd 'mv' "$@";}
 remove(){ _cen_simple_cmd 'rm' "$@";}
-symlink(){ _cen_simple_cmd 'ln -s' "$@";}
+symlink(){ _cen_simple_cmd 'ln' -s "$@";}
 _cen_simple_cmd(){
 local _oerr='-e -p' _orun _args=("$1");shift
 while [ "${1::1}" = - ];do
@@ -273,8 +275,9 @@ case "$1${_args::1}" in
 -uc)_args+=('-u');;
 -dr)_args+=('-r');;
 -or)_args+=('--one-file-system');;
--nl)_args+=('-f' '-s');;
+-nl)_args+=('-f');;
 -rl)_args+=('-r');;
+-sl)_args+=('-s');;
 -f?)_oerr='-f -p';;
 -q?)_oerr='-q';;
 -r?)_orun=1;;
@@ -283,12 +286,13 @@ done
 system $_oerr $_orun -- "${_args[@]}" "$@"
 }
 system(){
-local _stat _mesg=':' _rdry _fchk _onam _ored _otyp
+local _stat _mesg=':' _rdry _fchk _onam _ored _otyp _odel
 while [ "${1::1}" = - ];do
 case "$1" in
 --)shift;break;;
 -a)shift;_onam="$1";_ored=1;_otyp=2;;
 -c)_fchk=1;;
+-d)shift;_odel="$1";;
 -e)_mesg='error';;
 -f)_mesg='fatal';;
 -p)_ored=1;[ -z "$_otyp" ]&&_otyp=0;;
@@ -318,11 +322,11 @@ case "$_ored" in
 esac
 [ "$_stat" = 0 -a -z "$_onam" ]&&return 0
 [ "$_otyp" = 2 ]&&local -n _vsys="$_onam"||local _vsys
-readarray -t _vsys <"$CEN_TMP_SYSO"
+[ -n "$_otyp" ]&&readarray -t _vsys <"$CEN_TMP_SYSO"
 [ "$_otyp" = 1 ]&&splitjoin -j "$_onam" -- "${_vsys[@]}"
 [ "$_stat" = 0 ]&&return 0
 $_mesg -p $"Execution of '%s' failed (status %s)" "$1" "$_stat"
-[ "${_ored:-0}" != 0 ]&&message -i -m "${_vsys[@]}"
+[ -n "$_otyp" ]&&message -i -m "${_vsys[@]}"
 return "$_stat"
 }
 tmpfile(){
@@ -415,11 +419,20 @@ fi
 trace -a "quit STATUS=$CEN_EXIT";exit "$CEN_EXIT"
 }
 command_not_found_handle(){
+set +xeE;exec 1>&$CEN_STDOUT 2>&$CEN_STDERR
 message -l $"***ABORT***" $"Command not found:" "$1"
-set +xeE;kill -42 $$
+kill -42 $$
 }
 trap 'trap 42; quit -s 127' 42
+}
+if PATH=' ' type -t run &>/dev/null;then
 main "$@";quit
+fi
+elif [ -n "$CEN_STAGE" ];then
+run "$@"
+else
+main "$@";quit
+fi
 else ###########################################################################
 # ------------------------------------------------------------------------------
 # mini bash lib + A very minimal sub-set of centauri-bash-library
@@ -462,14 +475,24 @@ else ###########################################################################
 # ------------------------------------------------------------------------------
 # mini-bash-lib         implementation
 # ------------------------------------------------------------------------------
+if [ -z "$CEN_HOOK_MESSAGE" ];then
+
+# ------------------------------------------------------------------------------
+# mini-bash-lib         implementation
+# ------------------------------------------------------------------------------
 # shellcheck disable=SC2317
 {
 # shellcheck disable=SC2034
 {
+    CEN_HOOK_MESSAGE='message'
+    CEN_STDOUT=41
+    CEN_STDERR=42
+    eval exec "$CEN_STDOUT>&1" "$CEN_STDERR>&2"
+
     CEN_EXIT=0              # exit code
     CEN_HOOK_QUIT=          # called by quit()
     CEN_IDNT=               # Flag for indentation
-    CEN_MINI_VERSION='0.01'
+    CEN_MINI_VERSION='0.03'
 
     CEN_ARGS=               # option arg count  (0:=error  1:=flag only  2:has value)
     CEN_ARGOPT=             # potential option argument
@@ -612,12 +635,8 @@ create() {
     done
     dryrun $_rdry 'create' "$@" && return 1
     [ "${1:--}" = '-' ] && _fout='/dev/stdout' || _fout="$1"
-    if [ "${_fout::5}" != '/dev/' ] && [ -e "$_fout" ] ; then
-       if [ -z "$_rtru" ] ; then
-           error $"Existing file:" "$_fout" ; return 1
-       elif ! [ -f "$_fout" -a -w "$_fout" ] ; then
-           remove $_rdry -- "$_fout" || return 1
-       fi
+    if [ -z "$_rtru" ] && [ "${_fout::5}" != '/dev/' ] && [ -e "$_fout" ] ; then
+        error $"Existing file:" "$_fout" ; return 1
     fi
     _cen_create_file "$_fout" || return 1
     [ -z "$_vnam" ] && return 0
@@ -651,18 +670,18 @@ dryrun() {
 
 # run another tool using --embed: -m <fake> -a|-s <vnam> <system-opts> <tool> [--] <arg>...
 embed() {
-    local _opts=('--embed' "$CEN_NAME")
-    [ -n "$CEN_OPT_DRYRUN" ] && _opts+=('--dryrun')
+    local _stat _opts=()
     while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
-        -m)   return 0 ;;                       # mini-bash-lib has no modules
+        -m)   return 0 ;;
         -a|-s)  _opts+=("$1" "$2") ; shift ;;
-        *)    _opts+=("$1")
+        -*)   _opts+=("$1")
         esac ; shift
     done
-    local _prog="$1" _stat ; shift
-    system -r "$_prog" "${_opts[@]}" -- "$@" ; _stat="$?"
+    _opts+=('--' "$1" "--embed=${CEN_NAME@Q}") ; shift
+    [ -n "$CEN_OPT_DRYRUN" ] && _opts+=('--dryrun')
+    system -r "${_opts[@]}" "$@" ; _stat="$?"
     [ "$_stat" = 3 ] && quit -s 3 ; return "$_stat"
 }
 
@@ -683,7 +702,7 @@ folder() {
         if [ -n "$_omak" ] ; then
             system -e -p -- mkdir -p "$1" || return 1
         else
-            $_oerr $"Is not a folder:" "$1" || return 1
+            $_oerr $"Not a folder:" "$1" || return 1
         fi
     fi
     [ -z "$_ochg" ] && return 0
@@ -692,7 +711,7 @@ folder() {
     trace -a -c $"Current folder" "$PWD" ; return 0
 }
 
-# handle word split or join: -j|-s <vnam>  [--] <data>...
+# handle word split or join: -j|-s <vnam> -d <deli> [--] <data>...
 # shellcheck disable=SC2206
 # shellcheck disable=SC2059
 splitjoin() {
@@ -716,15 +735,15 @@ splitjoin() {
 }
 
 # some simple file-system commands:
-#   copy    [-f|-q] [-r] [-a] [-u] [--] <arg>...
-#   rename  [-f|-q] [-r]           [--] <arg>...
-#   remove  [-f|-q] [-r] [-d] [-o] [--] <arg>...
-#   symlink [-f|-q] [-r] [-n] [-r] [--] <arg>...
+##   copy    [-f|-q] [-r] [-a] [-u] [--] <arg>...
+##   rename  [-f|-q] [-r]           [--] <arg>...
+##   remove  [-f|-q] [-r] [-d] [-o] [--] <arg>...
+##   symlink [-f|-q] [-r] [-n] [-r] [--] <arg>...
 
 copy() { _cen_simple_cmd 'cp' "$@" ; }        # -a -u
 rename() { _cen_simple_cmd 'mv' "$@" ; }
 remove() { _cen_simple_cmd 'rm' "$@" ; }      # -d -o
-symlink() { _cen_simple_cmd 'ln -s' "$@" ; }  # -n -r
+symlink() { _cen_simple_cmd 'ln' -s "$@" ; }  # -n -r
 
 _cen_simple_cmd() {
     local _oerr='-e -p' _orun _args=("$1") ; shift
@@ -735,8 +754,9 @@ _cen_simple_cmd() {
         -uc)    _args+=('-u') ;;        # cp -u
         -dr)    _args+=('-r') ;;        # rm -r
         -or)    _args+=('--one-file-system') ;;
-        -nl)    _args+=('-f' '-s') ;;   # ln -f
-        -rl)    _args+=('-r') ;;        # ln -r (shadows dryrun -r)
+        -nl)    _args+=('-f') ;;        # ln -f
+        -rl)    _args+=('-r') ;;        # ln -r
+        -sl)    _args+=('-s') ;;        # ln -s
         -f?)    _oerr='-f -p' ;;
         -q?)    _oerr='-q' ;;
         -r?)    _orun=1 ;;
@@ -748,7 +768,7 @@ _cen_simple_cmd() {
 
 # run a command: <opt>... [--] <cmd> <arg>...
 system() {
-    local _stat _mesg=':' _rdry _fchk _onam _ored _otyp
+    local _stat _mesg=':' _rdry _fchk _onam _ored _otyp _odel
     # _ored (output redir)  '': none  0: /dev/null   1: stdout+err  2: stderr only
     # _otyp (output dest)   '': none  0: error only  1: to string   2: to array
     while [ "${1::1}" = '-' ] ; do
@@ -756,6 +776,7 @@ system() {
         --)   shift ; break ;;
         -a)   shift ; _onam="$1" ; _ored=1 ; _otyp=2 ;;
         -c)   _fchk=1 ;;
+        -d)   shift ; _odel="$1" ;;
         -e)   _mesg='error' ;;
         -f)   _mesg='fatal' ;;
         -p)   _ored=1 ; [ -z "$_otyp" ] && _otyp=0 ;;
@@ -788,16 +809,16 @@ system() {
 
     # shellcheck disable=SC2015
     [ "$_otyp" = 2 ] && local -n _vsys="$_onam" || local _vsys
-    readarray -t _vsys <"$CEN_TMP_SYSO"
+    [ -n "$_otyp" ] && readarray -t _vsys <"$CEN_TMP_SYSO"
     [ "$_otyp" = 1 ] && splitjoin -j "$_onam" -- "${_vsys[@]}"
     [ "$_stat" = 0 ] && return 0
 
     $_mesg -p $"Execution of '%s' failed (status %s)" "$1" "$_stat"
-    [ "${_ored:-0}" != 0 ] && message -i -m "${_vsys[@]}"
+    [ -n "$_otyp" ] && message -i -m "${_vsys[@]}"
     return "$_stat"
 }
 
-# create transient file: [-r] [-s <vnam>]
+# create transient file: [-n] [-r] [-s <vnam>]
 tmpfile() {
     local _vtmp='CEN_TEMPFILE' _rdry _crea=1
     local _temp="$CEN_TMP_BASE$CEN_TMP_INDX-$BASHPID"
@@ -904,15 +925,26 @@ quit() {
 # command not found runs in a sub-shell, must call quit() indirectly via signal
 # ------------------------------------------------------------------------------
 command_not_found_handle() {
+    set +xeE ; exec 1>&$CEN_STDOUT 2>&$CEN_STDERR
     message -l $"***ABORT***" $"Command not found:" "$1"
-    set +xeE ; kill -42 $$              # send signal to main shell
+    kill -42 $$                         # send signal to main shell
 }
 
 # shellcheck disable=SC2172
 trap 'trap 42; quit -s 127' 42          # quit from main shell
 }
 
-main "$@" ; quit                        # run application
+# ------------------------------------------------------------------------------
+# run the application
+# ------------------------------------------------------------------------------
+    if PATH=' ' type -t run &>/dev/null ; then
+        main "$@" ; quit
+    fi
+elif [ -n "$CEN_STAGE" ] ; then
+    run "$@"                            # we got sourced
+else
+    main "$@" ; quit                    # using centauri-bash-lib
+fi
 fi #############################################################################
 
 # end

@@ -43,10 +43,10 @@
 # coreutils bash builtins can be enabled. For more details see [[_centauri_bash_ext]]
 # and [[builtin]].
 #
-# Copyright Dr. J. Pfennig (c) 2007-2024
+# Copyright Dr. J. Pfennig (c) 2007-2025
 # ------------------------------------------------------------------------------
 
-declare -g -A CEN_MODULES['_centauri_bash_lib']='1.40:4:1'
+declare -g -A CEN_MODULES['_centauri_bash_lib']='1.50:5:1'
 
 CEN_ACTARR=             # action argument array
 CEN_ACTION=             # action name, see invoke()
@@ -586,9 +586,7 @@ _cen_abort() {
     if [ -z "$_mesg" ] ; then
         _mesg="$*"
     elif [ $# -gt 0 ] ; then
-        _mesg+=" '$*'. "
-    else
-        _mesg+='. '
+        _mesg+=" '$*'"
     fi
 
     CEN_AUTOIND=
@@ -603,6 +601,7 @@ _cen_abort() {
         _cen_message -l -r $"***ABORT***" "$_mesg" ; _cen_exit 4
     fi
 
+    [ -n "$_mesg" ] && _mesg+='. '
     _mesg+=$"Function call stack..."$'\n'
     while [ -n "${FUNCNAME[_indx]}" ] ; do
         _mesg+="$_idnt${BASH_SOURCE[_indx]}.${FUNCNAME[_indx]}() ${BASH_LINENO[_indx-1]}"$'\n'
@@ -1123,13 +1122,14 @@ context() {
 # ------------------------------------------------------------------------------
 # create - create file or folder
 #
-# Call:     create [-s] [-f|-q|-w] [-o] [-a|-t]                     # create file
+# Call:     create [-s] [-f|-q|-w] [-o] [-a|-t] [-b]                # create file
 #                  [-c|-h <name>] [<path> [<mode> [<owner>]]]
-#           create [-s] [-f|-q|-w] [-o] [-a|-t]                     # from variable
+#           create [-s] [-f|-q|-w] [-o] [-a|-t] [-b]                # from variable
 #                  -v <data> [-h <name>] <path> [<mode> [<owner>]]
 #           create [-d] [-s] [-f|-q|-w] <path> [<mode> [<owner>]]   # create folder
 #
 # Options:  -a  ''create'' new file or append to existing file
+#           -b  ''create'' an executable bash script
 #           -c  copy from /dev/stdin
 #           -d  ''create'' a folder (default is create file)
 #           -f  make errors fatal
@@ -1172,12 +1172,13 @@ context() {
 #.          create -c                       # echo /dev/stdin to /dev/stdout
 # ------------------------------------------------------------------------------
 create() {
-    local _fapp _ftru _fhdr _fcpy _fout _frun _fvar _mdir
+    local _fapp _fbsh _ftru _fhdr _fcpy _fout _frun _fvar _mdir
     local _otra="$CEN_TRACE" _oftl='error -z' _mtxt=$"file"
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -a)   _fapp=1 ;;
+      -b)   _fbsh=1 ;;
       -c)   _fcpy=1 ;;
       -f)   _oftl='fatal' ;;
       -d)   _mdir=1 ; _mtxt=$"folder" ;;
@@ -1205,6 +1206,7 @@ create() {
     fi
     dryrun $_frun -s $"Create"" $_mtxt:" "$1" && return 0
     $_otra -a -c " $_mtxt" -- "$1"
+    [ -n "$_fbsh" -a "${2:--}" = '-' ] && set -- "$1" 755 "${3:--}"
 
     local _temp _stat=0 _unew
     if [ -n "$_mdir" ] ; then                       # create folder...
@@ -1217,13 +1219,14 @@ create() {
         if [ -z "$_ftru" ] ; then
             :
         elif [ "$#" = 1 ] && [ -f "$_fout" -a -w "$_fout" ] ; then
-            >"$_fout" || _stat=$?                   # really truncate
+            true >"$_fout" || _stat=$?                  # really truncate
         elif [ -e "$1" ] ; then
             system $_frun -b -e -p -- rm -f -- "$_fout" || _stat=1
         fi
         _cen_umask -s "$2"                          # set umask for <mode>
 
-        {   [ -n "$_fhdr" ] && echo -e "# ${1##*/} - created by '$_fhdr' - do not edit!\n"
+        {   [ -n "$_fbsh" ] && echo "#!$BASH"
+            [ -n "$_fhdr" ] && echo -e "# ${1##*/} - created by '$_fhdr' - do not edit!\n"
             [ -n "$_fvar" ] && { splitjoin -d "\n" -j - -l -i "$_fvar" ; _fcpy= ; }
             [ -n "$_fcpy" ] && while IFS= read -r _temp ; do printf "%s\n" "$_temp" ; done
             [ -n "$_fhdr" ] && echo -e "\n# end" ; true
@@ -1347,12 +1350,13 @@ _cen_compactify() {
 # embed - run another script like a sub-routine or load a module
 #
 # Call:     embed [-g] [-i] [-n] [-r|-z] [-t] [-v] [-x] [-y]    # ... options
-#           embed ... [--] <script> <arg>...                    # simply run
+#           embed ... [-b] [--] <script> <arg>...               # run or source
 #           embed ... [-a|-s <name>] [-d <deli>] [--] ...       # catch output
 #           embed ... -u <user> [--] <script> <arg>...          # run as user
 #           embed ... -c|-m|-q <module> <mopt>...               # load module
 #
 # Options:  -a  [*] save stdout to array <name>
+#           -b  [*] source a bash script
 #           -c  [*] check if module is loadable, load if autoload is off
 #           -d  delimiters, use with -a, default is "\t\n"
 #           -g  pass --gui option to <script>
@@ -1399,6 +1403,7 @@ embed() {
       case "$1" in
       --)   shift ; break ;;
       -a)   shift ; _vset="$1" ; local -n _vsar="$1" ; _vsar=() ;;
+      -b)   _modu=4 ;;
       -c)   _modu=3 ;;
       -d)   shift ; [ "$1" = '--' ] && _vdel=(-n) || _vdel=('-d' "$1") ;;
       -g)   if   windows ; then _verb+=' --gui=1'
@@ -1423,6 +1428,11 @@ embed() {
       *)    _cen_abort - "$1"
       esac ; shift
     done
+
+    if [ "$_modu" = 4 ] ; then
+        [ -n "$_terr" ] && _terr= || _terr='-e'
+        _cen_source $_terr -- "$@" ; return
+    fi
     local _sexi=0 _enam="${CEN_EMBED:-$CEN_NAME}" _snam="${1##*/}" _srun="$1" ; shift
     if ! [ "${_srun::1}" = '/' -o "${_srun::2}" = './' ] ; then
         [ -n "$_modu" ] && _srun="$CEN_LIBRARY/$_srun" || _srun="$CEN_TOOLS/$_srun"
@@ -1451,9 +1461,10 @@ embed() {
             _sexi=1
         fi
         [ -n "$TEXTDOMAIN" ] && TEXTDOMAIN="$CEN_NAME"
-        [ "$_sexi" = 0 -o "$_modu" -ge 2 ] && return $_sexi
+        [ "$_sexi" = 0 -o "$_modu" -ge 2 -o -n "$_terr" ] && return $_sexi
         _cen_abort $"Failed to load module:" "$_snam"
     elif ! [ -x "$_srun" -a ! -d "$_srun" ] ; then
+        [ -n "$_terr" ] && return 127
         fatal $"Failed to execute script:" "$_srun"
     fi
 
@@ -2024,7 +2035,7 @@ optarg() {
     -m)
         [ "${1:-1}" = 1 ] && return 0 ; shift 3
         error -r $"mutually exclusive options:" "$@" ; CEN_ARGS=1 ; return 1 ;;
-    -n) isnumber -m _emsg -- "$CEN_ACTARR" ;;
+    -n) isnumber -m _emsg -s _temp -- "$CEN_ACTARR" && CEN_ACTARR="$_temp" ;;
     -o)
         case "$CEN_ACTARR" in
             off|0)  CEN_ACTARR=0 ;;
@@ -2566,13 +2577,25 @@ _cen_handle() {
 }
 
 # ------------------------------------------------------------------------------
-# Source a file: [--] <file>
+# Source a file: [-e|-f] [--] <file> <arg>...
 # ------------------------------------------------------------------------------
 _cen_source() {
-    [ "$1" = '--' ] && shift
-    [ -r "$1" ] || return 1
-    $CEN_TRACE2 -c -a 'sourcing file' "$1"
-    source "$1" && return 0
+    local _eopt='trace' _qsta=127
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)       shift ; break ;;
+      -e)    _eopt='error' ;;
+      -f)    _eopt='fatal'
+      esac ; shift
+    done
+    if [ -r "$1" ] ; then
+        $CEN_TRACE2 -c -a 'sourcing file' "$1"
+        local _qtrp="$CEN_QUIT_TRAP" ; CEN_QUIT_TRAP=0      # disable 'command not found'
+        PATH='/no such folder' source "$@" ; _qsta=$?       # mitigate command execution
+        CEN_QUIT_TRAP="$_qtrp"
+    fi
+    [ "$_qsta" != 0 ] && $_eopt -p -- $"Sourcing file '%s' failed (status %s)" "$1" "$_qsta"
+    return "$_qsta"
 }
 
 # ------------------------------------------------------------------------------

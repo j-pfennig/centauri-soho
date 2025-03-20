@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. J. Pfennig (c) 2021-2024; BSD License"
+CEN_LEGAL="Dr. J. Pfennig (c) 2021-2025; BSD License"
 CEN_TITLE="Tool to manage EFI boot and to create systemd-boot menu and UKI"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -y - '0.26:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -y - '0.27:4' || exit 2
 
 CEN_OPT_BASE=           # see --base, EFI partition mount point
 CEN_OPT_EXTERN=         # see --external, external disk
@@ -666,6 +666,29 @@ do_sign() {
     return 0
 }
 
+# create efi/systemd symlinks in /boot folder
+do_symlinks() {
+    if [ -e "$DAT_BOOTDIR/grub" ] ; then
+        if [ -h "$DAT_BOOTDIR/grub" ] || confirm -y "Delete 'boot/grub' folder" ; then
+            remove -d "$DAT_BOOTDIR/grub"
+        else
+            rename -b "$CEN_NAME" -x "$DAT_BOOTDIR/grub"
+        fi
+    fi
+    #   efi       /mnt/boot
+    #   entries   efi/loader/entries
+    #   grub      efi/grub
+    #   cmdline   efi/<image>/cmdline
+    #   package   efi/<image>/linux.efi
+    [ -h "$DAT_BOOTDIR/efi" ]     || symlink -n '/mnt/boot' "$DAT_BOOTDIR/efi"
+    [ -h "$DAT_BOOTDIR/entries" ] || symlink -n 'efi/loader/entries' "$DAT_BOOTDIR/entries"
+    [ -h "$DAT_BOOTDIR/grub" ]    || symlink -n 'efi/grub'  "$DAT_BOOTDIR/grub"
+    if [ "${1:--}" != '-' ] ; then
+        symlink -n "efi/image$DAT_SUFFIX/${1##*/}" "$DAT_BOOTDIR/${DAT_PACKAGE##*/}"
+        symlink -n "efi/image$DAT_SUFFIX/$DAT_CMDLINE" "$DAT_BOOTDIR/$DAT_CMDLINE"
+    fi
+}
+
 # helper to create a text file: csv|grub <fldr> [<text>]
 do_text() {
     if [ "$1" = 'csv' ] ; then
@@ -792,13 +815,7 @@ actionCreate() {
         message -a "Signing EFI image with MOK:" "$imag"
         do_sign "$imag" . || return
     fi
-
-    local irel="efi/image$DAT_SUFFIX/${imag##*/}"
-    if [ -h "$DAT_BOOTDIR/efi" -o -d "$DAT_BOOTDIR/efi" ] ; then
-        symlink -i -n -- "$irel" "$DAT_PACKAGE"
-    else
-        symlink -n -- "/mnt/boot/${irel#*/}" "$DAT_PACKAGE"
-    fi
+    do_symlinks "$imag"
 }
 
 # ------------------------------------------------------------------------------
@@ -981,6 +998,7 @@ actionMenu() {
             invoke -e "Please specify a boot device" ; return
         fi
     fi
+    do_symlinks
 
     volu="${root##*_}"
     if [[ "$volu" == vol[0-9] ]] ; then
@@ -1094,6 +1112,225 @@ actionMok() {
     *)      invoke -a 1 'create|decrypt|delete|import|sign|status'
     esac
  }
+
+# ------------------------------------------------------------------------------
+# README files for boot partition
+# ------------------------------------------------------------------------------
+actionReadme() {
+    create -c -- "$DAT_MOUNT/README" <<!EOF
+Dieses Medium kann Dateisysteme enthalten, die nicht von MS-Windows
+unterstützt sind. Es kann sich um ext4 oder btrfs handeln. Obwohl es
+dafür Windows Treiber gibt, ist ggf. eine Linux Live CD vorzuziehen um
+auf die Daten zugreifen zu können. Alternativ kann dieses Medium auf
+PC-Hardware gebootet werden.
+
+This medium may contain filesystems that are not supported by MS-Windows.
+These might be ext4 or btrfs. Although there are drivers available for
+Windows, using a Linux Live CD should be considered to get access to
+the data. Alternately this medium can be booted on PC hardware.
+!EOF
+
+    create -c -- "$DAT_MOUNT/README-boot" <<!EOF
+This setup supports
+
+    (1) [*] legacy BIOS boot. See: 'grub' and 'grub/i386-pc'
+    (2) efi GRUB boot. See: 'EFI/Debian' and 'grub/x86_64-efi'
+    (3) efi systemd boot. See: 'EFI/Linux', 'EFI/systemd' and 'loader'
+    (4) efi default/fallback via GRUB or systemd. See: 'EFI/boot'
+
+    [*] optional, some installlations only, not recommended. Needs a
+        BIOS partition on GPT partitioned disks. Use 'centauriefilinux
+        update bios' to install.
+
+Folder:
+    grub           efi grub installation (and optionally bios)
+    image          unified kernel/initrd image for systemd boot or ...
+    image-<distro> ... to allow multiple distributions in parallel
+    loader         systemd boot configuration
+    EFI/boot       efi default/fallback bootloader
+    EFI/grub       efi grub bootloader (custom build)
+    EFI/systemd    systemd bootloader, configuration in 'loader'
+
+Optional:
+    EFI/memtest    efi version of memtestx86
+    EFI/Microsoft/Boot/bootmgfw.efi
+                   windows bootloader, usually via efi variable
+    <other>/       diagnostic tools etc.
+
+EFI-Variables:
+    The primary boot loader for EFI is in EFI/boot of a bootable medium.
+    Other boot loaders for EFI's boot manager can be configured using
+    EFI variables. Also a boot order can be specified to prefer a boot
+    loader. Most EFIs delete boot variable for devices that are detached.
+
+    Usually the EFI/boot entry serves as a fall-back or is used to boot
+    removable media. Use 'centauriefilinux efiboot' to configure EFI boot
+    variables and boot order. When properly configured, EFIs boot manager
+    will run the grub or systemd loader and boot manager at boot time.
+
+Quirks:
+
+    - Windows likes it to overwrite EFI/boot and EFI boot order .
+    - systemd boot's menu (via space key) cannot be activated on
+      some hardware, consider using a delay (loader/..) or grub.
+
+Details:
+    README-grub         grub installation details
+    README-systemd
+    README-secure-boot
+!EOF
+
+    create -c -- "$DAT_MOUNT/README-grub" <<!EOF
+# This text describes grub installation details. Most of them are handled
+# by 'centauridisk' (the disk setup tool) and 'centauriefilinux'.
+
+# Documentation conventions: The boot disk could be '/dev/sda' and the EFI
+# partition should be mounted at '/mnt/boot'
+
+# For legacy BIOS Boot grub has to be installed in the bios-grub partion:
+
+    > grub-install --target=i386-pc --boot-directory=/mnt/boot /dev/sda
+
+# The grub EFI stuff is installed via:
+
+    > grub-install --no-nvram --target=x86_64-efi \
+                   --efi-directory=/mnt/boot /dev/sda
+
+# grub adds it's efi modules into /mnt/boot/grub and additionally creates
+# '/mnt/boot/EFI/grub'. The later contains a minimal efi image that loads
+# grub modules from /mnt/boot/grub. Grub can be made the default EFI boot
+# loader (see also README-systemd):
+
+    > cp -a /mnt/boot/EFI/grub/grubx64.efi /mnt/boot/EFI/boot/bootx64.efi
+
+# To build a stand-alone custom grub bootloader use the following command:
+
+   > grub-mkimage -d /usr/lib/grub/x86_64-efi -o /mnt/boot/EFI/Debian/bootx64.efi \
+                  -p "/grub" -O x86_64-efi \
+                  fat exfat ext2 btrfs iso9660 part_gpt part_msdos efifwsetup \
+                  boot linux multiboot loopback chain reboot  configfile normal \
+                  test loadenv keystatus  cat echo ls sleep search search_label \
+                  search_fs_uuid search_fs_file  font efi_gop efi_uga gfxterm \
+                  gfxterm_background gfxterm_menu all_video
+
+# WARNING: the default boot loader must be named 'bootx64.efi' !
+
+# An EFI boot variable might be needed. Example:
+
+   > efibootmgr -c -d /dev/sda -L "Grub Boot Menu" -l '\EFI\grub\grubx64.efi'
+
+# End.
+!EOF
+
+    create -c -- "$DAT_MOUNT/README-secure-boot" <<!EOF
+The Linux secure boot implementation creates it's own chain of
+trust using a Microsoft signed component 'shimx64.efi' and so
+called Machine Owner Keys (MOK). EFI binaries and kernel modules
+can be MOK signed and are validated using shim.
+
+When installing an image on a new machine only grub can be used
+to boot the new image. See section 'Installation' below.
+
+MOKs are X.509 certificates and a stored in EFI variables by
+'mmx64.efi'. Adding a MOK is called enrollment and is handled
+at boot time via shim and the MOK manager.
+
+DKMS can be configured to MOK sign kernel modules at build time.
+
+The details of secure boot and MOKs can be handled using the
+'centauriefilinux mok' command. A centauri site will keep a site
+specific MOK in its repository.
+
+Usually the MOK certificate private key is encrypted (using a
+pass phrase). This creates problems with unattended upgrades.
+So 'centauriefilinux' can decryt the key on repository import.
+This is a security risk that allows malware to sign any sort
+of kernel module or EFI binary.
+
+The EFI boot entries for secure boot should look like this:
+
+  ├── EFI
+  │   ├── BOOT              # default boot entry ...
+  │   │   ├── BOOTX64.EFI   # debian's shim64.efi
+  │   │   ├── mmx64.efi     # debian's signed MOK manager
+  │   │   └── fbx64.efi     # debian's signed boot fallback manager
+  │   ├── grub
+  │   │   ├── BOOTX64.CSV   # fallback, points to shimx64
+  │   │   ├── grub.cfg      # delegate to /grub/grub.cfg
+  │   │   ├── grubx64.efi   # debian's signed grub
+  │   │   ├── mmx64.efi     # debian's signed MOK manager
+  │   │   └── shimx64.efi   # debian's signed shim
+  │   └── systemd
+  │       ├── BOOTX64.CSV   # fallback, points to shimx64
+  │       ├── grubx64.efi   # renamed systemd bootx64.efi, MOK signed
+  │       ├── mmx64.efi     # debian's signed MOK manager
+  │       └── shimx64.efi   # debian's signed shim
+
+The 'fbx64.efi' generates EFI boot variables from BOOTX64.CSV files.
+
+
+Installation
+============
+
+When installing a centauri image on a new machine, the MOK key must
+be enrolled before secure boot can be enabled. Use method (1)...(3):
+
+    (1) centauriefilinux setup          # from repository, enroll MOK
+    (2) centauriefilinux mok import     # from default in: /etc/mok
+    (3) mokutil --import ...            # see man page
+
+The unified kernel image used be systemd-boot (and systemd-boot it-
+self) are MOK signed. So if secure boot is enabled systemd-boot
+cannot be used before the MOK is enrolled. Only 'grub' can boot in
+such a situation (grub and the kernel are signed with a distribution
+owner key that is built into shim).
+!EOF
+
+    create -c -- "$DAT_MOUNT/README-systemd" <<!EOF
+# systemd-boot-efi must be installed to boot via the lightweight
+# systemd boot manager. This text provides documentation for some
+# configuration details ...
+
+# Although the preferred method to boot can be systemd boot, some
+# extra EFI boot loaders should be installed. Typical folders are:
+
+- /mnt/boot/EFI/boot    is the EFI default/emergency bootloader.
+  This should contain a copy of the /mnt/boot/EFI/systemd bootloader
+  'bootx64.efi' or 'shimx64.efi'. See 'README-secure-boot'
+
+- /mnt/boot/EFI/grub    is the GRUB EFI bootloader location. The
+  GRUB bootloader installation is documented in 'README-grub' and
+  'README-secure-boot'
+
+- /mnt/boot/EFI/systemd is the systemd bootloader location. This
+  must contain a copy of 'grubx64.efi' and optionally 'shimx64.efi',
+  see 'README-secure-boot'
+
+- /mnt/boot/image       contains the unified kernel/initrd image to
+  be loaded by the systemd bootloader. When multiple distros are
+  installed in parallel there may be distro specific folders like
+
+  /mnt/boot/image-bullseye
+  /mnt/boot/image-bookworm
+
+- /mnt/boot/loader      contains the systemd boot configuration.
+  Systemd's boot manager uses '*.conf' files in sub folder'entries'
+  to display a boot menu. Some entries like the default boot loader
+  or MS-Windows are automatically shown. See 'centauriefilinux menu'.
+
+# The systemd bootloader can be updated/installed via
+
+    > bootctl --esp-path=/mnt/boot --no-variables update
+
+# ... or ...
+
+    > cp -a /usr/lib/systemd/boot/efi/systemd-bootx64.efi \
+            /mnt/boot/EFI/systemd/systemd-bootx64.efi
+
+# ... or /admin/centauriefilinux which also manages the
+# configuration in '/mnt/boot/loader' and the kernel/initrd image.
+!EOF
+}
 
 # ------------------------------------------------------------------------------
 # setup secure boot
@@ -1243,6 +1480,8 @@ actions() {
         invoke -r 'menu'     -           ;;
     mok)
         invoke -r -          -           ;;
+    rea*)
+        invoke -r 'readme'   -           ;;
     set*)
         invoke -r 'setup'    -           ;;
     upd*)
@@ -1303,6 +1542,7 @@ actions:
                             sign an EFI binary, see 'sbsign', use '.' for in-place
        mok     create|delete|decrypt|import
                             MOK management, see 'mokutil'
+       readme               create a set of README files in EFI partition
        setup                MOK setup, repository, enrollment, dkms
        update  [boot|bios|grub|memtest|systemd|-]
                             update boot loaders, use '-' for all except bios
@@ -1344,10 +1584,6 @@ examples:
        $CEN_NAME boot list
 !EOF
 }
-#Besides
-#       an EFI boot configuration a BTRFS labeled '<host>_root' and a '$DAT_SUBVOL'
-#       sub-volume are recommended for root. Otherwise 'loader/entries/*.conf' files
-#       need to be edited manually.
 
 # ------------------------------------------------------------------------------
 # Finally call the library to execute the script

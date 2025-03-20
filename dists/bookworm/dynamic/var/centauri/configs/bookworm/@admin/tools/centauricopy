@@ -156,8 +156,7 @@ actionSync() {
         [ -z "$CEN_OPT_BACKUP" ] && fatal "Cannot locate 'Deleted' folder"
     elif [ -n "$CEN_OPT_BACKUP" ] ; then
         if [ -n "$base" ] ; then
-            [ -d "$CEN_OPT_BACKUP" ] ||
-                fatal "Not a folder: $CEN_OPT_BACKUP"
+            folder -f "$CEN_OPT_BACKUP"
         else
             trace "cannot check backup folder on remote destination"
         fi
@@ -165,16 +164,16 @@ actionSync() {
 
     # implement --folder
     if [ -z "$CEN_OPT_FOLDER" ] ; then
-        [ -z "${orig##*:}" ] && orig+="."
+        [ -z "${orig##*:}" ] && orig+='.'
         orig+='/'
     fi
     ___message "$info: $orig  =>  $dest"
 
     # get the rsync password
-    if [ "${CEN_OPT_PASSWORD:-#}" != "#" ] ; then
+    if [ "${CEN_OPT_PASSWORD:-#}" != '#' ] ; then
         export RSYNC_PASSWORD
         if [ "$CEN_OPT_PASSWORD" != '-' ] ; then
-            if [ "$CEN_OPT_PASSWORD" = "+" ] ; then
+            if [ "$CEN_OPT_PASSWORD" = '+' ] ; then
                 CEN_OPT_PASSWORD="$DAT_PASSWORD"
             elif [ ! -r "$CEN_OPT_PASSWORD" ] ; then
                 fatal "Cannot read rsync password from: $CEN_OPT_PASSWORD"
@@ -219,18 +218,18 @@ actionSync() {
     fi
 
     # handle --include and --exclude options
-    local iaut valu excl="include"
+    local iaut valu excl='include'
     for valu in "${CEN_OPT_INCLEXCL[@]}" ; do
         if [ -n "$valu" ] ; then
             valu="${valu#^}" ; valu="${valu%$}"     # remove glob ^/$
             opts+=("--$excl=$valu")
-            [ "$excl" = "include" ] && iaut=1 || iaut=
+            [ "$excl" = 'include' ] && iaut=1 || iaut=
         fi
-        [ "$excl" = "include" ] && excl="exclude" || excl="include"
+        [ "$excl" = 'include' ] && excl="exclude" || excl='include'
     done
     if [ -n "$iaut" ] ; then
-        trace -i "Appending '--include=*/ --exclude=*' --prune-empty-dirs"
-        opts+=("--include=*/" "--exclude=*" "--prune-empty-dirs")
+        trace -i "Appending    :" '--include=*/ --exclude=* --prune-empty-dirs'
+        opts+=('--include=*/' '--exclude=*' '--prune-empty-dirs')
     fi
 
     if [ -n "$CEN_OPT_BACKUP" ] ; then

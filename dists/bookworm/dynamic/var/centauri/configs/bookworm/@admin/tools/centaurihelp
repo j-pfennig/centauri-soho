@@ -455,8 +455,8 @@ formatter_deco_plain() {
         2)  _temp="$2$DAT_FMT_ITAL$3$DAT_FMT_NORM$4" ;;
         3)  _temp="$2$DAT_FMT_BOLD$3$DAT_FMT_NORM$4" ;;
         4)  _temp="$2$DAT_FMT_ULIN$3$DAT_FMT_NORM$4" ;;
-        5)  [ "$DAT_FMT_MODE" = '0' ] && _temp="$2  $4"
-            [ "$DAT_FMT_MODE" = '1' ] && _temp="$2$4" ;;
+        5)  [ "$DAT_FMT_MODE" = 0 ] && _temp="$2  $4"
+            [ "$DAT_FMT_MODE" = 1 ] && _temp="$2$4" ;;
         *)  _temp="$2$3$4"
     esac
 }
@@ -487,24 +487,23 @@ formatter_full() {
         3)  [ -z "$_mraw" ] && _mode=3 ;;
         4)  [ -z "$_mraw" ] && _mode=4 ;;
         5)  [ -z "$_mraw" ] && _mode=5 ;;
-        *)  [ "$DAT_FMT_MODE" = "2" ] || return 1   # no change
+        *)  [ "$DAT_FMT_MODE" = 2 ] || return 1     # no change
             xml_text -v _temp -- "$1" ; return 0    # escape html
     esac
 
     local _tmp1="${BASH_REMATCH[1]}"
     local _tmp2="${BASH_REMATCH[2]}"
     local _tmp3="${BASH_REMATCH[3]}"
-    # echo "    MATCH: $_tmp1|$_tmp2|$_tmp3"
 
     # recurse only if not single char
     if [ "${#_tmp1}" -gt 1 ] ; then
         formatter_full "$_tmp1" && _tmp1="$_temp"
-    elif  [ "$DAT_FMT_MODE" = "2" ] ; then
+    elif  [ "$DAT_FMT_MODE" = 2 ] ; then
         xml_text -v _tmp1 -- "$_tmp1"
     fi
     if [ "${#_tmp3}" -gt 1 ] ; then
         formatter_full "$_tmp3" && _tmp3="$_temp"
-    elif  [ "$DAT_FMT_MODE" = "2" ] ; then
+    elif  [ "$DAT_FMT_MODE" = 2 ] ; then
         xml_text -v _tmp3 -- "$_tmp3"
     fi
 
@@ -766,7 +765,7 @@ definition_html() {
     mesg="${1%*:-}"
     if [ -z "$labl" ] ; then
         if [ -n "$DAT_DEF_OPEN" ] ; then
-            xml_element "div" -c "def-break" -n
+            xml_element 'div' -c "def-break" -n
             DAT_DEF_OPEN=
         fi
         [ -z "$mesg" ] && return
@@ -801,7 +800,7 @@ definition_html() {
         formatter mesg                          # format right side
 
         if [ -n "$mout" ] ; then                # continuation line
-            if [ "$fbox" = "1" ] ; then
+            if [ "$fbox" = 1 ] ; then
                 mout+="$mesg" ; fbox=2
             elif [ "$fbox" = "3" ] ; then
                 mout+="$sepa  $mesg"
@@ -818,14 +817,14 @@ definition_html() {
     done
     [ -n "$fbox" -a "$DAT_DEF_MODE" = "." ] && mout+="</pre>" ; fbox=
 
-    xml_element "div" -b -n -i -c "def-row"
+    xml_element 'div' -b -n -i -c "def-row"
     if [ -n "$lout" ] ; then
-        xml_element "div" -c "def-label" -n -t -- "$lout"
+        xml_element 'div' -c "def-label" -n -t -- "$lout"
     else
-        xml_element "div" -c "def-empty" -n
+        xml_element 'div' -c "def-empty" -n
     fi
-    xml_element "div" -n -c "$mtxt" -- "$mout"
-    xml_element "div" -e -n -u
+    xml_element 'div' -n -c "$mtxt" -- "$mout"
+    xml_element 'div' -e -n -u
     DAT_DEF_OPEN=1
 }
 
@@ -924,9 +923,9 @@ bookmark() {
         splitjoin -s afld -d "\a" "$text"
         file="${afld[0]}" ; name="${afld[1]}"
 
-    elif [ "$onxt" = "1" ] ; then
+    elif [ "$onxt" = 1 ] ; then
         file="${DAT_BMK_NEXT["$name"]}" ; name=
-    elif [ "$onxt" = "2" ] ; then
+    elif [ "$onxt" = 2 ] ; then
         file="${DAT_BMK_PREV["$name"]}" ; name=
 
     elif [ -n "$oref" ] ; then
@@ -1030,45 +1029,45 @@ article() {
     done
 
     # html article
-    if [ "$fbeg" = "1" ] ; then
+    if [ "$fbeg" = 1 ] ; then
         local mhdr="$CEN_NAME ─ ${mesg// - / ─ }"
         if [ -z "$mesg" ] ; then
             file="${DAT_OUT_FILE##*/}" ; mhdr+="${file%.*}"
         fi
-        xml_document $DAT_DOCO -b -s "default.js" -c "default.css" -t "$mhdr" \
+        xml_document $DAT_DOCO -b -s 'default.js' -c 'default.css' -t "$mhdr" \
                      -o "$DAT_OUT_FILE" -- "onload='initialize(\"${file%.*}\")'" || quit
-        xml_element "article#top" -b -n -i
+        xml_element 'article#top' -b -n -i
         if [ -n "$mesg" ] ; then
-            xml_element "div#item-header" -b -t -- "$mesg - "
-            xml_anchor -u "index.html" "$tool"
-            xml_element "div" -e -n
+            xml_element 'div#item-header' -b -t -- "$mesg - "
+            xml_anchor -u 'index.html' "$tool"
+            xml_element 'div' -e -n
         fi
         DAT_ART_CURR="$book"
 
     # new article in same document
     elif [ -n "$fbeg" ] ; then
-        xml_element "article" -e -u -n
-        xml_element "article" -b -i
+        xml_element 'article' -e -u -n
+        xml_element 'article' -b -i
         if [ -n "$mesg" ] ; then
             xml_element "div${book:+#}$book" -c "item-header" -t -- "$mesg"
         fi
     elif [ -n "$fend" ] ; then
-        xml_element "article" -e -n -u
+        xml_element 'article' -e -n -u
         DAT_ART_CURR=1 ; article -n -- "$@" ; DAT_ART_CURR=
         xml_document -e
     elif [ -n "$fnav" ] ; then
         ___anchor() {
             local clas="$1" ; shift
-            xml_element "div" -c "$clas" -b
+            xml_element 'div' -c "$clas" -b
             [ -n "$2" ] && xml_anchor "$@"
-            xml_element "div" -e -n
+            xml_element 'div' -e -n
         }
-        [ -n "$DAT_ART_CURR" ] && xml_element "div" -c "def-break" -n
+        [ -n "$DAT_ART_CURR" ] && xml_element 'div' -c "def-break" -n
         local npre nnxt
         if [ "$1" != '-' ] ; then                   # skip for /dev/stdout
             bookmark -p npre "$1" ; bookmark -n nnxt "$1"
         fi
-        xml_element "nav" -b ; xml_element "div" -c "nav-row" -b -n -i
+        xml_element "nav" -b ; xml_element 'div' -c "nav-row" -b -n -i
             ___anchor "nav-left"  -u "$npre" "[<< previous]"
             if [ -z "$CEN_OPT_TOOLS" ] ; then
                 if [ -n "$DAT_ART_CURR" ] ; then
@@ -1086,7 +1085,7 @@ article() {
                 ___anchor "nav-mid" -u "tools.html#top" "[Tools]"
             fi
             ___anchor "nav-right" -u "$nnxt" "[next >>]"
-        xml_element "div" -e ; xml_element "nav" -e -n -u
+        xml_element 'div' -e ; xml_element "nav" -e -n -u
 
     # plain text article
     else
@@ -1276,7 +1275,7 @@ element() {
               element_item_$DAT_FMT_TYPE "$nlin" "$kind" "$name" "$text"
               ;;
         A)    DAT_FLG_EBEG= ; DAT_FLG_ECNT=0 ;;
-        B)    [ "$name" = "1" ] && DAT_FLG_ECNT=0
+        B)    [ "$name" = 1 ] && DAT_FLG_ECNT=0
               element_begin_$DAT_FMT_TYPE "$name" ;;
         E)    element_end_$DAT_FMT_TYPE ; DAT_INP_NAME= ;;
         Z)    ;;
@@ -1300,7 +1299,7 @@ element() {
         DAT_INP_LINE="${DAT_INP_FILE}[$((CEN_DOC_BLOCK + $2))]"
 
         # text mode: separate groups by empty line
-        [ "$1" -gt 0 -a "$DAT_FMT_MODE" != "2" ] && definition
+        [ "$1" -gt 0 -a "$DAT_FMT_MODE" != 2 ] && definition
 
         # handle <auto> callback
         case "$text" in
@@ -1319,7 +1318,7 @@ element() {
             definition -- "$ttmp" "$@"
 
         # continue a definition
-        elif [ -z "$nrem" ] && [ "${texl::3}" = "   "  ] ; then
+        elif [ -z "$nrem" ] && [ "${texl::3}" = '   '  ] ; then
             definition '' "$@"
 
         # no definition, no continuation -> remarks entry
@@ -1331,15 +1330,15 @@ element() {
                 texl="${texl#[$DAT_CHAR_MARKER]}"       # remove format marker
                 labelsplit ttmp "$texl" || nrem=2       # test for label
             else
-                nrem=0 ; [ "$DAT_FMT_MODE" = "2" ] && definition
+                nrem=0 ; [ "$DAT_FMT_MODE" = 2 ] && definition
             fi
             local labl
             if [ -n "$CEN_OPT_L10N" ] ; then
-                [ "$nrem" = "1" ] && labl=$"Remark:"
-                [ "$nrem" = "2" ] && labl=$"Remarks:"
+                [ "$nrem" = 1 ] && labl=$"Remark:"
+                [ "$nrem" = 2 ] && labl=$"Remarks:"
             else
-                [ "$nrem" = "1" ] && labl="Remark:"
-                [ "$nrem" = "2" ] && labl="Remarks:"
+                [ "$nrem" = 1 ] && labl="Remark:"
+                [ "$nrem" = 2 ] && labl="Remarks:"
             fi
             definition -b "$labl" "$@"
         fi
@@ -1350,7 +1349,7 @@ element() {
     else
         documentation -b + ___block                     # get paragraphs with deco
     fi
-    [ "$DAT_FMT_MODE" != "2" ] && definition            # empty line
+    [ "$DAT_FMT_MODE" != 2 ] && definition            # empty line
     [ -z "$filt" ]                                      # false if filter was set
     documentation -t                                    # return query status
 }
@@ -1379,7 +1378,7 @@ element_item_plain() {
 # element listing - html
 # ------------------------------------------------------------------------------
 element_begin_html() {
-    if [ "$1" = "1" ] ; then
+    if [ "$1" = 1 ] ; then
         article -b "$DAT_INP_FILE"
         local book="${DAT_OUT_FILE##*/}"
         article -n -- "${book%.html}"
@@ -1423,7 +1422,7 @@ element_item_html() {
         text="${text/centauri-bash-lib/$book}"
         name="${name/centauri-bash-lib/$book}"
         xml_element "span" -- "$kind" " - " "$name" " - " "$text"
-        xml_element "div" -e -n -u
+        xml_element 'div' -e -n -u
     fi
     xml_flush
 }

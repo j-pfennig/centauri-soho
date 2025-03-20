@@ -916,11 +916,11 @@ _cen_ins_library() {
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
-      -p)   _update="-p" ;;
-      -r)   _remove="-r" ;;
-      -s)   _updsrv="-s" ;;
-      -t)   _update="-t" ;;
-      -u)   _update="-u" ;;
+      -p)   _update='-p' ;;
+      -r)   _remove='-r' ;;
+      -s)   _updsrv='-s' ;;
+      -t)   _update='-t' ;;
+      -u)   _update='-u' ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done
@@ -978,16 +978,16 @@ _cen_ins_library() {
     if [ -n "$_remove" ] ; then
         [ -d "$CEN_TOOLS" ] || return 1
         confirm -a -n $"Do do really want to uninstall 'centauritools'" || return 128
-    elif [ "$_update" = "-s" ] ; then
+    elif [ "$_update" = '-s' ] ; then
         $CEN_TRACE -a $"Update 'centauritools' services"
         _cen_ins_systemd ; return
-    elif [ "$_update" = "-t" ] ; then
+    elif [ "$_update" = '-t' ] ; then
         _cen_ins_paths ; return
-    elif [ "$_update" = "-u" ] ; then
+    elif [ "$_update" = '-u' ] ; then
         [ -d "$CEN_TOOLS" ] || return 1
         $CEN_TRACE -a $"Update 'centauritools'"
         _cen_ins_paths -f -u || return 1
-    elif [ "$_update" = "-p" ] ; then
+    elif [ "$_update" = '-p' ] ; then
         $CEN_TRACE -a $"Path check 'centauritools'"
         _cen_ins_paths -f -i ; return
     else
@@ -1065,10 +1065,10 @@ _cen_ins_paths() {
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
-      -f)   _ffrc="-f" ;;
+      -f)   _ffrc='-f' ;;
       -i)   ;;
       -u)   ;;
-      -r)   _frem="-r" ;;
+      -r)   _frem='-r' ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done

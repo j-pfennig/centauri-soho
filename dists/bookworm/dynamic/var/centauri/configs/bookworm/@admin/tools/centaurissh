@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2025; BSD License"
 CEN_TITLE="Opens a SSH connection to the given host"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d - '0.68:2' 1 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f - '0.69:2' 1 || exit 2
 
 # Data
 DAT_SERVER_GEN=                 # default host (generic server name)
@@ -23,7 +23,7 @@ CEN_OPT_X11=                    # see --X11
 # ------------------------------------------------------------------------------
 do_ssh() {
     local ox11="${CEN_OPT_X11:+-X}" opts=() opt1 opt2 opt3
-    [ -z "$ox11" -a "$CEN_ACTION" = "batch" ] && ox11="-x"
+    [ -z "$ox11" -a "$CEN_ACTION" = 'batch' ] && ox11='-x'
 
     do_private
 
@@ -34,12 +34,13 @@ do_ssh() {
     fi
 
     [ -n "$ox11"  ] && opts+=("$ox11")
-    [ -n "$CEN_OPT_COMPRESS" ] && opts+=("-C")
+    [ -n "$CEN_OPT_COMPRESS" ] && opts+=('-C')
+    [ -n "$CEN_OPT_FORCE" ] && opts+=('-o' 'StrictHostKeyChecking no')
     [ -n "$CEN_OPT_PORT" ] && opts+=("-p" "$CEN_OPT_PORT")
-    [ "$CEN_OPT_TERM" = "0" ] && opts+=("-T")
-    [ "$CEN_OPT_TERM" = "1" ] && opts+=("-t")
+    [ "$CEN_OPT_TERM" = 0 ] && opts+=('-T')
+    [ "$CEN_OPT_TERM" = 1 ] && opts+=('-t')
     [ -n "$XDG_CURRENT_DESKTOP" ] && opts+=("-o" "SendEnv=XDG_CURRENT_DESKTOP")
-    [ -n "$GDK_DPI_SCALE" -a "$ox11" != "-x" ] && opts+=("-o" "SendEnv=GDK_DPI_SCALE")
+    [ -n "$GDK_DPI_SCALE" -a "$ox11" != '-x' ] && opts+=("-o" "SendEnv=GDK_DPI_SCALE")
 
     local dest="$CEN_OPT_HOST"
     [ -n "$CEN_OPT_USER" ] && dest="$CEN_OPT_USER@$CEN_OPT_HOST"
@@ -227,7 +228,7 @@ actionCopy() {
         # short form: no --host, use <host>
         if [ "$CEN_OPT_HOST" = "$DAT_SERVER_GEN" ] ; then
             [ -n "$host" ] || error "no <host> specified"
-            CEN_OPT_HOST="$host" ; host="localhost"
+            CEN_OPT_HOST="$host" ; host='localhost'
         fi
         [ -n "$CEN_OPT_USER" -a "$CEN_OPT_USER" != "$user" ] &&
             error "Conflicting '--user' option"
@@ -237,8 +238,8 @@ actionCopy() {
     system -c -e scp getent nc                  # check requirements
     do_private
 
-    local pssh="22"                             # host port for ssh
-    local ptun="2201"                           # port to tunnel
+    local pssh=22                               # host port for ssh
+    local ptun=2201                             # port to tunnel
 
     local orig dest host
     if do_scparg "$1" ; then                    # 1st arg is remote
@@ -254,6 +255,8 @@ actionCopy() {
     fi
     error -t || return
 
+    local opts=('-p' '-r')
+    [ -n "$CEN_OPT_FORCE" ] && opts+=('-o' 'StrictHostKeyChecking no')
     if system -r -q getent hosts "$CEN_OPT_HOST" ; then
         if [ "$CEN_OPT_HOST" != "$host" -a -n "$host" ] ; then
             error "Conflicting '--host' option" ; return
@@ -262,11 +265,11 @@ actionCopy() {
         dest="${dest/@localhost:/@$CEN_OPT_HOST:}"
         message -i "copy '$orig' => '$dest'  [-no proxy-]"
         do_private
-        system -e -p scp -p -r "$orig" "$dest"
+        system -e -p scp "${opts[@]}" "$orig" "$dest"
     else
         message -i "copy '$orig' => '$dest'  [$CEN_OPT_HOST]"
         do_tunnel open "$ptun" "" "$pssh"
-        do_tunnel wait && system -e -p scp -P "$ptun" -p -r "$orig" "$dest"
+        do_tunnel wait && system -e -p scp "${opts[@]}" -P "$ptun" "$orig" "$dest"
         do_tunnel close
     fi
 }
@@ -332,7 +335,7 @@ actionFiles() {
     # short form: no --host, use <host>
     if [ "$CEN_OPT_HOST" = "$DAT_SERVER_GEN" ] ; then
         [ -n "$host" ] || error "no <host> specified"
-        CEN_OPT_HOST="$host" ; host="localhost"
+        CEN_OPT_HOST="$host" ; host='localhost'
     fi
 
     error -t || return
@@ -372,19 +375,19 @@ options() {
     case "$1" in
 
     -C|--com*)
-        optarg "compress"  -                    ;;      # a simple flag
+        optarg 'compress'  -                    ;;      # a simple flag
     -H|--hos|--host)
-        optarg "host"      -             -t     ;;      # text
+        optarg 'host'      -             -t     ;;      # text
     -P|--por|--port)
-        optarg "port"      -             -n     ;;      # a number
+        optarg 'port'      -             -n     ;;      # a number
     -S|--sou*)
-        optarg "sound"     -             -o     ;;      # on/off/auto
+        optarg 'sound'     -             -o     ;;      # on/off/auto
     -T|--ter*)
-        optarg "terminal"  CEN_OPT_TERM  -o     ;;      # on/off/auto
+        optarg 'terminal'  CEN_OPT_TERM  -o     ;;      # on/off/auto
     -U|--use|--user)
-        optarg "user"      -             -t     ;;      # text
+        optarg 'user'      -             -t     ;;      # text
     -X|--[Xx]11)
-        optarg "x11"       -                    ;;      # a simple flag
+        optarg 'x11'       -                    ;;      # a simple flag
 
     esac
 }

@@ -4,7 +4,7 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
 CEN_TITLE="Runs a backup program based on a configuration file"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m bat -m con - '0.51:1' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m bat -m con - '0.52:4' || exit 2
 
 # Data
 DAT_DEF_CONF="$CEN_ROOT/default/$CEN_NAME"
@@ -519,7 +519,7 @@ do_tar() {
     # Dryrun - just output the command
     dryrun "tar $*" && return
 
-    local poll mbyt stat
+    local poll mbyt stat tpar
     [ -z "$DAT_REMOTE" ] && remove -- "$_archive_part"
 
     # silent mode
@@ -532,7 +532,7 @@ do_tar() {
 
     # progress reporting
     else
-        (LC_MESSAGES=C DISPLAY= tar "${DAT_TAR_POLL[@]}" "$@" 2>&1 ; echo STAT=$?) |
+        (echo TPAR=$$ ; LC_MESSAGES=C DISPLAY= tar "${DAT_TAR_POLL[@]}" "$@" 2>&1 ; echo STAT=$?) |
         while read -e poll ; do
             case "$poll" in
             tar\:\ [0-9]*)
@@ -546,6 +546,15 @@ do_tar() {
             STAT=[0-9]*)
                 progress ; return "${poll##*=}"
                 ;;
+            TPAR?[0-9]*)
+                tpar="${poll##*=}"
+                trace -a -c "tar parent pid:" "$tpar" ;;
+            tar:*Input/output\ error)
+                error -- "$poll"
+                # pkill --parent "$tpar" --full 'tar' && message killed
+                return 126 ;;
+            xz:\ Reduced\ the\ number\ of\ threads*)
+                continue ;;
             *)  [ "${poll::22}" = "Warning: No xauth data" ] && continue
                 [ "${poll%: socket ignored}" = "$poll" ] || continue
                 message -i -d 2 "$poll"
