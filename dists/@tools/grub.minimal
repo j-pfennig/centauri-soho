@@ -1,4 +1,4 @@
-# minimal grub.cfg - jpf@centauri for debian (c) 2024-09-09
+# minimal grub.cfg - jpf@centauri for debian (c) 2025-04-07
 
 ### ### configuration section ### ### 
 
@@ -144,6 +144,7 @@ fi
 set bootlx="$kernel root=${rootkey}=$rootlbl $rootvol ro"
 
 # boot message
+loadfont ${grubdir}/fonts/unicode.pf2
 if [ "$efiboot" = "1" ] ; then
     insmod efi_gop
     insmod efi_uga
@@ -153,9 +154,6 @@ fi
 insmod keystatus
 insmod gfxterm
 terminal_output gfxterm
-
-loadfont ${grubdir}/fonts/unicode.pf2
-loadfont unicode
 
 set color_normal=white/black
 echo

@@ -38,7 +38,7 @@ SOHO_SONAME=                    # soho default machine name prefix
 SOHO_GENAME=                    # generic server name
 
 SOHO_SWAP_SIZE=
-SOHO_PLATFORM=                  # usally set by get_architecture
+SOHO_PLATFORM=                  # set by get_architecture
 SOHO_HOST=                      # target host, see cfg_apply() and setup script
 
 DAT_SOHO_KEYB=                  # see cfg_keyboard
@@ -48,7 +48,6 @@ CEN_OPT_BASE=                   # base folder, see --base
 CEN_OPT_CURRENT=                # current config, see --current
 CEN_OPT_DISPATCH=               # see --dispatch
 
-DAT_SOHO_ARCH=                  # architecture, see get_architecture()
 DAT_SOHO_PARAMS="${CEN_PATHS[6]}/$CEN_NAME"
 DAT_SOHO_NETCFG="${CEN_PATHS[6]}/centaurinetcfg"
 DAT_SOHO_CMDS=                  # setup extra commands
@@ -318,6 +317,16 @@ cfg_apply() {
         # assume hard coded path, $CEN_ROOT/default can be invalid
         DAT_SOHO_NETCFG='/etc/default/centaurinetcfg'
     fi
+DAT_ALONE=              # stand-alone flag, no server
+    if get_yesno -n $"Make this computer stand-alone (dhcp based)" ; then
+       get_yesno -n $"In private network only (firewall disabled)" && DAT_ALONE=1 || DAT_ALONE=2
+       get_value SOHO_NET_WLAN - - $"WLAN client SSID  (- to disable)"
+       para='-'
+       #templ_expand 'd_etc_default+centaurinetcfg-alone' "$dest/$DAT_SOHO_NETCFG"
+       # wenn kein server: secrets local    firewall ?
+       # ask for wlan
+     #  DAT_SOHO_NETREP+='-alone'
+    fi
 
     # only if we have a <para> argument ...
     if [ -n "$para" ] ; then
@@ -344,7 +353,7 @@ cfg_apply() {
 
     # update installed templates: <wrks> <host> <root>
     SOHO_DNAME="${SOHO_DOMAIN%.*}"
-    templ_expand "$DAT_SOHO_NETREP" "$dest"
+    templ_expand "$DAT_SOHO_NETREP${DAT_ALONE:+-alone}" "${dest%/}$DAT_SOHO_NETCFG"
     templ_update "$wrks" "$name" "$dest"
 
     copyFromRepo '/etc/services' "$dest"                # netcfg wants centauri settings
@@ -427,21 +436,15 @@ get_address() {
 # ------------------------------------------------------------------------------
 # get host architecture
 # ------------------------------------------------------------------------------
-#   SOHO_PLATFORM   x86 (pc)    rpi (raspi)     r32 (raspi2)
+#   SOHO_PLATFORM   x86/arm (pc)    rpi (raspi)     r32 (raspi2)
 # ------------------------------------------------------------------------------
 get_architecture() {
-    [ -n "$DAT_SOHO_ARCH" ] && return 0
-    system -q -r -s DAT_SOHO_ARCH -- dpkg --print-architecture
-    [ -n "$SOHO_PLATFORM" ] && return 0
-    system -c raspi-config && { SOHO_PLATFORM='rpi' ; DAT_RASPI=1 ; }
-    case "$SOHO_PLATFORM-$DAT_SOHO_ARCH" in
-        *-)         quit -f $"Not running a debian system?" ;;
-        -amd64)     SOHO_PLATFORM='x86' ;;
+    sysversion -a -e || return 1
+    case "$CEN_SYS_PLATFORM-$CEN_SYS_CPU_ARCH" in
         rpi-arm64)  DAT_RASPI=2 ;;
-        rpi-arm*)   SOHO_PLATFORM='r32' ;;
-        *)          error $"Unsupported hardware architecture:" "$DAT_SOHO_ARCH"
-                    return 1
+        rpi-arm*)   DAT_RASPI=1 ;;
     esac
+    SOHO_PLATFORM="$CEN_SYS_PLATFORM"
     return 0
 }
 
@@ -775,7 +778,6 @@ run_installer() {
     [ -x './installer' ] || quit -e "Install helper not found:" "$PWD/installer"
     local opts=('./installer' "$@")
     DAT_SELF="$CEN_NAME"
-#    dryrun -s "source ${opts[@]}" && return
     trace -a -c "Sourcing" "${opts[@]}"
     source "${opts[@]}"
 }
@@ -941,7 +943,7 @@ templ_update() {
     [ -n "$DAT_RASPI" ] && dkey='[ar]_' || dkey='[ad]_'
     for item in "$tmpl/@shared/"$dkey*.TEMPLATE ; do
         # skip centaurinetcfg ...
-        [ "$item" = "$tmpl/$DAT_SOHO_NETREP.TEMPLATE" ] && continue
+        [ "$item" = "${item%${DAT_SOHO_NETREP##*/}*}" ] || continue
         priv="${item/@shared/$host}"
         [ -e "$priv" ] && item="$priv"
         templ_expand -x "$item" "$root"
@@ -957,7 +959,7 @@ templ_expand() {
     [ "$2" = '-' ] || allowInstall              # check permission to install
     get_config || return 1                      # get SOHO_xxx vars and netcfg
     while [ "$1" = '-' ] ; do
-        CEN_HISTORY='+' confirm -p - -u "Template expression" || return
+        CEN_HISTORY='+' confirm -p - -u $"Template expression" || return
         templ_subst "$CEN_CONFIRM"
     done
 
@@ -971,7 +973,7 @@ templ_expand() {
     elif [ -f "$SOHO_WORKSPACE/templates/@shared/$tmpl" ] ; then
         tmpl="$SOHO_WORKSPACE/templates/@shared/$tmpl"
     elif [ "$CEN_ACTION" = 'template' ] ; then
-        error "Not a template: $tmpl" ; return 1
+        error $"Not a template:" "$tmpl" ; return 1
     else
         trace -a -c "Not a template" "$tmpl" ; return 1
     fi
@@ -986,6 +988,7 @@ templ_expand() {
     else                                        # destination is a file
         outfile -a -- "$2" || return
     fi
+    CEN_OUTFILE="${CEN_OUTFILE//\/\//\/}"
 
     if [ -n "$fexi" ] && [ ! -f "$CEN_OUTFILE" ] ; then
         trace -a -c "skip template" "$tmpl -> $CEN_OUTFILE"
@@ -1204,9 +1207,11 @@ actionBackup() {
         mptr="$CEN_MOUNT_DIR" ; auto=1
     fi
 
+    snap=('-A0' '-B' "$mptr/Volumes/Root")
     if [ "$mptr" -ef '/mnt/vol0/Volumes/Root' ] ; then
-        mptr='/mnt/vol0'
-        warning "Backup of a running system may result in garbage"
+        mptr='/mnt/vol0' ; snap=('-A1')
+        message       "Backup of a running system may result in garbage if not using a"
+        confirm -a -n "snapshot. Continue using the most recent daily snapshot" || quit -a -u
     elif [ -d "$mptr/mnt/vol0" -a ! -d "$mptr/Volumes/Root" ] ; then
         confirm -n "Mount option 'subvol=/' might be missing. Continue" || quit -a -u
     fi
@@ -1225,20 +1230,19 @@ actionBackup() {
 
         elif [ -d "$mptr/Volumes/Root" ] ; then     # btrfs volumes ...
             if [ "$item" = 'root' ] ; then
-                embed -t centauribackup -A0 -H "$host" -B "$mptr/Volumes/Root" \
+                embed -t centauribackup "${snap[@]}" -H "$host"  \
                                         -S "${curr/_root_/_vol0_}" -P "$algo" 'root'
             elif [ "$item" = 'usr' -o  "$item" = 'home' ] ; then
-                embed -t centauribackup -A0 -O "$curr/$file" \
-                                        -B "$mptr/Volumes/Root" "$item"
+                embed -t centauribackup "${snap[@]}" -O "$curr/$file" "$item"
             elif [ -d "$mptr/Volumes/${item^}" ] ; then
                 embed -t centauribackup -A0 -O "$curr/$file" \
                                         -B "$mptr/Volumes/${item^}" archive .
             fi
 
         elif [ "$item" = 'root' -o "$item" = 'usr' -o  "$item" = 'home' ] ; then
-            embed -t centauribackup -A0 -O "$curr/$file" -B "$mptr" run "$item"
+            embed -t centauribackup $snap -O "$curr/$file" -B "$mptr" run "$item"
         elif [ -d "$mptr/$item" ] ; then            # ext4 folders ...
-            embed -t centauribackup -A0 -O "$curr/$file" -B "$mptr/$item" archive .
+            embed -t centauribackup $snap -O "$curr/$file" -B "$mptr/$item" archive .
 
         else
             trace -a -c "No data dir" "$mptr $item"
@@ -1405,11 +1409,14 @@ actionDocview() {
 # ------------------------------------------------------------------------------
 actionExpand() {
     get_workspace -q                                    # try to get base folder
-    local work curr
+    local work curr mstr
     get_disttar "$1" || return
     work="${DAT_SOHO_DTAR##*/}" ; work="${work%.*}"     # filename only
     curr="${work#*-}"
     case "$work" in
+    *-master-*|*-master)
+            mstr=1 ; work="${work%%-master*}-master"
+            ;;
     *-*-*)  work="${work%-*}"
             SOHO_DISTRO="${curr%-*}" ; SOHO_CONFIG="${curr#*-}"
             ;;
@@ -1431,10 +1438,15 @@ actionExpand() {
     fi
     confirm -y "Unpack '${DAT_SOHO_DTAR##*/}' to '$work'" || return
     dryrun -s "Create: $work" || folder -f -m -c "$work"
-    dryrun "Unpack $DAT_SOHO_DTAR" || {
+
+    if dryrun "Unpack $DAT_SOHO_DTAR" ; then
+        :
+    elif [ -n "$mstr" ] ; then
+        system -e -p -- tar -xaf "$DAT_SOHO_DTAR" --strip-components=1
+    else
         system -e -p -- tar -xaf "$DAT_SOHO_DTAR" --strip-components=1 || return
         [ ! -s "$DAT_SEED" ] && fatal "No '$DAT_SEED' in '$DAT_SOHO_DTAR'"
-    }
+    fi
     dryrun "Unpack $PWD" || {
         SOHO_WORKSPACE="$PWD"
         actionUnpack
@@ -1447,7 +1459,7 @@ actionExpand() {
 actionInfo() {
     get_workspace -q                                    # try to get base folder
     get_architecture
-    message -a -c "HW architecture" "${SOHO_PLATFORM:-<unknown>} ($DAT_SOHO_ARCH)"
+    message -a -c "HW architecture" "${SOHO_PLATFORM:-<unknown>} ($CEN_SYS_CPU_ARCH)"
     message -a -c "Configuration"   "${CEN_CONFIGFILE:-<unknown>}"
 
     local work="$SOHO_WORKSPACE" seed="$DAT_SEED"
@@ -1529,7 +1541,7 @@ actionOwners() {
     for item in 'dists'/[!@]* ; do
         [ -d "$item" ] || continue
         if ! [ -d "$item/dynamic" -a -d "$item/static" ] ; then
-            invoke -e "Missing dynamic|static (run unpack):" "$dist" ; continue
+            invoke -e "Missing dynamic|static (run unpack):" "$item" ; continue
         fi
         file="$item/OWNERS"
         if [ -n "$osav" ] ; then
@@ -2019,11 +2031,11 @@ actionUnpack() {
         fi
         star="$CEN_MATCHPATH"
         if [ ! -s "$star" ] ; then
-            warning -a -c $"Cannot unpack - no seed tar:" "$curr"
+            trace -a -c $"Cannot unpack" $"no seed tar" "'$curr'"
             continue
         elif [ -d "$item/dynamic" -o -d "$item/static" ] ; then
-            warning -a -c $"Skipping unpack" "$dist -" $"'dynamic' or 'static' folder already exists"
-            continue
+            warning -a -c $"'dynamic' or 'static' folder already exists" "$dist"
+            confirm -a -n $"Possibly overwriting with older content, continue anyhow" || continue
         fi
         message -a -c $"Run unpack" "$star"
         system -f -- tar --directory="$item" -xaf "$star"
@@ -2146,6 +2158,8 @@ actions() {
         invoke -s 'info'    -             0 1 ;;   # one optional arg
     ins*)
         invoke -s 'install' -             0 + ;;   # any number of arguments
+    own*)
+        invoke -s 'owners'  -             1   ;;
     pac|pack)
         invoke -s 'pack'    -               0 ;;   # no args
     unp*)
@@ -2168,8 +2182,6 @@ actions() {
         invoke    'message' -             1 4 ;;
     net*)
         invoke -r 'network' -             0 1 ;;
-    own*)
-        invoke -r 'owners'  -             1   ;;
     ren*)
         invoke -r 'rename'  -             1 2 ;;   # 1 or 2 args
     rep*)

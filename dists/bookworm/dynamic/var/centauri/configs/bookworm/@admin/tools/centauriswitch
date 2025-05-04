@@ -1405,6 +1405,11 @@ actionUpDown() {
             trace -a "Interface not up, no server check:" "$ifce"
         fi
     fi
+
+    # --- no server: get domain from dns (via resolv.conf) ---
+
+    [ "$CEN_ACTION" = 'up' -a "${CEN_NET_SERVER_GEN:--}" = '-' ] &&
+        embed -v centaurinetcfg resolv domain
     CEN_EXIT=0                                          # make ifup/ifdown happy
 }
 

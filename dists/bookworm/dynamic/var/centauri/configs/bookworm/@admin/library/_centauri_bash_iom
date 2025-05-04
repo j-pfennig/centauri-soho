@@ -54,10 +54,10 @@
 #.          optarg "outfile" -   -w     # get output file, prompt for overwrite
 #.                                      # unless --force option was seen
 #
-# Copyright Dr. J. Pfennig (c) 2019-2024
+# Copyright Dr. J. Pfennig (c) 2019-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_iom']='0.04:4'
+CEN_MODULES['_centauri_bash_iom']='0.05:4'
 
 CEN_IOM_QUEUE=()        # see _cen_optarg_iom()
 
@@ -121,7 +121,7 @@ _cen_iom_error() {
 #           <ext>   an extension
 #           <file>  a file path
 #           <hndl>  a file handle used for input
-#           <func>  function called to each line read
+#           <func>  function called for each line read
 #
 #+Form (1) reads the given file, form (2) can prompt for a file, see [[inpfile()]].
 # Form (3) reads from a file handle, see [[redirect()]].
@@ -264,7 +264,7 @@ _cen_iom_reader() {
 # ------------------------------------------------------------------------------
 CEN_INPFILE=
 inpfile() {
-    local _fblk _fcan _fdir _femp _ffil _floo _fopt _fext _fset="CEN_INPFILE" _oerr='error -z' _stat
+    local _fblk _fcan _fdir _femp _ffil _floo _fopt _fext _fset='CEN_INPFILE' _oerr='error -z' _stat
     while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
@@ -286,7 +286,7 @@ inpfile() {
 
     _cen_inpfile() {
         local -n _varg="$_fset" ; _varg="$1"
-        if [ "$_varg" = "+" ] ; then
+        if [ "$_varg" = '+' ] ; then
             if isfunction -c windows ; then
                 if [ -n "$_fdir" ] ; then
                     windialog -k getexistingdirectory -t $"Select an input folder" "$PWD"
@@ -317,18 +317,23 @@ inpfile() {
             _cen_iom_error "$_oerr" $"No input path specified" ; return 1
         fi
         if [ "$_varg" = '-' ] ; then
-            _varg="/dev/stdin" ; return 0
+            if [ "$_ffil" ] ; then
+                _varg='/dev/stdin' ; return 0
+            elif [ -n "$_fopt" ] ; then
+                _varg= ; return 0
+            else
+                _cen_iom_error "$_oerr" $"Input must be an existing folder" ; return 1
+            fi
         elif [ -n "$_fext" ] ; then
             suffixpath -d -s "$_fset" -- "$_fext"
         fi
 
         [ "${_varg::7}" = "file://" ] && _varg="${_varg:7}"     # strip url
-        [ -n "$_fcan" -a "${_varg::2}" != "//" ] && prettypath -c -s "$_fset" -- "$_varg"
-
+        [ -n "$_fcan" -a "${_varg::2}" != '//' ] && prettypath -c -s "$_fset" -- "$_varg"
         # check for block device
         if [ -n "$_fblk" ] ; then
             if [ ! -b "$_varg" ] ; then
-                [ "${_varg::2}" = "//" ] && return 0         # samba share is ok
+                [ "${_varg::2}" = '//' ] && return 0         # samba share is ok
                 if [ "${_varg%.iso}" != "$_varg" ] ; then    # iso image is ok
                         [ -r "$_varg" ] && return 0
                         _mesg=$"Input file not readable"
@@ -361,7 +366,7 @@ inpfile() {
         _cen_iom_error "$_oerr" "$_mesg" "$_varg" ; return 1
     }
 
-    [ "$1" = "+" ] || _floo=
+    [ "$1" = '+' ] || _floo=
     while : ; do
         _cen_inpfile "$1" ; _stat=$?
         [ "$_stat" = 1 ] || return $_stat
@@ -557,7 +562,7 @@ outfile() {
     _cen_outfile() {
         local -n _varg="$_fset" ; _varg="$1"
 
-        if [ "$_varg" = "+" ] ; then
+        if [ "$_varg" = '+' ] ; then
             if isfunction -c windows ; then
                 if [ -n "$_fdir" ] ; then
                     windialog -k getexistingdirectory -t $"Select an output folder" "$PWD"
@@ -586,7 +591,7 @@ outfile() {
             _cen_iom_error "$_oerr" $"No output path specified" ; return 2
         fi
         if [ "$_varg" = '-' ] ; then
-            _fexi=1 ; _varg="/dev/stdout" ; return 0
+            _fexi=1 ; _varg='/dev/stdout' ; return 0
         elif [ -n "$_fext" ] ; then
             suffixpath -d -s "$_fset" -- "$_fext"
         fi
@@ -627,7 +632,7 @@ outfile() {
         _cen_iom_error "$_oerr" $"Output not writable" "$_varg" ; return 1
     }
 
-    [ "$1" = "+" ] || _floo=
+    [ "$1" = '+' ] || _floo=
     while : ; do
         _cen_outfile "$1" ; _stat="$?"
         [ "$_stat" = 1 ] || return $_stat

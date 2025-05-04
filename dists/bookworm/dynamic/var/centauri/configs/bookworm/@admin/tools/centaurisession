@@ -100,7 +100,7 @@ actionBashrc() {
         system -e -x -- "$auto"
     # start a display server
     else
-        embed -x centauridisplay -q -C0 -M- 
+        embed -x centauridisplay -q -C0 -M-
     fi
 
     timer -w 5                                      # pause after error
@@ -532,8 +532,8 @@ actionLogin() {
 
     # renew .xsession-errors
     if [ -s '.xsession-errors' ] ; then
-        rename -o '.xsession-errors' '.xsession-errors.old'
-        message -a $"Moved '.xsession-errors' to '.xsession-errors.old'"
+        rename -m -o '.xsession-errors' '.xsession-errors.old'
+        trace -a $"Moved '.xsession-errors' to '.xsession-errors.old'"
     fi
 
     # symlink pulse audio cookie

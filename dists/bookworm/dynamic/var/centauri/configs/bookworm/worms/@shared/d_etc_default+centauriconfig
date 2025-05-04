@@ -39,7 +39,7 @@ condition cget any
 condition cput family debian
 
     shared  /etc/default        centauriconfig centaurinetcfg centauriusers
-    private /etc/default        centauriinfo centauristartup centaurisysinit
+    private /etc/default        centauriinfo centaurisysinit
     shared  /usr/lib/sysusers.d centauri.conf
 
 # ------------------------------------------------------------------------------
@@ -247,7 +247,7 @@ condition family debian         /sbin/cachefilesd
 condition                       /usr/sbin/cupsd
 #    remove  /etc/cups           cups-browsed.conf
     shared  /etc/cups           lpoptions client.conf cupsd.conf printers_local printers_$DAT_NET_NICK
-    shared  /etc/cups/ppd       Einfach_alpha1.ppd Farbe_alpha1.ppd Doppelt_alpha1.ppd Peters_Drucker_alpha1.ppd
+#    shared  /etc/cups/ppd       xxxx.ppd
     shared  /etc/modules-load.d cups-filters.conf 
     linkto  /etc/ssl/certs      ssl-cert-snakeoil.pem /etc/cups/ssl/servercrt.pem
     linkto  /etc/ssl/private    ssl-cert-snakeoil.key /etc/cups/ssl/servercrt.key

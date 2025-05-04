@@ -744,7 +744,11 @@ _cen_net_maprule() {
     CEN_NET_IFMAP=() ; set -f
     for _item in "${CEN_NET_IFACES[@]}" ; do
         set -- $_item
-        [[ "$HOSTNAME" == $2 ]] || continue
+        case "$2" in
+            $HOSTNAME)  ;;
+            *[?*\[]*)   [[ "$HOSTNAME" == $2 ]] || continue ;;
+            *)          continue
+        esac
         [ "$3" = '-' ] && break                 # stop rule
         if [ "${3/:/}" != "$3" ] ; then         # mac rule
             warning -c $"not implemented" -- "iface $_item"
@@ -1872,7 +1876,7 @@ netquery() {
 # ------------------------------------------------------------------------------
 # netresolv - Read or write an /etc/resolv.conf file
 #
-# Call:     (1) netresolv -r
+# Call:     (1) netresolv -r [<what>]
 #           (2) netresolv [-d <host>] [<domain>|- [<server>|-...]]
 #
 # Options:  -d  specify the 1st nameserver
@@ -1881,6 +1885,7 @@ netquery() {
 # Arguments:<host>     a fully qualified host name
 #           <domain>   the DNS domain name
 #           <server>   a fully qualifed DNS server name
+#           <what>     read filter: search|domain|nameserver
 #
 #.Examples: netresolv              # write configured defaults to resolv.conf
 #.          netresolv -d alpha     # put alpha at 1st place
@@ -1893,18 +1898,23 @@ netresolv() {
 
     # read resolv.conf
     if [ "$1" = '-r' ] ; then
-        _netresolv=('')
-        [ -r "$conf" ] || return 1
+        _netresolv=()
+        if [ ! -r "$conf" ] ; then
+            error $"Cannot read file:" "$conf" ; return 1
+        fi
         local keyw valu xxxx
         while read -r keyw valu xxxx ; do
+            [ -n "$2" ] && [ "$keyw" != "$2" ] && continue
             case "$keyw" in
-            search|domain)
-                _netresolv[0]="${valu:--}" ;;
+            domain)                             # must preceed nameserver
+                _netresolv=("${valu:--}") ;;
+            search)                             # fallback only ...
+                [ -z "$_netresolv" ] && _netresolv+=("${valu:--}") ;;
             nameserver)
                 _netresolv+=("${valu:--}")
             esac
         done < "$conf"
-        return 0
+        [ -n "$_netresolv" ] && return 0 ; return 1 # failure if no data
     fi
 
     # default host

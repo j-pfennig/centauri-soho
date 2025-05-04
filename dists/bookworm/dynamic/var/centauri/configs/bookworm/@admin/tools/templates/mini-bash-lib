@@ -1,12 +1,12 @@
 #!/usr/bin/bash
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2025; BSD License"
 CEN_TITLE="Template for a minimal script using mini-bash-lib"
 
 MINIMAL="${MINIMAL:-false}" ####################################################
 if $MINIMAL ; then #############################################################
 # This script contains a packed version of mini-bash-lib
 else ###########################################################################
-# This script contains the full source of mini-bash-lib including documentation.
+# This script contains the source of mini-bash-lib (not including documentation)
 fi #############################################################################
 
 # declare global variables ...
@@ -30,7 +30,7 @@ run() {
 #}
 
 #usage() {
-#    create -c <<!EOF
+#    usagecat <<!EOF
 #Usage:     $CEN_NAME [-d|-h] [-v|-q] [---] <arg>...
 #
 #           $CEN_TITLE.
@@ -49,19 +49,21 @@ run() {
 
 if $MINIMAL ; then #############################################################
 # ------------------------------------------------------------------------------
-# Packed mini-bash-lib
+# mini-bash-lib source-code: https://github.com/j-pfennig/mini-bash-lib
 # ------------------------------------------------------------------------------
+### mini-bash-lib packed ###
 if [ -z "$CEN_HOOK_MESSAGE" ];then
 {
 {
-CEN_HOOK_MESSAGE='message'
 CEN_STDOUT=41
 CEN_STDERR=42
 eval exec "$CEN_STDOUT>&1" "$CEN_STDERR>&2"
 CEN_EXIT=0
+CEN_HOOK_MESSAGE='message'
 CEN_HOOK_QUIT=
 CEN_IDNT=
-CEN_MINI_VERSION='0.03'
+CEN_MINI_VERSION='0.05'
+: ${CEN_VERSION:=$CEN_MINI_VERSION}
 CEN_ARGS=
 CEN_ARGOPT=
 CEN_ACTARR=
@@ -77,7 +79,7 @@ CEN_YESNO=
 }
 warning(){ message -w "$@";}
 error(){ message -e -l "$@";return "$CEN_EXIT";}
-fatal(){ message -f -l "$@";}
+fatal(){ [ "$1" = '-t' ]&&set -- "${@:2}";message -f -l "$@";quit;}
 trace(){ [ "$CEN_VERB" -lt 2 ]&&return 0;message "$@";}
 message(){
 local _idnt="$CEN_NAME:" _exit _mesg _olog="$CEN_VERB" _opre _oqui _omul _opri
@@ -89,22 +91,22 @@ case "$1" in
 -c)
 local _asci _ugly
 _asci="${2//[[:alpha:]]/.}"
-printf -v _ugly "%-18s:" "$_asci"
+printf -v _ugly $"%-16s:" "$_asci"
 printf -v _opre '%s' "${_ugly/$_asci/$2}"
 shift;;
 -e)_opre=$"***ERROR***";_exit=2;;
--f)_opre=$"***FATAL ERROR***";_oqui=1;_exit=3;;
+-f)_opre=$"***FATAL ERROR***";_exit=3;;
 -i)_idnt="${_idnt//?/ }";;
 -l)_olog=1;;
 -m)_omul=1;;
 -p)_opri=1;;
--q)[ "$CEN_EXIT" = 0 ]&&return 0;_oqui=2;;
+-q)[ "$CEN_EXIT" = 0 ]&&return 0;_oqui=1;;
 -t)[ "$CEN_EXIT" = 0 ];return;;
 -w)_opre=$"***WARNING***";;
 esac;shift
 done
 [ -n "$_exit" ]&&{ _olog=1;CEN_EXIT="$_exit";}
-[ "$_oqui" = 2 ]&&quit -e "$@"
+[ -n "$_oqui" ]&&quit -e "$@"
 [ "$_olog" -lt 1 ]&&return 0
 if [ -n "$_omul" ];then
 _omul="$1";shift
@@ -113,7 +115,7 @@ fi
 [ -z "$_opri" ]&&_mesg="$*"||printf -v _mesg "$@"
 [ -n "$_opre" ]&&_mesg="$_opre $_mesg"
 echo "$_idnt" "$_mesg" >&2
-CEN_IDNT=1;[ -n "$_oqui" ]&&quit
+CEN_IDNT=1
 }
 confirm(){
 local _ofmt _oupc _what=1 _repl _vnam='CEN_CONFIRM' _idnt="$CEN_NAME:" _info _defn _text
@@ -175,11 +177,11 @@ case "$1" in
 -v)shift;_vnam="$1"
 esac;shift
 done
-dryrun $_rdry 'create' "$@"&&return 1
 [ "${1:--}" = - ]&&_fout='/dev/stdout'||_fout="$1"
 if [ -z "$_rtru" ]&&[ "${_fout::5}" != '/dev/' ]&&[ -e "$_fout" ];then
-error $"Existing file:" "$_fout";return 1
+trace -c $"Existing file" "$_fout";return 0
 fi
+dryrun $_rdry $"Create file" "$@"&&return 1
 _cen_create_file "$_fout"||return 1
 [ -z "$_vnam" ]&&return 0
 if [ "$_vnam" = - ];then
@@ -215,32 +217,32 @@ case "$1" in
 -*)_opts+=("$1")
 esac;shift
 done
-_opts+=('--' "$1" "--embed=${CEN_NAME@Q}");shift
+_opts+=('--' "$1" '--embed' "$CEN_NAME");shift
 [ -n "$CEN_OPT_DRYRUN" ]&&_opts+=('--dryrun')
 system -r "${_opts[@]}" "$@";_stat="$?"
 [ "$_stat" = 3 ]&&quit -s 3;return "$_stat"
 }
 folder(){
-local _ochg _omak _oerr='error'
+local _ochg _omak _oerr='error' _oopt='-e -p'
 while [ "${1::1}" = - ];do
 case "$1" in
 --)shift;break;;
 -c)_ochg='cd';;
--f)_oerr='fatal';;
+-f)_oerr='fatal';_oopt='-f -p';;
 -m)_omak=1;;
 -p)_ochg='cd -P';;
--q)_oerr=':';;
+-q)_oerr=':';_oopt='-q';;
 esac;shift
 done
 if [ ! -d "$1" ];then
 if [ -n "$_omak" ];then
-system -e -p -- mkdir -p "$1"||return 1
+system $_oopt -- mkdir -p "$1"||return 1
 else
-$_oerr $"Not a folder:" "$1"||return 1
+$_oerr $"Not a folder:" "$1";return 1
 fi
 fi
 [ -z "$_ochg" ]&&return 0
-system -r -e -- eval "$_ochg" "$1"||return 1
+system -r $_oopt -- eval "$_ochg" "$1"||return 1
 trace -a -c $"Current folder" "$PWD";return 0
 }
 splitjoin(){
@@ -264,8 +266,8 @@ esac;return 0
 }
 copy(){ _cen_simple_cmd 'cp' "$@";}
 rename(){ _cen_simple_cmd 'mv' "$@";}
-remove(){ _cen_simple_cmd 'rm' "$@";}
-symlink(){ _cen_simple_cmd 'ln' -s "$@";}
+remove(){ _cen_simple_cmd 'rm' -F "$@";}
+symlink(){ _cen_simple_cmd 'ln' -S "$@";}
 _cen_simple_cmd(){
 local _oerr='-e -p' _orun _args=("$1");shift
 while [ "${1::1}" = - ];do
@@ -274,10 +276,11 @@ case "$1${_args::1}" in
 -ac)_args+=('-a');;
 -uc)_args+=('-u');;
 -dr)_args+=('-r');;
+-Fr)_args+=('-f');;
 -or)_args+=('--one-file-system');;
 -nl)_args+=('-f');;
 -rl)_args+=('-r');;
--sl)_args+=('-s');;
+-Sl)_args+=('-s');;
 -f?)_oerr='-f -p';;
 -q?)_oerr='-q';;
 -r?)_orun=1;;
@@ -286,21 +289,21 @@ done
 system $_oerr $_orun -- "${_args[@]}" "$@"
 }
 system(){
-local _stat _mesg=':' _rdry _fchk _onam _ored _otyp _odel
+local _stat _rdry _fchk _olou _onam _ored _otyp _odel _oerr=':' _oqui=':'
 while [ "${1::1}" = - ];do
 case "$1" in
 --)shift;break;;
 -a)shift;_onam="$1";_ored=1;_otyp=2;;
 -c)_fchk=1;;
 -d)shift;_odel="$1";;
--e)_mesg='error';;
--f)_mesg='fatal';;
+-e)_oerr='error';_olou='-l';;
+-f)_oerr='message -f -l';_olou='-l';_oqui='quit';;
 -p)_ored=1;[ -z "$_otyp" ]&&_otyp=0;;
 -q)_ored=0;;
 -r)_rdry='-r';;
 -s)shift;_onam="$1";_ored=1;_otyp=1;;
 -t)[ "$CEN_EXIT" = 0 ]||return 1;;
--w)_mesg='warning';;
+-w)_oerr='warning';;
 -z)_ored=2;[ -z "$_otyp" ]&&_otyp=0;;
 esac;shift
 done
@@ -308,7 +311,7 @@ if [ -n "$_fchk" ];then
 _stat=0
 for _fchk in "$@";do
 type -t "$_fchk" &>/dev/null&&continue
-$_mesg -- $"Command not found:" "$_fchk";_stat=127
+$_oerr -p $"Command '%s' not found" "$_fchk";_stat=127;$_oqui
 done
 return "$_stat"
 fi
@@ -325,9 +328,9 @@ esac
 [ -n "$_otyp" ]&&readarray -t _vsys <"$CEN_TMP_SYSO"
 [ "$_otyp" = 1 ]&&splitjoin -j "$_onam" -- "${_vsys[@]}"
 [ "$_stat" = 0 ]&&return 0
-$_mesg -p $"Execution of '%s' failed (status %s)" "$1" "$_stat"
-[ -n "$_otyp" ]&&message -i -m "${_vsys[@]}"
-return "$_stat"
+CEN_IDNT=;$_oerr -p $"Running '%s' failed (status %s)" "$1" "$_stat"
+[ -n "$_otyp" ]&&message -a -m $_olou -- "${_vsys[@]}"
+$_oqui;return "$_stat"
 }
 tmpfile(){
 local _vtmp='CEN_TEMPFILE' _rdry _crea=1
@@ -382,13 +385,14 @@ CEN_ACTARR=;CEN_ARGOPT=;CEN_ACTION=;$_opts
 PATH=' ' type -t run &>/dev/null||return 2;run "$@"
 }
 optarg(){
-local _name="${2:--}";[ "$_name" = - ]&&_name="CEN_OPT_${1^^}"
+local _name="${2:--}" _aarr="$CEN_ACTARR"
+[ "$_name" = - ]&&_name="CEN_OPT_${1^^}"
 case "${3:--f}" in
 -f)printf -v "$_name" '%s' "${4:-1}";CEN_ARGS=1;;
 *)if [ -z "$CEN_ARGOPT" ];then
-[ "$CEN_ACTARR" != - -a "${CEN_ACTARR::1}" = '-' ] &&
-quit -e "Missing option value:" "--$1"
-CEN_ARGS=2;CEN_ARGOPT="$CEN_ACTARR"
+[ "$_aarr" != - ]&&[ -z "$_aarr" -o "${_aarr::1}" = '-' ] &&
+quit -e $"Missing option value:" "--$1"
+CEN_ARGS=2;CEN_ARGOPT="$_aarr"
 else
 CEN_ARGS=1
 fi
@@ -416,7 +420,19 @@ fi
 fi
 [ -n "$*" ]&&message "${_opts[@]}" "$@"
 [ "$CEN_TMP_INDX" != 0 -a -n "$CEN_TMP_BASE" ]&&system -q -r -- rm -f "$CEN_TMP_BASE"*
-trace -a "quit STATUS=$CEN_EXIT";exit "$CEN_EXIT"
+trace -a -c $"Script exits" "STATUS=$CEN_EXIT";exit "$CEN_EXIT"
+}
+usagecat(){
+local _larr _labl _line;readarray -t -u 0 _larr
+for _line in "${_larr[@]}";do
+[ "$1" = '-l' ]&&{ printf '%s\n' "$_line";continue;}
+case "$_line" in
+[a-zA-z]*:*) _labl="${_line%%:*}:";_line="${_line#*:}";;
+*)_labl=;;
+esac
+_line="${_line#"${_line%%[![:space:]]*}"}"
+printf '%-11s%s\n' "$_labl" "${_line//°/ }"
+done
 }
 command_not_found_handle(){
 set +xeE;exec 1>&$CEN_STDOUT 2>&$CEN_STDERR
@@ -435,64 +451,49 @@ main "$@";quit
 fi
 else ###########################################################################
 # ------------------------------------------------------------------------------
-# mini bash lib + A very minimal sub-set of centauri-bash-library
-#
-# Purpose: The mini-bash-lib has practical and educational use. Please always remember:
-#
-#, - it implements only something around 1% of _centauri_bash_lib
-#, - it can be used simplify scripting and to support debugging
-#, - it demonstrates some of the main design goals of _centauri_bash_lib:
-#,     °    application framework: here only some option parsing, run() and usage()
-#,     °    debug support: options -t|--trace and -d|--dryrun, trace()
-#, - error handling: [[error()]], [[fatal()]], [[quit()]], [[system()]] to run commands
-#, - simplify programming: folder(), splitjoin(), symlink(), confirm()
-#, - reasonable console output: message(), warning(), trace()
-#
-# Content: The following functions and options are implemented:
-#
-#       [[confirm]]     [-a|-i] [-n|-y] [-p <what>] [--] <text>...
-#       [[copy]]        [-f|-q] [-r] [-a] [-u] [--] <arg>...
-#       [[create]]      [-r] [-t] [-c] [-v <vnam>] [--] <path>|-
-#       [[dryrun]]      [-r]
-#       [[embed]]       [-a|-s <vnam>] [-r] [--] <tool> <arg>...
-#       [[error]]       -i] [-m|-p] [-q|-t] [--] <text>...
-#       [[fatal]]       [-m|-p] [--] <text>...
-#       [[folder]]      [-c] [-m] [-p] [-f|-q] [--] <path>
-#       [[main]]        [<opt>...] [---] [<arg>...]
-#       message     [-a|-i] [-m|-p] [--] <text>...          # also: -e|-f|-w -q|-t
-#       optarg      <name> <vnam>|- [-t|-f] [<valu>]
-#       rename      [-f|-q] [-r] [--] <arg>...
-#       remove      [-f|-q] [-r] [-d] [-o] [--] <arg>...
-#       splitjoin   [-j|-s <vnam>] [-d <deli>]
-#       symlink     [-f|-q] [-r] [-n] [-r] [--] <arg>...
-#       system      [-a|-s <vnam>] [-c] [-e|-f|-q|-t|-w] [-p] [-r] [-z] [--] <tool> <arg>...
-#       tmpfile     [-n] [-r] [-s <vnam>]
-#       trace       [-a|-i] [-m|-p] [--] <text>...
-#       warning     [-a|-i] [-m|-p] [--] <text>...
-#       quit        [-a|-i] [-e|-t|-u] [-m|-p] [-s <code>] [--] <text>...
-# ------------------------------------------------------------------------------
-
-# ------------------------------------------------------------------------------
 # mini-bash-lib         implementation
 # ------------------------------------------------------------------------------
-if [ -z "$CEN_HOOK_MESSAGE" ];then
+# The following functions and options are implemented:
+#
+#   confirm     [-a|-i] [-d dflt] [-f] [-n|-y] [-p -|what] [-s vnam] [-u] [--] text...
+#   create      [-r] [-t] [-c] [-v vnam] [--] path|-
+#   dryrun      [-r]
+#   embed       [-a|-s vnam] [-e|-f|-q|-w] [-p] [-r] [-t] [--] tool arg...
+#   error       [-i] [-m|-p] [-q|-t] [--] text...
+#   fatal       [-m|-p] [--] text...
+#   folder      [-c] [-m] [-p] [-f|-q] [--] path
+#   message     [-a|-i] [-c labl] [-m|-p] [--] text...
+#   optarg      name vnam|- [-t|-f] [valu]
+#   rename      [-f|-q] [-r] [--] arg...
+#   remove      [-f|-q] [-r] [-d] [-o] [--] arg...
+#   splitjoin   [-j|-s vnam] [-d deli]
+#   symlink     [-f|-q] [-r] [-n] [-r] [--] arg...
+#   system      [-a|-s vnam] [-c] [-d deli] [-e|-f|-q|-t|-w] [-p] [-r] [-z] [--] tool arg...
+#   tmpfile     [-n] [-r] [-s vnam]
+#   trace       [-a|-i] [-c labl] [-m|-p] [--] text...
+#   usagecat    [-l]
+#   warning     [-a|-i] [-m|-p] [--] text...
+#   quit        [-a|-i] [-e|-h|-t|-u] [-m|-p] [-s code] [--] text...
+# ------------------------------------------------------------------------------
+### mini-bash-lib source ###
 
-# ------------------------------------------------------------------------------
-# mini-bash-lib         implementation
-# ------------------------------------------------------------------------------
+if [ -z "$CEN_HOOK_MESSAGE" ] ; then    # centauri-bash-lib not loaded ...
+
+# shellcheck disable=SC2102
 # shellcheck disable=SC2317
 {
 # shellcheck disable=SC2034
 {
-    CEN_HOOK_MESSAGE='message'
     CEN_STDOUT=41
     CEN_STDERR=42
     eval exec "$CEN_STDOUT>&1" "$CEN_STDERR>&2"
 
-    CEN_EXIT=0              # exit code
-    CEN_HOOK_QUIT=          # called by quit()
-    CEN_IDNT=               # Flag for indentation
-    CEN_MINI_VERSION='0.03'
+    CEN_EXIT=0                  # exit code
+    CEN_HOOK_MESSAGE='message'
+    CEN_HOOK_QUIT='_cen_quit'   # called by quit()
+    CEN_IDNT=                   # Flag for indentation
+    CEN_MINI_VERSION='0.07'
+    : "${CEN_VERSION:=$CEN_MINI_VERSION}"
 
     CEN_ARGS=               # option arg count  (0:=error  1:=flag only  2:has value)
     CEN_ARGOPT=             # potential option argument
@@ -518,7 +519,7 @@ if [ -z "$CEN_HOOK_MESSAGE" ];then
 
 warning() { message -w "$@" ; }
 error()   { message -e -l "$@" ; return "$CEN_EXIT" ; }
-fatal()   { message -f -l "$@" ; }
+fatal()   { [ "$1" = '-t' ] && set -- "${@:2}" ; message -f -l "$@" ; quit ; }
 trace()   { [ "$CEN_VERB" -lt 2 ] && return 0 ; message "$@" ; }
 
 # write a message stderr: [-a|-i] [-m] [-p] [--] <text>...
@@ -532,22 +533,22 @@ message() {
         -c)   # printf formatting is not unicode aware ...
               local _asci _ugly
               _asci="${2//[[:alpha:]]/.}"               # this is unicode aware
-              printf -v _ugly "%-18s:" "$_asci"         # get correct padding
+              printf -v _ugly $"%-16s:" "$_asci"        # get correct padding
               printf -v _opre '%s' "${_ugly/$_asci/$2}" # back to unicode
               shift ;;
         -e)   _opre=$"***ERROR***" ; _exit=2 ;;
-        -f)   _opre=$"***FATAL ERROR***" ; _oqui=1 ; _exit=3 ;;
+        -f)   _opre=$"***FATAL ERROR***" ; _exit=3 ;;
         -i)   _idnt="${_idnt//?/ }" ;;
         -l)   _olog=1 ;;
         -m)   _omul=1 ;;
         -p)   _opri=1 ;;
-        -q)   [ "$CEN_EXIT" = 0 ] && return 0 ; _oqui=2 ;;
+        -q)   [ "$CEN_EXIT" = 0 ] && return 0 ; _oqui=1 ;;
         -t)   [ "$CEN_EXIT" = 0 ] ; return ;;
         -w)   _opre=$"***WARNING***" ;;
         esac ; shift
     done
     [ -n "$_exit" ] && { _olog=1 ; CEN_EXIT="$_exit" ; }
-    [ "$_oqui" = 2 ] && quit -e "$@"
+    [ -n "$_oqui" ] && quit -e "$@"
     [ "$_olog" -lt 1 ] && return 0
     if [ -n "$_omul" ] ; then
         _omul="$1" ; shift
@@ -558,7 +559,7 @@ message() {
     [ -z "$_opri" ] && _mesg="$*" || printf -v _mesg "$@"
     [ -n "$_opre" ] && _mesg="$_opre $_mesg"
     echo "$_idnt" "$_mesg" >&2
-    CEN_IDNT=1 ; [ -n "$_oqui" ] && quit
+    CEN_IDNT=1
 }
 
 # ------------------------------------------------------------------------------
@@ -633,11 +634,11 @@ create() {
         -v)   shift ; _vnam="$1"
         esac ; shift
     done
-    dryrun $_rdry 'create' "$@" && return 1
     [ "${1:--}" = '-' ] && _fout='/dev/stdout' || _fout="$1"
     if [ -z "$_rtru" ] && [ "${_fout::5}" != '/dev/' ] && [ -e "$_fout" ] ; then
-        error $"Existing file:" "$_fout" ; return 1
+        trace -c $"Existing file" "$_fout" ; return 0
     fi
+    dryrun $_rdry $"Create file" "$@" && return 1
     _cen_create_file "$_fout" || return 1
     [ -z "$_vnam" ] && return 0
     if [ "$_vnam" = '-' ] ; then
@@ -679,7 +680,7 @@ embed() {
         -*)   _opts+=("$1")
         esac ; shift
     done
-    _opts+=('--' "$1" "--embed=${CEN_NAME@Q}") ; shift
+    _opts+=('--' "$1" '--embed' "$CEN_NAME") ; shift
     [ -n "$CEN_OPT_DRYRUN" ] && _opts+=('--dryrun')
     system -r "${_opts[@]}" "$@" ; _stat="$?"
     [ "$_stat" = 3 ] && quit -s 3 ; return "$_stat"
@@ -687,27 +688,29 @@ embed() {
 
 # create dir, set current dir: [-f|-q] [-m] [-c|-p] [--] <path>
 folder() {
-    local _ochg _omak _oerr='error'
+    local _ochg _omak _oerr='error' _oopt='-e -p'
     while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --) shift ; break ;;
         -c) _ochg='cd' ;;
-        -f) _oerr='fatal' ;;
+        -f) _oerr='fatal' ; _oopt='-f -p' ;;
         -m) _omak=1 ;;
         -p) _ochg='cd -P' ;;
-        -q) _oerr=':' ;;
+        -q) _oerr=':' ; _oopt='-q' ;;
         esac ; shift
     done
     if [ ! -d "$1" ] ; then
         if [ -n "$_omak" ] ; then
-            system -e -p -- mkdir -p "$1" || return 1
+            # shellcheck disable=SC2086
+            system $_oopt -- mkdir -p "$1" || return 1
         else
-            $_oerr $"Not a folder:" "$1" || return 1
+            $_oerr $"Not a folder:" "$1" ; return 1
         fi
     fi
     [ -z "$_ochg" ] && return 0
     # using 'system eval cd ..' to simplify error handling
-    system -r -e -- eval "$_ochg" "$1" || return 1
+    # shellcheck disable=SC2086
+    system -r $_oopt -- eval "$_ochg" "$1" || return 1
     trace -a -c $"Current folder" "$PWD" ; return 0
 }
 
@@ -741,9 +744,9 @@ splitjoin() {
 ##   symlink [-f|-q] [-r] [-n] [-r] [--] <arg>...
 
 copy() { _cen_simple_cmd 'cp' "$@" ; }        # -a -u
-rename() { _cen_simple_cmd 'mv' "$@" ; }
-remove() { _cen_simple_cmd 'rm' "$@" ; }      # -d -o
-symlink() { _cen_simple_cmd 'ln' -s "$@" ; }  # -n -r
+rename() { _cen_simple_cmd 'mv' "$@" ; }      # -o
+remove() { _cen_simple_cmd 'rm' -F "$@" ; }   # -d -o
+symlink() { _cen_simple_cmd 'ln' -S "$@" ; }  # -n -r
 
 _cen_simple_cmd() {
     local _oerr='-e -p' _orun _args=("$1") ; shift
@@ -753,10 +756,12 @@ _cen_simple_cmd() {
         -ac)    _args+=('-a') ;;        # cp -a
         -uc)    _args+=('-u') ;;        # cp -u
         -dr)    _args+=('-r') ;;        # rm -r
+        -Fr)    _args+=('-f') ;;        # rm -f
         -or)    _args+=('--one-file-system') ;;
         -nl)    _args+=('-f') ;;        # ln -f
         -rl)    _args+=('-r') ;;        # ln -r
-        -sl)    _args+=('-s') ;;        # ln -s
+        -Sl)    _args+=('-s') ;;        # ln -s
+        -om)    _args+=('-f') ;;        # mv -f
         -f?)    _oerr='-f -p' ;;
         -q?)    _oerr='-q' ;;
         -r?)    _orun=1 ;;
@@ -768,7 +773,7 @@ _cen_simple_cmd() {
 
 # run a command: <opt>... [--] <cmd> <arg>...
 system() {
-    local _stat _mesg=':' _rdry _fchk _onam _ored _otyp _odel
+    local _stat _rdry _fchk _olou _onam _ored _otyp _odel _oerr=':' _oqui=':'
     # _ored (output redir)  '': none  0: /dev/null   1: stdout+err  2: stderr only
     # _otyp (output dest)   '': none  0: error only  1: to string   2: to array
     while [ "${1::1}" = '-' ] ; do
@@ -777,14 +782,14 @@ system() {
         -a)   shift ; _onam="$1" ; _ored=1 ; _otyp=2 ;;
         -c)   _fchk=1 ;;
         -d)   shift ; _odel="$1" ;;
-        -e)   _mesg='error' ;;
-        -f)   _mesg='fatal' ;;
+        -e)   _oerr='error' ; _olou='-l' ;;
+        -f)   _oerr='message -f -l' ; _olou='-l' ; _oqui='quit' ;;
         -p)   _ored=1 ; [ -z "$_otyp" ] && _otyp=0 ;;
         -q)   _ored=0 ;;
         -r)   _rdry='-r' ;;
         -s)   shift ; _onam="$1" ; _ored=1 ; _otyp=1 ;;
         -t)   [ "$CEN_EXIT" = 0 ] || return 1 ;;
-        -w)   _mesg='warning' ;;
+        -w)   _oerr='warning' ;;
         -z)   _ored=2 ; [ -z "$_otyp" ] && _otyp=0 ;;
         esac ; shift
     done
@@ -792,7 +797,7 @@ system() {
         _stat=0
         for _fchk in "$@" ; do
             type -t "$_fchk" &>/dev/null && continue
-            $_mesg -- $"Command not found:" "$_fchk" ; _stat=127
+            $_oerr -p $"Command '%s' not found" "$_fchk" ; _stat=127 ; $_oqui
         done
         return "$_stat"
     fi
@@ -808,14 +813,21 @@ system() {
     [ "$_stat" = 0 -a -z "$_onam" ] && return 0         # output ignored
 
     # shellcheck disable=SC2015
-    [ "$_otyp" = 2 ] && local -n _vsys="$_onam" || local _vsys
-    [ -n "$_otyp" ] && readarray -t _vsys <"$CEN_TMP_SYSO"
-    [ "$_otyp" = 1 ] && splitjoin -j "$_onam" -- "${_vsys[@]}"
+    if [ -n "$_otyp" ] ; then
+        [ "$_otyp" = 2 ] && local -n _vsys="$_onam" || local _vsys
+        if [ "$_odel" = '--' ] ; then
+            readarray -t _vsys <"$CEN_TMP_SYSO"
+        else
+            local _sifs="$IFS" _list ; readarray -t _list <"$CEN_TMP_SYSO" ; set +f
+            # shellcheck disable=SC2206
+            IFS=$'\n' _vsys=(${_list[*]}) ; IFS="$_sifs" ; set -f
+        fi
+        [ "$_otyp" = 1 ] && splitjoin -j "$_onam" -- "${_vsys[@]}"
+    fi
     [ "$_stat" = 0 ] && return 0
-
-    $_mesg -p $"Execution of '%s' failed (status %s)" "$1" "$_stat"
-    [ -n "$_otyp" ] && message -i -m "${_vsys[@]}"
-    return "$_stat"
+    CEN_IDNT= ; $_oerr -p $"Running '%s' failed (status %s)" "$1" "$_stat"
+    [ -n "$_otyp" ] && message -a -m $_olou -- "${_vsys[@]}"
+    $_oqui ; return "$_stat"
 }
 
 # create transient file: [-n] [-r] [-s <vnam>]
@@ -881,13 +893,14 @@ main() {
 
 # get option setting: <name> <vnam>|- [-t|-f] [<value>]
 optarg() {
-    local _name="${2:--}" ; [ "$_name" = '-' ] && _name="CEN_OPT_${1^^}"
+    local _name="${2:--}" _aarr="$CEN_ACTARR"
+    [ "$_name" = '-' ] && _name="CEN_OPT_${1^^}"
     case "${3:--f}" in
     -f) printf -v "$_name" '%s' "${4:-1}" ; CEN_ARGS=1 ;;
     *)  if [ -z "$CEN_ARGOPT" ] ; then
-            [ "$CEN_ACTARR" != '-' -a "${CEN_ACTARR::1}" = '-' ] &&
-                quit -e "Missing option value:" "--$1"
-            CEN_ARGS=2 ; CEN_ARGOPT="$CEN_ACTARR"
+            [ "$_aarr" != '-' ] && [ -z "$_aarr" -o "${_aarr::1}" = '-' ] &&
+                quit -e $"Missing option value:" "--$1"
+            CEN_ARGS=2 ; CEN_ARGOPT="$_aarr"
         else
             CEN_ARGS=1
         fi
@@ -897,19 +910,23 @@ optarg() {
 
 # terminate script: [-a|-i] [-p] [-s <code>] [-e|-t|-u] [--] <text>...
 quit() {
+    "$CEN_HOOK_QUIT" "$@"
+}
+
+_cen_quit() {
     local _opts=() _term
     while [ "${1::1}" = '-' ] ; do
         case "$1" in
         -)  break ;;
         --) shift ; break ;;
-        -s) shift ; CEN_EXIT="$1" ;;
         -e) _term=$"Terminated after error" ; CEN_EXIT=1 ; _opts+=('-e') ;;
+        -h) return ;;
+        -s) shift ; CEN_EXIT="$1" ;;
         -t|-u) _term=$"Terminated" ; CEN_EXIT=4 ;;
         *)  _opts+=("$1") ;;
         esac ; shift
     done
 
-    type -t "$CEN_HOOK_QUIT" &>/dev/null && "$CEN_HOOK_QUIT" "$@"
     if [ -n "$_term" ] ; then
         if [ $# = 0 ] ;       then set -- "$_term"
         elif [ "$*" = '-' ] ; then set --
@@ -918,14 +935,28 @@ quit() {
     fi
     [ -n "$*" ] && message "${_opts[@]}" "$@"
     [ "$CEN_TMP_INDX" != 0 -a -n "$CEN_TMP_BASE" ] && system -q -r -- rm -f "$CEN_TMP_BASE"*
-    trace -a "quit STATUS=$CEN_EXIT" ; exit "$CEN_EXIT"
+    trace -a -c $"Script exits" "STATUS=$CEN_EXIT" ; exit "$CEN_EXIT"
+}
+
+# copy usage message to stdout: [-l]
+usagecat() {
+    local _larr _labl _line ; readarray -t -u 0 _larr
+    for _line in "${_larr[@]}" ; do
+        [ "$1" = '-l' ] && { printf '%s\n' "$_line" ; continue ; }
+        case "$_line" in
+        [a-zA-z]*:*) _labl="${_line%%:*}:" ; _line="${_line#*:}" ;;
+        *) _labl= ;;
+        esac
+        _line="${_line#"${_line%%[![:space:]]*}"}"
+        printf '%-11s%s\n' "$_labl" "${_line//°/ }"
+    done
 }
 
 # ------------------------------------------------------------------------------
 # command not found runs in a sub-shell, must call quit() indirectly via signal
 # ------------------------------------------------------------------------------
 command_not_found_handle() {
-    set +xeE ; exec 1>&$CEN_STDOUT 2>&$CEN_STDERR
+    set +xeE ; exec 1>&"$CEN_STDOUT" 2>&"$CEN_STDERR"
     message -l $"***ABORT***" $"Command not found:" "$1"
     kill -42 $$                         # send signal to main shell
 }
@@ -937,14 +968,15 @@ trap 'trap 42; quit -s 127' 42          # quit from main shell
 # ------------------------------------------------------------------------------
 # run the application
 # ------------------------------------------------------------------------------
+# mini-bash-lib ...
     if PATH=' ' type -t run &>/dev/null ; then
         main "$@" ; quit
     fi
+# centauri-bash-lib ...
 elif [ -n "$CEN_STAGE" ] ; then
     run "$@"                            # we got sourced
 else
     main "$@" ; quit                    # using centauri-bash-lib
 fi
 fi #############################################################################
-
-# end
+### mini-bash-lib end ###

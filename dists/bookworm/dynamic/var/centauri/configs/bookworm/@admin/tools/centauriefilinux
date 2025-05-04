@@ -1,10 +1,10 @@
-#!/usr/bin/bash
+/#!/usr/bin/bash
 # ------------------------------------------------------------------------------
 CEN_LEGAL="Dr. J. Pfennig (c) 2021-2025; BSD License"
 CEN_TITLE="Tool to manage EFI boot and to create systemd-boot menu and UKI"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -y - '0.27:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -y - '0.30:4' || exit 2
 
 CEN_OPT_BASE=           # see --base, EFI partition mount point
 CEN_OPT_EXTERN=         # see --external, external disk
@@ -22,6 +22,9 @@ DAT_EFI_DISTDIR='EFI/grub'
 DAT_EFI_MEMTDIR='EFI/memtest'
 DAT_EFI_SYSDDIR='EFI/systemd'
 
+DAT_ARCH='-'
+DAT_ARCH_EFI=
+
 DAT_SYSD_LOADER='loader'
 DAT_SYSD_ENTRIES="$DAT_SYSD_LOADER/entries"
 DAT_SYSD_CONFIG="$DAT_SYSD_LOADER/loader.conf"
@@ -32,7 +35,6 @@ DAT_MOUNT=
 DAT_SUBVOL='/Volumes/Root'      # btrfs subvolume: bootflags=subvol=...
 DAT_UKIPATH=                    # set by do_suffix $DAT_MOUNT$/DAT_IMAGE
 DAT_SUFFIX=                     # see --nickname and do_suffix
-
 DAT_CMDLINE='cmdline'           # (extra) kernel parameters
 DAT_PACKAGE='package'           # flag for update-initramfs calls
 
@@ -307,6 +309,7 @@ do_image() {
 
 # install memtest86 in EFI partition
 do_memt() {
+    [ "$DAT_ARCH" = 'x64' ] || return 0                 # x64 only
     local file='memtest86+x64.efi'
     if [ -e "$DAT_BOOTDIR/$file" ] ; then
         trace -a -c "Setup folder" "$PWD/$DAT_EFI_MEMTDIR"
@@ -469,11 +472,11 @@ do_mount() {
 
 # helper for 'update' to get efi binaries right: <path>
 do_plain() {
-    local spre scmd sefi spst sdef="$DAT_MOUNT/$DAT_EFI_BOOTDIR/bootx64.efi"
+    local spre scmd sefi spst sdef="$DAT_MOUNT/$DAT_EFI_BOOTDIR/BOOT${DAT_ARCH_EFI^^}"
     local xpre xcmd xpst xdev="$CEN_BLKDEVICE"
 
     folder -c -f ${CEN_OPT_FORCE:+-m} "$DAT_MOUNT/$1"
-    if matchpath -o -e shimx64* fbx64* *.CSV ; then
+    if matchpath -o -e shim${DAT_ARCH}* fb${DAT_ARCH}* *.CSV ; then
         confirm -a -y -q "Remove SecureBoot '${1##*/}' components" &&
             remove *.efi *.EFI *.CSV
     fi
@@ -489,7 +492,7 @@ do_plain() {
         xpre=(grub-install --no-nvram --target=x86_64-efi \
                 --efi-directory="$DAT_MOUNT" "$xdev")
 
-        sefi="grubx64.efi"
+        sefi="grub$DAT_ARCH_EFI"
         scmd="build custom grub loader"
         xcmd=(grub-mkimage -d "$DAT_LIBDIR/grub/x86_64-efi"
                 -o "$sefi" -p '/grub' -O x86_64-efi
@@ -499,6 +502,9 @@ do_plain() {
                 search_fs_uuid search_fs_file  font efi_gop efi_uga gfxterm
                 gfxterm_background gfxterm_menu all_video)
 
+ #grub-mkimage -O arm64-efi -d ./arm64-efi/ -o grubaa64.efi.unsigned -p /EFI/boot --format 'arm64-efi' --compression  auto  ext2 part_gpt newc blocklist iso9660 udf memdisk cpio minicmd part_msdos part_gpt msdospart fat btrfs exfat loopback gfxterm reboot normal romfs procfs sleep ls cat echo search configfile halt chain test probe linux scsi gfxmenu gfxterm gfxterm_background deepin_gfxmode linux jpeg iso9660  elf part_apple extcmd xfs part_bsd part_gpt search   search_fs_file chain btrfs loadenv png part_gpt gzio part_gpt all_video efifwsetup password_pbkdf2 --sbat sbat
+
+
         spst="make grub the default boot loader"
         xpst=("$sefi" "$sdef" "$sdef")      # <src> <dest> [<folder>]
 
@@ -506,7 +512,7 @@ do_plain() {
         do_file "$DAT_DIST_SYSD" systemd-boot-efi || return 1
         scmd="install systemd boot"
 
-        sefi="systemd-bootx64.efi"
+        sefi="systemd-boot$DAT_ARCH_EFI"
         xcmd=(cp -a "$DAT_DIST_SYSD" "$sefi")
 
         spst="make systemd the default boot loader"
@@ -600,9 +606,9 @@ do_shim() {
             trace -a -c "External disk" "$PWD/$1"
             do_file "$DAT_DIST_GRUB" grub-efi-amd64-signed || return 1
             remove -q -- "$1"/* ; folder -m -f -- "$1"
-            copy -s -- "$DAT_DIST_GRUB" "$1/grubx64.efi"
+            copy -s -- "$DAT_DIST_GRUB" "$1/grub$DAT_ARCH_EFI"
             copy -s -- "$DAT_DIST_SHIM" "$1/BOOTX64.EFI"
-            copy -s -- "$DAT_DIST_MM"   "$1/mmx64.efi"
+            copy -s -- "$DAT_DIST_MM"   "$1/mm$DAT_ARCH_EFI"
             do_grub "$1"
             return 0
         fi
@@ -613,26 +619,26 @@ do_shim() {
     remove -- "$1"/*.[eE][fF][iI] "$1"/*.[cC][sS][vV]
 
     if [ "$1" = "$DAT_EFI_BOOTDIR" ] ; then
-        copy -s -- "$DAT_DIST_SHIM" "$1/BOOTX64.EFI"
-        copy -s -- "$DAT_DIST_MM"   "$1/mmx64.efi"
-        copy -s -- "$DAT_DIST_FB"   "$1/fbx64.efi"
+        copy -s -- "$DAT_DIST_SHIM" "$1/BOOT${DAT_ARCH_EFI^^}"
+        copy -s -- "$DAT_DIST_MM"   "$1/mm$DAT_ARCH_EFI"
+        copy -s -- "$DAT_DIST_FB"   "$1/fb$DAT_ARCH_EFI"
 
     elif [ "$1" = "$DAT_EFI_DISTDIR" ] ; then
         do_file "$DAT_DIST_GRUB" grub-efi-amd64-signed || return 1
-        copy -s -- "$DAT_DIST_GRUB" "$1/grubx64.efi"
-        copy -s -- "$DAT_DIST_MM"   "$1/mmx64.efi"
-        copy -s -- "$DAT_DIST_SHIM" "$1/shimx64.efi"
+        copy -s -- "$DAT_DIST_GRUB" "$1/grub$DAT_ARCH_EFI"
+        copy -s -- "$DAT_DIST_MM"   "$1/mm$DAT_ARCH_EFI"
+        copy -s -- "$DAT_DIST_SHIM" "$1/shim$DAT_ARCH_EFI"
         do_text csv "$1" "Grub boot (fallback)"
         do_grub "$1"
     else
         do_file "$DAT_DIST_SYSD" systemd-boot-efi || return 1
-        do_sign    "$DAT_DIST_SYSD" "$1/grubx64.efi"        # rename as grubx64 !
-        copy -s -- "$DAT_DIST_MM"   "$1/mmx64.efi"
-        copy -s -- "$DAT_DIST_SHIM" "$1/shimx64.efi"
+        do_sign    "$DAT_DIST_SYSD" "$1/grub$DAT_ARCH_EFI"    # rename as grubx64 !
+        copy -s -- "$DAT_DIST_MM"   "$1/mm$DAT_ARCH_EFI"
+        copy -s -- "$DAT_DIST_SHIM" "$1/shim$DAT_ARCH_EFI"
         do_text csv "$1" "Systemd boot (fallback)"
 
-        do_repo "/etc/kernel/postrm.d/zz-systemd-boot" - -
-        do_repo "/etc/kernel/postinst.d/zz-systemd-boot" - -
+        do_repo '/etc/kernel/postrm.d/zz-systemd-boot' - -
+        do_repo '/etc/kernel/postinst.d/zz-systemd-boot' - -
     fi
     return 0
 }
@@ -692,7 +698,7 @@ do_symlinks() {
 # helper to create a text file: csv|grub <fldr> [<text>]
 do_text() {
     if [ "$1" = 'csv' ] ; then
-        echo "shimx64.efi,$3,,fallback boot entry" |
+        echo "shim$DAT_ARCH_EFI,$3,,fallback boot entry" |
             system -e -p iconv -o "$2/BOOTX64.CSV" -t UTF-16
     else
         text="configfile /grub/grub.cfg"
@@ -838,11 +844,11 @@ actionEfimgr() {
     ent*\ gru*)
             arguments 2 - "$@" || return ; shift
             pmen="Grub boot menu" ; pref="$DAT_MOUNT/$DAT_EFI_DISTDIR"
-            matchpath -s pefi -e -o -- "$pref/shimx64.efi" "$pref/grubx64.efi" '.' ;;
+            matchpath -s pefi -e -o -- "$pref/shim$DAT_ARCH_EFI" "$pref/grub$DAT_ARCH_EFI" '.' ;;
     ent*\ sys*)
             arguments 2 - "$@" || return ; shift
             pmen="Systemd boot menu" ; pref="$DAT_MOUNT/$DAT_EFI_SYSDDIR"
-            matchpath -s pefi -e -o -- "$pref/shimx64.efi" "$pref/systemd-bootx64.efi" '.' ;;
+            matchpath -s pefi -e -o -- "$pref/shim$DAT_ARCH_EFI" "$pref/systemd-boot$DAT_ARCH_EFI" '.' ;;
     ord*)   arguments 2 - "$@" || return ; shift ; set -- -o "$@" ;;
     [a-z]*) invoke -e "Valid sub-commands are:" "add, delete, entry grub|systemd, order"
             return ;;
@@ -1070,8 +1076,8 @@ actionMenu() {
         netw='centauriswitch=smart'
     fi
 
-    local grub='/EFI/grub/shimx64.efi'
-    [ -e "$DAT_MOUNT$grub" ] || grub='/EFI/grub/grubx64.efi'
+    local grub="/EFI/grub/shim$DAT_ARCH_EFI"
+    [ -e "$DAT_MOUNT$grub" ] || grub="/EFI/grub/grub$DAT_ARCH_EFI"
 
     printf -v mode '%-29s.' "Linux  : $mode"
     do_entry 90 "$mode" "$dist" "$root" "$resu"   "$netw" "$opt1" "$opt2"
@@ -1083,7 +1089,8 @@ actionMenu() {
                  "$dist" "$root" 'resume=' "centauriswitch=router" "$opt1" \
                  'nosplash centaurilogin=local systemd.unit=runlevel2.target'
 
-    do_entry 30 $"Memory test"       '/EFI/memtest/memtest86+x64.efi'
+    [ "$DAT_ARCH" = 'x64' ] &&
+        do_entry 30 $"Memory test"   '/EFI/memtest/memtest86+x64.efi'
     do_entry 20 $"Boot via GRUB"     "$grub"
     do_entry 10 $"Windows"           '/EFI/Microsoft/boot/bootmgfw.efi'
 
@@ -1201,11 +1208,11 @@ Details:
 # grub modules from /mnt/boot/grub. Grub can be made the default EFI boot
 # loader (see also README-systemd):
 
-    > cp -a /mnt/boot/EFI/grub/grubx64.efi /mnt/boot/EFI/boot/bootx64.efi
+    > cp -a /mnt/boot/EFI/grub/grub$DAT_ARCH_EFI /mnt/boot/EFI/BOOT/BOOT${DAT_ARCH_EFI^^}
 
 # To build a stand-alone custom grub bootloader use the following command:
 
-   > grub-mkimage -d /usr/lib/grub/x86_64-efi -o /mnt/boot/EFI/Debian/bootx64.efi \
+   > grub-mkimage -d /usr/lib/grub/x86_64-efi -o /mnt/boot/EFI/Debian/boot$DAT_ARCH_EFI \
                   -p "/grub" -O x86_64-efi \
                   fat exfat ext2 btrfs iso9660 part_gpt part_msdos efifwsetup \
                   boot linux multiboot loopback chain reboot  configfile normal \
@@ -1213,18 +1220,18 @@ Details:
                   search_fs_uuid search_fs_file  font efi_gop efi_uga gfxterm \
                   gfxterm_background gfxterm_menu all_video
 
-# WARNING: the default boot loader must be named 'bootx64.efi' !
+# WARNING: the default boot loader must be named 'BOOT${DAT_ARCH_EFI^^}' !
 
 # An EFI boot variable might be needed. Example:
 
-   > efibootmgr -c -d /dev/sda -L "Grub Boot Menu" -l '\EFI\grub\grubx64.efi'
+   > efibootmgr -c -d /dev/sda -L "Grub Boot Menu" -l '\EFI\grub\grub$DAT_ARCH_EFI'
 
 # End.
 !EOF
 
     create -c -- "$DAT_MOUNT/README-secure-boot" <<!EOF
 The Linux secure boot implementation creates it's own chain of
-trust using a Microsoft signed component 'shimx64.efi' and so
+trust using a Microsoft signed component 'shim$DAT_ARCH_EFI' and so
 called Machine Owner Keys (MOK). EFI binaries and kernel modules
 can be MOK signed and are validated using shim.
 
@@ -1232,7 +1239,7 @@ When installing an image on a new machine only grub can be used
 to boot the new image. See section 'Installation' below.
 
 MOKs are X.509 certificates and a stored in EFI variables by
-'mmx64.efi'. Adding a MOK is called enrollment and is handled
+'mm$DAT_ARCH_EFI'. Adding a MOK is called enrollment and is handled
 at boot time via shim and the MOK manager.
 
 DKMS can be configured to MOK sign kernel modules at build time.
@@ -1446,6 +1453,14 @@ options() {
                 CEN_OPT_PLAIN=3
             fi
             [ -n "$CEN_OPT_PLAIN" ] && trace "Option '--plain' implied (info=$CEN_OPT_PLAIN)"
+
+            sysversion -a -e
+            case "$CEN_SYS_PLATFORM-$CEN_SYS_CPU_ARCH" in
+                rpi*)     DAT_ARCH='-' ;;
+                *-arm64)  DAT_ARCH='aa64' ;;
+                *)        DAT_ARCH='x64'
+            esac
+            DAT_ARCH_EFI="$DAT_ARCH.efi"
             ;;
 
     -B|--bas|--base)    optarg 'base'        -   -d  ;;     # folder

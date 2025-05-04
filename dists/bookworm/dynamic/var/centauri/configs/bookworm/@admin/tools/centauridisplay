@@ -637,6 +637,10 @@ run_guiserver() {
         opts+=("vt$CEN_OPT_CONSOLE") || opts+=('-keeptty')
 
     message "Running:" "$CEN_OPT_SERVER" "${opts[@]}" "$@"
+
+    # X11 would create a root-owner cache folder (might be a mesa bug)
+    create -d ~/.cache 700
+
     if dryrun -s "$CEN_OPT_SERVER" "${opts[@]}" "$@" ; then
         timer -w 3
     else
@@ -670,7 +674,7 @@ run_displaymgr() {
 run() {
     local unam="$CEN_OPT_USER"
 
-    # Option -R : run with xresources applied, restore without Xfi.dpi (for KDE)
+    # Option -R : run with xresources applied, restore without Xft.dpi (for KDE5)
     if [ -n "$CEN_OPT_RUN" ] ; then
         system -f -p -- xrdb "$DAT_XRES"
         set_xrdb -1                         # merge font resources

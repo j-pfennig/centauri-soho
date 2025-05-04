@@ -487,6 +487,7 @@ do_config() {
     ___config_network() {
         ___arg_rng_chk $# 2 2 'network' || return 1
         [ "$2" = '-' ] && return 0
+        [ "$1" = '-' ] && set -- "$CEN_NET_CONFIG.home" "$2"
 
         local indx
         case "$1" in
@@ -897,7 +898,7 @@ do_resolv() {
         trace "Nameserver '$1' - keeping '$rcon'" ; return 0
     # localhost
     elif [ "$1" = '127.0.0.1' ] ; then
-        netresolv "" - "$1"
+        netresolv '' - "$1"
     # rewrite only if nameserver is known
     elif ! nethost "$1" ; then
         warning "Unknown nameserver '$1' - keeping '$rcon'"
@@ -941,19 +942,13 @@ do_dnsserv() {
     # helper to pull server from resolv.conf (pop $pcur -> $item)
     ___dnsserv_resolv() {
         if [ -z "$pcur" ] ; then                # 1st call: get nameservers
-            if [ ! -r '/etc/resolv.conf' ] ; then
-                invoke -w "cannot read:" '/etc/resolv.conf'
-                pcur='-' ; return
-            fi
-            local key val
-            while read key val ; do
-                [ "$key" = 'nameserver' ] || continue
-                [ "$val" = '127.0.0.1' ] && continue
-                pcur+=("$val")
-            done < '/etc/resolv.conf'
-            [ -z "$pcur" ] && pcur='-'
+            local addr
+            netresolv -r 'nameserver'
+            for addr in "${_netresolv[@]}" ; do
+                [ "$addr" = '127.0.0.1' ] || pcur+=("$addr")
+            done
         fi
-        [ "$pcur" = '-' ] || item="$pcur" ; pcur=("${pcur[@]:1}")
+        item="$pcur" ; pcur=("${pcur[@]:1}")
     }
 
     # helper to pull server from configuration
@@ -966,6 +961,7 @@ do_dnsserv() {
     for item in "$@" ; do
         [ "$item" = '+' ] && ___dnsserv_resolv
         [ "$item" = '-' ] && ___dnsserv_config
+        [ -z "$item" ] && continue
         [ "$item" = "$HOSTNAME" ] && continue
 
         if [ "${item//[0-9]/}" != '...' ] ; then        # name -> ip
@@ -1116,7 +1112,7 @@ do_dnsmasq() {
         warning "AD/DC Server should have 'option dns $1'"
 
     # special case: have dnsmasq but not a server -> so it is a router config
-    local xown xadr="${DAT_MAP_IP[$CEN_NET_ROUTER_DEF]}"
+    local xown xadr="${DAT_MAP_IP[${CEN_NET_ROUTER_DEF:--}]}"
     if [ -n "$xdns$xdhc" -a -z "$xsvr" ] ; then
         xown='#' ; xadr="${DAT_MAP_IP[$1]}"
         [ -z "$xadr" ] && fatal "Need host statement for '$1' to enable dns/dhcp"
@@ -1473,7 +1469,7 @@ actionOptions() {
         ldap)   desc="provides LDAP service" ;;
         manual) desc="not managed by centaurinetcfg/centauriswitch" ;;
         mdns)   desc="" ;;
-        metr*)  desc="" ;;
+        metr*)  desc="interface IP metric priority" ;;
         mobile) desc="mobile device, notebook" ;;
         nm)     desc="use NetwokManager" ;;
         nomac)  desc="firewall: don't check MAC addresses" ;;
@@ -1519,6 +1515,7 @@ actionOptions() {
 #       (4) default
 #       (5) status
 #       (6) <ifce>      none|<ip>|+|- ...
+#       (7) domain                                          # set domainname
 # ------------------------------------------------------------------------------
 actionResolv() {
     # helper to show status
@@ -1534,6 +1531,18 @@ actionResolv() {
         done <"$1"
         [ -n "$emty" ] && message -i "$emty"
     }
+
+    if [ "$1" = 'domain' ] ; then
+        if [ -z "$2" ] && netresolv -r 'domain' ; then
+            set -- "$1" "$_netresolv"
+        fi
+        if [ "${2:--}" = '-' ] ; then
+            error "Domain name is unknown" ; return
+        fi
+        message -a "Seting domain name:" "$2"
+        writeline -e -o '/proc/sys/kernel/domainname' -t -- "$2"
+        return
+    fi
 
     # replace command arguments if there is an override file
     if do_override && [ -n "$DAT_OVER_RESOLV" ] ; then
@@ -1861,6 +1870,8 @@ actions:
        options [<host>]     show configuration options
        resolv  [<fqdn>] default|none|any|<iface> [<dns>...]
                             update dnsmasq dns server config, restart dnsmasq
+       resolv  domain [<name>]
+                            set domain name, use resolv.conf for default
        resolv  status       show '/etc/resolv.conf' and dnsmasq config
        setup   [<hostname>] create config files, full setup with <hostname>
        status               show the current status

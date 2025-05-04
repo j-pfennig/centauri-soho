@@ -1,11 +1,11 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2009-2024; BSD License"
-CEN_TITLE="Compare package lists, run apt update(install/remove"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2009-2025; BSD License"
+CEN_TITLE="Compare package lists, run apt update/install/remove"
 
 # Import the bash library, set name and version
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -s -t -y - '0.32:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -s -t -y - '0.33:4' || exit 2
 
 # Data
 
@@ -201,13 +201,13 @@ process_apt() {
 
     ___aptyes() {
         local mesg
-        pluralize -s mesg -p "$2 %s %s" "$1" "package"
+        pluralize -s mesg -p "$2 %s %s" "$1" $"package" $"packages"
         confirm -n -y "$mesg" || quit
     }
 
     ___aptend() {
         if [ -n "$lrem" ] ; then
-            ___aptyes "${#lrem[@]}" "Remove"
+            ___aptyes "${#lrem[@]}" $"Remove"
             if [ -n "$CEN_OPT_DRYRUN" ] ; then
                 echo "apt-get remove --yes ${lrem[@]}"
             elif [ -n "$CEN_OPT_FILE" ] ; then
@@ -217,7 +217,7 @@ process_apt() {
             fi
         fi
         if [ -n "$lins" ] ; then
-            ___aptyes "${#lins[@]}" "Install"
+            ___aptyes "${#lins[@]}" $"Install"
             ___aptupd || quit                       # apt update
             if [ -n "$CEN_OPT_DRYRUN" ] ; then
                 echo "apt-get install --no-install-recommends --yes ${lins[@]}"

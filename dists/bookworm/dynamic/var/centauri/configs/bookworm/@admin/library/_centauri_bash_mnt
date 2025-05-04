@@ -332,14 +332,14 @@ _cen_automount_register() {
 #           -e  generate error messages
 #           -f  generate fatal errors
 #           -i  allow an image file     (default: -d -i -p)
-#           -m  allow device to be mounted
+#           -m  allow device <item> to be mounted
 #           -n  partition number to generate a partition name
 #           -p  allow a partition       (default: -d -i -p)
 #           -s  silent, no trace messages
 #           -x  error if device or partition do not exist
 #
 # Arguments:<item>      name or path of a block device or an image
-#           <part>      a partion number
+#           <part>      a partition number (not relevant for mount check)
 #           <rslt>      result array name
 #
 # Return:   **true** on success, **false** on error, sets result array
@@ -348,28 +348,37 @@ _cen_automount_register() {
 #           [0] device file path
 #           [1] partition file path -or- empty string
 #           [2] partition number    -or- **0**
-#           [3] mountpoint
+#           [3] mountpoint          -or- **-**
 #
-# Examples: # check if name is a block device and not mounted
-#           blkdevice -d -e "sda" || quit
+#.Examples: # check if name is a block device and not mounted
+#.          blkdevice -d -e "sda" || quit
 #
-#           # check if name is a partion that is allowed to be mounted
-#           blkdevice -p -m -e "nvme0n1p1"
-#           [ "${CEN_BLKDEVICE[3]:--}" = '-' ] || message "Mounted at ${CEN_BLKDEVICE[3]}"
+#.          # check if name is a partition that is allowed to be mounted
+#.          blkdevice -p -m -e "nvme0n1p1"
+#.          [ "${CEN_BLKDEVICE[3]:--}" = '-' ] || message "Mounted at ${CEN_BLKDEVICE[3]}"
 #
-#           # check if a partion exists (allowed to be mounted)
-#           blkdevice -m -n 3 -x "nvme0n1" && message "Partition is ${CEN_BLKDEVICE[1]}"
+#.          # check if a partition exists (allowed to be mounted)
+#.          if blkdevice -m -n 3 -x "nvme0n1" ; then
+#.              message "Partition is '${CEN_BLKDEVICE[1]}'"
+#.              if [ "${CEN_BLKDEVICE[3]}" = '-' ] ; then
+#.                  message -a "Partition not mounted"
+#.              else
+#.                  message -a "Mounted at '${CEN_BLKDEVICE[3]}'"
+#.              fi
+#.          else
+#.              message "Partition '${CEN_BLKDEVICE[1]}' not found"
+#.          fi
 # ------------------------------------------------------------------------------
 CEN_BLKDEVICE=
 blkdevice() {
-    local _fblk _fexi _fimg _fpar _fmnt _npar _oerr="trace -a" _otra="trace -a" _anam="CEN_BLKDEVICE"
+    local _fblk _fexi _fimg _fpar _fmnt _npar _oerr='trace -a' _otra='trace -a' _anam='CEN_BLKDEVICE'
     while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -a)   shift ; _anam="$1" ;;
         -d)   _fblk=1 ;;
         -e)   _oerr='error' ;;
-        -f)   _oerr="fatal" ;;
+        -f)   _oerr='fatal' ;;
         -i)   _fimg=1 ;;
         -m)   _fmnt=1 ;;
         -n)   shift ; _npar="$1" ;;
@@ -415,7 +424,9 @@ blkdevice() {
     esac
 
     # check if mounted
-    local _item _xxxx _pmnt _ptyp _leng="${#_path}"
+    local _item _xxxx _pmnt _ptyp _leng="${#_path}" _merr _mchk
+    [ -n "$_npar" ] && _mchk="$_path$_pref$_npar" || _mchk="$_path"
+
     while read -r _item _pmnt _ptyp _xxxx ; do
         [ "$_ptyp" = 'autofs' ] && continue             # ignore these!
         [ "${_item::_leng}" = "$_path" ] || continue
@@ -423,10 +434,13 @@ blkdevice() {
         printf -v _pmnt "${_pmnt//%/$'\n'}"
         _item="${_item//$'\n'/%}"                       # restore %
         _pmnt="${_pmnt//$'\n'/%}"
-        [ "$_item" = "$_path" ] && _varr[3]="$_pmnt"
-        [ -n "$_fmnt" ] && break
-        $_oerr $"Device is mounted:" "$_path (${_varr[3]})" ; return 1
+        _merr=1                                         # device is mounted
+        [ "$_item" = "$_mchk" ] || continue             # this partititon?
+        _varr[3]="$_pmnt" ; break
     done < "/proc/mounts"
+    if [ -z "$_fmnt" -a -n "$_merr" ] ; then
+        $_oerr $"Device is mounted:" "$_path (${_varr[3]})" ; return 1
+    fi
 
     # validate device type
     _item="/sys/class/block/$_name"

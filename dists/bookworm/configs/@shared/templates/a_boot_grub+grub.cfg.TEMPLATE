@@ -1,4 +1,4 @@
-# common grub.cfg - jpf@centauri for debian (c) 2024-09-09
+# common grub.cfg - jpf@centauri for debian (c) 2025-04-07
 
 ### ### configuration section ### ### 
 
@@ -18,7 +18,7 @@ set ifnames=
 #set splash="nosplash"
 
 # as we do not run public/shared servers relax security ...
-set params="mitigations=off security="
+set params="rw mitigations=off security="
 
 # tell systemd-fsck.service that initrd checks the root fs
 if [ -n "$repair" ] ; then set params="$params fsck.repair=$repair" ; fi

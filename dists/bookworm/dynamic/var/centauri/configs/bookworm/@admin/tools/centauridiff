@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. Jürgen Pfennig (c) 2021-2024; BSD License"
+CEN_LEGAL="Dr. Jürgen Pfennig (c) 2021-2025; BSD License"
 CEN_TITLE=$"Handle differences between text files"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -s -y - '0.05:3' 2 2 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -s -y - '0.06:3' 2 2 || exit 2
 
 # Data
 CEN_OPT_ACCEPT=             # see --accept
@@ -13,6 +13,7 @@ CEN_OPT_EDIT=               # see --edit
 CEN_OPT_FIX=                # see --fix
 CEN_OPT_MERGE=              # see --merge
 CEN_OPT_KOMPARE=            # see --kompare
+CEN_OPT_NOADD=              # see --noadd
 CEN_OPT_PROMPT=             # see --prompt
 CEN_OPT_REVERT=             # see --revert
 CEN_OPT_ROOT=               # see --root
@@ -26,30 +27,52 @@ do_compare() {
     local   fsrc="$2" fdes="$3" mesg='message -a -c' temp
     [ "$2" = '-s' ] && message='trace -a -c'
 
-    if [ ! -f "$fdes" ] ; then
-        $mesg $"Source only" "${fsrc#$PWD/}"
+    if [ ! -e "$fsrc" ] ; then
+        $mesg "Source not found" "$CEN_DECO_MARK${fsrc#$PWD/}$CEN_DECO_NORM"
+        return 0
+    elif [ ! -f "$fdes" ] && [ ! -h "$fsrc" ] ; then
+        [ -n "$CEN_OPT_NOADD" ] && return 0
+        $mesg $"Source only" "$CEN_DECO_MARK${fsrc#$PWD/}$CEN_DECO_NORM"
         return 2
     fi
+
+    local lnkl=0 lnkr=0
+    [ -h "$fsrc" ] && lnkl=1
+    [ -h "$fdes" ] && lnkr=1
+    case "$lnkl$lnkr" in
+    00) ;;
+    11) [ -z "$CEN_OPT_SILENT" ] && trace -a -c $"Skip symlink" "${fsrc#$PWD/}"
+        return 0 ;;
+    *)  lnkl=$"file" lnkr=$"file"
+        [ -h "$fsrc" ] && lnkl=$"symlink"
+        [ -h "$fdes" ] && lnkr=$"symlink"
+        $mesg $"Different types" "$CEN_DECO_MARK${fsrc#$PWD/}$CEN_DECO_NORM"
+        printf -v temp "Left is %s, right is %s" "$lnkl" "$lnkr"
+        $mesg '...' "$temp"
+        return 3 ;;
+    esac
 
     if [ "$fsrc" -nt "$fdes" ] ; then
         temp=$"Source is newer"
     elif [ "$fdes" -nt "$fsrc" ] ; then
         temp=$"Source is older"
-    elif [ -n "$CEN_OPT_TIME" ] ; then
-        [ -z "$CEN_OPT_SILENT" ] && $mesg $"Same timestamp" "${fsrc#$PWD/}"
+    elif [ -z "$CEN_OPT_TIME" ] ; then
+        temp=
+    else
+        [ -z "$CEN_OPT_SILENT" ] && $mesg $"Same timestamp" "$CEN_DECO_ULIN${fsrc#$PWD/}$CEN_DECO_NORM"
         return 1
     fi
 
     if system -r -q -- cmp --quiet "$fsrc" "$fdes" ; then
         [ -n "$CEN_OPT_SILENT" ] && return 0
         if [ -n "$temp" ] ; then
-            $mesg "$temp" "${fsrc#$PWD/}"
-        else
-            message -c -a $"Files are equal" "${fsrc#$PWD/}"
+            $mesg "$temp" "$CEN_DECO_ULIN${fsrc#$PWD/}$CEN_DECO_NORM"
+            return 1
         fi
+        $CEN_TRACE2 -c -a $"Files are equal" "${fsrc#$PWD/}"
         return 0
     fi
-    $mesg $"Content differs" "${fsrc#$PWD/}"
+    $mesg $"Content differs" "$CEN_DECO_ULIN${fsrc#$PWD/}$CEN_DECO_NORM"
     return 1
 }
 
@@ -161,9 +184,9 @@ run_edit() {
 run_replace() {
     local fopt="$1" ; shift
     if [ "$fopt" = '-s' ] ; then
-        message -a -n "Left file is  (\$L): $1" '\n' "Right file is (\$R): $2"
+        message -a -n "Left file is  (\$L): ${1#$PWD/}" '\n' "Right file is (\$R): $2"
     else
-        message -a -n "Left file is : $1" '\n' "Right file is: $2"
+        message -a -n "Left file is : ${1#$PWD/}" '\n' "Right file is: $2"
     fi
 
     case "$fopt" in
@@ -193,7 +216,7 @@ run_kompare() {
 }
 
 # ------------------------------------------------------------------------------
-#
+# Merge command query: <src>|- <dest>
 # ------------------------------------------------------------------------------
 run_merge() {
     local ahlp=("ignore  -  do nothing" '\n'
@@ -201,8 +224,13 @@ run_merge() {
                 "quit    -  termiate the program" '\n'
                 "shell   -  run the 'bash' shell")
     local vcmd='ignore help quit shell' flef frig
-    [ -f "$1" ] && flef=1
-    [ -f "$2" ] && frig=1
+    if [ "$1" = '-' ] ; then
+        vcmd+=' delete'
+        ahlp+=('\n' "delete  -  remove the right file")
+    else
+        [ -f "$1" ] && flef=1
+        [ -f "$2" ] && frig=1
+    fi
 
     if [ -n "$flef" ] && [ -n "$frig" -o ! -e "$2" ] ; then
         vcmd+=' accept'
@@ -225,6 +253,7 @@ run_merge() {
             quit)   error -s 4 ; return 1 ;;
             shell)  run_shell "$1" "$2" ;;
             accept) run_replace -a "$1" "$2" ; break ;;
+            delete) remove -- "$2" ; break ;;
             revert) run_replace -r "$1" "$2" ; break ;;
             diff)   run_diff "$1" "$2" ;;
             komp*)  run_kompare "$1" "$2" ;;
@@ -328,6 +357,7 @@ run_folders() {
         local item="${2#$dest}" ides="${2#$dest}"
         [ -n "$chgf" ] && ides="${item//$chgf/$chgt}"
         if [ ! -d "$orig/$ides" ] ; then
+            [ -n "$CEN_OPT_NOADD" ] && return 0
             message -a -c "No origin" "$ides"
             return 2
         elif [ "$item" -ef "$orig/$ides" ] ; then
@@ -345,7 +375,8 @@ run_folders() {
         local item="${2#./}" ides="${2#./}"
         [ -n "$chgf" ] && ides="${item//$chgf/$chgt}"
         if [ ! -d "$dest/$ides" ] ; then
-            message -a -c "No destination" "$ides"
+           [ -n "$CEN_OPT_NOADD" ] && return 0
+           message -a -c "No destination" "$ides"
             return 2
         elif [ "$item" -ef "$dest/$ides" ] ; then
             trace -a -c "Skip folder" "$item"
@@ -359,13 +390,11 @@ run_folders() {
     resolve -e -m -s dest -- "$2" || return 1
     folder -c -- "$1" || return 1
     orig="$PWD"
-
     walk -i -n -r -d ___dest_equal -f ___dest_dict -- "$dest" || return 1
     trace -a -p "Found %s destination files" "${#ddic[@]}"
 
     walk -i -n -r -d ___skip_equal '.' || return 1
     trace -a -p "Found %s source files" "${#CEN_WALK_FILES[@]}"
-    CEN_AUTOIND=
 
     for item in "${CEN_WALK_FILES[@]}" ; do
         item="${item:2}" ; ides="$item"
@@ -376,11 +405,15 @@ run_folders() {
         run_merge "$orig/$item" "$dest/$ides" || return
     done
 
-    CEN_AUTOIND=
-    for item in "${!ddic[@]}" ; do
-        [ "${ddic[$item]}" = 1 ] && continue
-        message -a -c "Destination only" "$item"
-    done
+    [ -z "$CEN_OPT_NOADD" ] &&
+        for item in "${!ddic[@]}" ; do
+            [ "${ddic[$item]}" = 1 ] && continue
+            message -a -c "Destination only" "$item"
+            [ "$CEN_YESNO" = 'n' ] && continue
+            ides="$item"
+            [ -n "$chgf" ] && ides="${item//$chgf/$chgt}"
+            run_merge '-' "$dest/$ides" || return
+        done
 }
 
 # ------------------------------------------------------------------------------
@@ -391,11 +424,11 @@ do_check() {
     prettypath -s "$1" -t "$PWD" -- "$2"
 
     if [ ! -e "$2" ] ; then
-        info="does not exit"
+        info="not existing "
     elif [ ! -f "$2" ] ; then
         info="is not a file"
     elif [ ! -r "$2" ] ; then
-        info=" not readable"
+        info="not readable"
     elif [ ! -w "$2" ] ; then
         info="not writeable"
     else
@@ -432,7 +465,7 @@ run() {
     fi
 
     # using folders?
-    if   [ -d "$fdes" ] ; then
+    if [ -d "$fdes" ] ; then
         if [ -d "$fsrc" ] ; then
             do_badopts 'ACCEPT' 'EDIT' 'FIX' 'KOMPARE' 'PROMPT' 'REVERT' 'SHELL'
             error -t || return
@@ -444,8 +477,15 @@ run() {
             return
         fi
         [ -f "$fsrc" ] && fdes+="/${fsrc##*/}"
-    elif [ -d "$fsrc" -a -f "$fdes" ] ; then
-        fsrc+="/${fdes##*/}"
+    elif [ -d "$fsrc" ] ; then
+        if [ -e "$fdes" ] ; then
+            fsrc+="/${fdes##*/}"
+        else
+            resolve -e -m -s fsrc -t "$PWD" -- "$fsrc" || return 1
+
+            message -a -c "No destination" "$CEN_DECO_ULIN$fsrc$CEN_DECO_NORM"
+            return
+        fi
     fi
 
     do_badopts 'CHANGE' ; error -t || return
@@ -520,6 +560,8 @@ options() {
         optarg 'kompare'    -       ;;   # simple flag
     -M|--mer*)
         optarg 'merge'      -       ;;   # simple flag
+    -N|--noa*)
+        optarg 'noadd'      -       ;;   # simple flag
     -P|--pro*)
         optarg 'prompt'     -       ;;   # simple flag
     -R|--rev*)
@@ -552,6 +594,7 @@ usage() {
         -o - \
         -o '-C --change  <expr>' $"fix ownership, mode and timestamp" \
         -o '-F --fix'            $"fix ownership, mode and timestamp" \
+        -o '-N --noadd'          $"ignore source/destination only" \
         -o '-U --root'           $"run as root user" \
         -o - \
         -o '-E --edit    <what>' $"[*] edit left|right|both files" \

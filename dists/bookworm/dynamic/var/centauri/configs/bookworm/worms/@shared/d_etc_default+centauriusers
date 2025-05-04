@@ -67,11 +67,11 @@ file    group-pam       "/etc/security/group.conf"
 file     shell           /usr/sbin/nologin
 
 # automatically assign mech by uid or gid
-range   group-extra     500  999
+#range   group-extra     500  999
 #range   group-ldap    10000 29999
 range   group-samba-ad 2000  9999
 
-range   user-extra      500   999
+#range   user-extra      500   999
 #range   user-domain   30000 65533  # default is: 10000 65533
 #range   user-ldap     10000 29999
 #range   user-kerberos 30000 49999

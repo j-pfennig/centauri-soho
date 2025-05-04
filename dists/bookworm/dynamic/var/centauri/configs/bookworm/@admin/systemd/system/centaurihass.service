@@ -7,11 +7,11 @@ Wants=networking.service mosquitto.service
 StartLimitBurst=10
 StartLimitIntervalSec=1000
 
+# see centaurihass auto on/off
 ConditionPathExists=/opt/HomeAssistant/homeassistant/service-enabled
 
 [Service]
 User=homeassistant
-TimeoutSec=60
 IgnoreSIGPIPE=no
 KillMode=process
 GuessMainPID=no
@@ -21,10 +21,15 @@ Nice=-10
 IOSchedulingClass=realtime
 #IOSchedulingClass=best-effort
 IOSchedulingPriority=3
-ExecStart=/opt/HomeAssistant/homeassistant/bin/hass
 
+TimeoutSec=60
 Restart=on-failure
 RestartSec=30s
 
+# hass does not retry modbus init, so optionally wait until net is ready...
+#ExecStartPre=-/var/centauri/tools/centauriroute --zombie wait logo1 80 30
+ExecStart=/opt/HomeAssistant/homeassistant/bin/hass
+
+
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target networking.service

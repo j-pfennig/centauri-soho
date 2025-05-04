@@ -37,7 +37,7 @@ DAT_SEED_LIST=          # see seed_passw
 declare -A DAT_ROLE_DELETED DAT_ROLE_MANAGED    # from config
 
 declare -A DAT_GROUP_DELETED DAT_GROUP_MANAGED  # from config
-declare -A DAT_GROUP_PASSWD                     # from libnss
+declare -A DAT_GROUP_PASSWD                     # from libnss: getent group
 declare -A DAT_GID_TO_GROUP DAT_GROUP_TO_GID
 
 declare -A DAT_USER_DELETED DAT_USER_MANAGED    # from config
@@ -135,35 +135,35 @@ auto_range() {
 # add to mechs list by uid/gid range: [-g] <vent> <vmec> [<uid>|<gid>]
 # ------------------------------------------------------------------------------
 auto_mechs() {
-    local fgrp irun lfld _mech ugid
+    local _fgrp _irun _lfld _mech _ugid
     if [ "$1" = '-g' ] ; then
-        fgrp=1 ; shift
+        _fgrp=1 ; shift
     fi
 
     local -n _vent="$1" ; shift
     if [ $# != 2 ] ; then                           # get gid from group record
-        [ -z "$fgrp" ] && fatal -t
+        [ -z "$_fgrp" ] && fatal -t
         # element order: <name> <prnt> <info> <unix> <mechs>
-        record_split lfld '' "$_vent"
-        ugid="${lfld[3]}" ; _mech="${lfld[4]}"
-        set -- _mech "$ugid"
+        record_split _lfld '' "$_vent"
+        _ugid="${_lfld[3]}" ; _mech="${_lfld[4]}"
+        set -- _mech "$_ugid"                       # 1st arg is a variable name
     fi
 
-    [ -n "$2" -a -z "${2//[0-9]/}" ] || return      # not a uid/gid
+    [ -n "$2" -a -z "${2//[0-9]/}" ] || return 1    # not a uid/gid
     local -n _vmec="$1" ; _vmec=" ${_vmec//${DAT_FIELD}/ } "
     [ "$_vmec" = ' - ' -o "$_vmec" = '  ' ] && _vmec=' '
 
-    if [ -n "$fgrp" ] ; then
-        for ((irun=0 ; irun < DAT_GRANGE_COUNT ; irun++ )) ; do
-            (( $2 < DAT_GRANGE_MIN[irun] )) && continue
-            (( $2 > DAT_GRANGE_MAX[irun] )) && continue
-            _vmec+="${DAT_GRANGE_NAME[irun]} "
+    if [ -n "$_fgrp" ] ; then
+        for ((_irun=0 ; _irun < DAT_GRANGE_COUNT ; _irun++ )) ; do
+            (( $2 < DAT_GRANGE_MIN[_irun] )) && continue
+            (( $2 > DAT_GRANGE_MAX[_irun] )) && continue
+            _vmec+="${DAT_GRANGE_NAME[_irun]} "
         done
     else
-        for ((irun=0 ; irun < DAT_URANGE_COUNT ; irun++ )) ; do
-            (( $2 < DAT_URANGE_MIN[irun] )) && continue
-            (( $2 > DAT_URANGE_MAX[irun] )) && continue
-            _vmec+="${DAT_URANGE_NAME[irun]} "
+        for ((_irun=0 ; _irun < DAT_URANGE_COUNT ; _irun++ )) ; do
+            (( $2 < DAT_URANGE_MIN[_irun] )) && continue
+            (( $2 > DAT_URANGE_MAX[_irun] )) && continue
+            _vmec+="${DAT_URANGE_NAME[_irun]} "
         done
     fi
 
@@ -175,6 +175,7 @@ auto_mechs() {
     fi
     _vmec="${_vmec:1}" ; _vmec="${_vmec% }" ; _vmec="${_vmec// /$DAT_FIELD}"
     _vent="${_vent%$DAT_SEPARATOR*}$DAT_SEPARATOR$_vmec"
+    return 0
 }
 
 # ------------------------------------------------------------------------------
@@ -778,55 +779,62 @@ load_config() {
     # flushing
     # --------------------------------------------------------------------------
 
+    # import:   cond    condition flag
+    #           nusr    user name
+    #           husr    user home folder
+    #           susr    user shell
+    #           uusr    user id
+    #           musr    user mechs
     ___parse_flush_user() {
         if [ -n "$nusr" ] ; then
-            local home="${husr:-$DAT_FOLDER_HOME/$nusr}"
-            local shel=${susr:-$DAT_DEF_SHELL}
-            local data
+            local _home="${husr:-$DAT_FOLDER_HOME/$nusr}"
+            local _shel=${susr:-$DAT_DEF_SHELL}
+            local _data
 
-            # auto-generate group for user
+            # auto-generate group (set group vars and call ___parse_flush_group)
             if [ "${uusr#*:}" = '+' ] ; then
-                musr+="${DAT_FIELD}auto" ; musr="${musr#$DAT_FIELD}"
-                local entr uuid="${uusr%%:*}" ; uusr="$uuid:$nusr"
-                if [ -z "${DAT_GROUP_TO_GID["$nusr"]}" ] ; then # not yet known...
-                    ngrp="$nusr" ; pgrp= ; igrp= ; lgrp= ; ugrp="$uuid"
-                    if [ "${uuid:--}" = '-' ] ; then
-                        mgrp="$musr" ; ___parse_flush_group
-                    else
-                        mgrp="auto${DAT_FIELD}passwd" ; ___parse_flush_group
-                        entr="${DAT_GROUP_PASSWD["$nusr"]}"
-                        auto_mechs -g entr
-                    fi
-                elif [ -n "${DAT_GROUP_PASSWD["$nusr"]}" ] ; then
-                    DAT_GROUP_PASSWD["$nusr"]+="${DAT_FIELD}auto"
+                if [ -z "${DAT_GROUP_TO_GID["$nusr"]}" ] ; then # group not yet known...
+                    lgrp= ; pgrp= ; igrp=
+                    ugrp="${uusr%:*}" ; ngrp="$nusr" ; mrgp="$musr"
+                    #uusr="$ugrp:$nusr"
+                    ___parse_flush_group
                 fi
+                uusr="${uusr%:*}:$nusr"
             fi
 
             # element order: <name> <info> <home> <shell> <unix> <mechs>
-            record_join data '' "$nusr" "${iusr:-$DAT_FIELD}" \
-                                "$home" "$shel" "${uusr:--}" "${musr:--}"
+            record_join _data '' "$nusr" "${iusr:-$DAT_FIELD}" \
+                                "$_home" "$_shel" "${uusr:--}" "${musr:--}"
             if [ "$cond" = 1 ] ; then
-                DAT_USER_DELETED["$nusr"]="$data"
+                DAT_USER_DELETED["$nusr"]="$_data"
                 trace "User '$nusr' does not match any condition"
             elif [ -n "$xdel" ] ; then
-                DAT_USER_DELETED["$nusr"]="$data"
+                DAT_USER_DELETED["$nusr"]="$_data"
             else
                 if [ -n "$CEN_OPT_VALIDATE" ] ; then
-                    [ -e "$home" ] || configfile -w - "Home folder not existing:" "$home (user $nusr)"
-                    [ -x "$shel" ] || configfile -w - "Shell program is invalid:" "$shel (user $nusr)"
+                    [ -e "$_home" ] || configfile -w - "Home folder not existing:" "$_home (user $nusr)"
+                    [ -x "$_shel" ] || configfile -w - "Shell program is invalid:" "$_shel (user $nusr)"
                 fi
-                DAT_USER_MANAGED["$nusr"]="$data"
+                DAT_USER_MANAGED["$nusr"]="$_data"
             fi
         fi
         nusr= ; iusr= ; husr= ; susr= ; uusr= ; musr=
         uman= ; cman= ; cond=
     }
 
+    # import:   cond    condition flag
+    #           nusr    user name
+    #           lgrp    list of group members         -> DAT_MEMBER_MAP
+    #           ngrp    group name                    -> DAT_GROUP_MANAGED
+    #           pgrp    group plugins                 -> ...
+    #           igrp    group's 'info' text           -> ...
+    #           ugrp    unix group id                 -> ...
+    #           mgrp    group mechs                   -> ...
     ___parse_flush_group() {
         if [ "$cond" = 1 ] ; then
             [ -n "$nusr" ] && trace -a "Group '$ngrp' does not match any condition"
         elif [ -n "$ngrp" ] ; then
-            local data
+            local _data
             # members are saved to an extra map
             [ -n "$lgrp" ] && DAT_MEMBER_MAP["$ngrp"]="$lgrp"
 
@@ -834,13 +842,13 @@ load_config() {
                 DAT_GROUP_TO_GID["$ngrp"]="$ugrp"
                 DAT_GID_TO_GROUP["$ugrp"]="$ngrp"
             fi
-
+### TODO auto_mechs -g
             # element order: <name> <prnt> <info> <unix> <mechs>
-            record_join data '' "$ngrp" "${pgrp:--}" "${igrp:-$DAT_FIELD}" "${ugrp:--}" "${mgrp:--}"
+            record_join _data '' "$ngrp" "${pgrp:--}" "${igrp:-$DAT_FIELD}" "${ugrp:--}" "${mgrp:--}"
             if [ -n "$xdel" ] ; then
-                DAT_GROUP_DELETED["$ngrp"]="$data"
+                DAT_GROUP_DELETED["$ngrp"]="$_data"
             else
-                DAT_GROUP_MANAGED["$ngrp"]="$data"
+                DAT_GROUP_MANAGED["$ngrp"]="$_data"
             fi
         fi
         ngrp= ; pgrp= ; igrp= ; lgrp= ; ugrp= ; mgrp=
@@ -911,11 +919,8 @@ load_config() {
             home)   configfile -e - 1 1 $# ; husr="$1" ;;
             shell)  configfile -e - 1 1 $# ; susr="$1" ;;
             unix)   configfile -e - 1 2 $#
-                    #[ "$1" = '+' ] && set -- "$((++DAT_LAST_UID))" "$2"
-                    #[ "$2" = '+' ] && set -- "$1" "$((++DAT_LAST_GUID))"
                     if [ "$1" = '+' ] ; then
-                        set -- "$((++DAT_LAST_UID))" "$2"
-                        uusr="$1:$2"
+                        uusr="$((++DAT_LAST_UID)):$2"
                     elif [ -n "${1//[0-9]}" -a "${1:--}" != '-' ] ; then
                         configfile -e - "Unix uid must be numeric:" "$1"
                         uusr="-:$2"
@@ -1044,7 +1049,7 @@ load_passwd() {
     # parse group entries
     for entr in "${lgrp[@]}" ; do
         # field order: <name> <passwd> <gid> <list>
-        record_split flds ":" "$entr"
+        record_split flds ':' "$entr"
         [ -n "${DAT_GROUP_PASSWD["$flds"]}" ] && continue
         # validate guid, save in maps
         ugid="${flds[2]:--}" ; [ "$ugid" = '-' ] && continue
@@ -1061,7 +1066,7 @@ load_passwd() {
     # parse passwd entries
     for entr in "${lpwd[@]}" ; do
         # field order: <name> <passwd> <uid> <gid> <info> <home> <shell>
-        record_split flds ":" "$entr"
+        record_split flds ':' "$entr"
         [ -n "${DAT_USER_PASSWD["$flds"]}" ] && continue
         # ignore machine accounts (must be in domain range)
         if [ "${flds%\$}" != "$flds" ] ; then

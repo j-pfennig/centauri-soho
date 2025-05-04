@@ -1,22 +1,244 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. J. Pfennig (c) 2024; all rights reserved"
-CEN_TITLE=$"Template using command line verbs (action syntax)"
+CEN_LEGAL="Dr. J. Pfennig (c) 2024-2025; all rights reserved"
+CEN_TITLE=$"An extendable HTML based Day-Time-Clock"
 
 # Import the bash library
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g - '0.10:3' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g - '0.12:5' || exit 2
 
 #context -v 2                       # debug output
 
-# Data
+# Options and data
+
+CEN_OPT_BASE=                       # base folder
+CEN_OPT_EXEC=                       # startup tool
+CEN_OPT_HTML=                       # HTML file
 CEN_OPT_INVERT=                     # coordinate inversion
+CEN_OPT_LANG=                       # language
+CEN_OPT_SCALE=                      # scaling
+CEN_OPT_TIMER=                      # timer
+
 DAT_DPMS_OFF=                       # see actionTimer
 DAT_UNCLUTTER=
 
+# started as an appliance?
+
 if [ "$CEN_NAME" = '.centauristartup' ] ; then
-    CEN_NAME='centauriclock'
-    [ $# = 0 ] && set -- run
+    CEN_NAME='centauriclock' ; CEN_OPT_BASE='-' ;  CEN_OPT_TIMER=1
+    [ $# = 0 ] && set -- run --gui=0
 fi
+
+
+DAT_BASEDIR="~/.local/$CEN_NAME"    # defaults ...
+DAT_HTMLTXT="$CEN_NAME.html"
+DAT_SIZEPNT='10vw'
+DAT_STARTUP="${CEN_NAME}.bash"
+DAT_LANGGUI='en'
+
+case "${LANG,,}" in                 # get internal language code...
+*_us*)  DAT_LANGGUI='us' ;;
+en*)    ;;
+de*)    DAT_LANGGUI='de' ;;
+fr*)    DAT_LANGGUI='fr' ;;
+*)      DAT_LANGGUI="${LANG::2}"
+esac
+
+# ------------------------------------------------------------------------------
+# Create clock html: <path>
+# ------------------------------------------------------------------------------
+create_html() {
+    create -f -c -- "$1" <<!EOF
+<!DOCTYPE html>
+<html lang="en" class='croot'>
+<head>
+  <meta charset="UTF-8">
+  <title>JavaScript Digital Clock</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+    }
+
+    /* layout is based on unit 'rem', so font and font-size must be set here */
+    .croot {
+      /* Noto Sans: is a tabular font and can be downloaded from Google, it is
+            not installed by default.
+         Quicksand: very nice font, but not tabular. This is why we use two
+            cells to display hour and minute.
+         sans-serif: used as a fall-back (typically aliased to 'DejaVu Sans'.
+
+         font-size: use '10vw' for nice automatic scaling on 16:9 displays
+      */
+      font-family: "Noto Sans", "Quicksand", "sans-serif";
+      font-size: 10vw;
+      font-variant-numeric: tabular-nums;
+      overflow: hidden;
+    }
+
+    .cclock {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      background-color: black;
+    }
+
+    .ctime {
+      font-size: 3.9rem;
+      font-weight: bold;
+      color: #ccf;
+      margin-top: calc(10vh - 2.0rem);
+      margin-bottom: calc(15vh - 1.5rem);
+    }
+    .cdigit {
+      display: inline-block;
+      width: 46vw;
+    }
+    .cdsepa {
+      display: inline-block;
+      font-size: 2.5rem;
+      line-height: 0.6rem;
+      width: 6vw;
+    }
+
+    .csecs {
+        color: #00ffff;
+        width: 95%;
+      margin-bottom: calc(20vh - 1.2rem);
+    }
+    .csecs-bar {
+        height: 0.12rem;
+        background-color: beige;
+        border-radius: 0.1rem;
+    }
+
+    .cidate {
+      color: #aff;
+      font-size: 0.7rem;
+      text-align: center;
+      margin-top: calc(20vh - 0.8rem);
+    }
+  </style>
+</head>
+
+<body>
+<div class="cclock">
+  <div class="ctime">
+    <span id="ahour" class="cdigit" style="text-align: right;">--</span><span id="asepa" class="cdsepa">:</br>&nbsp;</span><span id="aminu" class="cdigit">--</span>
+  </div>
+  <div class="csecs"><div id="asecs" class="csecs-bar"></div></div>
+  <div class="cidate"></div>
+</div>
+
+<script>
+// query parameter: language and font scaling
+var lang='de'
+var ourl = window.location.search.substring(1);
+var aurl = ourl.split('&');
+for (var indx = 0; indx < aurl.length; indx++)
+{ var kval = aurl[indx].split('=');
+  switch(kval[0]) {
+    case 'lang':
+      lang = kval[1].substring(0,2)
+    case 'rsiz':
+      document.querySelector('.croot').style.fontSize = kval[1];
+  }
+}
+delete ourl; delete aurl; delete kval; delete indx
+
+// more global variables
+var htmld = document.firstElementChild;
+htmld.setAttribute('onkeydown', 'keydown(event)');
+htmld.setAttribute('ontouchstart', 'touch(event)');
+
+var vhour = document.getElementById("ahour");
+var vminu = document.getElementById("aminu");
+var vdate = document.getElementById("adate");
+
+// store day and month name in an array
+switch (lang) {
+  case 'de':
+    var dayNames = 'Montag Dienstag Mittwoch Donnerstag Freitag Sonnabend Sonntag';
+    var monthNames = 'Januar Februar März April Mai Juni' +
+                     'Juli August September Oktober November Dezember' ; break;
+  case 'fr':
+    var dayNames = 'Lundi Mardi Mercredi Jeudi Vendredi Samedi Dimanche';
+    var monthNames = 'Janvier Février Mars Avril Mai Juin' +
+                     'Juillet Août Septembre Octobre Novembre Décembre'; break;
+  default:
+    var dayNames = 'Monday Tuesday Wednesday Thursday Friday Saturday Sunday';
+    var monthNames = 'January February March April May June ' +
+                     'July August September October November December';
+}
+dayNames = dayNames.split(' ')
+monthNames = monthNames.split(' ')
+
+// get progress bar element
+var sbar = document.getElementById("asecs");
+var last_minutes
+
+function updateClock() {
+  // Get the current time, day , month and year
+  var now = new Date();
+  var minutes = now.getMinutes();
+  var seconds = now.getSeconds();
+
+  sbar.style.width = (seconds * 100 / 59) + '%';
+  if ( minutes == last_minutes ) return
+  last_minutes = minutes
+
+  var hours = now.getHours();
+  var day = now.getDay();               // BEWARE: 0:=sunday WHY THE HELL!
+  var date = now.getDate();
+  var month = now.getMonth();
+  var year = now.getFullYear();
+
+  // fix the idiotic day-of-week according to ISO standard
+  day = day > 0 ? day - 1 : 6
+
+  // format date and time
+  minutes = minutes < 10 ? '0' + minutes : minutes;
+  seconds = seconds < 10 ? '0' + seconds : seconds;
+
+  // display date and time
+  var line1 = dayNames[day] ; var line2 = monthNames[month]
+  switch (lang) {
+    case 'de': line2 = date + '. '+ line2 + ' ' + year; break;
+    case 'en': line2 = date + ' ' + line2 + ' ' + year; break
+    case 'fr': line1 = line1 + ' ' + date; line2 = line2 + ' ' + year; break;
+    case 'us': hours = hours % 12 || 12;
+               line2 = date + ' ' + line2 + ' ' + year; break;
+    default:  line1 = dayNames[day];
+              month = (month < 9) ? '0' + (month+1) : month + 1;
+              data = (date < 10) ? '0' + date : date;
+              line2 = year + '-' + month + '-' + date;
+  }
+
+  vhour.innerHTML = hours; vminu.innerHTML = minutes;
+  document.querySelector('.cidate').innerHTML = line1 + ' ' + line2;
+}
+
+// keys q/Escape and touch are handled in qml code via console logging
+function keydown(event) {
+  switch(event.key) {
+    case 'q':
+    case 'Escape': console.log("QUIT"); break;
+  }
+}
+function touch(event) {
+  console.log("EXIT") ;
+}
+
+// main script part ...
+updateClock();
+setInterval(updateClock, 1000);
+
+</script></body>
+!EOF
+}
 
 # ------------------------------------------------------------------------------
 # action run: -no args-
@@ -26,7 +248,7 @@ actionRun() {
 
     if [ -z "$CEN_OPT_INVERT" -a -e '/sys/class/backlight/10-0045/brightness' ] ; then
         CEN_OPT_INVERT=1
-        message -a "Assuming input coordinates to be inverted"
+        message -a $"Assuming input coordinates to be inverted"
     fi
 
     [ "$CEN_OPT_INVERT" = 1 ] && sysrun -e xinput set-prop 'Virtual Core Pointer' \
@@ -36,19 +258,74 @@ actionRun() {
         # beware: only system() can be used in a sub-shell
         system -e -x unclutter &
     else
-        warning "Please install 'unclutter' to hide the mouse cursor"
+        warning $"Please install 'unclutter' to hide the mouse cursor"
     fi
 
-    # for clock user only, in background
-    if [ "$USER" = 'clock' ] ; then
+    local stmp surl
+
+    [ -n "$CEN_OPT_HTML" ] && DAT_HTMLTXT="$CEN_OPT_HTML"
+
+    # configuration folder
+    if [ "$CEN_OPT_BASE" = '-' ] ; then
+        eval CEN_OPT_BASE="$DAT_BASEDIR"
+        folder -f -m -c -- "$CEN_OPT_BASE"
+        surl="$DAT_HTMLTXT"
+    else
+       [ -z "$CEN_OPT_BASE" ] && eval CEN_OPT_BASE="$DAT_BASEDIR"
+    fi
+    if folder -q -c -- "$CEN_OPT_BASE" ; then
+        surl="$DAT_HTMLTXT"
+    else
+        warning "Missing configuration:" "$CEN_OPT_BASE"
+        surl=
+    fi
+    if [ -z "$surl" ] ; then
+        if [ "${DAT_HTMLTXT::1}" = '/' ] ; then
+            surl="$DAT_HTMLTXT"
+        else
+            tmpfile -f -b - -n -s stmp ; surl="${stmp%/*}/${DAT_HTMLTXT##*/}"
+        fi
+    fi
+    # TODO update using --force
+    create_html "$surl"
+
+    # run startup tool
+
+    [ -n "$CEN_OPT_EXEC" ] && DAT_STARTUP="$CEN_OPT_EXEC"
+
+     # without --exec the startup tool is optional
+    if PATH=".:$PATH" system -c "$DAT_STARTUP" ; then
+        trace -a -c "Run startup tool" "$DAT_STARTUP"
+    elif [ -z "$CEN_OPT_EXEC" ] ; then      # no startup skript ...
+        DAT_STARTUP='false'
+        trace -a "No startup tool to be executed"
+    fi
+
+    # this can intentionally be fatal if --exec=<tool> is invalid
+    if [ "$DAT_STARTUP" != 'false' ] ; then
+        sysrun -g 1 -f -p -- "$DAT_STARTUP" || quit -- $"Stopped by startup tool"
+    fi
+
+    local args=( '-A' "lang=${CEN_OPT_LANG:-$DAT_LANGGUI}"
+                 '-A' "rsiz=${CEN_OPT_SCALE:-$DAT_SIZEPNT}"
+                 'viewer' "$surl"
+               )
+
+    # start timer, run in background, no cleanups
+    if [ "$CEN_OPT_TIMER" = 1 ] ; then
         sysrun -q systemd-run --user --on-calendar='*-*-* *:00:20' "$CEN_NAME" timer &
+        disown $!                                       # avoid hanging on startup
         DAT_DPMS_OFF='dpms off --' ; actionTimer &
         quit -h                                         # must run quit hooks ...
-        embed -x -v -z centaurilauncher --gui=1 clock
+        embed -x -v -z centaurilauncher --terminal "${args[@]}"
     fi
 
     # ... other user (no background, no timer)
-    embed -v -z centaurilauncher --terminal clock
+    embed -v -z centaurilauncher --terminal "${args[@]}"
+    if [ "$DAT_STARTUP" != 'false' ] ; then
+        message "Terminating workers ..."
+        sysrun -e -p -- pkill -s0 -A        # ouch...
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -63,18 +340,30 @@ actionTimer() {
     printf -v hour "%(%H)T" -1 ; [ "$hour" != 0 ] && hour="${hour#0}"
     printf -v zone "%(%Z)T" -1
     [ "$zone" = 'CEST' ] || ((hour += 1))
-    message "Brightness timer:" "$zone ${hour}h -> ${bval[hour]}"
+    trace $"Brightness timer:" "$zone ${hour}h -> ${bval[hour]}"
     embed -v -z centauripower --force $DAT_DPMS_OFF brightness "${bval[hour]}"
 }
 
 # ------------------------------------------------------------------------------
-# implement option parsing: <option> [<argument>]
+# option parsing: <option> [<argument>]
 # ------------------------------------------------------------------------------
 options() {
     case "$1" in
 
+    -B|--bas|--base)
+        optarg 'base'           -    -t ;;          # text
+    -E|--exe*)
+        optarg 'exec'           -    -t ;;          # text
+    -H|--htm|--html)
+        optarg 'html'           -    -t ;;          # text
     -I|--inv*)
         optarg 'invert'         -    -o ;;          # on|off|auto
+    -L|--lan*)
+        optarg 'lang'           -    -t ;;          # text
+    -S|--sca*)
+        optarg 'scale'          -    -t ;;          # text
+    -T|--tim*)
+        optarg 'timer'          -    -o ;;          # on|off|auto
 
     esac
 }
@@ -88,6 +377,9 @@ actions() {
         invoke 'run'    -           0   ;;      # no args
     tim*)
         invoke 'timer'  -           0   ;;      # no args
+
+# TODO 'run start|status|stop'  or a systemd --user service?
+
     esac
 }
 
@@ -96,14 +388,52 @@ actions() {
 # ------------------------------------------------------------------------------
 usage() {
     usageset \
+        -h '' \
+        -h $"The clock can work stand-alone, using internal HTML-code. For display" \
+        -h $"it runs \"centaurilauncher\" and to adjust display brightness following" \
+        -h $"the day-time it uses \"centauripower\" via systemd timer." \
+        -h '' \
+        -h $"Optionally or if run as an appliance (see \"centauristartup\") a config" \
+        -h $"folder can be used to provide different HTML-code or to run a tool at" \
+        -h $"startup, example: display additional weather information." \
+
+    usageset \
         -o - \
-        -o '-I --invert  <mode>' $"invert input coordinates (on|off|auto)" \
+        -o '-B --base    <fldr>' $"Set configuration folder (default: $DAT_BASEDIR)" \
+        -o '-E --exec    <tool>' $"Optional startup tool    (default: $DAT_STARTUP)" \
+        -o '-H --html    <html>' $"Override configured HTML (default: $DAT_HTMLTXT)" \
+        -o '-I --invert  <mode>' $"Invert mouse/touch input coordinates" \
+        -o '-L --lang    <code>' $"Override language to use (default: $DAT_LANGGUI)" \
+        -o '-S --scale   <pnts>' $"Font and layout scaling  (default: $DAT_SIZEPNT)" \
+        -o '-T --timer   <mode>' $"Use of a systemd-timer to control brightness" \
+
+    usageset \
+        -p '<code>'              $"Supported are: \"de\" \"en\" \"fr\" (24h) and \"us\" (12h)" \
+        -p '<fldr>'              $"Path of configuration and data folder" \
+        -p '<html>'              $"Path to the HTML file that gets shown" \
+        -p '<mode>'              $"Use one of: on|1  off|0  auto (default)" \
+        -p '<pnts>'              $"Font size used as reference for scaling" \
+        -p '<tool>'              $"Tool/script executed at startup, \"-\" to ignore" \
 
     usageset \
         -a 'run'                 $"start clock (implied for '.centauristartup' symlink)" \
-        -a 'timer'               $"called by brightness timer" \
+        -a 'timer'               $"used by brightness timer to run 'centauripower'" \
+
+    usageset \
+        -t $"Action \"run\" executes <tool> at startup (if existing). This is used to" \
+        -t $"initialize the environment. If <tool> returns an error execution stops." \
+        -t $"" \
+        -t $"A non-existing \"$DAT_BASEDIR\" is ignored, using \"--base=-\"" \
+        -t $"would initialize the folder. Option \"--timer=on\" causes the clock to"\
+        -t $"run in background. In appliance mode \"--base=-\" and \"--timer=on\" are" \
+        -t $"implied." \
 
 }
+
+#   show=$(PATH="$CEN_TOOLS/Display/weewx/weewx2hass:$PATH" type -p weewx2watch)
+#   sysfind weewx2show || return 0
+#   [ -w clock-data.js ] || return 0
+#   weewx2show &
 
 # ------------------------------------------------------------------------------
 # Finally call the library to execute the script

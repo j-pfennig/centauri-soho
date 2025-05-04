@@ -1,15 +1,15 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2025; BSD License"
 CEN_TITLE="Samba-AD/Kerberos/NFS management tool"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -t -y - '0.30:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -t -y - '0.32:4' || exit 2
 
 # Data
 DAT_KEYTAB='/etc/krb5.keytab'
 DAT_RUN_INIT=           # for action init/fallback
-DAT_DIR_SECRETS="/$CEN_ROOT/secrets"
+DAT_DIR_SECRETS="$CEN_ROOT/secrets"
 DAT_SEED_LIST=          # see get_seed
 
 DAT_VERB=               # current command verb, see check_verb
@@ -28,7 +28,7 @@ CEN_OPT_SERVER=         # see --server
 
 # check if there is an --output file: -no args-
 check_output() {
-    if [ -z "$CEN_OPT_OUTPUT" ] ; then
+    if [ "${CEN_OPT_OUTPUT:--}" = '-' ] ; then
         invoke -e $"needs an output file, use '--output'" ; return 1
     fi
 
@@ -543,7 +543,7 @@ actionGroup() {
 }
 
 # ------------------------------------------------------------------------------
-#
+# Add IP address to AD/DC dns
 # ------------------------------------------------------------------------------
 actionHost() {
     if [ -n "$CEN_OPT_KERBEROS" ] ; then
@@ -660,9 +660,7 @@ actionJoin() {
 actionKeytab() {
     local       hnam="$1" dnam
     check_master || return
-    check_tools || return
-
-    [ "$CEN_OPT_OUTPUT" = '-' ] && CEN_OPT_OUTPUT="$CEN_ROOT/machines/$hnam/krb5.keytab"
+    check_tools  || return
     check_output || return
 
     netquery -f -s dnam domain
@@ -1494,7 +1492,8 @@ actions:
        status               show Kerberos/Samba status information
 
        ••• directory actions •••
-       client    [<admn>]   (join AD/DC) make this computer a NFS client
+       client    [<admn>]   enable repository access for this computer and
+                            optionally run 'join' if <admin> is non-empty
        join      [<admn>]   join this computer into a Samba-AD domain
        leave     [<admn>]   let this computer leave a Samba-AD domain
        provision <pasw>|-   samba (un-)provisioning as an AD/DC server

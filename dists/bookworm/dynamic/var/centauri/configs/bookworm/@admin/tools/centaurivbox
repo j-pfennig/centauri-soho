@@ -4,9 +4,11 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2025; BSD License"
 CEN_TITLE="Run VirtualBox commands using the 'vbox' proxy user"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g -y - '0.44:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g -y - '0.46:5' || exit 2
 
 # Data
+
+CEN_OPT_SWAPLAST=                       # see --swaplast
 
 DAT_SELF="$CEN_TOOLS/$CEN_NAME"
 
@@ -144,6 +146,7 @@ do_image() {
 # ------------------------------------------------------------------------------
 do_opts() {
     optmake -a "$1" -b 'dryrun'
+    optmake -a "$1" -b 'embed'
     optmake -a "$1" -b 'verbose'
     optmake -a "$1" -b 'yesno'
     optmake -a "$1" -b 'quiet'
@@ -336,6 +339,13 @@ actionInit() {
 }
 
 # ------------------------------------------------------------------------------
+# drop caches to free low memory: -no args-
+# ------------------------------------------------------------------------------
+actionLowmem() {
+    system -e -- eval "echo 3 >/proc/sys/vm/drop_caches"
+}
+
+# ------------------------------------------------------------------------------
 # run VBoxManage: <args>...
 # ------------------------------------------------------------------------------
 actionMgr() {
@@ -417,14 +427,19 @@ actionMount() {
     message -a -p "Mounting '%s' at '%s'" "$aimg" "$base"
     system -e -p vboximg-mount --root $fwri --image "$aimg" "$base" || return
 
+    # stupid heueristcs here, consider this:
+    # LANG=C /usr/sbin/fdisk -l Mount/trix8/vhdd -o Device,Type
+
     # mounting volumes
     local list item part mopt
     matchpath -a list -e -- "$base"/vol? || return
     if [ $# = 0 ] ; then
         case "${#list[*]}" in
         4)  set -- + - - / ;;       # has bios partition
-        3)  set -- + - / ;;         # boot and root
-        2)  set -- + - ;;           # root and swap
+        3)  set -- + - /            # boot and root
+            [ -n "$CEN_OPT_SWAPLAST" ] && set -- + + - ;;
+        2)  set -- + -              # root and swap
+            [ -n "$CEN_OPT_SWAPLAST" ] && set -- + - ;;
         1)  set -- + ;;             # root only
         *)  error -p "Found %s partitions, need explicit specifications" "${#list[*]}"
             return ;;
@@ -615,7 +630,8 @@ execute() {
         else
             opts+=(-H "$CEN_NAME" '--local')
             do_opts opts
-            system -e -r -x sudo "${opts[@]}" "${CEN_CMDARGS[@]:CEN_CMDCURR}"
+            system -e -r -x sudo "${opts[@]}" "${CEN_CMDARGS[@]:CEN_CMDCURR}" \
+                                               ${CEN_OPT_SWAPLAST:+--swaplast}
         fi
         return 1
     fi
@@ -643,6 +659,8 @@ options() {
 
     '')  [ -n "$DAT_NAME" ] && DAT_FIXN=1 ;;
 
+    --swap*)
+         optarg 'swaplast'  -            -f ;;
     --client)
          optarg -           DAT_DEST     -f 'c' ;;
     -H|--host)
@@ -683,6 +701,8 @@ actions() {
         invoke -c 'help'   -           0 1 ;;
     ini|init)
         invoke    'init'   -           0 1 ;;
+    low*)
+        invoke -s 'lowmem' -           0   ;;
     mou*)
         invoke    'mount'  -               ;;
     res*)

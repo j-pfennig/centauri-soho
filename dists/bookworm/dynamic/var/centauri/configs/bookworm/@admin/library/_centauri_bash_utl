@@ -4,10 +4,10 @@
 #
 # Call:     . _centauri_bash_utl
 #
-# Copyright Dr. J. Pfennig (c) 2022-2024
+# Copyright Dr. J. Pfennig (c) 2022-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_utl']='0.10:4'
+CEN_MODULES['_centauri_bash_utl']='0.11:4'
 
 # helper for error messages: _cen_utl_err -e|-f|<vnam> <data> <fmt>...
 _cen_utl_err() {
@@ -154,9 +154,9 @@ isnumber() {
 # ------------------------------------------------------------------------------
 # listsearch - search a word in a list
 #
-# Call:     listsearch [-b] [-c] [-t] [-d <deli>] [-m|-n <vres>] [-g|-u|-x] [--] <what> <list>
-#           listsearch [-b] [-c] [-t] [-m|-n <vres>] [-g|-u|-x] [--] <what> <item>...
-#           listsearch [-b] [-c] [-t] [-d <deli>] [-m|-n <vres>] [-g|-u|-x] -i <vinp> [--] <what>
+# Call:     listsearch [-b] [-c] [-t] [-d <deli>] [-m|-n <vres>] [-o] [-g|-u|-x] [--] <what> <list>
+#           listsearch [-b] [-c] [-t] [-m|-n <vres>] [-o] [-g|-u|-x] [--] <what> <item>...
+#           listsearch [-b] [-c] [-t] [-d <deli>] [-m|-n <vres>] [-o] [-g|-u|-x] -i <vinp> [--] <what>
 #
 # Options:  -b  [-] do a binary search (list must be ordered lexically)
 #           -c      do a case sensitive search
@@ -165,6 +165,7 @@ isnumber() {
 #           -i      input from variable (string or array)
 #           -m      return matched word in <vres>
 #           -n      return match index in <vres>
+#           -o      stop after 1st match
 #           -t      trim list items
 #           -u      partial word search, match must be unique
 #           -x      regular expression match (longest expression wins)
@@ -188,7 +189,7 @@ isnumber() {
 #.          message "Index $valn is '$valm'"
 # ------------------------------------------------------------------------------
 listsearch() {
-    local _fbin _fcas _fglo _finp _fwrd _fidx _frex _ftrm _funi _sdel _word _list
+    local _fbin _fcas _fglo _finp _fone _fwrd _fidx _frex _ftrm _funi _sdel _word _list
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -199,6 +200,7 @@ listsearch() {
       -i)   shift ; local -n _vinp="$1" ; _finp=1 ;;
       -n)   shift ; local -n _vidx="$1" ; _vidx= ; _fidx=1 ;;
       -m)   shift ; local -n _vres="$1" ; _vres= ; _fwrd=1 ;;
+      -o)   _fone=1 ;;
       -t)   _ftrm=1 ;;
       -u)   _funi=1 ;;
       -x)   _fglo=0 ; _frex=1 ;;
@@ -234,6 +236,7 @@ listsearch() {
             fi
             [ -n "$_fidx" ] && _vidx="$_irun"
             [ -n "$_fwrd" ] && _vres="$_cwrd"
+            [ -n "$_fone" ] && return 0
             _fglo=${#_curr} ; _funi=2
         elif [ -z "$_funi" ] ; then                 # full match only...
             [ "$_word" = "$_curr" ] || continue
@@ -245,6 +248,7 @@ listsearch() {
             [ "$_funi" = 2 ] && return 2            # previous match, stop
             [ -n "$_fidx" ] && _vidx="$_irun"
             [ -n "$_fwrd" ] && _vres="$_cwrd"
+            [ -n "$_fone" ] && return 0
             ((_funi += 1))                          # _funi=2 is one match
         fi
     done
@@ -294,7 +298,7 @@ listsearch() {
 #+For builitin options (-b) the following <opti> values are recognized:
 #
 #,      dryrun|force|silent|trace|quiet|zombie
-#,      gui|pager|verb*|yesno
+#,      embed|gui|pager|verb*|yesno
 # ------------------------------------------------------------------------------
 optmake() {
     local _vset _name _vflg _asep _blti _fmin _valu
@@ -325,6 +329,8 @@ optmake() {
         case "$_blti" in
         dryrun|force|silent|trace|quiet|zombie)
                     [ -z "$_valu" ] && return ;;
+        embed)      [ -z "$CEN_EMBED" ] && return
+                    _vflg=1 ; _valu="$CEN_EMBED" ;;
         gui)        [ "$_valu" = 2 ] && return
                     _vflg=1 ;;
         pager)      _vflg=1 ;;
@@ -335,7 +341,7 @@ optmake() {
         esac
     else
         case "$_valu" in
-            "") return ;;
+            '') return ;;
             -)  [ -z "$_fmns" ] && return ;;
             0)  [ "$_vflg" = 2 ] && return ;;
         esac
@@ -351,7 +357,7 @@ optmake() {
     esac
 
     # append to array
-    if [ "$_vset" = "a" ] ; then
+    if [ "$_vset" = 'a' ] ; then
         [ -n "$_name" ] && _vvaa+=("$_name")
         [ "${_vflg:-0}" != 0 ] && _vvaa+=("$_valu")
         [ $# -gt 0 ] && _vvaa+=("$@")

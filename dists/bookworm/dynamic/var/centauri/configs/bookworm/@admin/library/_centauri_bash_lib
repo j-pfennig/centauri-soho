@@ -46,7 +46,7 @@
 # Copyright Dr. J. Pfennig (c) 2007-2025
 # ------------------------------------------------------------------------------
 
-declare -g -A CEN_MODULES['_centauri_bash_lib']='1.50:5:1'
+declare -g -A CEN_MODULES['_centauri_bash_lib']='1.52:5:1'
 
 CEN_ACTARR=             # action argument array
 CEN_ACTION=             # action name, see invoke()
@@ -58,7 +58,7 @@ CEN_CMDCURR=0           # index in CEN_CMDARGS[] for current action
 CEN_CMDINDX=0           # index in CEN_CMDARGS[] for remaining actions
 CEN_CMDOPTS=            # array of script options
 CEN_DEFAULTS=           # file to be sourced, see CEN_FEATURE_O
-CEN_DISPLAY=            # empty or 'x11' or 'wayland'
+CEN_DISPLAY=            # empty, 'x11' or 'wayland'
 CEN_DEBUG=:             # call debug(), see _centauri_bash_dbg
 CEN_DONE=1              # 0:ignore error  1:quit on error  2:quit now
 CEN_EMBED=              # see --embed option
@@ -179,7 +179,7 @@ CEN_VERSION=("$2")
 [ -n "$4" ] && CEN_RUN_MAX_ARGS="$4"
 [ -z "$CEN_NOBREAK" -a "${COLUMNS:-0}" -lt 40 ] && CEN_NOBREAK=1
 
-CEN_DISPLAY="$XDG_SESSION_TYPE"             # could be x11 or wayland
+CEN_DISPLAY="$XDG_SESSION_TYPE"             # could be tty, x11 or wayland
 if [ -z "$DISPLAY" ] ; then
     [ "$CEN_DISPLAY" != 'wayland' ] && CEN_DISPLAY=
 else
@@ -211,7 +211,7 @@ fi
 #
 # Arguments:<cls>   internal use: -e|-f|-s|-t|-w. Do not use in own script code
 #           <fmt>   a printf format string
-#           <prf>   prefix text (function-name printed if 1st char is space)
+#           <pre>   prefix text (function-name printed if 1st char is space)
 #           <arg>   data to be output
 #
 # Return:   **error** returns the value of CEN_EXIT,
@@ -418,8 +418,9 @@ fatal() {
 #           -u  sets CEN_EXIT=4, print "Terminated by user" if 1st arg is not '-'
 #           -y  run "stty sane" to restore terminal defaults
 #
-#+Return:   This function does not return, it calls an optional ''quit'' hook function
-#           and terminates the script with CEN_EXIT as exit code.
+#+Return:   Except for option -h this function does not return. It calls an optional
+#           ''quit'' hook function and terminates the script with CEN_EXIT as exit
+#           code.
 #
 #.Examples: quit "Stop here:" "$FUNCNAME"   # stop with message
 #.          quit -e                         # stop with error, default message
@@ -1101,7 +1102,7 @@ context() {
     # re-run as sudo but not in console
     [ -z "$_cons" -a "${CEN_QUIT_WAIT:-0}" = 0 ] && _wait=
     [ $# = 0 ] && set -- "$0" $_wait "${CEN_CMDOPTS[@]}" "${CEN_CMDARGS[@]:CEN_CMDCURR}"
-    $CEN_TRACE -a "Rerun${_cons:+ console}${_sudo:+ sudo}: $*"
+    $CEN_TRACE -a -c "Rerun${_cons:+ console}${_sudo:+ sudo}" "$*"
     [ -z "$_cons" ] && exec $_sudo "$@"
 
     # avoid loading iom module for non-desktop case
@@ -1126,7 +1127,7 @@ context() {
 #                  [-c|-h <name>] [<path> [<mode> [<owner>]]]
 #           create [-s] [-f|-q|-w] [-o] [-a|-t] [-b]                # from variable
 #                  -v <data> [-h <name>] <path> [<mode> [<owner>]]
-#           create [-d] [-s] [-f|-q|-w] <path> [<mode> [<owner>]]   # create folder
+#           create -d [-s] [-f|-q|-w] <path> [<mode> [<owner>]]     # create folder
 #
 # Options:  -a  ''create'' new file or append to existing file
 #           -b  ''create'' an executable bash script
@@ -1176,6 +1177,7 @@ create() {
     local _otra="$CEN_TRACE" _oftl='error -z' _mtxt=$"file"
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
+      -)    break ;;                                # path can be '-'
       --)   shift ; break ;;
       -a)   _fapp=1 ;;
       -b)   _fbsh=1 ;;
@@ -1201,8 +1203,9 @@ create() {
         set -- "<stdout> ${1##*/}"                  # remove user/mode
     elif [ "${1::5}" = '/dev/' ] ; then
         set -- "$1" ; _ftru=                        # remove user/mode
-    elif [ -z "$_fapp" -a -z "$_ftru" ] ; then
-        [ -e "$_fout" ] && return 0                 # existing, no truncate
+    elif [ -z "$_fapp" -a -z "$_ftru" ] && [ -e "$_fout" ] ; then
+        $_otra -a -c " $_mtxt" -- $"Existing, no truncate:" "$1"
+        return 0
     fi
     dryrun $_frun -s $"Create"" $_mtxt:" "$1" && return 0
     $_otra -a -c " $_mtxt" -- "$1"
@@ -1537,8 +1540,8 @@ filter() {
 # folder - assert/create valid folder, change directory, get special path
 #
 # Call:     folder [-c|-p] [-f|-q|-w] [-n] [-r] [-s <vnam>] ... # ... options
-#           folder ... [-l|-t|-v] <path>                        # check/cd
-#           folder ... [-l|-t|-v] -m <path> [<mode> [<owner>]]  # create folder
+#           folder ... [-t|-u|-v] <path>                        # check/cd
+#           folder ... [-t|-u|-v] -m <path> [<mode> [<owner>]]  # create folder
 #           folder ... [-b|-u] <name> [<path> <mode> [<owner>]] # special folder
 #
 # Options:  -b  [*] special ''folder'' (<path> is prefixed with $CEN_ROOT)
@@ -2345,7 +2348,7 @@ sysfind() {
 # system - run a command, builtin or function optionally capturing the output
 #
 # Call:     (1) system [-e|-f] [-b] [-i] [-n] [-m|-p|-q] [-v] [-x]
-#                      [-s <var>|-a <var>] [-d <del>] [-g <good>]
+#                      [-s <var>|-a <var>] [-d <deli>] [-g <good>]
 #                      [-u <user>] [--] <cmd> <arg>...      # run command (or builtin)
 #           (2) system [-e|-f] -c [--] <cmd>...             # check commands
 #
@@ -2376,7 +2379,7 @@ sysfind() {
 # Arguments:<cmd>     external command (or builtin) to be run or checked
 #           <arg>...  options and arguments passed to <cmd>
 #           <var>     variable or array name to return a result
-#           <del>     element delimiters for result array
+#           <deli>    element delimiters for result array, C-style syntax
 #           <good>    highest non-error exit code (default: 0)
 #           <user>    a user name or "-" for **root**
 #
@@ -2414,6 +2417,11 @@ sysfind() {
 #+          The cache can be seeded by calling sysfind explicitly before system.
 #           See also option -c.
 #
+#+Splitting:With option -a the <cmd> output is split into an array. By default tab
+#           and new-line are word delimiters. Using -d '\n' will return whole lines
+#           but ignore empty ones. With -d '--' whole lines including empty ones
+#           are returned.
+#
 #+Output:   The options -q -p -e and -z control which (error-)output is generated:
 #
 #,          - system        [-a|-s <var>] # no capture, no error message
@@ -2426,6 +2434,7 @@ sysfind() {
 #.Examples: system mycmd                            # no error/output handling
 #.          system -e -p -s rslt -- mycmd arg1      # formatted msg on error
 #.          system -q -a data -- mycmd arg1         # no error output
+#.          system -d '--' -a text -- mycmd         # return all output lines
 #
 #.          system -m -s rslt -- mycmd arg2         # capture all, no msg
 #.          system -z -s emsg -- mycmd arg3         # capture errors only
@@ -2854,7 +2863,7 @@ if [ -z "${CEN_PATHS[6]}" ] ; then
     elif [ "${CEN_PATHS[6]}" -ef "${CEN_PATHS[2]}/default" ] ; then
         CEN_PATHS[6]="${CEN_PATHS[2]}/default"
     elif [ ! -d "${CEN_PATHS[6]}" ] ; then
-        warning $"Invalid symlink:" "${CEN_PATHS[6]}"
+        [ -h "${CEN_PATHS[6]}" ] && warning $"Invalid symlink:" "${CEN_PATHS[6]}"
         CEN_PATHS[6]="${CEN_PATHS[2]}/default"
     fi
 fi

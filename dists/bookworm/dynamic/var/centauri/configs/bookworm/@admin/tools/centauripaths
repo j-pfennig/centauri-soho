@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2022; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2025; BSD License"
 CEN_TITLE=$"Resolve/symlink path shortcuts to real filesystem paths"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -t - '0.34:3' 1 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -t - '0.35:4' 1 || exit 2
 
 # Options
 CEN_OPT_ABSTRACT=       # path abstraction
@@ -38,12 +38,12 @@ declare -A DAT_UNIQUE   # for --unique
 # ------------------------------------------------------------------------------
 get_deleted() {
     local _curr
-    for _curr in "Deleted" "deleted" ".Deleted" ".deleted" ; do
+    for _curr in 'Deleted' 'deleted' '.Deleted' '.deleted' ; do
         [ -h "$_curr" ] && continue
         [ -d "$_curr" ] || continue
         DAT_PATH_LONG="$PWD/$_curr" ; return
     done
-    if [ "$PWD" -ef "/" ] || system -n -r -- mountpoint --quiet -- "$PWD" ; then
+    if [ "$PWD" -ef '/' ] || system -n -r -- mountpoint --quiet -- "$PWD" ; then
         $CEN_OPT_ERROR $"No trash folder found:" "$DAT_PATH_LONG"
         DAT_PATH_LONG= ; return
     fi
@@ -61,7 +61,7 @@ get_shortcut() {
 
     # not a short name?
     if [ -n "${1//[a-z0-9]}" ] ; then
-        if [ "${1::1}" = "/" -o "${1::2}" = "./" -o "${1::2}" = "./" ] ; then
+        if [ "${1::1}" = "/" -o "${1::2}" = './' -o "${1::2}" = './' ] ; then
             prettypath $DAT_PRETTY_MODE -s DAT_PATH_LONG -- "$1" ; return
         fi
         local _pref="${1%%/*}"
@@ -96,7 +96,7 @@ get_shortcut() {
 # ------------------------------------------------------------------------------
 print_item() {
     local _ldef
-    [ "$((CEN_OPT_STYLE & 1))" != 0 ] && _ldef="-"
+    [ "$((CEN_OPT_STYLE & 1))" != 0 ] && _ldef='-'
     local _slef="${1:-$_ldef}" _srig="${3:-$_ldef}"
 
     if [ -n "$2" ] ; then
@@ -134,17 +134,17 @@ proc_item() {
     if [ -n "$CEN_OPT_SYMLINK"  ] ; then
         [ -z "$DAT_PATH_LONG" ] && return
         local _link="${DAT_PATH_LONG##*/}"
-        [ "${CEN_OPT_NAME[$DAT_ARG_COUNT]:--}" != "-" ] &&
+        [ "${CEN_OPT_NAME[$DAT_ARG_COUNT]:--}" != '-' ] &&
             _link="${CEN_OPT_NAME[$DAT_ARG_COUNT]}"
         symlink ${DAT_PRETTY_MODE//-[enq]/} -- "$DAT_PATH_LONG" "$_link"
         return
     fi
 
-    local _sepa=" => "
+    local _sepa=' => '
     if [ -n "$CEN_OPT_UNIQUE" ] ; then
         if [ -n "${DAT_UNIQUE["${DAT_PATH_LONG:-:empty:}"]}" ] ; then
             [ -z "$CEN_OPT_TABLE" ] && return
-            _sepa=" == "
+            _sepa=' == '
         else
             DAT_UNIQUE["${DAT_PATH_LONG:-:empty:}"]=1
         fi
@@ -155,7 +155,7 @@ proc_item() {
     elif [ -n "$CEN_OPT_TABLE" ] ; then
         print_item "$DAT_PATH_SHORT" "$_sepa" "$DAT_PATH_LONG"
     else
-        print_item "$DAT_PATH_SHORT" "-   " "$DAT_PATH_INFO"
+        print_item "$DAT_PATH_SHORT" '-   ' "$DAT_PATH_INFO"
     fi
 }
 
@@ -182,10 +182,11 @@ run() {
     fi
 
     # load shortcut table
-    shortpath -a DAT_CONFIG -r -m '' || return
-
+    if ! shortpath -a DAT_CONFIG -r -m '' ; then
+        warning $"Failed to load shortcut table"
+    fi
     if [ -n "$CEN_OPT_WORK" ] ; then
-        local _serr="$DAT_PRETTY_MODE" ; DAT_PRETTY_MODE="-e -f"
+        local _serr="$DAT_PRETTY_MODE" ; DAT_PRETTY_MODE='-e -f'
         get_shortcut "$CEN_OPT_WORK"
         [ -z "$DAT_PATH_LONG" ] &&
             fatal $"Found no folder for shortcut:" "$DAT_PATH_SHORT"
@@ -209,7 +210,7 @@ run() {
         for _item in "$@" ; do
             proc_item "$_item"
         done
-    fi || true
+    fi
 }
 
 # ------------------------------------------------------------------------------

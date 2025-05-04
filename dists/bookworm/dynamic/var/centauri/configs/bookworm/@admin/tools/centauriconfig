@@ -1359,7 +1359,7 @@ actionSetup() {
 
     case "${1:-ins}" in
     rep*)   DAT_REPSTAT=1 ; do_setup && do_repository ;;
-    ini*)   syssetup -p "$inst" && ___run_rget && syssetup -i ;;
+    ini*)   syssetup -p "$inst" && ___run_rget && syssetup -i "$inst" ;;
     ins*)   syssetup -i "$inst" ;;
     upd*)   syssetup -s -u "$inst" ;;
     uni*)   syssetup -r ;;
@@ -1511,8 +1511,8 @@ actions() {
 # ------------------------------------------------------------------------------
 usage() {
     do_setup -h
-    local _repo="$DAT_NET_NICK:${CEN_ROOTDEF[3]:-$CEN_ROOT/admin}"
-    local _repa="$DAT_NET_NICK:$DAT_NET_DOMAIN"
+    local _repo="${DAT_NET_NICK:-<host>}:${CEN_ROOTDEF[3]:-$CEN_ROOT/admin}"
+    local _repa="${DAT_NET_NICK:-<host>}:${DAT_NET_DOMAIN:-<config>}"
     usagecat << !EOF
 $CEN_USE_HEADER
 

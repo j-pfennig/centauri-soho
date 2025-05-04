@@ -342,7 +342,7 @@ CEN_TERMINAL_DAT=
 #           <lsel>  0:all  1:session  2:paths  3:valids generic names
 #           <mode>  0:just run   1:exec   2:background   3:disown
 #           <rslt>  variable name, receives returned data as array
-#           <desk>  "tty", "kde", "lxqt", ... (see $XDG_SESSION_DESKTOP)
+#           <desk>  "tty", "kde", "lxqt", ... (see $XDG_CURRENT_DESKTOP)
 #           <titl>  window title text
 #           <what>  generic name for a command like "browser" or "editor"
 #
@@ -616,7 +616,7 @@ _cen_run_tools() {
 
         _want="${_pard[-wants:$_name]}"                     # installation requirement...
         if [ -n "$_want" ] ; then
-            for _want in $_want "" ; do
+            for _want in $_want '' ; do
                 [ -e "$_want" ] && break
             done
             $CEN_TRACE2 -c -p ' WANTS' '%-18s => %s' "$_nice" "${_want:--miss-}"
@@ -775,8 +775,9 @@ shortpath() {
     # read configuration file on 1st call
     if [ -z "$CEN_SHORTPATH_DAT" ] ; then
         [ -z "$CEN_SYS_NICKNAME" ] && sysversion            # get CEN_SYS_xxx vars
-        embed -m _centauri_bash_net -n ; netconfig
-        _cen_run_config $_oerr 'shortpath' || return 1
+        embed -m _centauri_bash_net -n ; netconfig          # set net conf vars
+        _cen_run_config $_oerr 'shortpath' ||
+            warning $"Failed to load 'shortpath' configuration"
         local _line _sifs="$IFS" _atmp
         for _line in "${CEN_RUN_SHORTPATH[@]}" ; do
             #$CEN_TRACE2 -a -c " parse" -- "$_line"
@@ -795,7 +796,7 @@ shortpath() {
             CEN_SHORTPATH_DAT+=("$_sval")
         done
         unset CEN_RUN_SHORTPATH                             # drop config data
-        [ -z "${#CEN_SHORTPATH_DAT[@]}" ] && CEN_SHORTPATH_DAT=(-)
+        [ "${#CEN_SHORTPATH_DAT[@]}" = 0 ] && CEN_SHORTPATH_DAT=(-)
     fi
 
     # error handling
@@ -805,7 +806,7 @@ shortpath() {
 
     # handling of missing entries
     case "$_ndir" in
-        "")     _ndef='E' ;;
+        '')     _ndef='E' ;;
         dash)   _ndef='-' ;;
         empty)  ;;
         ignore) _ndef='I' ;;
@@ -1148,7 +1149,7 @@ terminal() {
     fi
 
     if [ -z "$CEN_DISPLAY" ] ; then
-        $CEN_TRACE $"No desktop running, see $DISPLAY or $XDG_SESSION_DESKTOP"
+        $CEN_TRACE $"No desktop running, see $DISPLAY or $XDG_CURRENT_DESKTOP"
         CEN_IS_DESKTOP=0
     fi
 
@@ -1356,12 +1357,13 @@ _cen_run_config() {
                 configfile $_fqui $_fpri -r CEN_RUN_TERMINAL  -v -x -n "$CEN_CONFIGFILE" 'terminal'
                 configfile $_fqui $_fpri -r CEN_RUN_SHORTPATH -v -x -n "$CEN_CONFIGFILE" 'shortpath'
                 CEN_RUN_CONFIG="$CEN_CONFIGFILE"
-                serialize $_ferr -w -n "$CEN_CACHEFILE" -m 664 -- CEN_RUN_CONFIG \
-                        CEN_RUN_LAUNCHER CEN_RUN_TERMINAL CEN_RUN_SHORTPATH
             else
-                $CEN_TRACE -c " no data" $"Not writing config cache"
-                _stat=2
+                CEN_RUN_LAUNCHER=(); CEN_RUN_TERMINAL=(); CEN_RUN_SHORTPATH=()
+                CEN_RUN_CONFIG='-'
+                warning "Missing configuration file:" "$_path"
             fi
+            serialize $_ferr -w -n "$CEN_CACHEFILE" -m 664 -- CEN_RUN_CONFIG \
+                      CEN_RUN_LAUNCHER CEN_RUN_TERMINAL CEN_RUN_SHORTPATH || _stat=2
         fi
     fi
     return $_stat

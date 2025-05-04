@@ -11,6 +11,7 @@ embed -m _centauri_bash_dbg
 embed -c _centauri_bash_run         # dependency for standalone build
 
 # Data
+CEN_OPT_APPEND=()                   # see --append
 CEN_OPT_DESKTOP=                    # see --session
 CEN_OPT_FOLDER=                     # see --folder
 CEN_OPT_GEOMETRY=                   # see --geometry
@@ -175,7 +176,7 @@ url_http() {
 }
 
 url_finder() {
-    local _coun="${#DAT_URL[@]}" _item _file
+    local _coun="${#DAT_URL[@]}" _item _file _para _pstr
     trace -a -c "url finder" "entries: $_coun"
 
     while ((_coun--)) ; do
@@ -208,6 +209,10 @@ url_finder() {
         trace -a -c "url finder" "no match"
         DAT_URL=() ; return 1
     fi
+    for _para in "${CEN_OPT_APPEND[@]}" ; do
+        _pstr+="&$_para"
+    done
+    [ -n "$_pstr" ] && _item+="?${_pstr:1}"
     trace -a -c "url finder" "$_item"
 
     # url encoding (partial)
@@ -533,11 +538,11 @@ Window {
             if (message == 'QUIT') Qt.quit();
             console.log(message);
         }
+        settings.localContentCanAccessFileUrls: true
+        settings.localContentCanAccessRemoteUrls: true
    }
 }
 !EOF
-#cat $_file
-#quit $_mode
     case "$_mode" in
     # mode 1 makes no sense with qml, use mode=0
     0|1)
@@ -662,7 +667,7 @@ application_url() {
             ;;
     *)      _wurl=
     esac
-quit URL "$*"
+
     # host port try...
     # --------------------------------
     # no   no   localhost:{80,http_proxy,8123}
@@ -732,14 +737,11 @@ port_check() {
         elif isfunction -c netserver ; then
             host="$CEN_NET_SERVER"
         # try resolv.conf instead
-        elif [ -r "${CEN_PATHS[2]}/resolv.conf" ] ; then
-            while read rkey rval ; do
-                [ "$rkey" = 'nameserver' ] || continue
-                host="$rval" ; break
-            done <"${CEN_PATHS[2]}/resolv.conf"
+        elif netresolv -r 'nameserver' ; then
+            host="$_netresolv" ; break
         fi
         DAT_HOST="$host"
-        [ "$host" = '-' ] && return 1
+        [ "${host:--}" = '-' ] && return 1
     fi
     dryrun ">/dev/tcp/$host/$2" && return 0
     echo 2>/dev/null >"/dev/tcp/$host/$2"           # return status
@@ -780,12 +782,11 @@ quit_hook() {
 terminal_mode() {
     [ -z "$CEN_OPT_TERMINAL" ] && return
     case "$1" in
-    -b) context -g 1                        # window mode
-        DAT_GEOM=('+' '+')                  # full-screen
-        embed -v -z centauripower --force dpms on
+    -b) DAT_GEOM=('+' '+')                  # full-screen
+        embed -v -z centauripower --force dpms off
         ;;
     -e)
-        embed -v -z centauripower --force dpms off
+        embed -v -z centauripower --force dpms on
         ;;
     esac
 }
@@ -799,6 +800,7 @@ actionList() {
         error $"allowed 'list' modes are:" 'all session executable' || return
     fi
 
+    [ -n "$CEN_OPT_DESKTOP" ] && CEN_DESKTOP="$CEN_OPT_DESKTOP"
     [ "$indx" -lt 3 ] && help= || indx=2
     launcher -l "$indx" || return 1
 
@@ -827,6 +829,8 @@ options() {
             [ -n "$CEN_OPT_GEOMETRY" ] && splitjoin -s DAT_GEOM -d ':' -i CEN_OPT_GEOMETRY
             ;;
 
+    -A|--app*)
+        optarg 'append'     []     -t ;;        # text, array
     -D|--des*)
         optarg 'desktop'    -      -t ;;        # text argument
     -F|--fol*)
@@ -841,6 +845,7 @@ options() {
     -P|--por|--port)
         optarg 'port'       -      -n ;;        # number argument
     -T|--ter*)
+        CEN_OPT_GUI=1
         optarg 'terminal'   -      -f ;;        # flag
     esac
 }
@@ -895,6 +900,7 @@ actions() {
 usage() {
     usageset \
         -o '' \
+        -o '-A --append  <text>'  $"Append as argument/query-param, array" \
         -o '-D --desktop <desk>'  $"Override desktop configuration to use" \
         -o '-F --folder  <fldr>'  $"x" \
         -o '-G --geom    <geom>'  $"Size of browser window" \

@@ -106,6 +106,7 @@ run_root() {
         do_delete "./var/cache/squid*/"
         do_delete "./var/cache/.security.db"
         do_delete "./var/lib/apt/lists/"
+        do_delete "./var/lib/lightdm/.cache/"
         do_delete "./var/lib/mlocate/"
 
         do_delete "./var/spool/cups*/"
@@ -165,8 +166,8 @@ run_home() {
         [ -n "$1" ] && ___home "$1"
 
     # given user name
-    elif [ "$CEN_OPT_USER" != "+" ] ; then
-        [ "$CEN_OPT_USER" = "-" ] && CEN_OPT_USER="$LOGNAME"
+    elif [ "$CEN_OPT_USER" != '+' ] ; then
+        [ "$CEN_OPT_USER" = '-' ] && CEN_OPT_USER="$LOGNAME"
         eval path=~$CEN_OPT_USER
         [ "$PWD" = '/' ] || path="$PWD$path"
         if [ -d "$path" ] ; then
@@ -183,6 +184,8 @@ run_home() {
         confirm -a -n -f $"Cleanup '%s' caches" "$path" || return
         [ -d "./home" ] && ___walk 'home'
         [ -d "./root" ] && ___home './root'
+        [ -d ".$CEN_ROOT/home" ] && ___walk ".$CEN_ROOT/home"
+        # legacy ...
         [ -d ".$CEN_ROOT/vbox" ] && ___home ".$CEN_ROOT/vbox"
     fi
 }

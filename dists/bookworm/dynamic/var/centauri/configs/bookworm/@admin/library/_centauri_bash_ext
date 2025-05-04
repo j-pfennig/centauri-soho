@@ -18,10 +18,10 @@
 # documentation. Most functions notably [[move()]], [[remove()]], [[rename()]]
 # and [[symlink()]] are aware of these builtins.
 #
-# Copyright Dr. J. Pfennig (c) 2016-2024
+# Copyright Dr. J. Pfennig (c) 2016-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_ext']='0.30:4'
+CEN_MODULES['_centauri_bash_ext']='0.31:4'
 
 CEN_EXT_TEMP=               # temp file base path, see tmpfile
 CEN_EXT_TIDX=               # ... auto index
@@ -972,13 +972,13 @@ rename() {
       case "$1" in
       --)   shift ; break ;;
       -b)   shift ; _suff="${1#.}" ; _orem=1 ;;
-      -f)   _oftl="-f" ; _osys='-f -p' ; _oerr=fatal ;;
+      -f)   _oftl='-f' ; _osys='-f -p' ; _oerr=fatal ;;
       -m)   _omis=1 ;;
       -o)   _orem=1 ;;
-      -q)   _orep="-q" ; _osys='-q' ; _oerr="$CEN_TRACE" ;;
-      -r)   _orun="-r" ;;
-      -s)   _orep="-s" ; _omsg=: ;;
-      -v)   _orep="-v" ; _omsg=message ;;
+      -q)   _orep='-q' ; _osys='-q' ; _oerr="$CEN_TRACE" ;;
+      -r)   _orun='-r' ;;
+      -s)   _orep='-s' ; _omsg=: ;;
+      -v)   _orep='-v' ; _omsg=message ;;
       -x)   _orem=2 ;;
       *)    _cen_abort - "$1"
       esac ; shift
@@ -1012,7 +1012,7 @@ rename() {
         fi
     fi
 
-    $_omsg -a -c " " -- "$1 => $_dest"
+    $_omsg -a -c ' ' -- "$1 => $_dest"
     sysrun -b $_orun $_osys -- mv -f -- "$1" "$_dest" && return 0
     [ -n "$CEN_OPT_DRYRUN" ]                     # --dryrun always returns 0
 }
@@ -1552,7 +1552,7 @@ symlink() {
 # ------------------------------------------------------------------------------
 # sysrun - run a command or builtin, optionally generate error messages
 #
-# Call:     (1) sysrun [-e|-f|-w] [-p] [-v] [-m <mesg>] [-o <what>]
+# Call:     (1) sysrun [-e|-f|-w] [-p] [-v] [-m <mesg>] [-o <what>] [-g <good>]
 #                      [-a|-s <onam>] [-b|-i] [-d] [-n] [-r] [-z] [--] <cmd> <arg>...
 #           (2) sysrun -q
 #                      [-a|-s <onam>] [-b|-i] [-d] [-n] [-r] [-z] [--] <cmd> <arg>...
@@ -1569,6 +1569,7 @@ symlink() {
 #           -d  use './' prefix if 1st arg starts with a '-'
 #           -e  call [[error()]] if command <cmd> fails
 #           -f  call [[fatal()]] on error
+#           -g  no error processing if <cmd> exit code is less or equal <good>
 #           -i  do not run a function or builtin, see **sysfind -i**
 #           -m  custom format string for error message
 #           -n  do no checks on <cmd> (implied if <cmd> is a path)
@@ -1582,6 +1583,7 @@ symlink() {
 #           -z  don't capture **/dev/stdout**
 #
 # Arguments:<onam>  variable that receives the <cmd> output
+#           <good>  highest non-error exit code (default: 0)
 #           <mesg>  printf format string with 2 string variables
 #           <what>  shown in error message
 #           <stat>  status code to report (**0** reports nothing)
@@ -1649,7 +1651,7 @@ symlink() {
 sysrun() {
     $CEN_NOTRACE set +x
     local _ecmd="$CEN_TRACE" _emsg _vstr _vnam
-    local _ofmt _oign _osta _opre _orun _oout _over _owho _fqui _ffnd=1
+    local _ofmt _oign _osta _opre _orun _oout _over _owho _fqui _ffnd=1 _good=0
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -1659,6 +1661,7 @@ sysrun() {
       -d)   _opre=1 ;;
       -e)   _ecmd=error ;;
       -f)   _ecmd=fatal ;;
+      -g)   shift ; _good="$1" ;;
       -i)   _oign='-i' ;;
       -m)   shift ; _emsg="$1" ; [ -z "$_oout" ] && _oout=0 ;;
       -n)   _ffnd= ;;
@@ -1769,7 +1772,7 @@ sysrun() {
 
     # error reporting ...
     [ -z "$_osta" ] && _osta=1                  # must have a value here
-    if [ "$_osta" = 0 -o -n "$_fqui" ] ; then
+    if [ "$_osta" -le "$_good" -o -n "$_fqui" ] ; then
         $CEN_NOTRACE set -x ; return $_osta
     fi
 

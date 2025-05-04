@@ -946,9 +946,9 @@ setupStep2() {
             serverNetwork "$SOHO_HOST"                      # check net configuation
             HOSTOPT='-s'
             quitOnError
-            nethost -s -- "$SOHO_HOST" && break ; NETERR="server"
+            nethost -s -- "$SOHO_HOST" && break ; NETERR='server'
         else
-            nethost -c -- "$SOHO_HOST" && break ; NETERR="client"
+            nethost -c -- "$SOHO_HOST" && break ; NETERR='client'
         fi
         confirm -n -f "Host has no %s network configuration. Edit configuration" \
                       "$NETERR" || quit -a -u
@@ -1027,7 +1027,7 @@ setupStep2() {
         copy "$MNT_ROOT/etc/fstab" "$FSTAB"
     fi
     cpyo+=(--nocopy=off --counts --silent --hardlinks --one --exclude=boot/grub --exclude=etc/fstab)
-    embed -t centauricopy "${cpyo[@]}" --volume=root '/'     "$MNT_ROOT"
+    embed -t centauricopy "${cpyo[@]}" --volume=root '/'     "$MNT_ROOT" -x '^/boot/efi'
     cpyo[0]='update'
     embed -t centauricopy "${cpyo[@]}" --volume=home '/home' "$MNT_HOME"
     [ -e "$FSTAB" ] && copy "$FSTAB" "$MNT_ROOT/etc/fstab"
@@ -1346,11 +1346,13 @@ QUEUERUNNER=nodaemon
             '/etc/systemd/system/multi-user.target.wants/inetd.service'
 
         # exim4 configuration (it really uses SysV init)
-        copyFromRepo /etc/default/exim4
-        copyFromRepo /etc/exim4/exim4.conf.template
-        copyFromRepo /etc/exim4/update-exim4.conf.conf
-        copyFromRepo /etc/init.d/exim4
-        system -e -p -t update-exim4.conf
+        if [ -x '/usr/sbin/exim4' ] ; then
+            copyFromRepo /etc/default/exim4
+            copyFromRepo /etc/exim4/exim4.conf.template
+            copyFromRepo /etc/exim4/update-exim4.conf.conf
+            copyFromRepo /etc/init.d/exim4
+            system -e -p -t update-exim4.conf
+        fi
         quitOnError
 
         # lighttpd config
@@ -1406,7 +1408,7 @@ QUEUERUNNER=nodaemon
                             get grub.cfg -- get fstab -- get '_*_key'
     embed -t -v centauriconfig --quiet --role=workstation --yes --override=0 get
 
-    copyFromRepo "/etc/skel/.profile"               # got overridden by dpkg
+    copyFromRepo /etc/skel/.profile                 # got overridden by dpkg
 
     checkInstalled 'base' true
     outputMessage 'stepN' '/etc/motd' '' "step 3 (base system)"

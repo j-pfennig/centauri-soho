@@ -45,7 +45,7 @@ check_image() {
 # ------------------------------------------------------------------------------
 check_partition() {
     local mopt
-    [ "$1" = '-m' ] && { mopt="$1" ; shift ; }
+    [ "$1" = '-m' ] && { mopt=1 ; shift ; }
 
     case "${1:-0}" in
     0)  DAT_PARTITION="$CEN_OPT_DEVICE" ; return 0
@@ -59,7 +59,12 @@ check_partition() {
     *)  invoke -e $"Not a valid partition number:" "$1" ; return 1
     esac
 
-    blkdevice -e $mopt -n "$1" "$CEN_OPT_DEVICE" || return 1
+    blkdevice -e -m -n "$1" -x -- "$CEN_OPT_DEVICE" || return 1
+    if [ -z "$mopt" -a "${CEN_BLKDEVICE[3]}" != '-' ] ; then
+        error -p $"Partition '%s' is mounted at '%s'" "${CEN_BLKDEVICE[1]}" "${CEN_BLKDEVICE[3]}"
+        return 1
+    fi
+
     DAT_PARTITION="${CEN_BLKDEVICE[1]}"
     [ -b "$DAT_PARTITION" ] && return 0
     invoke -e $"Not a partition:" "${CEN_BLKDEVICE[1]}" ; return 1
@@ -271,7 +276,7 @@ actionFormat() {
     # create fstab entry from ftab array
     ___sav_fstab() {
         local line
-        printf -v line "%-23s %-15s %-7s %-47s %s" "${ftab[@]}"
+        printf -v line '%-23s %-15s %-7s %-47s %s' "${ftab[@]}"
         if [ "$CEN_OPT_FSTAB" = '-' ] ; then
             echo "$line"
         else
@@ -284,6 +289,7 @@ actionFormat() {
     if [ -z "${1//[0-9]}" ] ; then
         part="$1" ; shift
     fi
+
     check_device -m || return
     check_partition "$part" || return
 

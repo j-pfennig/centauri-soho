@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. J. Pfennig (c) 2023-2024; BSD License"
+CEN_LEGAL="Dr. J. Pfennig (c) 2023-2025; BSD License"
 CEN_TITLE=$"Generate interface, wlan, dhcp and dnsmasq configurations"
 
 # Import the bash library
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.13:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.14:4' || exit 2
 
 # Data
 CEN_OPT_APOINT=                 # see --host
@@ -1296,9 +1296,11 @@ actionInterface() {
     fi
 
     # write status file
+    set -- /sys/class/net/*
+    local ifac="${*##*/}"               # interfaces without path
     netquery -s item 'connect' "$CEN_OPT_HOST"
     netpath -- "$CEN_ROOT/persistent/$CEN_NAME"
-    writeline -e -o "$_netpath" -t -- "$CEN_OPT_HOST" "$item" "$mode"
+    writeline -e -o "$_netpath" -t -- "$CEN_OPT_HOST" "$item" "$mode" "${ifac// /;}"
 
     # generate interface files
     for item in "${list[@]}" ; do

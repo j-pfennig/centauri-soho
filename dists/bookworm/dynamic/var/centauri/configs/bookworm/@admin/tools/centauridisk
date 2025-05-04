@@ -3,7 +3,7 @@
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2017-2025; BSD License"
 CEN_TITLE="Partition a hard disk and install centauri linux"
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -m bat -r -y - '0.27:4' 0 4 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -m bat -r -y - '0.28:4' 0 4 || exit 2
 
 # Data
 CEN_OPT_BIOS=                   # see --bios
@@ -159,6 +159,13 @@ do_boot() {
         error -t || return
     fi
 
+    # install bios grub only if we have no EFI folder
+    if [ -z "$CEN_OPT_BIOS" ] ; then
+        if [ -d "$gdes/EFI" ] || [ -d "$gdes/efi" ]  ; then
+            message "EFI boot, not installing BIOS grub"
+            DAT_NO_BOOT=1
+        fi
+    fi
     if [ -z "$DAT_NO_BOOT" ] ; then
         message -a "Installing BIOS grub ..."
         local item targ snam gdes="$1" pref

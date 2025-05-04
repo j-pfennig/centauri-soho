@@ -113,7 +113,7 @@ installer_config() {
         ;;
     -w) if [ ! -d "$seed" ] ; then
             message "Creating seed folder:" "$seed"
-            system mkdir "$seed" || quit
+            folder -m "$seed" || quit
         fi
         if [ -s "$star" ] ; then
             :
@@ -217,7 +217,7 @@ installer_initial() {
         system -e -p mkinitramfs -o "$fini"
     fi
 
-    system rm -f /var/lib/dhcp/*leases
+    remove /var/lib/dhcp/*leases
     # the debian installer flagged them as 'automatically'
     system -q apt-mark manual bluetooth wpasupplicant iw libdaemon0
     # the debian installer installed these ...
@@ -277,7 +277,7 @@ installer_install() {
             system tar --directory=/ --strip-components=1 -xaf "$DAT_SEED" || quit -s 2
             installer_initial -n
         else
-            system mkdir -p "$ddir" || quit -s 2
+            folder -m "$ddir" || quit -s 2
             # unfortunately --exclude=static cannot be used with --strip-components
             system tar --directory="$ddir" --exclude='static' -xaf "$DAT_SEED" || quit -s 2
             system cp -a "$ddir/dynamic"/* /
@@ -292,7 +292,7 @@ installer_install() {
 
     # create persistent data folder
     if [ ! -d "${INSTALLER_PERCONF%/*}" ] ; then
-        system mkdir -p "$INSTALLER_PERSIST" || quit -s 2
+        folder -m "$INSTALLER_PERSIST" || quit -s 2
         symlink -n "$INSTALLER_PERSIST" "${INSTALLER_PERCONF%/*}" || quit -s 2
     fi
     system echo "$conf" >"$INSTALLER_PERCONF" || quit -s 2
@@ -305,7 +305,7 @@ installer_install() {
         system echo -e "$conf" >"$INSTALLER_PERBASE" || quit -s 2
         message -i "centauri-tools installation succeeded"
     else
-        system rm -r -f "$ddir"
+        remove -d "$ddir"
         message -i "centauri-tools update succeeded"
     fi
 }
@@ -363,7 +363,7 @@ installer_login() {
         system cp -a '/boot/firmware/cmdline-default.txt' '/boot/firmware/cmdline.txt'
     [ -e '/boot/grub/grub.cfg.orig' ] &&
         system mv -f '/boot/grub/grub.cfg.orig' '/boot/grub/grub.cfg'
-    system rm -f /root/.autologin
+    remove /root/.autologin
 
     # payload ...
     system dpkg-reconfigure keyboard-configuration
@@ -380,8 +380,8 @@ installer_minimal() {
     local item curr="$PWD"
     if folder -c /var/log ; then
         system -q systemctl stop systemd-journald
-        system rm -f -r installer journal/* apt/*
-        system rm -f    *.gz */*.gz *.[0-9] */*.[0-9]
+        remove -d installer journal/* apt/*
+        remove -- *.gz */*.gz *.[0-9] */*.[0-9]
         for item in *.log ; do                  # zero-size log files
             [ -s "$item" ] || continue
             > "$item"
@@ -390,8 +390,8 @@ installer_minimal() {
     folder -c "$curr"
 
     message -i "Zerofill file system ..."
-    system -q -g 1 -- dd if=/dev/zero of=zero.tmp bs=1M
-    system sync ; system rm -f zero.tmp
+    system -q -- dd if=/dev/zero of=zero.tmp bs=1M
+    system sync ; remove zero.tmp
 
     message -i "Clean swap space ..."
     system swapoff -a
@@ -411,8 +411,6 @@ installer_mklinks() {
     done
 
     for item in 'packages' 'private' 'templates' 'passwords' 'setup.conf' ; do
-        #[ -h "$item" ] && { system rm -f -- "$item" || ferr=1 ; }
-
         if [ -e "$base/$INSTALLER_CONFIG/$item" ] ; then
             link="$base/$INSTALLER_CONFIG/$item"
         elif [ -e "$base/@shared/$item" ] ; then
@@ -432,13 +430,13 @@ installer_mklinks() {
     if [ -s "$item" ] ; then
         symlink -n "$item" "$DAT_SEED" || ferr=1
     else
-        system rm -f -- "$DAT_SEED"
+        remove -- "$DAT_SEED"
     fi
     return $ferr
 }
 
 # ------------------------------------------------------------------------------
-# pack the seed tar: [<dist> <inst>]
+# pack the seed tar: [<dist> <conf>]
 # ------------------------------------------------------------------------------
 installer_pack() {
     installer_config -w "$@"
@@ -468,7 +466,7 @@ installer_pack() {
 
     if [ -e "$file" ] ; then
         if confirm -y -a "Replace existing '$file'" ; then
-            system rm -f "$file" || quit
+            remove "$file" || quit
         else
             quit -s 2
         fi
@@ -511,9 +509,9 @@ installer_prepare() {
 
     # we need centauri-bash-lib ...
     if [ -n "$CEN_OPT_FORCE" ] ; then           # see 'exec ... -f ...' below
-        [ -z "$CEN_HOOK_MESSAGE" ] &&
+        [ -z "$CEN_HOOK_MAIN" ] &&              # no full centauri-bash-lib
             quit "Please run '$CEN_NAME install' and try again"
-    elif [ -z "$CEN_HOOK_MESSAGE" ] ; then
+    elif [ -z "$CEN_HOOK_MAIN" ] ; then
         installer_install - -
         exec "./$CEN_NAME" -f prepare           # re-run to load centauri-bash-lib
     fi
@@ -543,6 +541,7 @@ installer_prepare() {
 
     message "Updating installed packages..."
     embed centauripackage -U2 -G -s || return
+    embed centauripackage -T -I -s -y isc-dhcp-client dosfstools || return
     system -q apt-mark manual wpasupplicant iw libdaemon0
     embed centaurisoho message step0 '/etc/motd' '' $(date --iso-8601) || return
     message -i
@@ -577,16 +576,7 @@ installer_prepare() {
     # --- renaming and fstab ---
 
     local vnam ddev
-    # debian image ...
-    if [ -b '/dev/sda5' ] && confirm -y "Rename system as '$name'" ; then
-        message "Rename x86 disk partions..."
-        embed -i centaurimedia --yes --device='/dev/sda' label 1 "${name}_root" || return
-        embed -i centaurimedia --yes --device='/dev/sda' label 5 "${name}_swap" || return
-        create -t -c '/etc/fstab' <<!EOF
-LABEL=${name}_root    /       auto  rw,defaults,noatime 0 0
-LABEL=${name}_swap    none    swap
-!EOF
-    elif [ -b '/dev/disk/by-label/rootfs' ] && confirm -n "Rename system as '$name'" ; then
+    if [ -b '/dev/disk/by-label/rootfs' ] && confirm -n "Rename system as '$name'" ; then
         message -i "Rename RaspberryPi disk partions..."
         vfatname vnam "$name"                       # random prefix for long name
         resolve -c -s ddev '/dev/disk/by-label/rootfs'
@@ -601,6 +591,26 @@ LABEL=${name}_swap    none    swap
             create -t -c '/etc/fstab' <<!EOF
 LABEL=${vnam}_boot  /boot/firmware  auto  rw,defaults,noatime 0 0
 LABEL=${name}_root  /               auto  rw,defaults,noatime 0 0
+!EOF
+        fi
+    # debian image (bookworm has sda5) ...
+    elif [ -b '/dev/sda3' -o -b '/dev/sda5' ] && confirm -y "Rename system as '$name'" ; then
+        message "Rename x86 disk partions..."
+        if [ -b '/dev/sda5' ] ; then
+            embed -i centaurimedia --yes --device='/dev/sda' label 1 "${name}_root" || return
+            embed -i centaurimedia --yes --device='/dev/sda' label 5 "${name}_swap" || return
+            create -t -c '/etc/fstab' <<!EOF
+LABEL=${name}_root    /       auto  rw,defaults,noatime 0 0
+LABEL=${name}_swap    none    swap
+!EOF
+        else
+            embed -i centaurimedia --yes --device='/dev/sda' label 1 "${name}_boot" || return
+            embed -i centaurimedia --yes --device='/dev/sda' label 2 "${name}_root" || return
+            embed -i centaurimedia --yes --device='/dev/sda' label 3 "${name}_swap" || return
+            create -t -c '/etc/fstab' <<!EOF
+LABEL=${name}_root  /           auto  rw,defaults,noatime 0 0
+LABEL=${name}_boot  /boot/efi   vfat  rw,defaults,noatime 0 0
+LABEL=${name}_swap  none        swap
 !EOF
         fi
     fi
@@ -676,7 +686,7 @@ network={
 
     if [ -e '/etc/systemd/network/99-default.link' ] ; then
         if [ "$ieth" != 'eth0' ] ; then
-            system -e rm '/etc/systemd/network/99-default.link'
+            remove '/etc/systemd/network/99-default.link'
             system -e touch '.timestamp'
         fi
     else
@@ -722,9 +732,9 @@ installer_remove() {
     [ -e '/admin/utilities' ] && quit -e "Cannot remove 'centaurisoho' from this system"
 
     local item subi subd base="$PWD" ; cd ..
-    system rm -f    /usr/local/bin/centauri* /usr/local/bin/_centauri_bash_lib
-    system rm -f -r /var/centauri /etc/default/centauri* /var/lib/centauri
-    system rm -f -r /run/centauri /centauritools /etc/centauri* "$base"
+    remove    /usr/local/bin/centauri* /usr/local/bin/_centauri_bash_lib
+    remove -d /var/centauri /etc/default/centauri* /var/lib/centauri
+    remove -d /run/centauri /centauritools /etc/centauri* "$base"
 
     # remove stale service links
     for item in /etc/systemd/system/* ; do
@@ -733,13 +743,13 @@ installer_remove() {
             for subi in "$item"/* ; do
                 [ -L "$subi" ] || continue
                 [ -e "$subi" ] && continue
-                system rm -f "$subi" ; subd=1
+                remove "$subi" ; subd=1
             done
             [ -n "$subd" ] || continue
             rmdir "$item" 2>/dev/null
         fi
         [ -L "$item" ] || continue
-        [ -e "$item" ] || system rm -f "$item"
+        [ -e "$item" ] || remove "$item"
     done
 }
 
@@ -752,10 +762,16 @@ installer_unpack() {
     confirm -y -i "Unpack '$INSTALLER_SEED' into workspace now" || quit -s 2
     local dist="$PWD/dists/$INSTALLER_DISTRO"
     local file="$dist/@seed/$INSTALLER_SEED"
-    system rm -r -f "$dist/dynamic" "$dist/static"|| quit
+    [ -d "$dist/dynamic" ] && rename "$dist/dynamic" "$dist/dynamic.old" || quit
+    [ -d "$dist/static" ] && rename "$dist/static" "$dist/static.old" || quit
 
     system tar --directory="$dist" -xaf "$file" || quit
-    message "Seed tar unpack succeeded"
+    if [ -d "$dist/dynamic" -a "$dist/static" ] ; then
+        message "Seed tar unpack succeeded"
+        remove -d "$dist/dynamic.old" "$dist/static.old"|| quit
+    else
+        fatal "Invalid tar, missing 'dynamic' or 'static' folder"
+    fi
     [ -z "$INSTALLER_CONFIG" ] && return
     installer_mklinks || quit -e "Failed to activate configuration"
 }
@@ -765,19 +781,19 @@ installer_unpack() {
 # ------------------------------------------------------------------------------
 installer_usage() {
     if [ "$1" != '-h' ] ; then
-        cat <<!EOF
+        usagecat <<!EOF
 $CEN_NAME: This tool is a helper for 'centaurisoho'. Except for installing the
-${CEN_NAME//?/ }  '$DAT_SEED' file it usally is not used from command line. See:
+           '$DAT_SEED' file it usally is not used from command line. See:
 
-               Installing and setup:     centaurisoho --help
-               Details about this tool:  $CEN_NAME --help
+           °   Installing and setup:     centaurisoho --help
+           °   Details about this tool:  $CEN_NAME --help
 
-${CEN_NAME//?/ }  After installing the seed file the centauri tools are available.
-${CEN_NAME//?/ }  Run the 'centaurisoho' tool to continue the installation.
+           After installing the seed file the centauri tools are available.
+           Run the 'centaurisoho' tool to continue the installation.
 
 !EOF
     else
-        cat <<!EOF
+        usagecat <<!EOF
 
 Usage: $CEN_NAME install [<dist> <conf>]   # install '$DAT_SEED' to system
        $CEN_NAME keyboard [<host>]         # keyboard dialog at raspi/grub boot
@@ -809,19 +825,18 @@ Arguments:
 if [ -z "$CEN_PAGER" ] ; then
     confirm -y "Continue output..." || quit -s 2
 fi
-cat <<!EOF
+usagecat <<!EOF
 
-Remarks:
-        '$CEN_NAME' is a self-contained bash script that manages two tar archives:
+Remarks:'$CEN_NAME' is a self-contained bash script that manages two tar archives:
 
         (1) centaurisoho-<dist>-<conf>.tgz (or centaurisoho-<dist>.tgz) which is
-            the deployment medium for centaurisoho. It contains seed tar files,
-            '$CEN_NAME' and other data used for the centaurisoho setup procedure.
-            The tar file extracts to the centaurisoho base folder that contains
-            '$CEN_NAME'.
+        °   the deployment medium for centaurisoho. It contains seed tar files,
+        °   '$CEN_NAME' and other data used for the centaurisoho setup procedure.
+        °   The tar file extracts to the centaurisoho base folder that contains
+        °   '$CEN_NAME'.
 
         (2) seed-<dist>-<conf>.tgz  (or seed-<dist>.tgz) which contains the
-            centauri-bash-library, centauri-tools and the initial repository data.
+        °   centauri-bash-library, centauri-tools and the initial repository data.
 
         All setup data except '$CEN_NAME' can depend on <dist> or even <conf> but
         '$CEN_NAME' does not have such dependencies. The install, dist or unpack
@@ -829,6 +844,7 @@ Remarks:
 
         The optional prepare command is used to create a distributable disk image.
         It pre-sets (wlan) network, grub-boot, locales and installs locale-purge.
+
 !EOF
     fi
     quit -s 2
@@ -890,22 +906,24 @@ usage() {
 
 # ------------------------------------------------------------------------------
 # This tool can be run without centauri-bash-lib being installed. If so it uses
-# a couple simplified library equivalents that are created below ...
+# a couple of simplified library equivalents that are created below ...
 # ------------------------------------------------------------------------------
 [ "${CEN_NAME:--}" = '-' ] && [ -x '/usr/local/bin/_centauri_bash_lib' ] &&
-    . /usr/local/bin/_centauri_bash_lib -a -d -f - '0.11:2' 0
+    . /usr/local/bin/_centauri_bash_lib -a -d -f - '0.12:2' 0
 
-# Packed mini-bash-lib, see centauricreate minilib --option minimal
+### mini-bash-lib packed ###
 if [ -z "$CEN_HOOK_MESSAGE" ];then
 {
-CEN_HOOK_MESSAGE='message'
+{
 CEN_STDOUT=41
 CEN_STDERR=42
 eval exec "$CEN_STDOUT>&1" "$CEN_STDERR>&2"
 CEN_EXIT=0
+CEN_HOOK_MESSAGE='message'
 CEN_HOOK_QUIT=
 CEN_IDNT=
-CEN_MINI_VERSION='0.03'
+CEN_MINI_VERSION='0.05'
+: ${CEN_VERSION:=$CEN_MINI_VERSION}
 CEN_ARGS=
 CEN_ARGOPT=
 CEN_ACTARR=
@@ -918,9 +936,10 @@ CEN_TMP_SYSO=
 CEN_TMPFILE=
 CEN_VERB=1
 CEN_YESNO=
+}
 warning(){ message -w "$@";}
 error(){ message -e -l "$@";return "$CEN_EXIT";}
-fatal(){ message -f -l "$@";}
+fatal(){ [ "$1" = '-t' ]&&set -- "${@:2}";message -f -l "$@";quit;}
 trace(){ [ "$CEN_VERB" -lt 2 ]&&return 0;message "$@";}
 message(){
 local _idnt="$CEN_NAME:" _exit _mesg _olog="$CEN_VERB" _opre _oqui _omul _opri
@@ -932,22 +951,22 @@ case "$1" in
 -c)
 local _asci _ugly
 _asci="${2//[[:alpha:]]/.}"
-printf -v _ugly "%-18s:" "$_asci"
+printf -v _ugly $"%-16s:" "$_asci"
 printf -v _opre '%s' "${_ugly/$_asci/$2}"
 shift;;
 -e)_opre=$"***ERROR***";_exit=2;;
--f)_opre=$"***FATAL ERROR***";_oqui=1;_exit=3;;
+-f)_opre=$"***FATAL ERROR***";_exit=3;;
 -i)_idnt="${_idnt//?/ }";;
 -l)_olog=1;;
 -m)_omul=1;;
 -p)_opri=1;;
--q)[ "$CEN_EXIT" = 0 ]&&return 0;_oqui=2;;
+-q)[ "$CEN_EXIT" = 0 ]&&return 0;_oqui=1;;
 -t)[ "$CEN_EXIT" = 0 ];return;;
 -w)_opre=$"***WARNING***";;
 esac;shift
 done
 [ -n "$_exit" ]&&{ _olog=1;CEN_EXIT="$_exit";}
-[ "$_oqui" = 2 ]&&quit -e "$@"
+[ -n "$_oqui" ]&&quit -e "$@"
 [ "$_olog" -lt 1 ]&&return 0
 if [ -n "$_omul" ];then
 _omul="$1";shift
@@ -956,7 +975,7 @@ fi
 [ -z "$_opri" ]&&_mesg="$*"||printf -v _mesg "$@"
 [ -n "$_opre" ]&&_mesg="$_opre $_mesg"
 echo "$_idnt" "$_mesg" >&2
-CEN_IDNT=1;[ -n "$_oqui" ]&&quit
+CEN_IDNT=1
 }
 confirm(){
 local _ofmt _oupc _what=1 _repl _vnam='CEN_CONFIRM' _idnt="$CEN_NAME:" _info _defn _text
@@ -1018,11 +1037,11 @@ case "$1" in
 -v)shift;_vnam="$1"
 esac;shift
 done
-dryrun $_rdry 'create' "$@"&&return 1
 [ "${1:--}" = - ]&&_fout='/dev/stdout'||_fout="$1"
 if [ -z "$_rtru" ]&&[ "${_fout::5}" != '/dev/' ]&&[ -e "$_fout" ];then
-error $"Existing file:" "$_fout";return 1
+trace -c $"Existing file" "$_fout";return 0
 fi
+dryrun $_rdry $"Create file" "$@"&&return 1
 _cen_create_file "$_fout"||return 1
 [ -z "$_vnam" ]&&return 0
 if [ "$_vnam" = - ];then
@@ -1058,32 +1077,32 @@ case "$1" in
 -*)_opts+=("$1")
 esac;shift
 done
-_opts+=('--' "$1" "--embed=${CEN_NAME@Q}");shift
+_opts+=('--' "$1" '--embed' "$CEN_NAME");shift
 [ -n "$CEN_OPT_DRYRUN" ]&&_opts+=('--dryrun')
 system -r "${_opts[@]}" "$@";_stat="$?"
 [ "$_stat" = 3 ]&&quit -s 3;return "$_stat"
 }
 folder(){
-local _ochg _omak _oerr='error'
+local _ochg _omak _oerr='error' _oopt='-e -p'
 while [ "${1::1}" = - ];do
 case "$1" in
 --)shift;break;;
 -c)_ochg='cd';;
--f)_oerr='fatal';;
+-f)_oerr='fatal';_oopt='-f -p';;
 -m)_omak=1;;
 -p)_ochg='cd -P';;
--q)_oerr=':';;
+-q)_oerr=':';_oopt='-q';;
 esac;shift
 done
 if [ ! -d "$1" ];then
 if [ -n "$_omak" ];then
-system -e -p -- mkdir -p "$1"||return 1
+system $_oopt -- mkdir -p "$1"||return 1
 else
-$_oerr $"Not a folder:" "$1"||return 1
+$_oerr $"Not a folder:" "$1";return 1
 fi
 fi
 [ -z "$_ochg" ]&&return 0
-system -r -e -- eval "$_ochg" "$1"||return 1
+system -r $_oopt -- eval "$_ochg" "$1"||return 1
 trace -a -c $"Current folder" "$PWD";return 0
 }
 splitjoin(){
@@ -1107,8 +1126,8 @@ esac;return 0
 }
 copy(){ _cen_simple_cmd 'cp' "$@";}
 rename(){ _cen_simple_cmd 'mv' "$@";}
-remove(){ _cen_simple_cmd 'rm' "$@";}
-symlink(){ _cen_simple_cmd 'ln' -s "$@";}
+remove(){ _cen_simple_cmd 'rm' -F "$@";}
+symlink(){ _cen_simple_cmd 'ln' -S "$@";}
 _cen_simple_cmd(){
 local _oerr='-e -p' _orun _args=("$1");shift
 while [ "${1::1}" = - ];do
@@ -1117,10 +1136,11 @@ case "$1${_args::1}" in
 -ac)_args+=('-a');;
 -uc)_args+=('-u');;
 -dr)_args+=('-r');;
+-Fr)_args+=('-f');;
 -or)_args+=('--one-file-system');;
 -nl)_args+=('-f');;
 -rl)_args+=('-r');;
--sl)_args+=('-s');;
+-Sl)_args+=('-s');;
 -f?)_oerr='-f -p';;
 -q?)_oerr='-q';;
 -r?)_orun=1;;
@@ -1129,21 +1149,21 @@ done
 system $_oerr $_orun -- "${_args[@]}" "$@"
 }
 system(){
-local _stat _mesg=':' _rdry _fchk _onam _ored _otyp _odel
+local _stat _rdry _fchk _olou _onam _ored _otyp _odel _oerr=':' _oqui=':'
 while [ "${1::1}" = - ];do
 case "$1" in
 --)shift;break;;
 -a)shift;_onam="$1";_ored=1;_otyp=2;;
 -c)_fchk=1;;
 -d)shift;_odel="$1";;
--e)_mesg='error';;
--f)_mesg='fatal';;
+-e)_oerr='error';_olou='-l';;
+-f)_oerr='message -f -l';_olou='-l';_oqui='quit';;
 -p)_ored=1;[ -z "$_otyp" ]&&_otyp=0;;
 -q)_ored=0;;
 -r)_rdry='-r';;
 -s)shift;_onam="$1";_ored=1;_otyp=1;;
 -t)[ "$CEN_EXIT" = 0 ]||return 1;;
--w)_mesg='warning';;
+-w)_oerr='warning';;
 -z)_ored=2;[ -z "$_otyp" ]&&_otyp=0;;
 esac;shift
 done
@@ -1151,7 +1171,7 @@ if [ -n "$_fchk" ];then
 _stat=0
 for _fchk in "$@";do
 type -t "$_fchk" &>/dev/null&&continue
-$_mesg -- $"Command not found:" "$_fchk";_stat=127
+$_oerr -p $"Command '%s' not found" "$_fchk";_stat=127;$_oqui
 done
 return "$_stat"
 fi
@@ -1168,9 +1188,9 @@ esac
 [ -n "$_otyp" ]&&readarray -t _vsys <"$CEN_TMP_SYSO"
 [ "$_otyp" = 1 ]&&splitjoin -j "$_onam" -- "${_vsys[@]}"
 [ "$_stat" = 0 ]&&return 0
-$_mesg -p $"Execution of '%s' failed (status %s)" "$1" "$_stat"
-[ -n "$_otyp" ]&&message -i -m "${_vsys[@]}"
-return "$_stat"
+CEN_IDNT=;$_oerr -p $"Running '%s' failed (status %s)" "$1" "$_stat"
+[ -n "$_otyp" ]&&message -a -m $_olou -- "${_vsys[@]}"
+$_oqui;return "$_stat"
 }
 tmpfile(){
 local _vtmp='CEN_TEMPFILE' _rdry _crea=1
@@ -1225,13 +1245,14 @@ CEN_ACTARR=;CEN_ARGOPT=;CEN_ACTION=;$_opts
 PATH=' ' type -t run &>/dev/null||return 2;run "$@"
 }
 optarg(){
-local _name="${2:--}";[ "$_name" = - ]&&_name="CEN_OPT_${1^^}"
+local _name="${2:--}" _aarr="$CEN_ACTARR"
+[ "$_name" = - ]&&_name="CEN_OPT_${1^^}"
 case "${3:--f}" in
 -f)printf -v "$_name" '%s' "${4:-1}";CEN_ARGS=1;;
 *)if [ -z "$CEN_ARGOPT" ];then
-[ "$CEN_ACTARR" != - -a "${CEN_ACTARR::1}" = '-' ] &&
-quit -e "Missing option value:" "--$1"
-CEN_ARGS=2;CEN_ARGOPT="$CEN_ACTARR"
+[ "$_aarr" != - ]&&[ -z "$_aarr" -o "${_aarr::1}" = '-' ] &&
+quit -e $"Missing option value:" "--$1"
+CEN_ARGS=2;CEN_ARGOPT="$_aarr"
 else
 CEN_ARGS=1
 fi
@@ -1259,7 +1280,19 @@ fi
 fi
 [ -n "$*" ]&&message "${_opts[@]}" "$@"
 [ "$CEN_TMP_INDX" != 0 -a -n "$CEN_TMP_BASE" ]&&system -q -r -- rm -f "$CEN_TMP_BASE"*
-trace -a "quit STATUS=$CEN_EXIT";exit "$CEN_EXIT"
+trace -a -c $"Script exits" "STATUS=$CEN_EXIT";exit "$CEN_EXIT"
+}
+usagecat(){
+local _larr _labl _line;readarray -t -u 0 _larr
+for _line in "${_larr[@]}";do
+[ "$1" = '-l' ]&&{ printf '%s\n' "$_line";continue;}
+case "$_line" in
+[a-zA-z]*:*) _labl="${_line%%:*}:";_line="${_line#*:}";;
+*)_labl=;;
+esac
+_line="${_line#"${_line%%[![:space:]]*}"}"
+printf '%-11s%s\n' "$_labl" "${_line//°/ }"
+done
 }
 command_not_found_handle(){
 set +xeE;exec 1>&$CEN_STDOUT 2>&$CEN_STDERR
@@ -1276,5 +1309,5 @@ run "$@"
 else
 main "$@";quit
 fi
+### mini-bash-lib end ###
 
-# end

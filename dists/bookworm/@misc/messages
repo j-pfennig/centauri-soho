@@ -291,7 +291,7 @@ The easiest way to apply all of these changes is to repeat the server setup:
 # ------------------------------------------------------------------------------
 
 Template patterns for simple names:
-    %A%     wlan AP ssid                    default:  %N% (short domain name)
+    %A%     wlan AP ssid                    default:  %D1% (short domain name)
     %B%     soho network base addr          example:  '10.10.0.0/22'
     %D%     domain name                     ...       'worms.home'
     %E%     external network addr           ...       '10.01.0.0/16'
@@ -305,7 +305,7 @@ Template patterns for simple names:
     %S%     secondary server                ...       'worm1'
     %T%     iot network                     ...       '10.10.1.0/19'
     %U%     trusted network                 ...       '10.10.2.0/19'
-    %W%     wlan client ssid                default:   %N% (short domain name)
+    %W%     wlan client ssid                default:   %D1% (short domain name)
     %V%     VPN network                     ...       '10.10.6.0/19'
     %X%     repeater network                ...       '10.10.5.0/19'
     %Y%     dhcp/dynamic network            ...       '10.10.4.0/19'

@@ -9,252 +9,261 @@ msgstr "BSD Lizenz"
 msgid "Centauri initialization and launcher for appliances"
 msgstr "Centauri Initialisierung und Appliance Starter"
 
-#: /var/centauri/tools/centaurisysinit:54
+#: /var/centauri/tools/centaurisysinit:55
 msgid "'$DAT_AUTOLOGIN' is a symlink to '/dev/null'"
 msgstr "'$DAT_AUTOLOGIN ist ein Verweis zu '/dev/null'"
 
-#: /var/centauri/tools/centaurisysinit:56
+#: /var/centauri/tools/centaurisysinit:57
 msgid "Missing '$DAT_AUTOLOGIN' file"
 msgstr "Fehlende '$DAT_AUTOLOGIN' Datei"
 
-#: /var/centauri/tools/centaurisysinit:59
+#: /var/centauri/tools/centaurisysinit:60
 msgid "No home folder"
 msgstr "Kein Heimverzeichnis"
 
-#: /var/centauri/tools/centaurisysinit:85
+#: /var/centauri/tools/centaurisysinit:86
 msgid "Found no 'appliance' definitions"
 msgstr "Keine 'appliance' Definitionen gefunden"
 
-#: /var/centauri/tools/centaurisysinit:102
+#: /var/centauri/tools/centaurisysinit:103
 msgid "Invalid appliance index:"
 msgstr "Appliance Index ungültig:"
 
-#: /var/centauri/tools/centaurisysinit:106
+#: /var/centauri/tools/centaurisysinit:107
 msgid "Appliance not found"
 msgstr "Appliance nicht gefunden"
 
-#: /var/centauri/tools/centaurisysinit:113
+#: /var/centauri/tools/centaurisysinit:114
 msgid "Cannot enable this appliance:"
 msgstr "Appliance kann nicht eingerichtet werden:"
 
-#: /var/centauri/tools/centaurisysinit:116
+#: /var/centauri/tools/centaurisysinit:117
 msgid "Add appliance '%s' to boot menu"
 msgstr "Appliance '%s' zu Boot-Menü hinzufügen"
 
-#: /var/centauri/tools/centaurisysinit:117
+#: /var/centauri/tools/centaurisysinit:118
 msgid "Remove appliance '%s' from boot menu"
 msgstr "Appliance '%s' vom Boot-Menü entfernen"
 
-#: /var/centauri/tools/centaurisysinit:118
+#: /var/centauri/tools/centaurisysinit:119
 msgid "Boot as appliance '%s'"
 msgstr "Als '%s' Appliance booten"
 
-#: /var/centauri/tools/centaurisysinit:126
+#: /var/centauri/tools/centaurisysinit:127
 msgid "Mode '%s' no configured for host, no automatic setup"
 msgstr "Rechnerkonfiguration '%s' Modus, keine automatische Einrichtung"
 
-#: /var/centauri/tools/centaurisysinit:170
+#: /var/centauri/tools/centaurisysinit:159
 msgid "No supported boot method implemented"
 msgstr "Keine unterstützte Boot Methode implementiert"
 
-#: /var/centauri/tools/centaurisysinit:223
+#: /var/centauri/tools/centaurisysinit:212
 msgid "Appliance mode"
 msgstr "Appliance Modus"
 
-#: /var/centauri/tools/centaurisysinit:227
+#: /var/centauri/tools/centaurisysinit:216
 msgid "Starting network"
 msgstr "Netzwerk wird gestartet"
 
+#: /var/centauri/tools/centaurisysinit:224
+#: /var/centauri/tools/centaurisysinit:227
+#: /var/centauri/tools/centaurisysinit:232
 #: /var/centauri/tools/centaurisysinit:235
-#: /var/centauri/tools/centaurisysinit:238
-#: /var/centauri/tools/centaurisysinit:243
-#: /var/centauri/tools/centaurisysinit:246
 msgid "Autologin user"
 msgstr "Autologin Benutzer"
 
-#: /var/centauri/tools/centaurisysinit:235
+#: /var/centauri/tools/centaurisysinit:224
 msgid "Disabled via symlink to '/dev/null'"
 msgstr "Durch Verweis auf '/dev/null' ausgeschaltet"
 
-#: /var/centauri/tools/centaurisysinit:238
+#: /var/centauri/tools/centaurisysinit:227
 msgid "Starting up"
 msgstr "Initialisierung läuft"
 
-#: /var/centauri/tools/centaurisysinit:243
+#: /var/centauri/tools/centaurisysinit:232
 msgid "Enabled by default"
 msgstr "Voreingestellt"
 
-#: /var/centauri/tools/centaurisysinit:246
+#: /var/centauri/tools/centaurisysinit:235
 msgid "Not enabled, try 'centauristartup install $auto'"
 msgstr "Nicht eingerichtet, siehe 'centauristartup install $auto'."
 
-#: /var/centauri/tools/centaurisysinit:257
-#: /var/centauri/tools/centaurisysinit:268
-#: /var/centauri/tools/centaurisysinit:271
-#: /var/centauri/tools/centaurisysinit:274
+#: /var/centauri/tools/centaurisysinit:248
+#: /var/centauri/tools/centaurisysinit:255
+#: /var/centauri/tools/centaurisysinit:265
+#: /var/centauri/tools/centaurisysinit:267
+#: /var/centauri/tools/centaurisysinit:269
 msgid "Network config"
 msgstr "Netzwerkeinstellung"
 
-#: /var/centauri/tools/centaurisysinit:257
-msgid "configuration update"
-msgstr "Einstallung aktualisieren"
-
-#: /var/centauri/tools/centaurisysinit:268
+#: /var/centauri/tools/centaurisysinit:248
 msgid "hostname changed"
 msgstr "Rechnername geändert"
 
-#: /var/centauri/tools/centaurisysinit:271
+#: /var/centauri/tools/centaurisysinit:255
+msgid "configuration update"
+msgstr "Einstallung aktualisieren"
+
+#: /var/centauri/tools/centaurisysinit:265
+msgid "interface list changed to '%s'"
+msgstr "Schnittstellenliste nach '%s' geändert"
+
+#: /var/centauri/tools/centaurisysinit:267
 msgid "connect method changed to '%s'"
 msgstr "Verbindungsmethode nach '%s' geändert"
 
-#: /var/centauri/tools/centaurisysinit:274
+#: /var/centauri/tools/centaurisysinit:269
 msgid "naming mode changed to '%s'"
 msgstr "Modus für Schnittstellenname nach '%s' geändert"
 
-#: /var/centauri/tools/centaurisysinit:293
+#: /var/centauri/tools/centaurisysinit:281
+msgid "System startup..."
+msgstr "System fährt hoch..."
+
+#: /var/centauri/tools/centaurisysinit:290
 msgid "Running script"
 msgstr "Skript ausführen"
 
-#: /var/centauri/tools/centaurisysinit:297
+#: /var/centauri/tools/centaurisysinit:294
 msgid "Missing script"
 msgstr "Skript fehlt"
 
-#: /var/centauri/tools/centaurisysinit:305
+#: /var/centauri/tools/centaurisysinit:302
 msgid "quit"
 msgstr "beenden"
 
-#: /var/centauri/tools/centaurisysinit:308
+#: /var/centauri/tools/centaurisysinit:305
 msgid "Running full network setup"
 msgstr "Vollständige Netzwerkeinrichtung ausführen"
 
-#: /var/centauri/tools/centaurisysinit:325
+#: /var/centauri/tools/centaurisysinit:322
 msgid "Selectable boot modes and appliances are:"
 msgstr "Auswählbare Boot-Modi und Appliances sind:"
 
-#: /var/centauri/tools/centaurisysinit:327
+#: /var/centauri/tools/centaurisysinit:324
 msgid "Default boot mode"
 msgstr "Standard Boot Modus"
 
-#: /var/centauri/tools/centaurisysinit:349
+#: /var/centauri/tools/centaurisysinit:346
 msgid "[#] This appliance is currently not enabled. To use it, please run"
 msgstr "[#] Diese Appliance ist derzeit nicht verfügbar. Bitte Einrichten"
 
-#: /var/centauri/tools/centaurisysinit:350
+#: /var/centauri/tools/centaurisysinit:347
 msgid "    'centauristartup install $optu'."
 msgstr "    mit 'centauristartup install $optu'."
 
-#: /var/centauri/tools/centaurisysinit:352
+#: /var/centauri/tools/centaurisysinit:349
 msgid "[*] This appliance is not enabled by network configuration. Please"
 msgstr ""
 "[*] Diese Appliance ist nicht in der Netzwerkkonfiguration eingerichtet."
 
-#: /var/centauri/tools/centaurisysinit:353
+#: /var/centauri/tools/centaurisysinit:350
 msgid "    adjust the appropriate 'option <what> <host>...' statement in"
 msgstr ""
 "    Bitte die entsprechende 'option <what> <host>...' Zeile in der Datei"
 
-#: /var/centauri/tools/centaurisysinit:354
+#: /var/centauri/tools/centaurisysinit:351
 msgid "    file '/etc/default/centaurinetcfg' to enable it."
 msgstr "    '/etc/default/centaurinetcfg' anpassen."
 
-#: /var/centauri/tools/centaurisysinit:357
+#: /var/centauri/tools/centaurisysinit:354
 msgid "Select an Appliance or hit <return> when finished"
 msgstr "Eine Appliance auswählen oder <Eingabe> wenn fertig"
 
-#: /var/centauri/tools/centaurisysinit:404
+#: /var/centauri/tools/centaurisysinit:401
 msgid "Invalid arguments:"
 msgstr "Ungültige Argumente:"
 
-#: /var/centauri/tools/centaurisysinit:427
+#: /var/centauri/tools/centaurisysinit:424
 msgid "Issue message #%s"
 msgstr "Hinweisnachricht Nr. %s"
 
-#: /var/centauri/tools/centaurisysinit:431
+#: /var/centauri/tools/centaurisysinit:428
 msgid "Press any key to continue"
 msgstr "Taste zur Fortsetzung drücken"
 
-#: /var/centauri/tools/centaurisysinit:450
+#: /var/centauri/tools/centaurisysinit:447
 msgid "Cannot find active console, use <Alt><Fn> to switch manually"
 msgstr ""
 "Finde keine aktive Konsole, <Alt><Fn> für manuelles Umschalten benutzen"
 
-#: /var/centauri/tools/centaurisysinit:488
+#: /var/centauri/tools/centaurisysinit:485
 msgid "add an issue text from stdin"
 msgstr "Hinweistext von stdin hinzufügen"
 
-#: /var/centauri/tools/centaurisysinit:489
+#: /var/centauri/tools/centaurisysinit:486
 msgid "add a issue file or an exucutable"
 msgstr "Eine Aufgaben-Notiz oder Programm hinzufügen"
 
-#: /var/centauri/tools/centaurisysinit:490
+#: /var/centauri/tools/centaurisysinit:487
 msgid "remove any pending issues"
 msgstr "Alle ausstehenden Aufgaben entfernen"
 
-#: /var/centauri/tools/centaurisysinit:491
+#: /var/centauri/tools/centaurisysinit:488
 msgid "show or run issues, used by 'centaurissues.service'"
 msgstr "Aufgaben ausführen oder anzeigen, siehe 'centauriissues.service'"
 
-#: /var/centauri/tools/centaurisysinit:492
+#: /var/centauri/tools/centaurisysinit:489
 msgid "test for pending service, can wait until done"
 msgstr "Auf anstehenden Aufgaben prüfen, kann bis zur Erledigung warten"
 
-#: /var/centauri/tools/centaurisysinit:493
+#: /var/centauri/tools/centaurisysinit:490
 msgid "Appliance actions"
 msgstr "Appliance Aktionen"
 
-#: /var/centauri/tools/centaurisysinit:494
+#: /var/centauri/tools/centaurisysinit:491
 msgid "list configured appliances"
 msgstr "Konfigurierte Appliances auflisten"
 
-#: /var/centauri/tools/centaurisysinit:496
+#: /var/centauri/tools/centaurisysinit:493
 msgid "enter an appliance mode"
 msgstr "Zu Appliance Modus wechseln"
 
-#: /var/centauri/tools/centaurisysinit:497
+#: /var/centauri/tools/centaurisysinit:494
 msgid "[*] set/remove a boot default"
 msgstr "[*] Eine Boot-Vorgabe setzen/löschen"
 
-#: /var/centauri/tools/centaurisysinit:498
+#: /var/centauri/tools/centaurisysinit:495
 msgid "[*] disable an appliance in boot menu"
 msgstr "[*] Appliance aus dem Boot Menü entfernen"
 
-#: /var/centauri/tools/centaurisysinit:499
+#: /var/centauri/tools/centaurisysinit:496
 msgid "[*] enable an appliance in boot menu"
 msgstr "[*] Appliance in das Boot Menü einfügen"
 
-#: /var/centauri/tools/centaurisysinit:501
+#: /var/centauri/tools/centaurisysinit:498
 msgid "[*] these actions use the 'centauriefilinux' or 'centauriraspi' tools."
 msgstr "[*] diese Aktionen benutzen 'centauriefilinux' oder 'centauriraspi'."
 
-#: /var/centauri/tools/centaurisysinit:502
+#: /var/centauri/tools/centaurisysinit:499
 msgid "    Grub's boot menu must be adapted manually (if used at all)."
 msgstr "    Grubs Bootmenü muß manuell angepaßt werden (falls verwendet)."
 
-#: /var/centauri/tools/centaurisysinit:505
+#: /var/centauri/tools/centaurisysinit:502
 msgid "appliance name or index (see 'list' action)"
 msgstr "Appliance Name oder Index (siehe 'list' Aktion)"
 
-#: /var/centauri/tools/centaurisysinit:506
+#: /var/centauri/tools/centaurisysinit:503
 msgid "an executable and arguments"
 msgstr "Programm nebst Argumenten"
 
-#: /var/centauri/tools/centaurisysinit:507
+#: /var/centauri/tools/centaurisysinit:504
 msgid "console tty number  (usually: 8)"
 msgstr "TTY-Nummer der Konsole (meist: 8)"
 
-#: /var/centauri/tools/centaurisysinit:508
+#: /var/centauri/tools/centaurisysinit:505
 msgid "a centauriswitch networking mode"
 msgstr "Ein 'centauriswitch' Netzwerkmodus"
 
-#: /var/centauri/tools/centaurisysinit:509
+#: /var/centauri/tools/centaurisysinit:506
 msgid "appliance run-level (usually: 2|3)"
 msgstr "Appliance Run-Level (meist: 2|3)"
 
-#: /var/centauri/tools/centaurisysinit:510
+#: /var/centauri/tools/centaurisysinit:507
 msgid "appliance user      (usually: local|kiosk|clock)"
 msgstr "Appliance Benutzer  (meist: local|kiosk|clock)"
 
-#: /var/centauri/tools/centaurisysinit:511
+#: /var/centauri/tools/centaurisysinit:508
 msgid "issue service test maximum wait time"
 msgstr "Maximale Wartezeit auf 'issue' Dienst"
 

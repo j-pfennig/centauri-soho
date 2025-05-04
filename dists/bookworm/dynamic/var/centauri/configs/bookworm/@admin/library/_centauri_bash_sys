@@ -43,10 +43,10 @@
 #,      [[syssetup()]]
 #,      °  └── [[_centauri_bash_ext]]
 #
-# Copyright Dr. J. Pfennig (c) 2019-2024
+# Copyright Dr. J. Pfennig (c) 2019-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_sys']='0.28:4'
+CEN_MODULES['_centauri_bash_sys']='0.29:4'
 
 CEN_SYS_STATE_DIR="$CEN_ROOT/persistent"    # non-volatile
 CEN_SYS_CACHE_DIR="$CEN_ROOT/transient"     # volatile
@@ -68,6 +68,13 @@ CEN_SYS_PLASMA=                 # kde plasma version (sortable)
 CEN_SYS_QTVERS=                 # qt version (sortable)
 
 # ------------------------------------------------------------------------------
+# data from _cen_ins_archinfo
+# ------------------------------------------------------------------------------
+
+CEN_SYS_CPU_ARCH=               # amd64 arm64 armhf
+CEN_SYS_PLATFORM=               # x86|arm (pc)  rpi (raspi2-5)  r32 (raspi1-2)
+
+# ------------------------------------------------------------------------------
 # default data for sysconfig (overridden by config file)
 # ------------------------------------------------------------------------------
 
@@ -81,28 +88,37 @@ CEN_PATH_REXP=()                # list of path replacements
 CEN_ROOTDEFS=()                 # see _cen_sys_rootdefs
 
 # ------------------------------------------------------------------------------
+# call function in _centauri_bash_ins: <func> <arg>...
+# ------------------------------------------------------------------------------
+_cen_ins_call() {
+    $CEN_TRACE2 -a -c 'installer call' "$*"
+    [ -z "${CEN_MODULES['_centauri_bash_ins']}" ] && embed -m '_centauri_bash_ins'
+    _cen_ins_$1 "${@:2}"
+}
+
+# ------------------------------------------------------------------------------
 # fill CEN_ROOTDEFS from CEN_INSTALL: [<rootdefs>]
 # ------------------------------------------------------------------------------
 _cen_sys_rootdefs() {
     [ -n "$CEN_ROOTDEFS" -a "${1:--}" = '-' ] && return 0
-    embed -m '_centauri_bash_ins'
-    _cen_ins_chksystemd
-    _cen_ins_rootdefs "$1"
+    _cen_ins_call chksystemd
+    _cen_ins_call rootdefs "$1"
 }
 
 # ------------------------------------------------------------------------------
 # sysversion - determine os/kde versions, read/write version file
 #
-# Call:     sysversion [-e|-f] [-k] [-m] [-o] [-r|-u|-w]
+# Call:     sysversion [-e|-f] [-a] [-k] [-m|-v] [-o] [-r|-u|-w]
 #
-# Options:  -e  report error when information cannot be obtained
+# Options:  -a  get hardware architecture and platform
+#           -e  report error when information cannot be obtained
 #           -f  make errors fatal
 #           -k  get kde and plasma version, see remarks about kde/plasma
 #           -m  print version info via [[message()]]
 #           -o  get os version
 #           -r  cache read only, return **false** for no cached data
 #           -u  update cache if needed
-#           -m  print version info via [[trace()]]
+#           -v  print version info via [[trace()]]
 #           -w  refresh information and write cache
 #
 # Variables:The function tries to obtain the following data:
@@ -117,6 +133,9 @@ _cen_sys_rootdefs() {
 #,          CEN_SYS_KDEVERS  -  KDE main version (sortable)
 #,          CEN_SYS_PLASMA   -  KDE plasma version (sortable)
 #,          CEN_SYS_QTVERS   -  QT version (sortable)
+#
+#,          CEN_SYS_CPU_ARCH -  amd64 arm64 armhf
+#,          CEN_SYS_PLATFORM -  x86|arm (pc)  rpi (raspi2-5)  r32 (raspi1-2)
 #
 # Storage:  The root user only uses the shared cache:
 #
@@ -163,13 +182,14 @@ sysversion() {
 
     ### main ###
 
-    local _flgk _flgo _flgu _flgw _fpla _otra _oerr=':' _errk
+    local _flgk _flgo _flgu _flgw _fpla _oarc _otra _oerr=':' _errk
     if [ $# = 0 ] ; then                            # do nothing if state is loaded
         [ -n "$CEN_SYS_VERSION" -a -n "$CEN_SYS_KDEVERS" ] && return 0
         _flgo=1 ; _flgk=1 ; _flgu=1
     else
         while [ $# -gt 0 ] ; do
         case "$1" in
+        -a)   _oarc=1 ;;
         -e)   _oerr='error' ;;
         -f)   _oerr='fatal'  ;;
         -k)   _flgk=1 ; _errk=1
@@ -186,6 +206,12 @@ sysversion() {
         [ "$EUID" = 0 -a "$_flgw" != 0 ] && _flgu=1 # root does implicit update
         [ -z "$_flgk$_flgo$_flgr" ] && {  _flgk=1 ; _flgo=1 ; }
     fi
+
+    if [ -n "$_oarc" ] ; then
+        _cen_ins_call archinfo $_otra CEN_SYS_CPU_ARCH CEN_SYS_PLATFORM ||
+            _oerr $"Unsuported architecture" "$CEN_SYS_CPU_ARCH"
+    fi
+
     # 1st step: try to read, prefer system file
 
     if [ "$_flgw" = 1 -o -n "$_otra" ] ; then       # opt -w|-m skip read
@@ -227,20 +253,19 @@ sysversion() {
         [ -n "$_flgo$_flgk" ] && $CEN_TRACE -a -c -p ' ' $"Get %s version" "$_text"
     fi
 
-    embed -m '_centauri_bash_ins'
     if [ -n "$_flgo" ] ; then
-        _cen_ins_version -s
+        _cen_ins_call version -s
         if [ "${CEN_SYS_NICKNAME:--}" = '-' ] ; then
             $_oerr $"Linux distribution unknown" ; return 1
         fi
     fi
     if [ -n "$_flgk" ] ; then
-        _cen_ins_version -k
+        _cen_ins_call version -k
         if [ "$CEN_SYS_KDEVERS" = '-' ] ; then
             $_oerr $"No KDE version found" ; [ -n "$_errk" ] && return 1
         fi
     fi
-    [ -n "$_otra" ] && _cen_ins_version $_otra
+    [ -n "$_otra" ] && _cen_ins_call version $_otra
 
     if [ "$_flgw" != 1 ] ; then                     # opt -w always writes
         [ -z "$_flgu" ] && return 0                 # opt -u wanted to update
@@ -249,7 +274,7 @@ sysversion() {
 
     $CEN_TRACE -a -c -p ' ' $"Update '%s'" "$CEN_SYS_STATE_FILE"
     folder -m "${CEN_SYS_STATE_FILE%/*}" '775'
-    _cen_ins_version -w                             # return state
+    _cen_ins_call version -w                        # return state
 }
 
 # ------------------------------------------------------------------------------
@@ -316,13 +341,13 @@ syssetup() {
     done
 
     # initial install config is expected in CEN_ROOTDEFS
-    _cen_sys_rootdefs "${2:-$1}" || return 1        # also load _centauri_bash_ins
+    _cen_sys_rootdefs "${2:-$1}" || return 1
 
     if [ "$_updt" = '-n' ] ; then                   # copy library files
         [ "${1:--}" = '-' ] && fatal $"Missing argument:" '<orig>'
         [ "${2:--}" = '-' ] && fatal $"Missing argument:" '<dest>'
         folder -c -f -- "${1:-$CEN_ROOT}" ; shift
-        _cen_ins_files ; return                     # return status
+        _cen_ins_call files ; return                # return status
     fi || :
 
     # sysconfig, is called twice during setup as the config file may have changed
@@ -336,8 +361,8 @@ syssetup() {
     splitjoin -j CEN_INSTALL -d ':' -i CEN_ROOTDEFS
     $CEN_TRACE -a $"Installation configuration:" "${CEN_INSTALL[@]#$CEN_PATHS}"
 
-    _cen_ins_library $_remv $_updt $_usrv       # run update/install
-     _stat=$? ; [ "$_stat" = 128 ] && return 128 # cancelled
+    _cen_ins_call library $_remv $_updt $_usrv      # run update/install
+     _stat=$? ; [ "$_stat" = 128 ] && return 128    # cancelled
 
     if [ -z "$_remv" -a "$_updt" != '-t' ] ; then
         local _fold="$PWD"
@@ -427,7 +452,7 @@ sysinfo() {
         uninst*)    _iopt='-r' ;;
         update)     _iopt='-u' ;;
         detailed)   _dopt=1 ;;
-        ver*)       sysversion -f -m -u ; quit ;;
+        ver*)       sysversion -a -m -u ; quit ;;
         *)          ___cen_sys_help -f
     esac
 
@@ -497,7 +522,7 @@ sysconfig() {
     # reader callback: <line>
     ___cen_sys_read() {
         set -f ; eval set -- $1 ; set +f ; local _skey="$1" ; shift
-        $CEN_TRACE2 "[library] $_skey $*"
+        $CEN_TRACE2 -a  -c '[library]' "$_skey $*"
         local _sifs="$IFS"
 
         # reset statements
@@ -517,10 +542,10 @@ sysconfig() {
             obsolete)  CEN_SYS_OBSOLETE+=("$@") ;;
             service)   CEN_SYS_SERVICE+=("$@") ;;
             defaults)  ;;                               # obsolete, ignore
-            repath )   configfile -w "sysconfig" 3 + $#
+            repath )   configfile -w 'sysconfig' 3 + $#
                        IFS=$'\a' CEN_PATH_REXP+=("$*") ; IFS="$_sifs"
                        ;;
-            *)         configfile -w "sysconfig"
+            *)         configfile -w 'sysconfig'
         esac
         return 0
     }
@@ -546,31 +571,27 @@ sysconfig() {
     folder -f -- "$CEN_ROOT"
     [ -w "$CEN_ROOT" ] || fatal $"You are not allowed to alter this installation"
 
-    {   embed -m '_centauri_bash_run'                       # load modules ext/iom/run
-        CEN_SYS_INCLUDE=() ; CEN_SYS_EXCLUDE=() ; CEN_SYS_OBSOLETE=()
-        CEN_SYS_SERVICE=() ; CEN_PATH_REXP=()
-        _cen_run_config -p "${CEN_PATHS[6]}/centauri-bash-lib" \
-                        -r ___cen_sys_read 'library' || _stat=$?
-        shortpath -q || _stat=$?                            # init paths cache
+    embed -m '_centauri_bash_run'                       # load modules ext/iom/run
+    CEN_SYS_INCLUDE=() ; CEN_SYS_EXCLUDE=() ; CEN_SYS_OBSOLETE=()
+    CEN_SYS_SERVICE=() ; CEN_PATH_REXP=()
+    _cen_run_config -p "${CEN_PATHS[6]}/centauri-bash-lib" \
+                    -r ___cen_sys_read 'library' || _stat=$?
+    shortpath -q || _stat=$?                            # init paths cache
 
-        if [ -n "$_popt" -a -d "$CEN_TOOLS" ] ; then        # generate proxy
-            local _parr _prox
-            _cen_run_config -v _parr 'proxy'
-            splitjoin -j _prox -n -i _parr
-            embed -m '_centauri_bash_ins'
-            _cen_ins_proxy "$_prox" || _stat=$?
-        fi || :
+    if [ -n "$_popt" -a -d "$CEN_TOOLS" ] ; then        # generate proxy
+        local _parr _prox
+        _cen_run_config -v _parr 'proxy'
+        splitjoin -j _prox -n -i _parr
+        _cen_ins_call proxy "$_prox" || _stat=$?
+    fi || :
 
-        if [ -n "$_copt" -a -d "$CEN_LIBRARY" ] ; then      # bash completion
-            embed -m '_centauri_bash_ins'
-            _cen_ins_completion || _stat=$?
-        fi
+    if [ -n "$_copt" -a -d "$CEN_LIBRARY" ] ; then      # bash completion
+        _cen_ins_call completion || _stat=$?
+    fi
 
-        if [ -n "$_sopt" ] ; then                           # systemd check
-            embed -m '_centauri_bash_ins'
-            _cen_ins_chksystemd || _stat=$?
-        fi
-    } || :
+    if [ -n "$_sopt" ] ; then                           # systemd check
+        _cen_ins_call chksystemd || _stat=$?
+    fi
     return $_stat
 }
 

@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2025; BSD License"
 CEN_TITLE="Runs a backup program based on a configuration file"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m bat -m con - '0.52:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m bat -m con - '0.53:4' || exit 2
 
 # Data
 DAT_DEF_CONF="$CEN_ROOT/default/$CEN_NAME"
@@ -210,7 +210,7 @@ do_parse() {
 
         # commands in macro
         if [ -n "$DAT_MACRO" ] ; then
-            if [ "$2" = "exclude" ] ; then
+            if [ "$2" = 'exclude' ] ; then
                 DAT_MACRO_MAP["$DAT_MACRO"]+=$'\n'"$2 $3"
             else
                 fatal "Invalid in macro: $cmd (line $line)"
@@ -219,7 +219,7 @@ do_parse() {
         fi
 
         # expand a macro
-        [ "$2" = "expand" ] || return 1
+        [ "$2" = 'expand' ] || return 1
         [ "$filter" != '-' -a "$filter" != "$DAT_TARGET" ] && return 1
         [ -z "${DAT_MACRO_MAP["$3"]}" ] && fatal "Undefined macro: $3 (line $line)"
         DAT_PREFIX="${4:-.}"
@@ -227,9 +227,9 @@ do_parse() {
         return 1
     }
 
-    local htar="${2--}" ; [ "$htar" = '-' ] && htar=":"
-    local hinc="${3--}" ; [ "$hinc" = '-' ] && hinc=":"
-    local hexc="${4--}" ; [ "$hexc" = '-' ] && hexc=":"
+    local htar="${2--}" ; [ "$htar" = '-' ] && htar=':'
+    local hinc="${3--}" ; [ "$hinc" = '-' ] && hinc=':'
+    local hexc="${4--}" ; [ "$hexc" = '-' ] && hexc=':'
     [ -r "$CEN_OPT_CONFIG" ] || fatal "Cannot read: $CEN_OPT_CONFIG"
 
     DAT_INCLUDE=() ; DAT_EXCLUDE=() ; DAT_MACRO_MAP=() ; DAT_SKIP_TAG=
@@ -237,32 +237,32 @@ do_parse() {
     local line=0 cmd arg1 arg2 arg3 args
     while true ; do
         if [ -n "$DAT_EXPAND" ] ; then
-            splitjoin -s args -d " \t" "$DAT_EXPAND"
+            splitjoin -s args -d ' \t' "$DAT_EXPAND"
             DAT_EXPAND=("${DAT_EXPAND[@]:1}")
             cmd="${args[0]}" ; arg1="${args[1]}" ; arg2="${args[2]}" ; arg3="${args[3]}"
-            [ "${arg1::2}" = "./" ] && arg1="$DAT_PREFIX${arg1:1}"
+            [ "${arg1::2}" = './' ] && arg1="$DAT_PREFIX${arg1:1}"
         else
             read cmd arg1 arg2 arg3 || break
-            line=$((line + 1))
+            ((line += 1))
         fi
 
         case "$cmd" in
-        \#*|"")     ;;
+        \#*|'')     ;;
 
         # target
         tar*)   [ -z "$arg1" ] && fatal "Missing target: $cmd (line $line)"
-                _chk_target "$arg1" && $htar "target" "$arg1" "$arg2 $arg3"
+                _chk_target "$arg1" && $htar 'target' "$arg1" "$arg2 $arg3"
                 ;;
 
         inc*)   [ -z "$arg1" ] && fatal "Missing path: $cmd (line $line)"
                 [ -n "$arg2" ] && fatal "Extra input: $arg2 (line $line)"
-                _chk_target && $hinc "include" "$arg1"
+                _chk_target && $hinc 'include' "$arg1"
                 ;;
 
         exc*)   [ -z "$arg1" ] && fatal "Missing path: $cmd (line $line)"
                 [ -n "$arg2" ] && fatal "Extra input: $arg2 (line $line)"
-                if ! _chk_macro "" "exclude" "$arg1" ; then
-                    _chk_target && $hexc "exclude" "$arg1"
+                if ! _chk_macro '' 'exclude' "$arg1" ; then
+                    _chk_target && $hexc 'exclude' "$arg1"
                 fi
                 ;;
 
@@ -271,20 +271,20 @@ do_parse() {
                 ;;
 
         fol*)   [ -z "$arg1" ] && fatal "Missing argument: $cmd (line $line)"
-                _chk_target && $htar "folder" "$arg1" "$arg2"
+                _chk_target && $htar 'folder' "$arg1" "$arg2"
                 ;;
 
         clo*)
-                _chk_target && $htar "clone" "$arg1" "$arg2"
+                _chk_target && $htar 'clone' "$arg1" "$arg2"
                 ;;
         # group
 
         gro*)   [ -z "$arg1" ] && fatal "Missing group name: $cmd (line $line)"
-                _chk_group "$arg1" && $htar "group" "$arg1" "$arg2 $arg3"
+                _chk_group "$arg1" && $htar 'group' "$arg1" "$arg2 $arg3"
                 ;;
 
         mem*)   [ -z "$arg1" ] && fatal "Missing target name: $cmd (line $line)"
-                _chk_group && $htar "member" "$arg1" "$arg2"
+                _chk_group && $htar 'member' "$arg1" "$arg2"
                 ;;
 
         mac*)   [ -z "$arg1" ] && fatal "Missing macro name: $cmd (line $line)"
@@ -295,12 +295,12 @@ do_parse() {
 
         def*)   [ "$filter" = '-' -o "$filter" = "$DAT_TARGET" -o \
                   "$filter" = "$DAT_GROUP" ] &&
-                   $htar "default" "${arg1:--}" "${arg2:--}" "${arg3:--}"
+                   $htar 'default' "${arg1:--}" "${arg2:--}" "${arg3:--}"
                 ;;
 
         exp*)   [ -z "$arg1" ] && fatal "Missing macro name: $cmd (line $line)"
                 [ -z "$arg2" ] && fatal "Missing path: $cmd (line $line)"
-                _chk_macro "" "expand" "$arg1" "$arg2"
+                _chk_macro "" 'expand' "$arg1" "$arg2"
                 ;;
 
         *)
@@ -316,7 +316,7 @@ do_checks() {
     local incl
     if [ "$1" = "include" ] ; then
         incl=1
-    elif [ "$1" != "exclude" ] ; then
+    elif [ "$1" != 'exclude' ] ; then
         fatal "invalid do_checks: $*"
     fi
 
@@ -348,7 +348,7 @@ do_generate() {
          # check if path exists in any include path
          local incl leng resi
          for incl in "${DAT_INCLUDE[@]%/.}" ; do
-            [ "$incl" = '/' -o "$incl" = "./" ] || incl="${incl%/}"
+            [ "$incl" = '/' -o "$incl" = './' ] || incl="${incl%/}"
             [ "$incl" = "$1" ] && return 0
             leng="${#incl}" ; leng="$((leng + 1))"
             resi="${1::$leng}"
@@ -604,14 +604,14 @@ do_clone() {
     fi
 
     [ -n "$DAT_TARGET" ] || DAT_TARGET="${wdev##*/}"
-    [ -z "$DAT_TARGET" ] && DAT_TARGET="clone"
+    [ -z "$DAT_TARGET" ] && DAT_TARGET='clone'
     message "Backup target:" "$DAT_TARGET"
     if [ -z "$wdev" ] ; then
        warning -i -d mark "No device found for: '$relf', skip target '$DAT_TARGET'"
        return
     fi
 
-    do_filename "${DAT_TARGET}" "img" || return
+    do_filename "${DAT_TARGET}" 'img' || return
     error -q
 
     marg="$_filename.partial"
@@ -624,9 +624,9 @@ do_clone() {
     else
         opts+=(ntfsclone --save-image --output - "'$wdev'")
         if [ -z "$DAT_REMOTE" ] ; then
-            opts+=("|" $_pack_run ">" "'$marg'")
+            opts+=('|' $_pack_run '>' "'$marg'")
         else
-            opts+=("|" $_pack_run)
+            opts+=('|' $_pack_run)
         fi
     fi
     [ -n "$DAT_REMOTE" ] && opts+=("|" centaurissh --host=$DAT_REMOTE batch --- cat - "\>" "'$marg'")
@@ -655,13 +655,13 @@ actionList() {
    # callbacks
     ___print() {
         local text
-        if [ "$1" = "target" -o "$1" = "group" ] ; then
+        if [ "$1" = 'target' -o "$1" = 'group' ] ; then
             do_print "%-8s %-16s %s" "$1" "$2" "$3"
             found="$1" ; tag="$2"
-        elif [ "$found" = "target" -o "$found" = "group" ] ; then
+        elif [ "$found" = 'target' -o "$found" = 'group' ] ; then
             [ "$1" = "include" ] && DAT_INCLUDE+=("$2")
-            [ "$1" = "clone"   ] && DAT_INCLUDE+=('-')
-            [ "$1" = "member"  ] && DAT_INCLUDE+=("$2")
+            [ "$1" = 'clone'   ] && DAT_INCLUDE+=('-')
+            [ "$1" = 'member'  ] && DAT_INCLUDE+=("$2")
             do_print -i "%-8s %s %s %s %s" "$@"
         fi
     }
@@ -676,7 +676,7 @@ actionList() {
         if [ -z "$found" ] ; then
             error "Target or group not found:" "$tag"
         elif [ -z "$DAT_INCLUDE" ] ; then
-            if [ "$found" != "target" ] ; then
+            if [ "$found" != 'target' ] ; then
                 error "No 'member' statement for group '$tag'"
             fi
         fi
@@ -693,23 +693,24 @@ actionRun() {
    local orig btag qtag found relf
 
    # callbacks
-    ___target() {   if [ "$1" = "member" ] ; then
+    ___target() {   if [ "$1" = 'member' ] ; then
                         DAT_INCLUDE+=("$2")
                     elif [ "$1" = "skiptag" ] ; then
                         DAT_SKIP_TAG="$2"
-                    elif [ "$1" = "folder" ] ; then
+                    elif [ "$1" = 'folder' ] ; then
                         [ ! -d "$relf" ] && relf="$2"
-                    elif [ "$1" = "clone" ] ; then
+                    elif [ "$1" = 'clone' ] ; then
                         found="$1"
-                    elif [ "$1" = "default" ] ; then
+                    elif [ "$1" = 'default' ] ; then
                         [ -z "$CEN_OPT_STORAGE" -a "$2" != '-' ] &&
-                            embed -r -s CEN_OPT_STORAGE centauripaths -L -F "$2"
+                            shortpath -f -a CEN_OPT_STORAGE -- "$2"
+                            # embed -r -s CEN_OPT_STORAGE centauripaths -L -F "$2"
                         [ -z "$CEN_OPT_PACK" -a "$3" != '-' ] &&
                             CEN_OPT_PACK="$3"
                         [ -z "$CEN_OPT_TAG" -a "$4" != '-' ] &&
                             CEN_OPT_TAG="$4"
                     elif [ -n "$found" ] ; then
-                        fatal "Ambiguous target given: $orig"
+                        fatal "Ambiguous target given:" "$orig"
                     else
                         found="$1" ; btag="$2"
                     fi
@@ -724,14 +725,14 @@ actionRun() {
 
     for btag in "$@" ; do
         # optional member (+ prefix)
-        if [ "${btag::1}" = "+" ] ; then
+        if [ "${btag::1}" = '+' ] ; then
             btag="${btag:1}" ; qtag=1
         fi
 
         # set/restore the base dir
         folder -f -c "$CEN_OPT_BASE"
 
-        # initially save options that are used by the "default" statement
+        # initially save options that are used by the 'default' statement
         if [ -z "$DAT_INITIAL" ] ; then
             error -q
             DAT_INITIAL="$PWD"
@@ -754,27 +755,27 @@ actionRun() {
         DAT_STORAGE="$DAT_INITIAL"
         [ -n "$CEN_OPT_STORAGE" ] && DAT_STORAGE="$CEN_OPT_STORAGE"
         [ "$DAT_STORAGE" = '/' ] || DAT_STORAGE+='/'
-        [ -z "$DAT_INCLUDE" -a "$found" = "target" ] && DAT_INCLUDE=(".")
+        [ -z "$DAT_INCLUDE" -a "$found" = 'target' ] && DAT_INCLUDE=('.')
 
         if [ -z "$found" ] ; then
             if [ -n "$DAT_RUN_IMPLIED" ] ; then
-                error "Neither an action, target or group: $btag"
+                error "Neither an action, target or group:" "$btag"
             else
                 error "Target or group not found:" "$btag"
             fi
 
-        elif [ "$found" = "clone" ] ; then
+        elif [ "$found" = 'clone' ] ; then
             DAT_TARGET="${CEN_OPT_TAG:-$btag}"
             do_clone "$relf"
 
         elif [ -z "$DAT_INCLUDE" ] ; then
             error "No 'member' statement for group '$btag'"
 
-        elif [ "$found" = "target" ] ; then
+        elif [ "$found" = 'target' ] ; then
             do_archive init "$btag"
-            if [ "${relf:-.}" != "." -a ! -d "$relf" ] ; then
-                if [ -n "$DAT_BTRFS" -a "${relf::2}" = "./" ] ; then
-                    relf="."
+            if [ "${relf:-.}" != '.' -a ! -d "$relf" ] ; then
+                if [ -n "$DAT_BTRFS" -a "${relf::2}" = './' ] ; then
+                    relf='.'
                 elif [ -z "$qtag" ] ; then
                     warning -a -d mark "Source '$relf' not found, skip target '$btag'"
                     continue
@@ -786,12 +787,12 @@ actionRun() {
 
             # handle snapshots
             if [ "$CEN_OPT_BASE" != '/' ] ; then
-                [ "$CEN_OPT_SNAP" != "0" ] && warning -i -d mark "Option --base disables --snapshot"
-            elif [ "$CEN_OPT_SNAP" != "0" ] ; then
+                [ "$CEN_OPT_SNAP" != 0 ] && warning -i -d mark "Option --base disables --snapshot"
+            elif [ "$CEN_OPT_SNAP" != 0 ] ; then
                 local relu rell reln
                 embed -s rell -- centaurisnapshot --quiet --zombie list --- "${relf:-.}" .
                 if [ -z "$rell" ] ; then
-                    if [ "$CEN_OPT_SNAP" = "1" ] ; then
+                    if [ "$CEN_OPT_SNAP" = 1 ] ; then
                         warning -i -d mark "Snapshot not found, skip target '$btag'"
                         continue
                     else
@@ -893,7 +894,7 @@ actionClone() {
 actionTargets() {
     # callback
     ___target() {
-        [ "$1" = "target" ] && do_print -i "%-12s# %s" "$2" "$3"
+        [ "$1" = 'target' ] && do_print -i '%-12s# %s' "$2" "$3"
     }
 
     [ -z "$CEN_OPT_PRINT" ] && message "targets in: $CEN_OPT_CONFIG"
@@ -906,7 +907,7 @@ actionTargets() {
 actionGroups() {
     # callback
     ___group() {
-        [ "$1" = "group" ] && do_print -i "%-12s# %s" "$2" "$3"
+        [ "$1" = 'group' ] && do_print -i '%-12s# %s' "$2" "$3"
     }
 
     [ -z "$CEN_OPT_PRINT" ] && message "groups in: $CEN_OPT_CONFIG"
@@ -949,14 +950,20 @@ options() {
     '')
         CEN_FEATURE_F="-f --force           allow to override existing output files"
         if [ -d "$CEN_OPT_BASE/Volumes/Root" ] ; then
-            DAT_BTRFS=1 ; CEN_OPT_BASE+="/Volumes"
+            DAT_BTRFS=1 ; CEN_OPT_BASE+='/Volumes'
             message -a "BTRFS Volume(s) detected"
         fi
-        if [ -n "$CEN_OPT_STORAGE" ] ; then
+        if [ "${CEN_OPT_OUTPUT::1}" = '/' ] ; then
+            trace "Absolute output path, ignoring '--storage'"
+            CEN_OPT_STORAGE='/'
+        elif [ "${CEN_OPT_STORAGE::1}" = '/' ] ; then
+            :
+        elif [ -n "$CEN_OPT_STORAGE" ] ; then
             DAT_REMOTE="${CEN_OPT_STORAGE%%:*}"
             if [ "$DAT_REMOTE" = "$CEN_OPT_STORAGE" ] ; then
+                shortpath -f -a CEN_OPT_STORAGE -- "$CEN_OPT_STORAGE"
+                [ -z "$CEN_OPT_STORAGE" ] && CEN_OPT_STORAGE="$DAT_REMOTE"
                 DAT_REMOTE=
-                embed -r -s CEN_OPT_STORAGE centauripaths -L -F "$CEN_OPT_STORAGE"
             else
                 CEN_OPT_STORAGE="${CEN_OPT_STORAGE#*:}"
                 embed -r -s CEN_OPT_STORAGE -- centaurissh --host "$DAT_REMOTE" batch --- \
