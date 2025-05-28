@@ -412,7 +412,8 @@ actionBrightness() {
     fi
     if [ ! -w "$bdev" ] ; then
         message -l "Trying to fix permissions:" "$bdev"
-        system -e -p -u - -- "$BASH" -c "chgrp video $bdev ; chmod 664 $bdev"
+        system -e -p -u - -- chgrp video "$bdev"
+        system -e -p -u - -- chmod 664 "$bdev"
     fi
 
     bdev="${bdev%/*}"

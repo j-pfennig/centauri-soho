@@ -4,7 +4,7 @@ CEN_LEGAL="Dr. J. Pfennig (c) 2023-2025; BSD License"
 CEN_TITLE=$"Generate interface, wlan, dhcp and dnsmasq configurations"
 
 # Import the bash library
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.14:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.15:4' || exit 2
 
 # Data
 CEN_OPT_APOINT=                 # see --host
@@ -1331,7 +1331,7 @@ actionInterface() {
 # ------------------------------------------------------------------------------
 actionNaming() {
     local stal stak stao stas stag atag want='bios'
-    local mode mini mmen mfil=1 mupd=1
+    local mode mini mmen mfil=1 mupd=1 iopt
 
     # --- collect status information ---
                                                 # current library mode
@@ -1390,10 +1390,10 @@ actionNaming() {
 
     if [ "$mode" = 'bios' ] ; then
         symlink -n '/dev/null' "$DAT_ETCDIR/systemd/network/99-default.link"
-        mini=2 ; mmen=2
+        mini=2 ; mmen=2 ; iopt='--ifnames=0'
     elif [ "$mode" = 'systemd' ] ; then
         remove -- "$DAT_ETCDIR/systemd/network/99-default.link"
-        mini=2 ; mmen=2
+        mini=2 ; mmen=2 ; iopt='--ifnames=1'
     fi
 
     if [ -n "$mini" -a "$CEN_OPT_HOST" != "$HOSTNAME" ] ; then
@@ -1449,10 +1449,10 @@ actionNaming() {
     if [ "$mmen" = 1 ] ; then
         if [ -e '/boot/firmware' ] ; then
             message -a "Updating firmware boot menu"
-            embed -v centauriraspi --yes entry -
+            embed -v centauriraspi $iopt --yes entry -
         elif [ -e '/boot/efi/loader' ] ; then
             message -a "Updating systemd boot menu"
-            embed -v centauriefilinux --yes menu
+            embed -v centauriefilinux $iopt --yes menu
         elif [ "$nmen" = 1 ] ; then
             warning -a "No systemd-boot configuration found"
         fi
@@ -1574,6 +1574,13 @@ interface $_netiface
 }
 
 # ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
+actionWake() {
+    system -c -e wakeonlan
+}
+
+# ------------------------------------------------------------------------------
 # wpa_supplicant configuration: [<ssid>|- [<psk>|-]] <opt=val>...
 # ------------------------------------------------------------------------------
 actionWpa() {
@@ -1598,7 +1605,7 @@ actionWpa() {
 
     # do we need a country code? Assume yes on a Raspberry Pi
     local cntr='#country=XX'
-    if netoption 'country' "$CEN_OPT_HOST" || system -c raspi-config ; then
+    if netoption 'country' "$CEN_OPT_HOST" || sysfind -q raspi-config ; then
         local line zone ftab='/usr/share/zoneinfo/zone.tab'
         if [ -r "$ftab" ] && resolve -l '/etc/localtime' ; then
             zone="${CEN_RESOLVE##*zoneinfo/}"
@@ -1715,6 +1722,8 @@ actions() {
         invoke -r 'radvd'     -        0   ;;
     rem*)
         invoke -r 'remove'    -        1   ;;
+    wak*)
+        invoke -r 'wake'      -        1 ;;
     wpa*)
         invoke -r 'wpa'       -        0 + ;;
 

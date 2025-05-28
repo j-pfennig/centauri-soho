@@ -3,7 +3,7 @@
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2018-2025; "$"BSD License"
 CEN_TITLE=$"Wait for Display and start X-Server"
 
-PATH+="${0%/*}" . _centauri_bash_lib -a -d -f -m svc -o -r -t - '0.31:4' || exit 2
+PATH+="${0%/*}" . _centauri_bash_lib -a -d -f -m svc -o -r -t - '0.33:4' || exit 2
 
 # Options
 CEN_OPT_CONSOLE=            # see --console
@@ -149,8 +149,9 @@ has_display() {
             [ -r "$card/status" ] || continue
             [ "${card/LVDS/}" != "$card" ] && continue   # pokini/notebook
             read xcon <"$card/status"
-            [ "$xcon" = 'connected' ] || continue
+            [ "${xcon:--unknown}" = 'unknown' ] && continue
             DAT_CARD="$card"
+            [ "$xcon" = 'connected' ] || continue
             trace -a -c $"Display connected" "$card"
             return 0
         done
@@ -179,7 +180,7 @@ has_display() {
     ___wait_loop() {
         local xcon wtim="$1" wmax="$2" wrun wras
         # raspberry might have a DSI display
-        if system -c raspi-config ; then
+        if sysfind -q raspi-config ; then
             set -- /sys/class/backlight/*
             [ -e "$1" ] && wras=1
         fi
@@ -205,7 +206,7 @@ has_display() {
                 ((wmax -= 1))
                 message -a -p $"Display not connected, waiting %s" "$wtim [s]"
             fi
-            timer -w "$wtim"
+            timer -r -w "$wtim"
         done
         return 1
     }
@@ -253,6 +254,49 @@ has_input() {
     CEN_DISPLAY_MICE="$mcnt"
     CEN_DISPLAY_TNAM="$nmou"
     status_file -w
+}
+
+# ------------------------------------------------------------------------------
+# rerun as a different user (does not return): <user>
+# ------------------------------------------------------------------------------
+usr_runas() {
+    local unam="$1"
+    message -a -p "Current user '%s' want '%s'" "$unam" "$CEN_OPT_USER"
+    context -r                              # we must be root
+
+    # create temporary /etc/XWrapper.conf config override (see centaurisysinit)
+    local wrap="${CEN_PATHS[2]}/X11/Xwrapper.config"
+    if [ -f "$wrap" ] && [ ! -f "$wrap.default" ] ; then
+        move -q -x -- "$wrap" "$wrap.default"
+        create -h - -- "$wrap" <<!EOF
+
+# We need this to have user access to tty and keyboard. At next boot the
+# centaurisysinit service will restore the saved /etc/X11/Xwrapper.conf:
+
+needs_root_rights=yes
+allowed_users=anybody
+!EOF
+    fi
+
+    set -- "$0" "${CEN_CMDOPTS[@]}" "${CEN_CMDARGS[@]}"
+    trace -a -c $"Rerun as user" -- "$CEN_OPT_USER:" "$*"
+    if dryrun -s ; then
+        quit $"Do not 'exec' with '--dryrun'"
+    elif system -c setpriv ; then
+        # re-run via setpriv
+        local egrp ; system -s egrp -f -p -- id -g "$CEN_OPT_USER"
+        eval folder -c -f ~"$CEN_OPT_USER"
+        local opts=("--reuid=$CEN_OPT_USER" "--regid=$egrp" \
+                    --init-groups --reset-env "$BASH" -l "$@")
+        trace -a -c $"Rerun" -- 'setpriv' "${opts[@]}"
+        exec setpriv "${opts[@]}"
+    else
+        # re-run via su (not sudo, context -u would do sudo)
+        local sexe="${@@Q}"
+        trace -a -c $"Rerun" -- "su -l -c \"$sexe\" $CEN_OPT_USER"
+        exec su -l -c "$sexe" "$CEN_OPT_USER"
+    fi
+    fatal $"Could not exec as '$CEN_OPT_USER'"
 }
 
 # ------------------------------------------------------------------------------
@@ -663,7 +707,7 @@ run_displaymgr() {
     esac
 
     PATH+=':/usr/sbin'
-    system -c "$1" || fatal -p $"Display-Manager '%s' not found" "$1"
+    sysfind -q -c "$1" || fatal -p $"Display-Manager '%s' not found" "$1"
     has_display ; set_mode                  # wait for monitor, set dm config
     system -x -f "$1" ; return 0            # does not return unless --dry
 }
@@ -672,7 +716,11 @@ run_displaymgr() {
 # The one and only action
 # ------------------------------------------------------------------------------
 run() {
-    local unam="$CEN_OPT_USER"
+    # run as another user ...
+    local unam="${USER:-$LOGNAME}"
+    [ "${CEN_OPT_USER:--}" = '-' ] && CEN_OPT_USER="$unam"
+    [ "$CEN_OPT_USER" != "$unam" ] && usr_runas "$unam"     # rerun as user
+    trace -a -c $"Running as" -- "$unam"
 
     # Option -R : run with xresources applied, restore without Xft.dpi (for KDE5)
     if [ -n "$CEN_OPT_RUN" ] ; then
@@ -816,6 +864,8 @@ options() {
             if [ -z "$CEN_OPT_MODE" -a "$CEN_OPT_SCALE" != 0 ] ; then
                 [ -n "$CEN_OPT_SCALE" ] && CEN_OPT_MODE='-'
             fi
+            # imples --server=none for --nowait
+            [ -n "$CEN_OPT_NOWAIT" ] && { CEN_OPT_SERVER='none' ; nock=1 ; }
             ;;
         none|auto|sddm|lightdm)
             nock=1 ;;
@@ -823,46 +873,6 @@ options() {
             CEN_OPT_SERVER="$DAT_GUI"
         esac
         [ -n "$CEN_OPT_SERVER" -a -z "$nock" ] && system -c -f -- "$CEN_OPT_SERVER"
-
-        # run as another user ...
-        local unam="${USER:-$LOGNAME}"
-        [ "${CEN_OPT_USER:--}" = '-' ] && CEN_OPT_USER="$unam"
-        if [ "$CEN_OPT_USER" != "$unam" ] ; then
-            message -a -p "Current user '%s' want '%s'" "$unam" "$CEN_OPT_USER"
-            context -r                              # we must be root
-            # create temporary /etc/XWrapper.conf config override (see centaurisysinit)
-            local wrap="${CEN_PATHS[2]}/X11/Xwrapper.config"
-            if [ -f "$wrap" ] && [ ! -f "$wrap.default" ] ; then
-                move -q -x -- "$wrap" "$wrap.default"
-                create -h - -- "$wrap" <<!EOF
-
-# We need this to have user access to tty and keyboard. At next boot the
-# centaurisysinit service will restore the saved /etc/X11/Xwrapper.conf:
-
-needs_root_rights=yes
-allowed_users=anybody
-!EOF
-            fi
-
-            set -- "$0" "${CEN_CMDOPTS[@]}" "${CEN_CMDARGS[@]}"
-            trace -a -c $"Rerun as user" -- "$CEN_OPT_USER:" "$*"
-            if system -c setpriv ; then
-                # re-run via setpriv
-                local egrp ; system -s egrp -f -p -- id -g "$CEN_OPT_USER"
-                eval folder -c -f ~"$CEN_OPT_USER"
-                local opts=("--reuid=$CEN_OPT_USER" "--regid=$egrp" \
-                            --init-groups --reset-env "$BASH" -l "$@")
-                trace -a -c $"Rerun" -- 'setpriv' "${opts[@]}"
-                exec setpriv "${opts[@]}"
-            else
-                # re-run via su (not sudo, context -u would do sudo)
-                local sexe="${@@Q}"
-                trace -a -c $"Rerun" -- "su -l -c \"$sexe\" $CEN_OPT_USER"
-                exec su -l -c "$sexe" "$CEN_OPT_USER"
-            fi
-            fatal $"Could not exec as '$CEN_OPT_USER'"
-        fi
-        trace -a -c $"Running as" -- "$unam"
         ;;
 
     -A|--sca*)

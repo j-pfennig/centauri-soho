@@ -896,7 +896,7 @@ bookmark() {
     # make prev/next dictionaries
     if [ -n "$omak" ] ; then
         if [ -z "$CEN_OPT_TOOLS" ] ; then
-            DAT_BMK_NEXT=([index]="browse"   [browse]="module"   # foreward refences
+            DAT_BMK_NEXT=([index]="browse"   [browse]="module"   # forward refences
                           [module]="content" [content]="reference")
             DAT_BMK_PREV=([browse]="index"   [module]="browse"   # backward references
                           [content]="module" [reference]="content")

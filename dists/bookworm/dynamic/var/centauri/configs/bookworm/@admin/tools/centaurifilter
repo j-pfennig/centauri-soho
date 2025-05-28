@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2025; BSD License"
 CEN_TITLE="Simple IpTables Firewall and Masquerade Tool"
 CEN_SVC_SHORT="Firewall and Masquerade Service"
 
@@ -17,9 +17,7 @@ CEN_SVC_SHORT="Firewall and Masquerade Service"
 
 # Import the bash library, set name and version
 PATH+=':/usr/local/bin'
-PATH+=":${0%/*}" . _centauri_bash_lib -d -f -s -v - '0.54:4' || exit 2
-
-embed -m _centauri_bash_net -n  # Load centaurinetcfg support
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -v - '0.55:4' || exit 2
 
 CEN_OPT_IPV4=                   # see --ipv4
 CEN_OPT_IPV6=                   # see --ipv6
@@ -39,8 +37,6 @@ DAT_ADDRULE=                    # see do_addrule()
 
 # port mapping for samba4 / dnsmasq, see actionDnsmap
 DAT_MAP_DNS_ADDR='127.0.0.2'    # used by samba with 'dns forwarder='
-                                # override file
-DAT_OVERRIDE="$CEN_ROOT/persistent/$CEN_NAME-override"
 
 # set umask to give all created files 0644 protection
 umask 022
@@ -504,7 +500,7 @@ do_restore() {
 
     # load cached rules
     local noop mode
-    if [ "$1" = "-n" ] ; then
+    if [ "$1" = '-n' ] ; then
         noop=1 ; shift
     fi
     local mode="_${1:-$DAT_RUN_MODE}"
@@ -596,12 +592,6 @@ do_level() {
             message "Configured home dns server:" "$hdns"
         fi
     fi
-}
-
-# get override data: <vnam>
-do_override() {
-    [ -n "$CEN_OPT_FORCE" ] && return 1
-    readline -e -s "$1" -i "$DAT_OVERRIDE"      # return status
 }
 
 # ------------------------------------------------------------------------------
@@ -764,7 +754,7 @@ rules_early() {
     rules_comment - "Early filter rules (deny)"
     do_list 'deny' aint
     for neta in "${aint[@]}" ; do
-        trace -a "Block interface: $neta"
+        trace -a "Block interface:" "$neta"
         do_tables -- -A INPUT -i $neta -j DROP
     done
 
@@ -782,7 +772,7 @@ rules_bypass() {
     rules_comment - "Early filter rules (bypass)"
     do_list 'bypass' aint
     for neta in "${aint[@]}" ; do
-        trace -a "Bypass interface: $neta"
+        trace -a "Bypass interface:" "$neta"
         do_tables -- -A INPUT -i $neta -j ACCEPT
     done
 }
@@ -874,7 +864,7 @@ rules_global() {
 # 10.21.0.0/19  10.22.0.0/19  n/a  separate     yes    block            forced
 # ------------  ------------  ---- -----------  -----  -----  --------  -----------
 
-# die sachen sind redundant:
+# TODO die sachen sind redundant:
 #       option other                wirkt blöde
 #       CEN_NET_EXTERNAL
 #       netmask test auf subnet     langsam
@@ -888,8 +878,6 @@ rules_global() {
         #   - ignore dhcp input from base
 
         # no overlap
-
-        ### TODO code in centauriroute
 
     fi
     if [ "$DAT_RUN_MODE" = 'home' ] ; then
@@ -1029,8 +1017,9 @@ rules_wild() {
 # ------------------------------------------------------------------------------
 # configure iptables: -no args-
 # ------------------------------------------------------------------------------
-# The firewall only filters incomming packets. Output packet always pass thrugh.
-# It gets configured by '/etc/default/centaurinetcfg' using the statements:
+# The firewall only filters incomming packets (output packets are always passed
+# thrugh). It gets configured via '/etc/default/centaurinetcfg' using these
+# statements:
 #
 #       servers ...
 #       routers ...
@@ -1188,7 +1177,7 @@ actionStatus() {
     message -a "Current security level: ${DAT_RUN_CURR:--none-}"
     message -i "Default security level: ${DAT_RUN_MODE:--none-}"
 
-    if do_override over ; then
+    if override -r - over ; then
         message -i "... from override file: $over"
     elif [ "$DAT_RUN_CURR" != "$DAT_RUN_MODE" -a "$CEN_NET_MODE" != "GUEST" ] ; then
         warning -a "Please run: $CEN_NAME auto"
@@ -1203,8 +1192,8 @@ actionStatus() {
 actionCounts() {
     local verb="$CEN_VERB"                          # reset by --pager
 
-    CEN_MODULES['_centauri_bash_svc']=
-    embed -q '_centauri_bash_con'
+    CEN_MODULES['_centauri_bash_svc']=              # ugly hack to fake 'not loaded'
+    console -c 0                                    # init colored output
 
     ___header() {
             [ -z "$CEN_OPT_IPV4" -o -z "$CEN_OPT_IPV6" ] && return
@@ -1262,8 +1251,7 @@ actionCounts() {
         fi
     }
 
-    embed -q '_centauri_bash_pip' && syspager       # check pager
-    $CEN_PAGER ___counts                            # see --pager option
+    syspager ___counts                              # see --pager option
 }
 
 # ------------------------------------------------------------------------------
@@ -1347,8 +1335,7 @@ actionLogger() {
         syspipe -b 'journalctl' -d ___format -- "${opts[@]}"
     }
 
-    embed -q '_centauri_bash_pip' && syspager       # check pager
-    $CEN_PAGER ___logger                            # see --pager option
+    syspager $CEN_PAGER ___logger                       # see --pager option
 }
 
 # ------------------------------------------------------------------------------
@@ -1394,7 +1381,7 @@ actionMangle() {
 # ------------------------------------------------------------------------------
 actionMode() {
     do_level
-    if do_override DAT_RUN_MODE ; then
+    if override -f - DAT_RUN_MODE ; then
         invoke -w "Using '$DAT_RUN_MODE' mode from override file"
     elif [ "$CEN_ACTION" != 'auto' ] ; then
         DAT_RUN_MODE="$CEN_ACTION"
@@ -1498,10 +1485,10 @@ actionRoute() {
             read -r rstat </proc/sys/net/ipv4/conf/$ifout/forwarding
             ___forwarding "$fval" "$ifout"
             trace -a "Forwarding $mesg for interface: $ifout"
-        elif [ "$CEN_ACTION" = "route" ] ; then
+        elif [ "$CEN_ACTION" = 'route' ] ; then
             message -a "No such interface: $ifout. Using global forwarding."
             read -r rstat </proc/sys/net/ipv4/conf/all/forwarding
-            ___forwarding "$fval" "all"
+            ___forwarding "$fval" 'all'
             trace -a "Forwarding $mesg for all interfaces"
         fi
     fi
@@ -1520,7 +1507,7 @@ actionRoute() {
     #    do_tables -4 -- --table nat -A POSTROUTING -o $ifout $ipsrc -j MASQUERADE
 
     if [ "$CEN_ACTION" = 'route' ] ; then
-        [ "${rstat:-0}" != 0 ] && warning -a "Forwarding was already enabled: $ifout"
+        [ "${rstat:-0}" != 0 ] && warning -a "Forwarding was already enabled:" "$ifout"
         # configure NAT
         do_tables -- -P FORWARD ACCEPT
         if [ -z "$ipsrc" ] ; then
@@ -1533,7 +1520,7 @@ actionRoute() {
 
     # "noroute" command ...
     else
-        [ "${rstat:-1}" = 0 ] && warning -a "Forwarding was not enabled: $ifout"
+        [ "${rstat:-1}" = 0 ] && warning -a "Forwarding was not enabled:" "$ifout"
     fi
 }
 
@@ -1583,10 +1570,8 @@ options() {
 
     # end of option parsing
     '') if [ -z "$CEN_OPT_IPV4" -a -z "$CEN_OPT_IPV6" ] ; then
-            local rsta
-            [ -r "/proc/sys/net/ipv6/conf/all/disable_ipv6" ] &&
-                read -r rsta <"/proc/sys/net/ipv6/conf/all/disable_ipv6"
-            if [ "$rsta" = 1 ] ; then
+            readline -w -x -i '/proc/sys/net/ipv6/conf/all/disable_ipv6'
+            if [ "$CEN_READLINE" = 1 ] ; then
                 trace -a "ipv6 is disabled via /proc/sys/net/ipv6/conf/all/disable_ipv6"
                 CEN_OPT_IPV4=1
             else

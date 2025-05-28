@@ -8,7 +8,7 @@ StartLimitBurst=10
 StartLimitIntervalSec=1000
 
 # see centaurihass auto on/off
-ConditionPathExists=/opt/HomeAssistant/homeassistant/service-enabled
+ConditionPathExists=|/opt/HomeAssistant/venv/service-enabled
 
 [Service]
 User=homeassistant
@@ -28,7 +28,7 @@ RestartSec=30s
 
 # hass does not retry modbus init, so optionally wait until net is ready...
 #ExecStartPre=-/var/centauri/tools/centauriroute --zombie wait logo1 80 30
-ExecStart=/opt/HomeAssistant/homeassistant/bin/hass
+ExecStart=/opt/HomeAssistant/venv/bin/hass
 
 
 [Install]

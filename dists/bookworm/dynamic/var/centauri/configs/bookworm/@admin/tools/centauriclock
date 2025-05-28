@@ -32,16 +32,18 @@ fi
 DAT_BASEDIR="~/.local/$CEN_NAME"    # defaults ...
 DAT_HTMLTXT="$CEN_NAME.html"
 DAT_SIZEPNT='10vw'
-DAT_STARTUP="${CEN_NAME}.bash"
+DAT_STARTUP="./${CEN_NAME}.bash"
 DAT_LANGGUI='en'
 
-case "${LANG,,}" in                 # get internal language code...
-*_us*)  DAT_LANGGUI='us' ;;
-en*)    ;;
-de*)    DAT_LANGGUI='de' ;;
-fr*)    DAT_LANGGUI='fr' ;;
-*)      DAT_LANGGUI="${LANG::2}"
-esac
+if [ -z "$LANG" ] ; then            # get system default ...
+    embed -b '/etc/default/locale'
+    DAT_LANGGUI="${LANG::2}"        # intentionally ignore *_US* here
+else
+    case "${LANG,,}" in             # get internal language code...
+    *_us*)  DAT_LANGGUI='us' ;;
+    *)      DAT_LANGGUI="${LANG::2}"
+    esac
+fi
 
 # ------------------------------------------------------------------------------
 # Create clock html: <path>
@@ -213,7 +215,7 @@ function updateClock() {
                line2 = date + ' ' + line2 + ' ' + year; break;
     default:  line1 = dayNames[day];
               month = (month < 9) ? '0' + (month+1) : month + 1;
-              data = (date < 10) ? '0' + date : date;
+              date = (date < 10) ? '0' + date : date;
               line2 = year + '-' + month + '-' + date;
   }
 

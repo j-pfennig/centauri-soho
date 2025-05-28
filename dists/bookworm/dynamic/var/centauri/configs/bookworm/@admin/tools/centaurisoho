@@ -258,8 +258,21 @@ BACKSPACE="guess"
     return 0
 }
 
+DAT_ALONE=
 # ------------------------------------------------------------------------------
-# apply configuration: <dest>|- <name>|- <para>|-|+
+#
+# ------------------------------------------------------------------------------
+cfg_alone() {
+    DAT_ALONE='wild'
+    get_yesno -n $"Private network only (firewall disabled)" && DAT_ALONE='home'
+    SOHO_NET_APNT='-'
+    get_value SOHO_NET_WLAN - - $"WLAN client SSID  (- to disable)"
+    [ "$SOHO_NET_WLAN" != '-' ] &&
+        get_value SOHO_NET_WLAN_PW  - - $"WLAN password     (- for random)"
+}
+
+# ------------------------------------------------------------------------------
+# apply configuration: <dest>|- <name>|- <para>|-|+|:
 # ------------------------------------------------------------------------------
 #   Where to get centaurisoho parameters:
 #   (1) <para> file argument
@@ -268,7 +281,10 @@ BACKSPACE="guess"
 #
 #   <dest>  mountpoint of root-fs or '-' for this machine
 #   <name>  machine name or '-' for $HOSTNAME
-#   <para>  '+' to query  '-' no params  <file> param file
+#   <para>  '+'         query mode
+#           '-'         read only
+#           ':'         statnd-alone
+#           <path>      load from path
 # ------------------------------------------------------------------------------
 cfg_apply() {
     local dest="${1%/}" ; dest="${dest:--}"
@@ -317,44 +333,44 @@ cfg_apply() {
         # assume hard coded path, $CEN_ROOT/default can be invalid
         DAT_SOHO_NETCFG='/etc/default/centaurinetcfg'
     fi
-DAT_ALONE=              # stand-alone flag, no server
-    if get_yesno -n $"Make this computer stand-alone (dhcp based)" ; then
-       get_yesno -n $"In private network only (firewall disabled)" && DAT_ALONE=1 || DAT_ALONE=2
-       get_value SOHO_NET_WLAN - - $"WLAN client SSID  (- to disable)"
-       para='-'
-       #templ_expand 'd_etc_default+centaurinetcfg-alone' "$dest/$DAT_SOHO_NETCFG"
-       # wenn kein server: secrets local    firewall ?
-       # ask for wlan
-     #  DAT_SOHO_NETREP+='-alone'
-    fi
 
-    # only if we have a <para> argument ...
-    if [ -n "$para" ] ; then
-        case "$para" in
-        +)  while true ; do
-                cfg_params -q "$dcfg" || return 1
-                confirm -d - -v $"yes no quit" -p $" [y/n/q]? " $"Apply configuration"
-                case $? in
-                0)  break ;;
-                1)  ;;
-                *)  para='-' ; break # return 0
-                esac
-            done
-            ;;
-        -)  [ "$CEN_ACTION" = 'restore' ] && return 0
-            cfg_params -r || return 1 ;;
-        *)  cfg_params -r "$para" || return 1
-        esac
-        if [ "$para" != '-' ] ; then
-            cfg_params -w "$dcfg"
-            cfg_params -p "$dcfg" "$wrks"
-        fi
+    [ "$para" ] &&
+        get_yesno -n $"Make this computer stand-alone (dhcp based)" && para=':'
+
+    # if we have a <para> argument ...
+    case "$para" in
+    '') ;;
+    +)  while true ; do
+            cfg_params -q "$dcfg" || return 1
+            confirm -d - -v $"yes no quit" -p $" [y/n/q]? " $"Apply configuration"
+            case $? in
+            0)  break ;;
+            1)  ;;
+            *)  para='-' ; break # return 0
+            esac
+        done
+        ;;
+    -)  [ "$CEN_ACTION" = 'restore' ] && return 0
+        cfg_params -r || return 1 ;;
+    :)  cfg_alone ;;
+    *)  cfg_params -r "$para" || return 1
+    esac
+    if [ "$para" != '-' ] ; then
+        cfg_params -w "$dcfg"
+        cfg_params -p "$dcfg" "$wrks"
     fi
 
     # update installed templates: <wrks> <host> <root>
     SOHO_DNAME="${SOHO_DOMAIN%.*}"
     templ_expand "$DAT_SOHO_NETREP${DAT_ALONE:+-alone}" "${dest%/}$DAT_SOHO_NETCFG"
-    templ_update "$wrks" "$name" "$dest"
+    templ_update "$wrks" "$name" "$dest"                # will not update centaurinetcfg
+    if [ -n "$DAT_ALONE" ] ; then                       # force firewall/secrets mode ...
+        override -c 'centaurifilter' "$DAT_ALONE"
+        override -c 'centaurisecrets' 'local'
+    else
+        override -d 'centaurifilter'
+        override -d 'centaurisecrets'
+    fi
 
     copyFromRepo '/etc/services' "$dest"                # netcfg wants centauri settings
     if [ "$dest" = '/' ] ; then
@@ -768,7 +784,7 @@ get_workspace() {
 get_yesno() {
     local text yopt="$1" ; shift
     [ $# -gt 1 ] && printf -v text "$@" || text="$1"
-    confirm $yopt -f "%-48s" "$text"
+    confirm -a $yopt -f "%-48s" "$text"
 }
 
 # ------------------------------------------------------------------------------
@@ -2201,7 +2217,7 @@ actions() {
     /dev/*)
         invoke -r 'clone'   actionSetup    1 3 "$@" ;;  # 1 .. 3 args
 
-    # call an exended command of 'setup'
+    # call an extended command of 'setup'
     ??*)
         local item ; get_workspace -q && get_commands
         for item in "${DAT_SOHO_CMDS[@]}" ; do

@@ -1,10 +1,16 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2005-2019; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2005-2025; BSD License"
 CEN_TITLE="Tool to handle S.M.A.R.T disk check actions"
 
 # Import the bash library, set name and version
-PATH+="${0%/*}" . _centauri_bash_lib -a -d -s "$0" "0.20:1" || exit 2
+PATH+="${0%/*}" . _centauri_bash_lib -a -d -o -s - '0.21:1' || exit 2
+
+CEN_OPT_EXTRA=()            # extra parameters for smartctl
+
+# sourcing /etc/default/centaurismart. Example for -X option:
+# CEN_OPT_EXTRA+=('sda:-P sat' 'nvme0n1:-P nvme')
+# CEN_OPT_EXTRA+=('sdb:-P scsi')
 
 # ------------------------------------------------------------------------------
 # helper to stop the smartd deamon and to run selftest
@@ -24,6 +30,9 @@ stopSmartd() {
     return 0
 }
 
+# ------------------------------------------------------------------------------
+# helpers
+# ------------------------------------------------------------------------------
 DAT_DISKS=
 diskFind() {
     local item isok
@@ -36,7 +45,7 @@ diskFind() {
     for item in "$@" ; do
         item="${item##*/}" ; isok=1
         case "$item" in
-            nvme[0-9]*)     item+="n1" ; item="${item::7}" ;;
+            nvme[0-9]*)     item+='n1' ; item="${item::7}" ;;
             [hs]d[a-z]*)    item="${item::3}" ;;
             *)              isok=
         esac
@@ -46,6 +55,27 @@ diskFind() {
         fi
         [ -n "$isok" ] && DAT_DISKS+=("/dev/$item")
     done
+}
+
+# add extra arguments to smartctl command and run (last arg is disk)
+runSmartctl() {
+    local opts=()
+    while [ "${1::1}" = '-' ] ; do
+    case "$1" in
+    --)   shift ; break ;;
+    *)    _opts+=("$1") ;;
+    esac ; shift
+    done
+
+    local args=("$@")
+    local disk="${args[-1]}" pars
+    if [ "${disk::5}" = '/dev/' ] ; then
+        if listsearch -o -g -m pars -i CEN_OPT_EXTRA -- "${disk:5}:*" ; then
+            trace -a -c "Extra arguments" "${disk:5} -> ${pars#*:}"
+            set -f ; args=(${pars#*:} "${args[@]}") ; set +f
+        fi
+    fi
+    system "${opts[@]}" smartctl "${args[@]}"
 }
 
 selfTest() {
@@ -66,7 +96,7 @@ selfTest() {
         local dtyp=
         # not with usb # [ "${disk:5:1}" = "s" ] && dtyp="--device=ata"
         message -a "Starting self-test: $disk"
-        system -p -e -- smartctl --smart=on --test=$mode $dtyp $disk
+        runSmartctl -p -e -- --smart=on --test=$mode $dtyp $disk
     done
     return 0
 }
@@ -107,7 +137,7 @@ actionStatus() {
 
     local item
     for item in "${DAT_DISKS[@]}" ; do
-        system -e -- smartctl -A -H -i -l selftest "$item"
+        runSmartctl -e -- -A -H -i -l selftest "$item"
     done
 }
 
@@ -167,22 +197,32 @@ actionTest() {
 }
 
 # ------------------------------------------------------------------------------
-# implement action parsing
+# Option parsing
+# ------------------------------------------------------------------------------
+options() {
+    case "$CEN_ACTION" in
+    -X|--ext*)
+        optarg 'extra'      []      -t ;;           # text array
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Action parsing
 # ------------------------------------------------------------------------------
 actions() {
     case "$CEN_ACTION" in
 
     dae*)
-        invoke -r "daemon" - 0 ;;
+        invoke -r 'daemon' - 0 ;;
     sho*)
-        invoke -r "short"  - 0 + ;;
+        invoke -r 'short'  - 0 + ;;
     lon|long)
-        invoke -r "long"   - 0 + ;;
+        invoke -r 'long'   - 0 + ;;
     sta*)
-        invoke -r "status" - 0 + ;;
+        invoke -r 'status' - 0 + ;;
 
     tes|test)
-        invoke -r "test"   - 0 1 ;;
+        invoke -r 'test'   - 0 1 ;;
 
     esac
 }
@@ -192,21 +232,21 @@ actions() {
 # ------------------------------------------------------------------------------
 usage() {
     usageset \
-        -a "daemon               run daemon to check the SMART status" \
-        -a "short                run short self-tests  (stops deamon)" \
-        -a "long                 run long self-tests   (stops deamon)" \
-        -a "test    [<mode>]     set test mode, run tests" \
-        -a "" \
-        -a "status  [<disk>]...  show SMART status of (all) disk(s)" \
-        \
-        -l "arguments" \
-        -t "<disk>               disk name like 'sda' or '/dev/sdc'" \
-        -t "<mode>               one of: info|short|long|run" \
-        \
-        -l "examples" \
-        -t "$CEN_NAME test short # clear 'long' self-test flag" \
-        -t "$CEN_NAME test long  # set 'long' self-test flag" \
-        -t "$CEN_NAME test run   # run test, clear 'long' flag"
+        -a 'daemon'              "run daemon to check the SMART status" \
+        -a 'short'               "run short self-tests  (stops deamon)" \
+        -a 'long'                "run long self-tests   (stops deamon)" \
+        -a 'test    [<mode>]'    "set test mode, run tests" \
+        -a 'status  [<disk>]...' "show SMART status of (all) disk(s)" \
+        -o - \
+        -o '-X --extra  <xarg>'  "Device specific extra arguments for smartctl" \
+        -p - \
+        -p '<disk>'     "disk name like 'sda' or '/dev/sdc'" \
+        -p '<mode>'     "one of: info|short|long|run" \
+        -p '<xarg>'     "key/value like: \"sda:-p sat\" (<disk>:<text>)" \
+        -e - \
+        -e ". test short # clear 'long' self-test flag" \
+        -e ". test long  # set 'long' self-test flag" \
+        -e ". test run   # run test, clear 'long' flag"
 }
 
 # ------------------------------------------------------------------------------

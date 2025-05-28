@@ -226,7 +226,7 @@ installer_initial() {
     [ "$1" = '-p' ] && return 0
     cat - >/etc/motd <<!EOF
 
-This is a minimal unmodified Debian Bookworm system (last update: $(date +%Y-%m-%d)).
+This is a minimal unmodified Debian ${INSTALLER_DISTRO^} system (last update: $(date +%Y-%m-%d)).
 
 (1) To install a centaurisoho configuration use:
 

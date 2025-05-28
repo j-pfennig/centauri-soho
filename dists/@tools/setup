@@ -1277,7 +1277,7 @@ setupStep3Base() {
         system -e -t -- plymouth-set-default-theme breeze
     fi
 
-    create -c -- '/etc/default/exim4' <<!EOF
+    [ "$SOHO_DISTRO" = 'bookworm' ] && create -c -- '/etc/default/exim4' <<!EOF
 # Temporarily disable exim4 from running as service after installation
 QUEUERUNNER=nodaemon
 !EOF
@@ -1350,7 +1350,7 @@ QUEUERUNNER=nodaemon
             copyFromRepo /etc/default/exim4
             copyFromRepo /etc/exim4/exim4.conf.template
             copyFromRepo /etc/exim4/update-exim4.conf.conf
-            copyFromRepo /etc/init.d/exim4
+            [ "$SOHO_DISTRO" = 'bookworm' ] && copyFromRepo /etc/init.d/exim4
             system -e -p -t update-exim4.conf
         fi
         quitOnError

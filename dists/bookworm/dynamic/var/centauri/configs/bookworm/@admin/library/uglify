@@ -1,13 +1,13 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2025; BSD License"
 CEN_TITLE="Pack centauri-bash-lib sources, create packaged script"
 
 # TODO optimize case statements
 # TODO function '(){'
 
 # cannot use autoload - might autolod .p before being written completely ...
-PATH+=":${0%/*}" . _centauri_bash_lib -d -f -m ext -m cfm -m utl -r -y - '0.26:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -d -f -m ext -m cfm -m utl -r -y - '0.27:4' || exit 2
 
 embed -m _centauri_bash_iom -o
 
@@ -91,7 +91,7 @@ do_parser() {
 
             # could not remove a comment
             else
-                $CEN_TRACE -a -c "COMMENT3 $nlin" -- "$rlin"
+                $CEN_TRACE2 -a -c "COMMENT3 $nlin" -- "$rlin"
             fi
         fi
     fi
@@ -179,7 +179,7 @@ do_parser() {
             *)      tmp1="${rlin%%[\'\"]*}"     # left side
                     tmp2="${rlin:${#tmp1}}"     # right side
                     rlin="$tmp1" ; do_simple ; rlin+="$tmp2"
-                    $CEN_TRACE -a -c "NESTED   $nlin" -- "$rlin"
+                    $CEN_TRACE2 -a -c "NESTED   $nlin" -- "$rlin"
                     return
             esac
         done
@@ -345,9 +345,10 @@ CEN_ROOT="\${CEN_ROOT%/*}"
     fi
         [ -n "$DAT_FLG_LOCALE" ] && create -a -c -- "$2" <<!EOF
 
-# setup locale support
+# setup locale support (1st try FSH path)
 TEXTDOMAIN="\$CEN_NAME"
-TEXTDOMAINDIR="\$CEN_ROOT/locale"
+TEXTDOMAINDIR="\$CEN_ROOT/../../share/locale"
+[ -d "\$TEXTDOMAINDIR" ] || TEXTDOMAINDIR="\$CEN_ROOT/locale"
 !EOF
         create -a -c -- "$2" <<!EOF
 
@@ -391,7 +392,7 @@ _cen_bash_main() {
 $(do_deco "the packed code of library modules follows below")
 
 !EOF
-    elif [ "$1" = "footer" ] ; then
+    elif [ "$1" = 'footer' ] ; then
         create -a -c -- "$2" <<!EOF
 
 $(do_deco "simplified '--info' implementation")
@@ -453,7 +454,7 @@ do_special() {
     local flib="$1" fmod frun sifs="$IFS"
     set -f ; IFS=" \"'" ; set -- $2 ; set +f ; IFS="$sifs"
     shift                                       # ignore: embed
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -a|-s|-d|-u)    shift ;;                # options with argument
@@ -465,10 +466,10 @@ do_special() {
     if [ -z "$fmod" ] ; then
         [ "$flib" = '-l' ] && return            # not in library modules
         DAT_MAP_EMBED["$1"]=1                   # save external dependency
-        trace -a -c "- External" -- "$1"
+        trace -a -c "+ External" -- "$1"
         return
     elif [ -n "$frun" ] ; then
-        trace -a -c "- Ignoring" -- "$1" "(option -r)"
+        trace -a -c "+ Ignoring" -- "$1" "(option -r)"
         return
     fi
                                                 # --nodeps option
@@ -476,17 +477,17 @@ do_special() {
 
     local snam="${1#_centauri_bash_}"           # short module name
     if [ "$snam" = "$1" ] ; then
-        trace -a -c "- Custom" -- "$1"
+        trace -a -c "+ Custom" -- "$1"
         return
     fi
 
     if [ "$snam" = 'ins' -o "$snam" = 'sys' ] ; then
         if [ "$flib" = '-l' ] ; then
-            trace -a -c "- Ignoring" -- "$1" "(system module)"
+            trace -a -c "+ Ignoring" -- "$1" "(system module)"
             return
         fi
     else
-        trace -a -c "- Module" -- "$1"
+        trace -a -c "+ Module" -- "$1"
     fi
     DAT_MAP_MODULE["$snam"]=1
 }
@@ -583,13 +584,14 @@ do_libarg() {
     DAT_INP_LIBARG=
     while [ -n "$1" ] ; do
         case "$1" in
+        '-')  DAT_INP_LIBARG+="\"\$CEN_NAME\" " ; shift ; continue ;;
         -a)   [ -z "$DAT_FLG_MODARGS" ] && DAT_FLG_DYNAMIC=1
-              DAT_MAP_MODULE["dyn"]=1 ;;
-        -g)   DAT_MAP_MODULE["con"]=1 ; DAT_MAP_MODULE["win"]=1 ; DAT_MAP_MODULE["run"]=1 ;;
+              DAT_MAP_MODULE['dyn']=1 ;;
+        -g)   DAT_MAP_MODULE['con']=1 ; DAT_MAP_MODULE['win']=1 ; DAT_MAP_MODULE['run']=1 ;;
         -m)   DAT_INP_LIBARG+="$1 " ; shift ; DAT_MAP_MODULE["$1"]=1 ;;
         -t)   DAT_FLG_LOCALE=1 ;;
-        -v)   DAT_MAP_MODULE["svc"]=1 ;;
-        -w)   DAT_MAP_MODULE["web"]=1 ;;
+        -v)   DAT_MAP_MODULE['svc']=1 ;;
+        -w)   DAT_MAP_MODULE['web']=1 ;;
         -*)   ;;
         [\'\"\$0-9]*) ;;
         *)    break
@@ -732,6 +734,7 @@ run() {
                 fi
                 dryrun && continue
                 {   echo "_cen_bash_load_${item##*_}(){"
+        [ -n "$DAT_FLG_LOCALE" ] && echo "CEN_FEATURE_T="
                     do_ugly "${item##*_}" <"$item"
                     echo "}"
                 } >> "$CEN_OUTFILE"
@@ -756,8 +759,10 @@ run() {
                 error "No such module:" "$item" ; return
             fi
 
-            local ddat dlin dmod
+            local ddat dlin dmod verb
+            verb="$CEN_VERB" ; CEN_VERB=0               # disable message/trace
             sysrun -a ddat -n -- do_ugly "${item##*_}" <"$item"
+            CEN_VERB="$verb"
             trace -a "Filtering ${#ddat[@]} autoload lines"
             do_deco "packed module: $item"
             echo "_cen_bash_load_${item##*_}(){"

@@ -8,7 +8,7 @@ Conflicts=weewx.service
 StartLimitBurst=10
 StartLimitIntervalSec=1000
 
-ConditionPathExists=/opt/WeeWx/weewx/service-enabled
+ConditionPathExists=/opt/WeeWx/venv/service-enabled
 
 [Service]
 
@@ -18,7 +18,7 @@ RestartSec=120s
 Restart=on-failure
 
 #ExecStartPre=-/var/centauri/tools/centauriroute --tool wait 127.0.0.1 53 30 "No DNS"
-ExecStart=/opt/WeeWx/weewx/bin/weewxd --daemon --pidfile=/run/weewx/weewx.pid /opt/WeeWx/home/weewx-data/weewx.conf
+ExecStart=/opt/WeeWx/venv/bin/weewxd --daemon --pidfile=/run/weewx/weewx.pid /opt/WeeWx/home/weewx-data/weewx.conf
 #ExecStartPost=-/usr/local/bin/weewx2hass --run
 
 ExecReload=/bin/kill -HUP $MAINPID
