@@ -45,7 +45,7 @@ CEN_TXT_GREP=
 # Arguments:<rexp>  a regular expression
 #           <data>  data to be matchd
 #           <emsg>  message for no match (calls [[error()]] by default)
-#           <gmsg>  message for garbage (calls [[warnning()]] by default)
+#           <gmsg>  message for garbage (calls [[warning()]] by default)
 #           <vmat>  name of variable to be set tp a match
 #
 # Return:   0   matched all data
@@ -137,14 +137,14 @@ regexp() {
 #
 # Return:   **true** at success or **false** otherwise.
 #
-# Example:  In-place (same input/output array) numberic sort
+# Example:  In-place (same input/output array) numeric sort
 #
 #.          local data=(343 332 22)
 #.          txtsort -n -i data -a data
 #
 #+This function runs a simple bubble sort unless the line count threshold
 # gets exceeded. In the later case [[extsort()]] is invoked. The rationale
-# is to prevent forking an external sort programm for trival cases.
+# is to prevent forking an external sort program for trivial cases.
 #
 #+On a numerical sort only the leading digits are used as key, empty
 # keys are treated as zero and the resulting order of non-numeric
@@ -533,7 +533,7 @@ extgrep() {
 # Arguments:<maxi>  maximum number of characters to return
 #           <deli>  a delimiter string (use - for newline)
 #           <vinp>  variable holding input
-#           <vout>  variable to receice the output
+#           <vout>  variable to receive the output
 #
 # Return:   **true** if text is returned, **false** if no input is left
 #

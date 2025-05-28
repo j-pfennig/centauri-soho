@@ -35,10 +35,10 @@
 #,          -d -        # force a text message, don't display a message box
 #,          -d +<time>  # show notification popup window for <time> seconds
 #
-# Copyright Dr. J. Pfennig (c) 2015-2024
+# Copyright Dr. J. Pfennig (c) 2015-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_win']='0.47:2'
+CEN_MODULES['_centauri_bash_win']='0.48:5'
 
 embed -c '_centauri_bash_ext'       # reference modules ...
 embed -c '_centauri_bash_txt'
@@ -137,7 +137,7 @@ windows() {
     # debug -c -- "$*"
     # parse options
     local _titl _ferr _frun _fchk _fgui _emsg='error'
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -c)   shift ; _fchk="$1" ;;
@@ -204,7 +204,7 @@ windows() {
     fi
 
     # return ok if in windowing mode, set TERM
-    [ "$TERM:dumb" = "dumb" ] && export TERM="xterm"
+    [ "$TERM:dumb" = 'dumb' ] && export TERM='xterm'
     [ -z "$_frun" ] && return 0                 # return or launch application
     _cen_win_launch $_frun "$_titl" "$@"        # return status
 }
@@ -218,7 +218,7 @@ windows() {
 # ------------------------------------------------------------------------------
 _cen_win_pdlg() {
     local _fini _fqui _cncl
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -c)   _fqui=1 ;;
@@ -301,7 +301,7 @@ _cen_win_prog() {
 
     # increment by steps
     if [ -n "$_step" ] ; then
-        if [ "$_step" = "-" ] ; then
+        if [ "$_step" = '-' ] ; then
             CEN_WIN_PROGTOTAL="${1:-100}" ; CEN_WIN_PROGSTEPS=0 #; return
             _step=0 ; shift
         elif [ "${_step/:/}" != "$_step" ] ; then
@@ -405,7 +405,7 @@ _cen_win_prog() {
 #           <time>     time in [s] to display the popup window
 #           <icon>     icon for popup
 #           <title>    window title (not fully supported by **kdialog**)
-#           <var>      sets input variable (for "-" CEN_CONFIRM is used)
+#           <var>      sets input variable (for '-' CEN_CONFIRM is used)
 #           <header>   header text for message -or- empty, show as bold
 #           <msg>...   body text for message
 #           <dlft>     an optiona <item> number to set the default selection
@@ -416,7 +416,7 @@ _cen_win_prog() {
 #
 # Kinds:    Known dialog <kind> arguments and their associated options are:
 #
-#,          - msgbox                sinple messagebox, see [[message()]]
+#,          - msgbox                simple messagebox, see [[message()]]
 #,          - sorry         -w      warning message, see [[warning()]]
 #,          - error         -e|-f   error message, see [[error()]] and [[fatal()]]
 #,          - yesno         -2      messagebox with 2 buttons
@@ -434,8 +434,8 @@ _cen_win_prog() {
 #           <item> := [[<rslt>:]<mode>:]<text>  # multi selection  (option -m)
 #           <mode> := "0"|"off"|"1"|"on"
 #
-#+          The <rslt> values of seletected items are returned to the caller. If
-#           <rslt> is not specfied the item line number is used.
+#+          The <rslt> values of selected items are returned to the caller. If
+#           <rslt> is not specified the item line number is used.
 #
 #.Examples: windialog -- "Hello world"
 #.          windialog -u 3 -n face-angry -- "My Message is:" "It's raining today"
@@ -453,7 +453,7 @@ _cen_win_prog() {
 windialog() {
     local _sbtn _stit _inam _labl
     local _snam="${CEN_EMBED:-$CEN_NAME}" _args=() _kopt _kflg _klst _icon _popw
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
         -)    break ;;
@@ -465,7 +465,7 @@ windialog() {
                 _kopt="inputbox" ; _stit=$"Input"
               fi ;;
         -k)   shift ; _kopt="$1" ; _kflg=1 ;
-              [ -z "$_inam" ] && _inam="-" ;;
+              [ -z "$_inam" ] && _inam='-' ;;
         -l)   shift ;_inam="$1" ; _kopt="progressbar" ; _stit=$"Progress" ;;
         -m)   shift ; _inam="$1" ; _kopt="checklist" ; _klst=2 ; _stit=$"Options" ;;
         -n)   shift ; _icon="$1" ;;
@@ -482,7 +482,7 @@ windialog() {
     done
 
     windows || fatal $"Not available in console mode:" "$FUNCNAME"
-    [ "$_inam" = "-" ] && _inam="CEN_CONFIRM"
+    [ "$_inam" = '-' ] && _inam="CEN_CONFIRM"
 
     # msgbox is the default dialog
     if [ -z "$_kopt" ] ; then
@@ -565,7 +565,7 @@ windialog() {
     else
         # add button labels
         if [ -n "$_sbtn" ] ; then
-            [ "${_labl:--}" = "-" ] && _labl=$"yes no cancel"
+            [ "${_labl:--}" = '-' ] && _labl=$"yes no cancel"
             _labl=($_labl)
             _cen_win_addlbl -        "$_sbtn"           # set _kopt
             _cen_win_addlbl 'yes'    "${_labl[0]}"
@@ -771,7 +771,7 @@ _cen_win_txtfold() {
 # ------------------------------------------------------------------------------
 _cen_windmesg() {
     local _sfmt _args=() _argx=() _flib _fqui _ftwo _popw _scal _verb="$CEN_VERB" _head _stat=0
-    while [ "${1::1}" = "-" ] ; do
+    while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -a)   _argx+=("$1") ;;
@@ -779,7 +779,7 @@ _cen_windmesg() {
       -c)   _argx+=("$1" "$2") ; shift ; _scal="$1" ;;
       -d)   shift
             [ "$1" = "?" ] && _ftwo=1
-            [ "$1" = "-" ] && _flib=1
+            [ "$1" = '-' ] && _flib=1
             [ "${1::1}" = "+" ] && _popw="${1:1}" ;;
       -i)   _argx+=("$1") ;;
       -l)   _argx+=("$1") ; _verb=1 ;;
@@ -1037,7 +1037,8 @@ _cen_win_hook() {
 [ -n "$CEN_WINDOWS" ] && return 0       # already loaded
 
 [ -n "${CEN_MODULES[_centauri_bash_con]}" ] &&
-    fatal $"module conflict:" "_centauri_bash_win/con"
+    console -d
+    trace -c $"window module load" $"Disabled 'console' module"
 [ -n "${CEN_MODULES[_centauri_bash_svc]}" ] &&
     fatal $"module conflict:" "_centauri_bash_win/svc"
 

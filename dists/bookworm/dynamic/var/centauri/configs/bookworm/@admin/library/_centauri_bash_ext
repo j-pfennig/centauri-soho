@@ -437,7 +437,7 @@ matchpath() {
 # Call:    move [-f] [-o|-x] [-q|-s|-v] [-r] <src>... <dest>
 #
 # Options: -f  make errors fatal
-#          -o  try to overwrite readonly <dest>
+#          -o  try to overwrite read only <dest>
 #          -q  do not report errors
 #          -r  ignore --dryrun
 #          -s  do not report via [[message()]] or [[trace()]]
@@ -450,7 +450,7 @@ matchpath() {
 # reporting and error handling. Unlike [[rename()]] the move function accepts
 # multiple <src> arguments if <dest> is a folder.
 #
-# +Option -o will try to remove a readonly <dest> and option -x will
+# +Option -o will try to remove a read only <dest> and option -x will
 # unconditionally try to remove <dest>. If more than two arguments are passed
 # <dest> must be a folder. In this case -o and -x are disabled.
 # ------------------------------------------------------------------------------
@@ -626,7 +626,7 @@ prettypath() {
 #           2   not a readable file (only without option -x)
 #
 #
-#           The function skips header lines starting with '#' and returns the
+#+          The function skips header lines starting with '#' and returns the
 #           1st line not starting with '#'. Trailing lines are ignored.
 # ------------------------------------------------------------------------------
 CEN_READLINE=
@@ -648,19 +648,19 @@ readline() {
       esac ; shift
     done
 
-    if [ ! -r "$_finp" ] ; then
-        [ -z "$_oexi" ] && return 2
-        _mesg=$"Cannot read from:"" $_finp"
-    else
-        while read $_oarr $_vnam ; do
+    if [ -r "$_finp" ] ; then
+        while read $_oarr $_vnam &>/dev/null ; do
             eval "_mesg=\"\$$_vnam\""
             [ "${_mesg::1}" = '#' ] && continue
             [ -z "$_oqui" ] && $CEN_TRACE -a -c ' file OK' -- "$_finp"
             return 0
-        done <"$_finp" &>/dev/null
-        _mesg=$"Failed to read from:"" $_finp"
+        done <"$_finp"
+        _mesg=$"Failed to read from:"
+    else
+        [ -z "$_oexi" ] && return 2
+        _mesg=$"Cannot read from:"
     fi
-    $_oerr -- "$_mesg" ; return 1
+    $_oerr -- "$_mesg" "$_finp" ; return 1
 }
 
 # ------------------------------------------------------------------------------
@@ -670,7 +670,7 @@ readline() {
 #           (2) writeline [-c <text>] [-e|-f|-w] -h <hnum> [-q] <data>...
 #           (3) writeline [-c <text>] [-e|-f|-w] [-m <mask>] [-q] <data>...
 #
-#           This function writes data that can be retrieved by [[readline()]].
+#+          This function writes data that can be retrieved by [[readline()]].
 #           Form (1) writes to a file, (2) to a file handle and (3) to **stdout**.
 #
 # Options:  -c  header comment text
@@ -760,7 +760,7 @@ writeline() {
 #           <num>    handle number
 #           <var>    variable to save handle
 #
-#+Return:   **true** at success or **false** otherwise. After a successfull open
+#+Return:   **true** at success or **false** otherwise. After a successful open
 #           the variable CEN_REDIRECT contains the canonicalized file path.
 #
 #.Examples: redirect -h 4 -i /etc/fstab     # open handle 4 for read
@@ -861,7 +861,7 @@ redirect() {
 # ------------------------------------------------------------------------------
 # remove - Remove files or folders using rm, rmdir coreutil or builtin
 #
-# Call:     remove [-d] [-e] [-o] [-r] [-f|-q] [-s|-v] <path>...
+# Call:     remove [-d] [-e] [-o] [-r] [-f|-q] [-s|-v] [--] <path>...
 #
 # Options:  -d  recurse folders (like using "/usr/bin/rm -r")
 #           -e  files/dirs must exist (default is "/usr/bin/rm -f")
@@ -888,18 +888,18 @@ redirect() {
 # **rm** without any further checks.
 # ------------------------------------------------------------------------------
 remove() {
-    local _oerr="-e -p" _orec _ofrc="-f" _oone _orun _omsg="$CEN_TRACE" _oitm=$"file" _smpl
+    local _oerr='-e -p' _orec _ofrc='-f' _oone _orun _omsg="$CEN_TRACE" _oitm=$"file" _smpl
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
-      -d)   _orec="-r" ;;
+      -d)   _orec='-r' ;;
       -e)   _ofrc= ;;
-      -f)   _oerr="-f -p" ;;
-      -o)   _oone="--one-file-system" ;;
-      -q)   _oerr="-q" ;;
-      -r)   _orun="-r" ;;
+      -f)   _oerr='-f -p' ;;
+      -o)   _oone='--one-file-system' ;;
+      -q)   _oerr='-q' ;;
+      -r)   _orun='-r' ;;
       -s)   _omsg=: ;;
-      -v)   _omsg=message ;;
+      -v)   _omsg='message' ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done
@@ -925,7 +925,7 @@ remove() {
     $_omsg -a -c " $_oitm" -- "$*"
 
     # bash builtins might be unable to handle options or -- . Also: use </dev/null
-    # to avoid interactive mode of rm (will delete readonly files like with -f) ...
+    # to avoid interactive mode of rm (will delete read only files like with -f) ...
 
     if [ -n "$_oone" ] ; then
         sysrun $_oerr $_orun -i -- rm $_oone $_orec $_ofrc -- </dev/null "$@" && return 0
@@ -1020,10 +1020,11 @@ rename() {
 # ------------------------------------------------------------------------------
 # resolve - Resolve and prettify (multiple) file/dir paths
 #
-# Call:     resolve [-a <arr>|-s <var>] [-t <trm>] [-e] [-f|-q] [-c|-l|-m] [-p] <path>...
-#           resolve [-s <var>] [-e] [-f|-q] [-c|-l|-m] [-p] -x|-y <exe>
+# Call:     resolve [-a <arr>|-s <var>] [-t <trm>] [-e] [-f|-q] [-b] [-c|-l|-m] [-p] <path>...
+#           resolve [-s <var>] [-e] [-f|-q] [-b] [-c|-l|-m] [-p] -x|-y <exe>
 #
 # Options:  -a  save result to array <arr> (default is CEN_RESOLVE)
+#           -b  remove trailing "/*" (get base folder)
 #           -c  canonicalize, ignore missing <path>s
 #           -e  error if <path>s does not exist
 #           -f  make errors fatal
@@ -1070,17 +1071,19 @@ rename() {
 #.          # read symlink (fails if arg is not a symlink)
 #.          resolve -q -l /usr/bin/sh && message "sh symlinked: $CEN_RESOLVE"
 #
-#.          # get my invocation path
-#.          resolve -x -p && message "Path:" "$CEN_RESOLVE"
+#.          # get my invocation path or my base folder
+#.          resolve    -x -p && message    "Path:" "$CEN_RESOLVE"
+#.          resolve -b -x -p && message -a "Base:" "$CEN_RESOLVE"
 # ------------------------------------------------------------------------------
 CEN_RESOLVE=
 resolve() {
-    local _ocan _otrm _oexe _osys='-e -p' _pret \
+    local _obas _ocan _otrm _oexe _osys='-e -p' _pret \
           _vset="CEN_RESOLVE" _varr _vrrr _xchk _xerr=error _nret=0
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -a)   shift ; _vset= ; local -n _vvaa="$1" ; _vvaa=() ;;
+      -b)   _obas=1 ;;
       -c)   _ocan='-e' ;;
       -e)   _xchk=1 ;;
       -f)   _xerr=fatal ; _osys='-f -p' ;;
@@ -1142,8 +1145,8 @@ resolve() {
         fi
     fi
 
-    # try to find a nice path names
-    if [ -n "$_pret" -o -n "$_otrm" ] ; then
+    # try to find nice path names
+    if [ -n "$_pret" -o -n "$_otrm" -o -n "$_obas" ] ; then
         _vrrr=()
         for _logi in "$@" ; do
             if [ -n "$_pret" ] ; then
@@ -1151,6 +1154,7 @@ resolve() {
                 _cen_path_regex '-l' "$_logi"
             fi
             [ -n "$_otrm" ] && _cen_path_ltrim "$_otrm"
+            [ -n "$_obas" -a "$_logi" != '/' ] && _logi="${_logi%/*}"
             _vrrr+=("$_logi")
         done
         set -- "${_vrrr[@]}"
@@ -1158,7 +1162,7 @@ resolve() {
 
     # join array into string and return status
     if [ -n "$_vset" ] ; then
-        splitjoin -j "$_vset" -d '\n' -- "$@"
+        [ $# -le 1 ] && _vsss="$1" || splitjoin -j "$_vset" -d '\n' -- "$@"
     else
         _vvaa=("$@")
     fi
@@ -1337,7 +1341,7 @@ splitpath() {
 #,            function does nothing and returns **false**.
 #
 #,          - A path ending on **.** causes the dot to be removed and no further action
-#,            to be taken. This can be used to prevent this function from addind any
+#,            to be taken. This can be used to prevent this function from adding any
 #,            default suffix to a path.
 #
 #,          - If the suffix does not start with a **.** character it is prefixed with
@@ -1382,7 +1386,7 @@ suffixpath() {
     done
 
     local -n _vsuf="$_vnam"
-    [ $# -gt 1 ] && _vsuf="$2"                      # allow inplace operation
+    [ $# -gt 1 ] && _vsuf="$2"                      # allow in-place operation
 
     # special cases: folder, remove trailing ., no suffix
     local _snam="${_vsuf##*/}"                      # path with suffix removed
@@ -1861,7 +1865,7 @@ sysrun() {
 #
 #+Temp files are created inside a base folder (see CEN_EXT_TEMP). This folder
 # is by default set and created at the 1st call. Changing the base folder via -t,
-# -v or -b does not automatically delete prevously created files.
+# -v or -b does not automatically delete previously created files.
 #
 #+Daemons or services should use -v or unset XDG_RUNTIME_DIR. Otherwise systemd
 # might delete the base folder, which in turn may cause severe problems as new
@@ -2012,8 +2016,8 @@ tmpfile() {
 #           -n  do not follow symlinks into folders
 #           -r  recurse into folders
 #
-# Arguments:<ffil>  command excuted for each file   (default **true**)
-#           <fdir>  command excuted for each folder (default **true**)
+# Arguments:<ffil>  command executed for each file   (default **true**)
+#           <fdir>  command executed for each folder (default **true**)
 #           <extn>  extension filter, example "-e xml -e html -e gpx"
 #           <levl>  max recursion depth, **0** to disable recursion
 #           <path>  any file or folder
@@ -2024,7 +2028,7 @@ tmpfile() {
 #
 # Return:    **0** := OK  **1** := empty  **2** := error  **3** := stopped
 #
-#+The walk function is not reentrant. Folder names are canonicalized and
+#+The walk function is not re-entrant. Folder names are canonicalized and
 # kept in a map to prevent folders from being walked multiple times.
 # Symlinks to folders are resolved and recursion is not restricted to a
 # single filesystem.

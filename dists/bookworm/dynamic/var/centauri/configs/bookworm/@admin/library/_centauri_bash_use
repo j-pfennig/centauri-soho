@@ -246,7 +246,7 @@ usageparser() {
 # CEN_TITLE and CEN_USE_OPTIONS is built from the default options.
 #
 # User defined options must be added manually. See [[usageset()]] on how to do
-# this programmatically for a usage text that can be localized with standard
+# this programatically for a usage text that can be localized with standard
 # GNU gettext tools.
 #
 # To support bash completion the [[usage()]] function provides action or
@@ -285,7 +285,7 @@ usageparser() {
 #.                       -t "<text>     "$"any text"
 #.          }
 #
-#           (3) mixing programmatical and and inline mode
+#           (3) mixing programatical and and inline mode
 #.          usage() {
 #.              # custom usage info (optional)
 #.              usageset -u "$CEN_NAME <option>... <text>" \
@@ -589,10 +589,10 @@ _cen_use_writeln() {
 #
 # Arguments:<text>  a line of text or "-" for an empty line
 #
-# The function helps to create [[usage()]] output that can be localized using
+#+The function helps to create [[usage()]] output that can be localized using
 # the standard GNU gettext Tools. See [[usage()]] for an example.
 #
-# Using option -u will add a 'usage:' label to the 1st header line and override
+#+Using option -u will add a 'usage:' label to the 1st header line and override
 # the default usage line. Option -h simply adds a line to the (default) header.
 # ------------------------------------------------------------------------------
 CEN_USE_OWNHDR=

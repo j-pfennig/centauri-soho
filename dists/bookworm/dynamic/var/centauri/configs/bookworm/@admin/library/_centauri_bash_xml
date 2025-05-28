@@ -123,7 +123,7 @@ xml_anchor() {
 #           xml_comment [-n] [-i|-l] [--] <array>
 #           xml_comment [-n] [-i|-l] -r <fhan>
 #
-# Options:  -i  indented mult-line, implies -l
+# Options:  -i  indented multi-line, implies -l
 #           -l  multi-line comment (each argument in a line)
 #           -n  force new line at end of output string
 #           -r  read text from file handle <fhan>
@@ -365,7 +365,7 @@ xml_document() {
 #           -i  indent (implies -n)
 #           -n  newline after element
 #           -s  css string (style attribute)
-#           -t  convert args using entities for apostroph, less and greater
+#           -t  convert args using entities for apostrophe, less and greater
 #           -u  unindent
 #           -v  output to <dest> variable
 #           -x  generate explicit end element (implied for HTML documents unless <br>)
@@ -790,7 +790,7 @@ xml_script() {
 # Arguments:<tag>  the tag. *** before options ***
 #           <id>   for <tag>#<id> an "id" attribute is added (HTML mode only)
 #           <data> element content
-#           <elem> element callbak function:  <note> <elt> <data>
+#           <elem> element callback function:  <note> <elt> <data>
 #           <item> item callback function:    <note> <counter> <data>
 #           <note>  all callback functions receive this as 1st argument
 #

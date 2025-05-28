@@ -7,7 +7,9 @@
 # Copyright Dr. J. Pfennig (c) 2022-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_utl']='0.11:4'
+CEN_MODULES['_centauri_bash_utl']='0.12:5'
+
+embed -c '_centauri_bash_ext'               # dependency
 
 # helper for error messages: _cen_utl_err -e|-f|<vnam> <data> <fmt>...
 _cen_utl_err() {
@@ -18,6 +20,21 @@ _cen_utl_err() {
     -f) fatal -- "$___utl_emsg$___utl_data" ;;
     *)  printf -v "$___utl_vnam" '%s' "$___utl_emsg"
     esac
+}
+
+# helper for optarg() options
+_cen_optarg_utl() {
+    local _emsg
+    case "$1" in
+    -h) isname -h -m _emsg -- "$CEN_ACTARR" ;;
+    -n) isnumber  -m _emsg -s "$3" -- "$CEN_ACTARR" && return 0 ;;
+    -v) isname    -m _emsg -- "$CEN_ACTARR" ;;
+    *)  _cen_abort - "$1"
+    esac
+    if [ -z "$_emsg" ] ; then
+        printf -v "$3" '%s' "$CEN_ACTARR" ; return 0
+    fi
+    optarg "$2" "$CEN_ACTARR" -e "$_emsg" ; return 1
 }
 
 # ------------------------------------------------------------------------------
@@ -262,7 +279,7 @@ listsearch() {
 #           optmake -s|-j|-a <dest> -b <opti>
 #
 # Options:  -a  add result to <dest> array
-#           -b  copy a builitin option
+#           -b  copy a builtin option
 #           -f  option is a flag, no value
 #           -j  add result to <dest> variable
 #           -k  key name (not an option)
@@ -295,7 +312,7 @@ listsearch() {
 # puts the <valu> into an extra array element. For string output only
 # simple quoting is used, e.g. '''"''' in <valu> are changed to '''\"'''.
 #
-#+For builitin options (-b) the following <opti> values are recognized:
+#+For builtin options (-b) the following <opti> values are recognized:
 #
 #,      dryrun|force|silent|trace|quiet|zombie
 #,      embed|gui|pager|verb*|yesno

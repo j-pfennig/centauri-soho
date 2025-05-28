@@ -70,8 +70,8 @@ CEN_NET_IFIUS=0                 # usb ...
 #       **systemd** names are not portable between differen machines. This is why
 #       centauri introduces the concept of **internal** names.
 #
-#+Internal: The centauri tools and library preferrably use an internal naming
-#           sheme to improve portablity of system images between different
+#+Internal: The centauri tools and library preferably use an internal naming
+#           scheme to improve portability of system images between different
 #           hardware without reconfiguration:
 #
 #,          **eth0**    primary ethernet   (internal device has priority)
@@ -79,7 +79,7 @@ CEN_NET_IFIUS=0                 # usb ...
 #,          **wlan0**   primary wlan       (internal device has priority)
 #,          **wlan1**   secondary          (internal or via USB etc.)
 #
-#+          [[netiface()]] translates between name shemes based on built-in
+#+          [[netiface()]] translates between name schemes based on built-in
 #           heuristics. Additionally the "centaurinetcfg" configuration file can
 #           define host name dependent mappings between internal names
 #           and systemd names.
@@ -146,7 +146,7 @@ netconfig() {
     CEN_NET_FILTERS=()          # ... in samba syntax
 
     CEN_NET_SERVERS=()          # configured servers
-    CEN_NET_ROUTERS=()          # confiugred routers
+    CEN_NET_ROUTERS=()          # configured routers
     CEN_NET_OPTIONS=()          # option strings: <option> <host>...
     CEN_NET_HOME_DNS=()         # homedns strings: <domain> <nsip> <host>
     CEN_NET_HOSTS=()            # host strings: <mac> <ip4> <host>...
@@ -169,7 +169,7 @@ netconfig() {
 }
 
 # ------------------------------------------------------------------------------
-# netconv - Convert IP4v between dotted and binary, mac-address to IP6v
+# netconv - Convert IPv4 between dotted and binary, mac-address to IP6v
 #
 # Call:     (1.1)   netconv -d <binary>             # ip4v only
 #           (1.2)   netconv -b <dotted>             # ...
@@ -190,7 +190,7 @@ netconfig() {
 #
 #           **_netconv** is set to the conversion result
 #
-# IP6v address generation from mac:
+# IPv6 address generation from mac:
 #
 #, - take the mac address: for example 52:74:f2:b1:a8:7f
 #, - throw ff:fe in the middle: 52:74:f2:ff:fe:b1:a8:7f
@@ -278,7 +278,7 @@ netconv() {
 #           -f  report errors via [[fatal()]]
 #           -s  search an address, return interface name
 #
-# Arguments:<addr>  ipv4/6 address
+# Arguments:<addr>  IPv4/6 address
 #           <ifce>  an interface name like 'eth0'
 #
 # Variable: **_netgetip**   array of addresses found, or interface
@@ -288,7 +288,7 @@ netconv() {
 #+The function uses the 'ip' command to collect data.
 #
 #.Examples: # get list of addresses
-#.          netgetip -4 && message "known ipv4 addresses:" "${_netgetip[*]}"
+#.          netgetip -4 && message "known IPv4 addresses:" "${_netgetip[*]}"
 #
 #.          # search an address
 #.          netgetip -6 -s 'fc01::a15:250' && message "interface:" "$_netgetip"
@@ -351,13 +351,13 @@ netgetip() {
 #           All input must be in lowercase
 #
 # Variables:**_nethost_name**   array of host names/aliases
-#           **_nethost_dom**    domain name stripped from <host> arugment
+#           **_nethost_dom**    domain name stripped from <host> argument
 #           **_nethost_mac**    the mac address    (or '-' if unknown)
-#           **_nethost_ip**     the ipv4 address   (or '-' if unknown)
+#           **_nethost_ip**     the IPv4 address   (or '-' if unknown)
 #
 # Return:  **true** if <host> was found or **false** on failure
 #
-#+         This routine can either check for a valid name synstax (-n option)
+#+         This routine can either check for a valid name syntax (-n option)
 #          or search the CEN_NET_HOSTS configuration table.
 #
 #+         The **_nethost_mac**, **_nethost_ip**, **_nethost_dom** and **_nethost_name**
@@ -388,7 +388,7 @@ nethost() {
 
     local host snam sdom name="${1:--}"
 
-    if [ "${name//[0-9]/}" = '...' ] ; then             # is an ipv4 address...
+    if [ "${name//[0-9]/}" = '...' ] ; then             # is an IPv4 address...
         _nethost_ip="$name"
     elif [ "${name//[0-9a-f]/}" = ':::::' ] ; then      # is a mac address...
         _nethost_mac="$name"
@@ -492,14 +492,14 @@ nethost() {
 #.          netiface -c "eth0"   -s path && message "Class:" "$path"
 #.          netiface -c "enp1s3" -s path || message "Not found"
 #
-#+Centauri networking does not explicitly use the kernel naming sheme for device
+#+Centauri networking does not explicitly use the kernel naming scheme for device
 # names. Instead it internally uses traditional BIOS names as these are logical
 # names and not glued to a specific hardware. Again: this does not mean that
 # traditional names must be used by the kernel. The netiface routine implements a
 # mapping layer between internal names and kernel names.
 #
 #+The centauri network configuration files are generated by the [[centaurinetcfg]]
-# tool using the definitons in file **$CEN_ROOT/default/centaurinetcfg**. Of course
+# tool using the definitions in file **$CEN_ROOT/default/centaurinetcfg**. Of course
 # these generated files contain kernel names.
 #
 #+The **centaurinetcfg** file optionally contains **iface** statements that control
@@ -916,7 +916,7 @@ netindex() {
 #           <addr>  address to be checked
 #
 # Return:  **0**   success
-#          **1**   general synstax failure
+#          **1**   general syntax failure
 #          **2**   invalid network mask
 #
 #+This function internally calls [[netparse()]] and [[netconv()]].
@@ -1670,7 +1670,7 @@ _cen_net_homedns() {
 #
 # Options:  -e  error if config file not found
 #           -f  fatal error if config file not found
-#           -q  return qualifed names (or nm|simple for 'connect')
+#           -q  return qualified names (or nm|simple for 'connect')
 #           -r  discard cache, reload data
 #           -s  save result to named variable
 #
@@ -1701,7 +1701,7 @@ _cen_net_homedns() {
 #           class         [*] get device class
 #           server        [*] get generic server name, return true if on a server
 #
-#           [*] Form (2) calls can have a <host> argement. If missing HOSTNAME is used.
+#           [*] Form (2) calls can have a <host> argument. If missing HOSTNAME is used.
 #
 #+The result for uppercase keywords is based on the dynamic CEN_NET_ROLE, and
 # **NOT** the static configuration data. Lowercase keywords return static data.
@@ -1727,7 +1727,7 @@ _cen_net_homedns() {
 #           static        for 'static'
 #
 #+class:    depending on centaurinet option settings one of the following is returned.
-#           Option checks are made in the listed order, 1st match winns:
+#           Option checks are made in the listed order, 1st match wins:
 #
 #           server        host is a server
 #           mobile        has 'option mobile'
@@ -1884,7 +1884,7 @@ netquery() {
 #
 # Arguments:<host>     a fully qualified host name
 #           <domain>   the DNS domain name
-#           <server>   a fully qualifed DNS server name
+#           <server>   a fully qualified DNS server name
 #           <what>     read filter: search|domain|nameserver
 #
 #.Examples: netresolv              # write configured defaults to resolv.conf
@@ -2053,8 +2053,8 @@ CEN_NET_MASTER='$CEN_NET_MASTER'
 #+          Form (6) sets or checks "/proc/sys/net/ipv?/conf/.../disable_ipv?" to enable
 #           or disable the IPv6 protocol stack.
 #
-# Options:  -4  [*] use ipv4 (adds option -4 when running a tool)
-#           -6  use ipv6 (adds option -6 when running a tool)
+# Options:  -4  [*] use IPv4 (adds option -4 when running a tool)
+#           -6  use IPv6 (adds option -6 when running a tool)
 #           -c  also check for carrier with 'isup' and 'exists'
 #           -d  [*] interface to be used
 #           -f  call [[fatal()]] on error
@@ -2067,8 +2067,8 @@ CEN_NET_MASTER='$CEN_NET_MASTER'
 #           -w  call [[warning()]] on error
 #
 #           [*] ifup/ifdown style suffixes (see 'eth0:0') are ignored when checking
-#               interface existence and up/down state. Whenn adding or deleting an
-#               ipv4 addresse a 'label' option is generated for **ip**.
+#               interface existence and up/down state. When adding or deleting an
+#               IPv4 address a 'label' option is generated for **ip**.
 #
 # Arguments:<dev>       a kernel interface name (optionally with label)
 #
@@ -2121,7 +2121,7 @@ nettool() {
         esac
     fi
 
-    # ipv4/6 status set/check
+    # IPv4/6 status set/check
     if [ "$_mode" = 2 ] ; then
         [ -z "$_fipv" ] && _cen_abort = '-4|-6'
         # check disable_ipvX file

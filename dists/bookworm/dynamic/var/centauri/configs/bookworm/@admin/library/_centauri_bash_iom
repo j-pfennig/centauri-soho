@@ -57,7 +57,7 @@
 # Copyright Dr. J. Pfennig (c) 2019-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_iom']='0.05:4'
+CEN_MODULES['_centauri_bash_iom']='0.06:4'
 
 CEN_IOM_QUEUE=()        # see _cen_optarg_iom()
 
@@ -396,7 +396,7 @@ inpfile() {
 # Arguments:<data>  name of an array variable
 #           <ext>   an extension
 #           <file>  a file path
-#           <hndl>  a file handle used for ouput
+#           <hndl>  a file handle used for output
 #
 # Return:   **true** at success or **false** otherwise.
 #
@@ -612,7 +612,7 @@ outfile() {
         # handle file
         if [ -s "$_varg" -a ! -c "$_varg" ] ; then
             if ! [ -n "$_fexi" -o -n "$_fook" -o -n "$CEN_OPT_DRYRUN" ] ; then
-                confirm -n $"Overwrite existing output file" "'$_varg'" || return 2
+                confirm -n $"Overwrite existing output file" "'${_varg#$PWD/}'" || return 2
             fi
         elif [ -n "$_fexi" ] ; then
             _cen_iom_error "$_oerr" $"Output file does not exist" "$_varg" ; return 1
@@ -657,7 +657,7 @@ outfile() {
 #           -q  quiet, no error messages
 #           -r  cache file must exist or return **false**
 #           -s  source (deserialize) cache file if it has non-zero size
-#           -w  get a writetable path if cache does not exist
+#           -w  get a writable path if cache does not exist
 #
 # Arguments:<name>  name of the cache file, a full path or '-' for "$CEN_NAME.dat"
 #           <conf>  name of a configuration file or a full path
@@ -815,7 +815,7 @@ _cen_cache_chk() {
 #           <mesg>    extra error output (default: "Invalid statement:")
 #
 #+Return:   **true** on success or **false** otherwise. Returning a non-zero status from
-#           a callback will stop parsing and return the status. After a successfull
+#           a callback will stop parsing and return the status. After a successful
 #           open the variable CEN_CONFIGFILE contains the canonicalized file path.
 #
 #+General:  Form (1) is used to get a config file path into CEN_CONFIGFILE, form (2)
@@ -823,7 +823,7 @@ _cen_cache_chk() {
 #           form (4) is used for error reporting.
 #
 #+          The <name> argument can be a file system path (containing a "/") or it
-#           can be a file name. Whithout option -p  a file name is searched at
+#           can be a file name. Without option -p  a file name is searched at
 #           **$CEN_ROOT/default** (which may be a distribution specific symlink).
 #           With option -p the locations **~/.config**, **~/.local** then ***~.<name>**
 #           are checked before that.
@@ -892,7 +892,7 @@ _cen_cache_chk() {
 CEN_CONFIGFILE=
 configfile() {
     $CEN_DEBUG -c -- "$*"
-    local _file _aflg _init _priv _rlin _read _ropt="-r" _sopt _sect=()
+    local _file _aflg _init _priv _rlin _read _ropt='-r' _sopt _sect=()
     local _ocom _oerr _omul _oqui _ovar _orep='error -z' _otra="$CEN_TRACE"
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
@@ -1127,7 +1127,7 @@ configfile() {
 #           <name>  a path if it contains a **/** or a name in the cache folder
 #           <var>   name of a variable to be serialized
 #
-#+Return:   **true** at success or **false** otherwise. After a successfull open
+#+Return:   **true** at success or **false** otherwise. After a successful open
 #           the variable CEN_SERIALIZE is set to the full path of <name>.
 #
 # Examples: (1) serialize some variables, zero data
@@ -1431,18 +1431,18 @@ _cen_iom_option() {
     # pass option info to usage module
 
     --help)
-        [ "$2" = "opts" ] && _cen_iom_add_opts ;;
+        [ "$2" = 'opts' ] && _cen_iom_add_opts ;;
 
     # options added by this module
 
     -i|--inp*)
-        [ -n "$CEN_IOM_OPT_I" ] && optarg "input"  CEN_INPFILE -r ;;
+        [ -n "$CEN_IOM_OPT_I" ] && optarg 'input'  CEN_INPFILE -r ;;
     -o|--out*)
-        [ -n "$CEN_IOM_OPT_O" ] && optarg "output" CEN_OUTFILE -w ;;
+        [ -n "$CEN_IOM_OPT_O" ] && optarg 'output' CEN_OUTFILE -w ;;
     -r|--rea|--read)
-        [ -n "$CEN_IOM_OPT_R" ] && optarg "input"  CEN_INPFILE -r ;;
+        [ -n "$CEN_IOM_OPT_R" ] && optarg 'input'  CEN_INPFILE -r ;;
     -w|--wri*)
-        [ -n "$CEN_IOM_OPT_W" ] && optarg "output" CEN_OUTFILE -w ;;
+        [ -n "$CEN_IOM_OPT_W" ] && optarg 'output' CEN_OUTFILE -w ;;
 
     esac || :
     $CEN_IOM_HOOK_OPTIONS "$@"
@@ -1450,10 +1450,10 @@ _cen_iom_option() {
 
 # helper for _cen_iom_options
 _cen_iom_add_opts() {
-    [ -n "$CEN_IOM_OPT_I" ] && _cen_use_option "-i" "--input   <file>" $"Open file for input"
-    [ -n "$CEN_IOM_OPT_O" ] && _cen_use_option "-o" "--output  <file>" $"Open file for output"
-    [ -n "$CEN_IOM_OPT_R" ] && _cen_use_option "-r" "--read    <file>" $"Open file for reading"
-    [ -n "$CEN_IOM_OPT_W" ] && _cen_use_option "-w" "--write   <file>" $"Open file for writing"
+    [ -n "$CEN_IOM_OPT_I" ] && _cen_use_option '-i' "--input   <file>" $"Open file for input"
+    [ -n "$CEN_IOM_OPT_O" ] && _cen_use_option '-o' "--output  <file>" $"Open file for output"
+    [ -n "$CEN_IOM_OPT_R" ] && _cen_use_option '-r' "--read    <file>" $"Open file for reading"
+    [ -n "$CEN_IOM_OPT_W" ] && _cen_use_option '-w' "--write   <file>" $"Open file for writing"
 }
 
 # ------------------------------------------------------------------------------
@@ -1463,7 +1463,7 @@ _cen_iom_add_opts() {
 while [ "${1::1}" = '-' ] ; do
     case "$1" in
     --)   shift ; break ;;
-    -e)   CEN_IOM_OPT_E="-e" ;;
+    -e)   CEN_IOM_OPT_E='-e' ;;
     -i)   CEN_IOM_OPT_I=1 ;;
     -o)   CEN_IOM_OPT_O=1 ;;
     -r)   CEN_IOM_OPT_R=1 ;;

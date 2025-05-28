@@ -119,7 +119,7 @@
 # Copyright Dr. J. Pfennig (c) 2015-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_svc']='0.38:4'
+CEN_MODULES['_centauri_bash_svc']='0.38:5'
 
 CEN_IS_SERVICE=                 # used by _cen_svc_action (internal)
 
@@ -312,7 +312,7 @@ background() {
 #
 #            This function is a no-operation for systemd --user services.
 #
-# Arguments:<message>  output on attemps to start/stop or restart a disabled
+# Arguments:<message>  output on attempts to start/stop or restart a disabled
 #                      service. Must not be empty.
 #
 #+The function can be placed in a service script before the [[main()]]
@@ -742,12 +742,12 @@ runsysddir() {
 #           runservice [-r] [-u] [-e|-f] [-v] **enabled** <name>
 #
 #           runservice [-u] [-e|-f] [-v] **test** <name>...     # unmasked services
-#           runservice [-u] [-e|-f] [-v] **sytemd** <name>...   # systemd services
+#           runservice [-u] [-e|-f] [-v] **systemd** <name>...  # systemd services
 #           runservice [-u] [-e|-f] [-v] **masked** <name>...   # masked services
 #
 #           runservice **level** [<lmin>]                       # get/check runlevel
 #
-# Options:  -d  run as a daemon, needs no root priviledge or service install
+# Options:  -d  run as a daemon, needs no root privilege or service install
 #           -e  report errors
 #           -f  make errors fatal
 #           -n  non-blocking operation (systemd only)
@@ -1004,7 +1004,7 @@ _cen_svc_logger() {
         2)  "${_lmsg[@]}" "$_bpid" -- "$*" ;;
         1)  "${_lmsg[@]}" -- "$*" ;;
         0)  return 1 ;;
-        *)  if ! system -c logger ; then                # logger installed?
+        *)  if ! sysfind -c logger ; then               # logger installed?
                 CEN_SVC_SYSLOG=0 ; CEN_SVC_LOGPID=0
             elif [ "$EUID" != 0 ] ; then                # only root has --id=<pid>
                 CEN_SVC_LOGPID=1 ; "${_lmsg[@]}" -- "$*"
@@ -1464,7 +1464,8 @@ _cen_svc_usage() {
 [ -n "${CEN_MODULES[_centauri_bash_bat]}" ] &&
     fatal $"module conflict:" '_centauri_bash_svc/bat'
 [ -n "${CEN_MODULES[_centauri_bash_con]}" ] &&
-    fatal $"module conflict:" '_centauri_bash_svc/con'
+    console -d
+    trace -c $"Service module load" $"Disabled 'console' module"
 [ -n "${CEN_MODULES[_centauri_bash_win]}" ] &&
     fatal $"module conflict:" '_centauri_bash_svc/win'
 

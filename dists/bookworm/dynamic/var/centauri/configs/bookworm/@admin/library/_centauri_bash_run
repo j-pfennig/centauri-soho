@@ -275,7 +275,7 @@ CEN_TERMINAL_DAT=
 #
 # Options:  -f  errors are fatal
 #           -i  information string
-#           -m  lauch per exec or in background
+#           -m  launch per exec or in background
 #           -o  override desktop status (force running emulator)
 #           -q  no error messages
 #           -r  ignore --dryrun
@@ -339,7 +339,7 @@ CEN_TERMINAL_DAT=
 #           [*] these options are mutually exclusive
 #
 # Arguments:<arg>   arguments to be passed to the application
-#           <lsel>  0:all  1:session  2:paths  3:valids generic names
+#           <lsel>  0:all  1:session  2:paths  3:valid generic names
 #           <mode>  0:just run   1:exec   2:background   3:disown
 #           <rslt>  variable name, receives returned data as array
 #           <desk>  "tty", "kde", "lxqt", ... (see $XDG_CURRENT_DESKTOP)
@@ -474,7 +474,7 @@ launcher() {
             # used to escape spaces, see [:space:] - this will work in most cases:
 
             -path:*|-wants:*)
-                local _aarr=("${_larr[@]:1}")                   # arguments ony
+                local _aarr=("${_larr[@]:1}")                   # arguments only
                 _pard["$_larr"]="${_aarr[@]// /[[:space:]]}" ;; # keep spaces
 
             # No path names used, join args to a single string:
@@ -663,7 +663,7 @@ _cen_run_tools() {
 #.             path data       "/mnt/backup/data|$BACKUPS/data" "folder for data archives"
 #.             path phys       "/mnt/backup/phys|$BACKUPS/phys" "folder for disk images"
 #
-#+Builtin:  Some predefined entries are provided by the library iself
+#+Builtin:  Some predefined entries are provided by the library itself
 #
 #.             path root       "$CEN_ROOT"              "centauritools installation root"
 #.             path library    "$CEN_LIBRARY"           "centauri-bash-lib library files"
@@ -724,7 +724,7 @@ _cen_run_tools() {
 #           is a textual description. The shortcut will be resolved to the first
 #           existing filesystem path.
 #
-#+The function loops over a (chached) list of shorcut definition lines. These are
+#+The function loops over a (cached) list of shortcut definition lines. These are
 # loaded at 1st call from "centauri-bash-lib" section "[shortpath]". The format is
 # described at [[shortpath°config]]. Each shortcut can have a list of paths and
 # the 1st path specifying an existing folder becomes the resulting path.
@@ -775,7 +775,7 @@ shortpath() {
     # read configuration file on 1st call
     if [ -z "$CEN_SHORTPATH_DAT" ] ; then
         [ -z "$CEN_SYS_NICKNAME" ] && sysversion            # get CEN_SYS_xxx vars
-        embed -m _centauri_bash_net -n ; netconfig          # set net conf vars
+        embed -r -q _centauri_bash_net -n && netconfig      # set net conf vars
         _cen_run_config $_oerr 'shortpath' ||
             warning $"Failed to load 'shortpath' configuration"
         local _line _sifs="$IFS" _atmp
@@ -1092,7 +1092,7 @@ terminal() {
             # directly without error handling. The slower equivalent is: spliteval -u
             eval "_sarr=($_line)"
             #$CEN_TRACE2 -a -c -p " key val" "%-20s %s\n" "$_sarr" "${_sarr[*]:1}"
-            [ -z "${_sarr[1]}" ] && _sarr=                  # no argument -> incrorrect
+            [ -z "${_sarr[1]}" ] && _sarr=                  # no argument -> incorrect
 
             _indx=
             case "$_sarr" in
@@ -1160,7 +1160,7 @@ terminal() {
     #       [4]    login            login shells
     #       [5]    shell            shells
     #       [6]    white            white list
-    #       [7]    black            black lisst
+    #       [7]    black            black list
     #       [8]    black-startup    no desktop session, no xroot window
     #       [9]    black-konsole    special kde for sub-window
 

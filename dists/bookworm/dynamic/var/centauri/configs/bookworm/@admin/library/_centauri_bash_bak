@@ -4,7 +4,7 @@
 #
 # Call:     . _centauri_bash_bak
 #
-#+          This modules generates backup file names, parses them and finds
+#+          This module generates backup file names, parses them and finds
 #           backups. Backup names are built from **fields** in one of two forms:
 #
 #           (1)  <tag>_<date>.<extension>
@@ -22,7 +22,7 @@
 #           contain a 4-digit year like "1998" or "2017".  A trailing month
 #           and day (sort order!) are optional.
 #
-#+          The sub-field separator of <date> can be **-** (prefered) or **_** (depricated).
+#+          The sub-field separator of <date> can be **-** (preferred) or **_** (depricated).
 #
 #.Examples: data_2015.bak
 #.          jupiter_info_2015-07.lzo
@@ -173,7 +173,7 @@ _cen_backup_name() {
 #           <glob>  shell glob plus extensions: %H (host) %T (tag) %D (any date).
 #           <>      All sequences of multiple "_" are replaced by a single "_".
 #
-# For each selected file a user supplied filter can be called. The filter
+#+For each selected file a user supplied filter can be called. The filter
 # is called via CEN_BAK_FILTER (see **backup -f**). The filter arguments are:
 #
 #, <file> <host> <tag> <year> <month> <day> <ext> <indx> <change>
@@ -281,7 +281,7 @@ _cen_backup_find() {
 #
 # Call:     backup  <other>... -f [<host>|- [<tag>|- <glob>]]]
 #
-# The function uses **/bin/find** to recurse folders and calls **backup -f**
+#+The function uses **/bin/find** to recurse folders and calls **backup -f**
 # on each folder.
 # ------------------------------------------------------------------------------
 _cen_backup_tree() {
@@ -322,7 +322,7 @@ _cen_backup_tree() {
 #
 # Call:     backup  <other>... -p <name>
 #
-# Return:   **true** at success or **false** otherwise. On success the CEN_BAK_PARSE
+#+Return:   **true** at success or **false** otherwise. On success the CEN_BAK_PARSE
 #           array is set:
 #
 #       CEN_BAK_PARSE[0]        path (no trailing /)
@@ -333,7 +333,7 @@ _cen_backup_tree() {
 #       CEN_BAK_PARSE[5]        day
 #       CEN_BAK_PARSE[6]        extension (starting after 1st dot)
 #
-#           The array elements do not contain spaces. No element can be empty,
+#+          The array elements do not contain spaces. No element can be empty,
 #           - is used as a place holder.
 #
 # Examples: °  **good/host_tag_2015-12-24.tar.gz**

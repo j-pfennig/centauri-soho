@@ -83,7 +83,7 @@ CEN_CONFIRM=            # result of confirm()
 #
 #.          CEN_HISTORY='-'
 #.          until confirm -n -v "none left right both" -d "none" \
-#.               -p " [left|rigth|both]: " "Which file(s) to edit" ; do
+#.               -p " [left|right|both]: " "Which file(s) to edit" ; do
 #.              case "$?" in
 #.                  1) system editor "$1" ;;
 #.                  2) system editor "$2" ;;

@@ -14,7 +14,7 @@
 # and for debug instrumentation. It adds debug support for [[main()]],
 # [[options()]], [[actions()]] and [[quit()]]. By explicitly loading the
 # module and passing the module options via  [[embed()]], tracing the
-# above mentioned functions is enbaled. Always the invokation of these
+# above mentioned functions is enabled. Always the invocation of these
 # functions will be reported. At program termination the list of loaded
 # modules is printed.
 #
@@ -83,7 +83,7 @@ CEN_OPT_DEBUG=0                 # see --debug
 #.      centaurihelp -T                 # list tools
 #.      centaurihelp -B                 # browse HTML documentation
 #.      centaurihelp -i ext             # output _centauri_bash_ext documentation
-#.      centaurihelp sys txt            # show everthing matching 'sys' or 'txt'
+#.      centaurihelp sys txt            # show everything matching 'sys' or 'txt'
 #.      centaurihelp - sys              # show functions matching 'sys'
 #.      centaurihelp + sys              # show topics matching 'sys'
 #.      centaurihelp = dbg              # show module documentation of 'dbg'
@@ -644,6 +644,6 @@ _cen_dbg_quit_hook() {
 # set debug options (_centauri_bash_dyn uses '-A' on autoload)
 CEN_DEBUG='debug'
 [ "$1" = '-A' ] && CEN_OPT_DEBUG=7 || debug -r "$@"
-:                                           # must return succes
+:                                           # must return success
 
 # end

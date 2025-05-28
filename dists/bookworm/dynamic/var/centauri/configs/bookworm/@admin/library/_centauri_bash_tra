@@ -43,7 +43,7 @@ CEN_TRA_WARN=1                  # user to be warned (trash -w)
 #           (3) trash [-f] [-p <pref>] [-s] [--] <item>...
 #
 # Options:  -f   flush queue (before adding new items)
-#           -i   exiplicitly initialize the trash method
+#           -i   explicitly initialize the trash method
 #           -p   flush (after adding items) using a prefix
 #           -s   silent, generate no [[trace()]] messages
 #           -w   warning if method is 'rm', allow user to quit
@@ -143,9 +143,9 @@ _cen_tra_init() {
     if [ "$CEN_OPT_TRASH" != 0 ] ; then
         # are we a subfolder of $HOME? -> use trash:/
         if _cen_tra_home ; then
-            if system -c 'gio' ; then
+            if sysfind -c 'gio' ; then
                 CEN_TRA_METHOD='gio'
-            elif [ -n "$CEN_DISPLAY" ] && system -c 'kioclient' ; then
+            elif [ -n "$CEN_DISPLAY" ] && sysfind -c 'kioclient' ; then
                 CEN_TRA_METHOD='kioclient'
             fi
 

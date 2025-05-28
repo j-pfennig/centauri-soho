@@ -32,7 +32,7 @@ embed -c '_centauri_bash_ext'           # import on demand
 # [[usage()]] can be passed through the selected pager. This includes **stdout**
 # and **stderr**.
 #
-#+The easiest method for paging output programmatically (and thereby honoring
+#+The easiest method for paging output programatically (and thereby honoring
 # the --pager option) is using the CEN_PAGER variable. On request the option
 # parser in [[main()]] will load [[_centauri_bash_pip]] and call [[syspipe()]].
 # The [[syspipe()]] call will set "CEN_PAGER=syspipe°-y" if paging is enabled,
@@ -96,7 +96,7 @@ embed -c '_centauri_bash_ext'           # import on demand
 #,          inst[4]     receive fifo name (if any)
 #,          ...         opaque data for internal use
 #
-#+          Using multiple instnace arrays allow the use of multiple, independent
+#+          Using multiple instance arrays allow the use of multiple, independent
 #           servers.
 #
 #+Protocol: The RPC protocol should be text-line based (server replies are split
@@ -337,9 +337,9 @@ syspager() {
 #           <producer>  [#] script function that consumes data from <cmd>
 #           <array>     name of an array variable
 #           <string>    name of a string variable
-#           <var>       name of a string or array veriable
+#           <var>       name of a string or array variable
 #
-#           [#] using external commands possibe but not recommended
+#           [#] using external commands is possible but not recommended
 #
 # Return:   **true** at success or **false** otherwise.
 #
@@ -374,7 +374,7 @@ syspager() {
 #
 #+          The default handler reports an error after SIGPIPE or when <cmd> returns
 #           an error. A custom error handler can be provided (use "-c '+'" for a
-#           silent termination via [[quit()]]). This code does not catch any singnals
+#           silent termination via [[quit()]]). This code does not catch any signals
 #           other than SIGPIPE (see option -t). Here an implementation example:
 #
 #.          # arguments on call: STATUS|SIGPIPE <status> <command>
@@ -654,7 +654,7 @@ _cen_pip_reset() {
 #           (3) sysloop [-e|-f] -m [-p <pipe>] [--] <mesg>...
 #           (4) sysloop [-e|-f] -q [-p <pipe>]
 #
-#+Form (1) creates a pipe and runs a reader loop and (2) aditionally starts a ticker
+#+Form (1) creates a pipe and runs a reader loop and (2) additionally starts a ticker
 # (heartbeat) process. Form (3) sends a message and (4) terminates loop and ticker.
 #
 # Options:  -c  [*] a script function to process events

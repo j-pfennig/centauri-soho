@@ -193,7 +193,7 @@ ${args[@]}
         # must enable quit callback
         CEN_BAT_BATCH=1
 
-        # reinvokation with --batch=@
+        # re-invocation with --batch=@
         if [ "${CEN_OPT_BATCH::1}" = "@" ] ; then
             CEN_BAT_STATE="done"
             _logf="${CEN_OPT_BATCH##*@}"

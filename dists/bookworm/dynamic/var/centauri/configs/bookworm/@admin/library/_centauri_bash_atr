@@ -11,6 +11,8 @@
 
 CEN_MODULES['_centauri_bash_atr']='0.10:2'
 
+embed -c '_centauri_bash_ext'               # dependency
+
 # dynamically created by filestat() ...
 #declare -g -A CEN_ATR_FILESTAT_MAP
 
@@ -22,8 +24,8 @@ CEN_ATR_HAVE_STAT=              # 1 := stat builtin loaded, 0 := not available
 # Call:     attributes [-o <owner>|-] [-m <mode>|-] [-c|-d] [-f] [-k] [-r] [-s]
 #                      [-x <excl>]... [--] <item>...
 #
-# Options:  -c  create non-exsting items as files
-#           -d  create non-exsting items as directories
+# Options:  -c  create non-existing items as files
+#           -d  create non-existing items as directories
 #           -f  make errors fatal
 #           -k  keep existing items unchanged
 #           -o  set owner (use **-** for "$LOGNAME:")
@@ -54,18 +56,18 @@ CEN_ATR_HAVE_STAT=              # 1 := stat builtin loaded, 0 := not available
 # '<user>**:**' (no group but trailing colon) the user's primary group is used.
 # ------------------------------------------------------------------------------
 attributes() {
-    local _excl=() _erun _kind _ownr=":" _mode _mdef="664" _args=() _item _srec _ferr="-e"
+    local _excl=() _erun _kind _ownr=':' _mode _mdef='664' _args=() _item _srec _ferr='-e'
     while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;
-        -c)   _kind=" " ;;
-        -d)   _kind="-d" ; _mdef="775" ;;
-        -f)   _ferr="-f" ;;
+        -c)   _kind=' ' ;;
+        -d)   _kind='-d' ; _mdef='775' ;;
+        -f)   _ferr='-f' ;;
         -k)   _keep=1 ;;
         -o)   shift ; _ownr="$1" ;;
         -m)   shift ; _mode="$1" ;;
         -r)   _fdry='-r' ;;
-        -s)   _srec="-R" ;;
+        -s)   _srec='-R' ;;
         -x)   shift ; _excl+=("$1") ;;
         *)    _cen_abort - "$1"
         esac ; shift
@@ -74,6 +76,7 @@ attributes() {
     for _item in "$@" ; do
         if [ -e "$_item" ] ; then
             [ -n "$_keep" ] && continue
+            [ -d "$_item" ] && _mdef='775'
         elif [ -n "$_kind" ] ; then
             create $_fdry $_kind -- "$_item" || continue
         else
@@ -147,7 +150,7 @@ attributes() {
 #
 #+This function loads the 'stat' bash-builtin which is not compatible with the
 # command line utility **/usr/bin/stat**. While system does not run builtins by
-# default [[sysrun]] just behaves the other way. Be carefull to use 'sysrun -i stat ...'
+# default [[sysrun]] just behaves the other way. Be careful to use 'sysrun -i stat ...'
 # to run the command line version!
 # ------------------------------------------------------------------------------
 CEN_FILESTAT=

@@ -11,15 +11,20 @@
 #  decorated [[output()]]. Also the -b and -d option of [[message()]] will be
 #  enabled, see -b and -d of [[output()]].
 #
-#+ The module cannot be loaded at the same time as [[_centauri_bash_win]]. Any
-#  attempt to do so causes a call to [[fatal()]]. Consider using option -g of
-#  [[_centauri_bash_lib]] to enable choosing between [[_centauri_bash_con]] and
-#  [[_centauri_bash_win]] at script start (adds option --gui).
+#+ [[_centauri_bash_svc]] and [[_centauri_bash_win]] cannot be used at the same
+#  time as this module. An attempt to enable console support after one of these
+#  was loaded causes a fatal error. Only when [[_centauri_bash_svc]] or
+#  [[_centauri_bash_win]] is loaded after [[_centauri_bash_con]] "console -d"
+#  gets called to disable console support.
 #
-# Copyright Dr. J. Pfennig (c) 2015-2024
+#+ Consider using option -g of [[_centauri_bash_lib]] to enable choosing between
+#  [[_centauri_bash_con]] and [[_centauri_bash_win]] at script start (this also
+#  adds option --gui).
+#
+# Copyright Dr. J. Pfennig (c) 2015-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_con']='0.24:4'
+CEN_MODULES['_centauri_bash_con']='0.25:4'
 
 CEN_ROWS=               # console rows
 CEN_COLS=               #         columns
@@ -38,6 +43,7 @@ CEN_CONS_HIGH=          # highlighting, see console -h
 CEN_CONS_MSGLEN=        # message length, used by progress
 CEN_CONS_MSGTXT=        # text for incremental mode
 CEN_CONS_PROGLN=        # progress line mode flag
+CEN_CONS_DISABLED=
 
 CEN_CONSOLE=            # 0: stdout not tty, 1: console ok, 2: unknown device
 
@@ -46,9 +52,11 @@ CEN_CONS_HOOK_MESSAGE=
 # ------------------------------------------------------------------------------
 # console - query/initialize console mode support
 #
-# Call:     console [-m **0**|**1**|**2**|**3**] [-h <high>] [-c **0**|<cols>] [-r **0**|<rows>]
+# Call:     (1) console [-m **0**|**1**|**2**|**3**] [-h <high>] [-c **0**|<cols>] [-r **0**|<rows>]
+#           (2) console -d
 #
 # Options:  -c  colums to use (**0** := current COLUMNS)
+#           -d  disable module, allow to load **_centauri_bash_win** or **_cen_bash_svc**
 #           -h  trace/warning/error highlight; **0**: off  **1**: on  **2**: auto (default)
 #           -r  rows to use   (**0** := current LINES)
 #           -m  force mode; **0** disable  **1**: fancy  **2**: simple  **3**: auto (default)
@@ -57,11 +65,11 @@ CEN_CONS_HOOK_MESSAGE=
 #
 #+This function is called by default at module load time as "console -c 0". The default
 # for option -m is **3** on 1st call. Decorated output and the availability of [[progress()]]
-# depend on a successfull console call (CEN_CONSOLE result **1** or **2**).
+# depend on a successful console call (CEN_CONSOLE result **1** or **2**).
 #
 #+Without option -m the function only sets mode **2** if **stderr**
 # goes to a terminal and sets mode **1** if also the TERM variable is set to
-# "xterm*" or "linux". In mode **2** no ANSII escape sequences are set. For
+# "xterm*" or "linux". In mode **2** no ANSI escape sequences are set. For
 # mode **3** **stdout** must go to a terminal or command line option --force
 # must be set.
 #
@@ -99,12 +107,14 @@ console() {
       case "$1" in
       --)   shift ; break ;;
       -c)   shift ; _fcol="$1" ;;
+      -d)   CEN_CONS_DISABLED=1 ; CEN_MODULES['_centauri_bash_con']= ; return 0 ;;
       -h)   shift ; _high="$1" ;;
       -m)   shift ; _fmod="$1" ;;
       -r)   shift ; _frow="$1" ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done
+    [ -n "$CEN_CONS_DISABLED" ] && return 1
 
     # implicit initialization
     if [ -z "$CEN_CONSOLE" -o -n "$_fmod" ] ; then
@@ -199,7 +209,7 @@ console() {
 # Arguments:<deco>  decoration mode, see below for values
 #           <text>  Data to be processed, multiple arguments are concatenated
 #                   and are separated be spaces
-#           <rslt>  variable to receice the output
+#           <rslt>  variable to receive the output
 #           <size>  text width (not counting escape characters)
 #
 # Options:  -a  append result to <rslt>
@@ -209,7 +219,7 @@ console() {
 #           -m  multi-line mode, repeat call per line in joined <text>
 #           -s  save result to <rslt> (default is CEN_DECORATE)
 #
-#+Style:    The <deco> paramater can be '-', a digit or a keyword. Most modes
+#+Style:    The <deco> parameter can be '-', a digit or a keyword. Most modes
 #           prepend the data with a starting escape sequence and append an escape
 #           to go back to normal text mode.
 #
@@ -217,12 +227,13 @@ console() {
 #,          **1  bold  **   bold text, back to normal
 #,          **2  mark  **   inverted text, back to normal
 #,          **3  italic**   italics text, back to normal
-#,          **4  uline **   undelined text, back to normal
+#,          **4  uline **   underlined text, back to normal
 #,          **9  remove**   remove escape sequences from input
 #,          **0  normal**   back to normal, than text
 # ------------------------------------------------------------------------------
 CEN_DECORATE=
 decorate() {
+    [ -n "$CEN_CONS_DISABLED" ] && return 1
     local _fclr=1 _ffix _flin _fmul _deco='-' _npad=0 _stxt _fset='CEN_DECORATE'
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
@@ -294,10 +305,10 @@ decorate() {
 #           -p  use printf formatting (1st arg is format)
 #           -v  append result to variable
 #           -w  set line width (overrides CEN_COLS)
-#           -x  expand width with spaces or other speficied chars
+#           -x  expand width with spaces or other specified chars
 #
 # Arguments:<offs>  indentation after line breaking, see -b
-#           <balg>  algorithms for option -b, bitmask with:
+#           <balg>  algorithms for option -b, bit-mask with:
 #                      **1|trim left**  **2|word breaks**  **4|hyphens**
 #           <cols>  columns per line
 #           <deco>  ANSII escape sequences for decoration:
@@ -322,6 +333,7 @@ decorate() {
 # ------------------------------------------------------------------------------
 output() {
     $CEN_NOTRACE return 0                   # ignore in trace mode
+    [ -n "$CEN_CONS_DISABLED" ] && return 1
 
     local _aopt _balg=0 _cexp _deco _fbrk _ffmt _find _fjoi _flin _fmul _fsav
     local _sind _fexp _nexp _marr _mesg _cols="${CEN_COLS:-0}"
@@ -430,6 +442,7 @@ output() {
 #.          output    -i 5 -l -d two -- "${head// /_}"      # footer line
 # ------------------------------------------------------------------------------
 tabulator() {
+    [ -n "$CEN_CONS_DISABLED" ] && return 1
     local amod=() atxt=() ncol=0 _slen _smod stxt stmp fmod frow fcol
     local _balg=6 _idnt=0 _cols='-'
     while [ "${1::1}" = '-' ] ; do
@@ -500,7 +513,7 @@ _cen_con_break() {
         CEN_CON_BREAK_RES= ; return 1
     fi
 
-    # init: ignore empty line - check if breaking enbabled
+    # init: ignore empty line - check if breaking enabled
     local _cols="$1" _offs="$2" _sinp="$3" _suff="$4"
 
     if [ -z "$CEN_CON_BREAK_END" ] ; then
@@ -514,22 +527,11 @@ _cen_con_break() {
 
     local _balg="${_offs#*:}" _idnt _ftrm _fwrd _fhyp _mlen
     if [ "$_balg" != "$_offs" ] ; then
-        #_idnt="${_balg#*:}"
-        #if [ "$_idnt" = "$_balg" ] ; then
-        #    _idnt=0
-        #else
-        #    _balg="${_balg%:*}"
-        #fi
         [ $((_balg & 1)) = 0 ] || _ftrm=1
         [ $((_balg & 2)) = 0 ] || _fwrd=1
         [ $((_balg & 2)) = 0 ] || _fhyp=1
         _offs="${_offs%%:*}" ; [ -z "$_offs" ] && _offs=0
     fi
-
-    #[ "$_cols" = '-' ] && _cols="$CEN_COLS"
-    #if [ -z "$CEN_CON_BREAK_END" -a -n "$_idnt" ] ; then
-    #    _cols=$((_cols - _idnt))
-    #fi
 
     # follow-up line
     if [ "$CEN_CON_BREAK_END" = 1 ] ; then
@@ -591,7 +593,7 @@ _cen_con_break() {
 }
 
 # ------------------------------------------------------------------------------
-# _cen_con_break hyphenation helper, uses _sinp _curr and _fhyp
+# _cen_con_more hyphenation helper, uses _sinp _curr and _fhyp
 # ------------------------------------------------------------------------------
 _cen_con_more() {
     [ -n "$_fhyp" ] || return 1             # hyphens on?
@@ -633,6 +635,9 @@ _cen_con_more() {
 # hook message functions to add "-d <deco>" and "-b <offs>"
 # ------------------------------------------------------------------------------
 _cen_con_mesg() {
+    if [ -n "$CEN_CONS_DISABLED" ] ; then
+        $CEN_CONS_HOOK_MESSAGE "$@" ; return    # next in chain, return status
+    fi
     local _eopt _hasi _fatl _fbrk _ffmt _fmul _fnnl _fxnl=$'\n' _scal _args _deco
     local _verb="$CEN_VERB" _stat=0
     while [ "${1::1}" = '-' ] ; do
@@ -738,7 +743,7 @@ _cen_con_mesg() {
     else
         _cen_message "${_args[@]}" -- "$_mesg"
     fi
-    $_mret 1>&2 ; return "$_stat"               # linewise progress -> \r
+    $_mret 1>&2 ; return "$_stat"               # line wise progress -> \r
 }
 
 # ------------------------------------------------------------------------------
@@ -756,6 +761,7 @@ _cen_con_mesg() {
 # ------------------------------------------------------------------------------
 _cen_con_prog() {
     [ "${CEN_CONSOLE:-0}" = 0 ] && return 1     # not in console mode
+    [ -n "$CEN_CONS_DISABLED" ] && return 1
     local _prog="$1" _fend="$2" _flin="$3" _find="$4" _step="$5" _ftxt="$6"
     shift 6
     [ -n "$_step" -a -z "${_step//[0-9]/}" ] && _prog='.'

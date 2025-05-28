@@ -13,7 +13,7 @@
 #          -q  quiet mode, no errors/warnings
 #
 #+A self-extraction script is a completely normal script that embeds this module.
-# The script code should end whith something like "main "$@" ; quit" so that bash
+# The script code should end with something like "main "$@" ; quit" so that bash
 # will never try to read input behind this line. So any type of data can follow.
 #+The data section used here starts with a marker line. The decoder re-reads the
 # script file and skips all lines in the input until it reaches the marker line:
@@ -34,7 +34,7 @@
 #
 #,      **!!!STOP!!!**
 #
-#+Sometimes it might be possible or neccessary to encapsulate data in an (unused)
+#+Sometimes it might be possible or necessary to encapsulate data in an (unused)
 # here document:
 #
 #.      # start a here document to hide data from bash interpretation:
@@ -62,7 +62,7 @@
 # character is used to represent a '\x' sequence (and the '.' is encoded as
 # hex). A few more substitutions are made so that any data line can be passed
 # to **printf** as format string. The format is fast and easy to decode and is
-# great for ASCII data. But binary data can take up to three times the origninal
+# great for ASCII data. But binary data can take up to three times the original
 # size.
 #
 # Copyright Dr. J. Pfennig (c) 2022
@@ -89,24 +89,24 @@ CEN_XTR_ERROR=${CEN_XTR_ERROR:='warning'}
 #
 #+          Scripts are written and tested as usual and later converted into
 #           a standalone flavour. The high level tool to do this work is
-#           [[centauribuilder]] which runs all neccessary low level tools.
+#           [[centauribuilder]] which runs all necessary low level tools.
 #
 #+          The **package** and **portable** flavours use [[uglify]] to create
 #           packaged scripts whereas **archive** uses the unmodified script.
 #
-#+Package:  Packaging is acomplished be slightly modifying the script startup and
+#+Package:  Packaging is accomplished be slightly modifying the script startup and
 #           by adding uglified module sources behind the script. This works fine
 #           in most cases, although the script size grows. The script itself is
 #           not uglified to allow analysis and modifications.
 #
 #+          Dynamic module loading does not really work in standalone mode, but
 #           is simulated. All used modules must be included in the packed file.
-#           For most modules this works automatically by analysing the library
+#           For most modules this works automatically by analyzing the library
 #           options of [[_centauri_bash_lib]] and by searching for "embed°-m" or
 #           "embed°-c" statements ("embed -r -m" is ignored).
 #
 #+          Some modules may need to be added manually. The [[_centauri_bash_usr]]
-#           debug support module can helpfull as it lists the loaded modules at
+#           debug support module can helpful as it lists the loaded modules at
 #           exit.
 #
 #           > **$CEN_ROOT/library/uglify** --output=my-script.package my-script
@@ -131,7 +131,7 @@ CEN_XTR_ERROR=${CEN_XTR_ERROR:='warning'}
 #
 #+          The **portable** flavour is the [[centauribuilder]] default project
 #           type. In addition to the example command line you will have to create
-#           any tanslations (the [[l10n-tool]] is run as needed) and to add any
+#           any translations (the [[l10n-tool]] is run as needed) and to add any
 #           extra files.
 #
 #+          In the uglified script file a data section follows the script code. This
@@ -143,7 +143,7 @@ CEN_XTR_ERROR=${CEN_XTR_ERROR:='warning'}
 #           [[_centauri_bash_xtr]] is loaded after script start. On the first
 #           run a folder in the user's cache is created and is populated with
 #           extracted data. Also on the 1st run and if the script is localized,
-#           the script will reload. All further invokations use the cached data.
+#           the script will reload. All further invocations use the cached data.
 #
 #+          The variable CEN_XTR_RUNTIME contains the path of the cached runtime
 #           folder, which should be the same as CEN_ROOT.

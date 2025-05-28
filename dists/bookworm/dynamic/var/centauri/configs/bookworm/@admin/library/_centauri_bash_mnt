@@ -80,7 +80,7 @@ declare -g -A CEN_MNT_AMAP      # automount map
 #
 # The [[findmount()]] function is used to check if a device is already mounted.
 # In this case it will not be mounted again and it will not be unmonted via
-# [[quit()]]. After a successfull mount [[findmount()]] is called again to set
+# [[quit()]]. After a successful mount [[findmount()]] is called again to set
 # some **CEN_MOUNT_**xxx variables.
 #
 # The functions uses **/usr/bin/udisksctl** for mounting, which does not need
@@ -521,7 +521,7 @@ blkdevice() {
 #     °                 the types are returned. With -a option all "/proc/mounts"
 #     °                 fields are returned, separated by tabulators.
 #
-#     CEN_MOUNT_EXC  -  a predifened list of exclusion used with -t '-'.
+#     CEN_MOUNT_EXC  -  a predefined list of exclusion used with -t '-'.
 #
 #     In "/proc/mounts" the mount dir might contain escapes. The returned value is
 #     always unescaped by this function; path names with tabulator chars won't work.
@@ -672,14 +672,14 @@ _cen_mnt_option() {
     # pass option info to usage module
 
     --help)
-        [ "$2" = "opts" ] && _cen_mnt_add_opts ;;
+        [ "$2" = 'opts' ] && _cen_mnt_add_opts ;;
 
     # options added by this module
 
     -c|--dev*)
-        [ -n "$CEN_MNT_OPT_D" ] && optarg "device" - -t ;;
+        [ -n "$CEN_MNT_OPT_D" ] && optarg 'device' - -t ;;
     -m|--mou*)
-        [ -n "$CEN_MNT_OPT_M" ] && optarg "mount"  - -t ;;
+        [ -n "$CEN_MNT_OPT_M" ] && optarg 'mount'  - -t ;;
 
     esac
     $CEN_MNT_HOOK_OPTIONS "$@"

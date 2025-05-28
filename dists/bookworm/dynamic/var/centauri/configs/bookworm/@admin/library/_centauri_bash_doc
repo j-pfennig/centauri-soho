@@ -138,7 +138,7 @@ CEN_DOC_BLOCK=()        # text of documentation block
 #+Rules: The 1st character of each line is a **marker**. Usually the text is indented.
 # A block optionally can start with a **label** line and can have any number of
 # non-empty **continuation** lines. The **label** ends with a colon. The colon and
-# the spaces up to the 1st non-blanc character are removed. For a
+# the spaces up to the 1st non-blank character are removed. For a
 # **continuation** line up to 12 blank characters are removed. Example:
 #
 #.          #+Label:    The 1st line is followed by continuation lines. The label
@@ -161,7 +161,7 @@ CEN_DOC_BLOCK=()        # text of documentation block
 #+      Blocks do not need to have a **marker**, the examples used "+" for some of
 #       the paragraphs to control the layout. See below.
 #
-#+Markup:   Some characters have a special interpretation (unless escaped via double apstrophs):
+#+Markup:   Some characters have a special interpretation (unless escaped via double apostrophes):
 #
 #,          ''°'' (degree)      works a a non-breaking space
 #,          ''§'' (paragraph)   is used in definition lists for indenting
@@ -169,7 +169,7 @@ CEN_DOC_BLOCK=()        # text of documentation block
 #+          There are also a few markup sequences (which may have no effect on a dumb terminal
 #           or for plain text output):
 #
-#,          '<>'<>'             literal apostroph: '''
+#,          '<>'<>'             literal apostrophe: '''
 #,          '<>'xxx'<>'         literal: xxx
 #,          ''**xxx**''         bold: **xxx**
 #,          ''"xxx"''           quoted: "xxx"
@@ -226,7 +226,7 @@ CEN_DOC_BLOCK=()        # text of documentation block
 #.      #           A text starting at column 13 (or before) is not indented.
 #
 #   A remark block, which is automatically right justified in HTML output
-#       is started by a text line (without a label) in colum 1 .. 8. All leading
+#       is started by a text line (without a label) in column 1 .. 8. All leading
 #               spaces are trimmed.
 #
 #   Multiple remark blocks are automatically labeled as "Remark:" or "Remarks:"
@@ -1317,7 +1317,7 @@ _cen_doc_citem() {
 #           [[actions()]] and [[quit()]].
 #
 #+Traps:    Variable CEN_QUIT_TRAP=<signal> controls the initialization of an internal
-#           command_not_found_handel() function at main module load (also see
+#           command_not_found_handle() function at main module load (also see
 #           [[context()]]). This would print a friendly message (or a stack trace)
 #           when a command is not found and terminate the script. This feature causes
 #           little overhead and is thus enabled by default.
@@ -1327,7 +1327,7 @@ _cen_doc_citem() {
 #           But be warned: the library is not safe to use this, only some code paths
 #           are, mostly in _centauri_bash_lib and _centauri_bash_ext.
 #
-#+Abort:    Call the [[fatal()]] function if something unforseen is discoverd.
+#+Abort:    Call the [[fatal()]] function if something unforeseen is discovered.
 #           For internal errors the -t option is used to trigger a stack trace:
 #
 #.          [ "$result" = "42" ] && fatal -t "this gets boring" "$result"
@@ -1358,11 +1358,11 @@ _cen_doc_citem() {
 #         CEN_ACTION         current action, see [[actions()]]
 #         CEN_ARGOPT         option argument, see optarg() and main()
 #         CEN_ARGS           arguments used, see arguments() or options()
-#         CEN_AUTOIND        autoindent flag, see _cen_message() -a
+#         CEN_AUTOIND        auto-indent flag, see _cen_message() -a
 #         CEN_CMDARGS        array of script arguments (options removed)
 #         CEN_CMDINDX        index in CEN_CMDARGS[]
 #         CEN_CMDOPTS        array of script options
-#         CEN_DECO_xxxx      ansi escape sequences, see [[console]]
+#         CEN_DECO_xxxx      ANSI escape sequences, see [[console]]
 #         CEN_DEFAULTS       file to be sourced after option parsing
 #         CEN_EMBED          see --embed option
 #         CEN_EXIT           error status, see [[error()]]

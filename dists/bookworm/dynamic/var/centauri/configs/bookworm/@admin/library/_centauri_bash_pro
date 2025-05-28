@@ -24,7 +24,7 @@ embed -c '_centauri_bash_utl'                       # import on demand, see time
 # CEN_CONSOLE           # imported ...
 # CEN_WINDOWS
 
-CEN_PROGRESS=           # 0:disabled  1:enbabled  2:active
+CEN_PROGRESS=           # 0:disabled  1:enabled  2:active
 
 # ------------------------------------------------------------------------------
 # progress - progress bar or incremental progress reporting
@@ -45,7 +45,7 @@ CEN_PROGRESS=           # 0:disabled  1:enbabled  2:active
 #           [[_centauri_bash_svc]] is completely different, see [[progress (service)]].
 #
 # Options:  **••• console mode •••**
-#           -a  indent all but 1st invokation
+#           -a  indent all but 1st invocation
 #           -c  incremental mode (ignored if arg is a number)
 #           -d  add delay in dryrun mode
 #           -e  end incremental/line mode (keep output)
@@ -58,7 +58,7 @@ CEN_PROGRESS=           # 0:disabled  1:enbabled  2:active
 #           -w  progress iterator
 #
 #           **••• windows mode (options -a -i and -v are silently ignored) •••**
-#           -c  set/increment progess bar
+#           -c  set/increment progress bar
 #           -d  add <delay> in dryrun mode
 #           -e  close window (same as progress without args)
 #           -l  notification message
@@ -212,7 +212,7 @@ progress() {
         [ "$CEN_PROGRESS" = 0 ] && _mini=0
         _cen_pro_work "$_work" "$_fdel" "${_step%:*}" "$_mini" "$_prog" "$_text" || _stat=$?
     elif [ "$CEN_PROGRESS" != 0 ] ; then
-        if [ -n "$CEN_WINDOWS" ] ; then         # foreward to _centauri_bash_win
+        if [ -n "$CEN_WINDOWS" ] ; then         # forward to _centauri_bash_win
             _cen_win_prog "$_prog" "$_fdel" "$_fend" "$_flin" "$_step" "$_ftxt" "$@" || _stat=$?
         else
             _cen_con_prog "$_prog" "$_fend" "$_flin" "$_find" "$_step" "$_ftxt" "$@" || _stat=$?
@@ -229,7 +229,7 @@ progress() {
 #     <work>    (-w) worker function
 #     <fdel>    (-d) debug delay
 #     <totl>    (-s) total item count
-#     <mini>    (-s) treshold for progress to be shown
+#     <mini>    (-s) threshold for progress to be shown
 #     <frmt>    (-c) printf format for n of m
 #     <text>    extra text (prefix)
 #     <done>    message

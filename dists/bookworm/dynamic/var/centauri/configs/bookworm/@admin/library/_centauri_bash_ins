@@ -17,7 +17,7 @@
 #           _cen_ins_findsvc    § find service/file or unit
 #           _cen_ins_install    § (un)install SysV or systemd service(s)
 #           _cen_ins_isshared   § do we have a shared installation?
-#           _cen_ins_library    § library installation/update remov
+#           _cen_ins_library    § library installation/update remove
 #           _cen_ins_paths      § for _cen_ins_library, paths setup
 #           _cen_ins_proxy      § create library proxy
 #           _cen_ins_rootdefs   § fill CEN_ROOTDEFS from CEN_INSTALL
@@ -33,13 +33,13 @@
 # ------------------------------------------------------------------------------
 
 # do not demand an api-version, we get loaded by centauriconfig
-CEN_MODULES['_centauri_bash_ins']='0.17:4'
+CEN_MODULES['_centauri_bash_ins']='0.18:4'
 
 embed -c '_centauri_bash_ext'               # dependency
 embed -c '_centauri_bash_cfm'               # ... confirm()
 
 CEN_INS_SYSTEMD=                            # flags that systemd is supported
-CEN_INS_SYSVOK=                             # flags that sysv is supported
+CEN_INS_SYSVOK=                             # flags that SysV is supported
 CEN_INS_ETCPATH="${CEN_PATHS[2]}"           # path to /etc
 
 # systemd variables are initialized by _cen_ins_chksystemd
@@ -76,7 +76,7 @@ _cen_ins_archinfo() {
     [ -n "$_cen_ins_varc" ] && return 0
     system -q -r -s _cen_ins_varc -- dpkg --print-architecture
     [ -n "$_cen_ins_vpla" ] && return 0
-    system -q -c raspi-config && _cen_ins_vpla='rpi'
+    sysfind -q raspi-config && _cen_ins_vpla='rpi'
     case "$_cen_ins_vpla-$_cen_ins_varc" in
         *-)         _cen_ins_vpla='-' ; return 1 ;;
         -amd64)     _cen_ins_vpla='x86' ;;
@@ -93,7 +93,7 @@ _cen_ins_archinfo() {
 # ------------------------------------------------------------------------------
 # Check if SysV or systemd services are supported: [-s] [-f|-q]
 #
-#   -s      check for systemd (default is sysv)
+#   -s      check for systemd (default is SysV)
 #   -f      errors are fatal
 #   -q      quiet
 #
@@ -123,14 +123,14 @@ _cen_ins_canrun() {
         fi
     fi
 
-    # check for sysv support
+    # check for SysV support
     [ "$CEN_INS_SYSVOK" = 'yes' ] && return 0
     [ "$CEN_INS_SYSVOK" = 'no'  ] && return 1
     if ! [ -d "$CEN_INS_SYSVINI" ] ; then
         $_fout -p $"No 'SysV' support, missing '%s' folder" "init.d"
     elif [ "$CEN_INS_SYSVOK" = 'yes' ] ; then
-        :                                           # using systemd sysv compat.
-    elif ! system -c "insserv" ; then
+        :                                           # using systemd SysV compat.
+    elif ! sysfind -q 'insserv' ; then
         $_fout $"No 'SysV' support, please install 'insserv'"
     else
         CEN_INS_SYSVOK='yes' ; return 0
@@ -232,8 +232,8 @@ _cen_completion_func$_func {
         local _xall="\$(CEN_COMPLETION=opts \$1 --help) --info --help --verbose --quiet"
         COMPREPLY=(\$(compgen -W "\$_xall" -- \$2))
         # no space for option argument
-        if [ "\${#COMPREPLY[@]}" = "1" ] ; then
-            [ "\${COMPREPLY:\${#COMPREPLY}-1}" = "=" ] && compopt -o nospace
+        if [ "\${#COMPREPLY[@]}" = 1 ] ; then
+            [ "\${COMPREPLY:\${#COMPREPLY}-1}" = '=' ] && compopt -o nospace
         fi
 
     # filenames or verbs
@@ -241,7 +241,7 @@ _cen_completion_func$_func {
         compopt -o filenames
 
         # forced filename completion
-        if [ "\${2::1}" = "." ] ; then
+        if [ "\${2::1}" = '.' ] ; then
             :
         # filename completion after verb (bash bug, needs && here)
         elif [ -z "\${3//[a-z]/}" ] && [ "\$1" != "\$3" ] ; then
@@ -380,7 +380,7 @@ _cen_ins_findsvc() {
             [ -e "$_curr" ] && break
         done
 
-    # is it a sysv service?
+    # is it a SysV service?
     elif [ "$1" = '-s' ] ; then
         [ -x "$CEN_INS_SYSVINI/$3" ] && _curr="$CEN_INS_SYSVINI/$3"
         [ -x "$CEN_TOOLS/$3" ] && _curr="$CEN_TOOLS/$3"
@@ -411,7 +411,7 @@ _cen_ins_sysvhdr() {
     [ "$line" = "#!/" ] || return 1                 # is binary
 
     while [ "$lcnt" -lt 100 ] && read line ; do
-        [ "${line::1}" = "#" ] && ((++lcnt))
+        [ "${line::1}" = '#' ] && ((++lcnt))
         [ "$line" = "### BEGIN INIT INFO" ] && return 0
     done < "$file" ; return 1
 }
@@ -451,7 +451,7 @@ _cen_ins_saferm() {
 #
 # If -i or -s are given, the SysV or systemd mode is set without any heuristics:
 #   No -s option: must be .desktop or have $CEN_TOOLS/.desktop for systemd
-#   No -i option: for a SysV install an lsb-header must be present.
+#   No -i option: for a SysV install an LSB-header must be present.
 #
 # Conditions prefixes:
 #       <none>      always install and enable or uninstall
@@ -492,7 +492,7 @@ _cen_ins_install() {
         +)      ;; # [ -z "$CEN_INS_SYSDDIR" ] && actn= ;;   # no systemd support
         '?')    [ "$CEN_NAME"  = "${farg##*/}" ] && continue
                 [ "$CEN_EMBED" = "${farg##*/}" ] && continue
-                if system -c "$farg" ; then
+                if sysfind -q "$farg" ; then
                     message -a $"Running installer:" "$farg" "$_verb"
                     embed -z -v -- "$farg" "$_verb"
                     continue
@@ -521,7 +521,7 @@ _cen_ins_install() {
                         fi
         esac
 
-        [ -n "$unit" -a "$_iopt" = "-i" ] &&        # internal error...
+        [ -n "$unit" -a "$_iopt" = '-i' ] &&        # internal error...
             fatal -t "unit file and -i:" "$farg"
         if [ ! -f "$fsvc" ] || [ -z "$unit" -a ! -x "$fsvc" ] ; then
             error $"Not a service file:" "${fsvc:-$farg}" ; continue
@@ -529,13 +529,13 @@ _cen_ins_install() {
 
         # is it SysV (in CEN_INS_SYSVINI) or systemd (in CEN_INS_SYSDDIR)?
         name="${farg##*/}"
-        if [ "$_iopt" = "-i" ] ; then
+        if [ "$_iopt" = '-i' ] ; then
             dest="$CEN_INS_SYSVINI"
-        elif [ "$_iopt" = "-s" ] ; then
+        elif [ "$_iopt" = '-s' ] ; then
             dest="$CEN_INS_SYSDDIR"
         elif [ -n "$unit" ] ; then
             [ -e "$CEN_INS_SYSDDIR/$name" ] && dest="$CEN_INS_SYSDDIR"
-            [ "$unit" = "2" ] && dest="${fsvc%/*}"
+            [ "$unit" = 2 ] && dest="${fsvc%/*}"
         else
             [ -e "$CEN_INS_SYSDDIR/$name.service" ] && dest="$CEN_INS_SYSDDIR"
             [ -e "$CEN_INS_SYSVINI/$name" ] && dest="$CEN_INS_SYSVINI"
@@ -597,7 +597,7 @@ _cen_ins_install() {
         elif [ -n "$_sysv" ] ; then                 # single location for SysV
             [ "$fdes" -ef "$fsvc" ] && continue
         else
-            [ "$unit" != "2" -a -e "$fdes" ] && continue
+            [ "$unit" != 1 -a -e "$fdes" ] && continue
         fi
         message -a $"Installing service:" "$farg" "$labl"
 
@@ -633,7 +633,7 @@ _cen_ins_service() {
             _cen_ins_saferm "$_fsvc" || return
         fi
 
-        local _saft="networking.service network-online.target remote-fs.target"
+        local _saft='networking.service network-online.target remote-fs.target'
         local _file="${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}"
 
         [ -n "$CEN_SVC_WANTS" ] &&
@@ -641,13 +641,13 @@ _cen_ins_service() {
         [ -n "$CEN_SVC_AFTER" ] &&
             _saft="$CEN_SVC_AFTER"
 
-        [ "${_file::1}" = "/" ] || prettypath -c -e -f -s _file -- "$_file"
-        if [ "$CEN_SVC_TYPE" = "simple" ] ; then
+        [ "${_file::1}" = '/' ] || prettypath -c -e -f -s _file -- "$_file"
+        if [ "$CEN_SVC_TYPE" = 'simple' ] ; then
             _sstp="# a 'simple' service should not set 'ExecStop='"$'\n'
         else
             _sstp="ExecStop=$_file --daemon=0  stop"$'\n'
         fi
-        if [ "$CEN_SVC_TYPE" == "once" ] ; then
+        if [ "$CEN_SVC_TYPE" == 'once' ] ; then
             create -t -h - "$CEN_INS_SYSDDIR/$_fsvc" 644 <<!EOF
 [Unit]
 Description=$CEN_SVC_SHORT
@@ -661,7 +661,7 @@ ExecStart=$_file --daemon=0 start
 [Install]
 WantedBy=$CEN_SVC_WANTED_BY
 !EOF
-        elif [ "$CEN_SVC_TYPE" == "oneshot" ] ; then
+        elif [ "$CEN_SVC_TYPE" == 'oneshot' ] ; then
             create -t -h - "$CEN_INS_SYSDDIR/$_fsvc" 644 <<!EOF
 [Unit]
 Description=$CEN_SVC_SHORT
@@ -792,12 +792,12 @@ WantedBy=$CEN_SVC_WANTED_BY
 # ------------------------------------------------------------------------------
 _cen_ins_systemd() {
     local _remove _nosysv
-    [ "$1" = "-n" ] && _nosysv=1
-    [ "$1" = "-r" ] && _remove=1
+    [ "$1" = '-n' ] && _nosysv=1
+    [ "$1" = '-r' ] && _remove=1
 
     # entries in .wants folders: <want> <orig>
     #___sysd_wants() {
-    #    local skey snam lopt="-r"
+    #    local skey snam lopt='-r'
     #    if [ -z "$_remove" ] ; then
     #       create -d -- "$dest/$fdir" 755 || return
     #       lopt=
@@ -895,7 +895,7 @@ _cen_ins_systemd() {
                 case "$skey" in
                 -)  $CEN_TRACE -a -c "... remove" -- "$snam"
                     remove -- "$fdir/$snam" ;;
-                +)  [ "${snam::1}" = "/" ] && pref="${snam%/*}" || pref="$orig"
+                +)  [ "${snam::1}" = '/' ] && pref="${snam%/*}" || pref="$orig"
                     snam="${snam##*/}"
                     if [ -z "$_remove" ] ; then
                         $CEN_TRACE -a -c "... symlink" -- "$pref/${snam/@*./@.} => $snam"
@@ -941,7 +941,7 @@ _cen_ins_systemd() {
 #           -t  create/fix paths (root only)
 #           -u  update tool links only
 #
-# Returns status 128 if (un)install is cancelled.
+# Returns status 128 if (un)install is canceled.
 # ------------------------------------------------------------------------------
 _cen_ins_library() {
     if [ "$EUID" != 0 ] && _cen_ins_isshared ; then
@@ -1964,6 +1964,14 @@ ${CEN_SYS_QTVERS@A}
 #           and [[syssetup()]]. The installation path is:
 #
 #.          **$CEN_TOOLS/_centauri_bash_lib**
+#
+#+          The proxy file is sourced and loads the  main library module. The proxy
+#           takes some options and arguments, see [[_centauri_bash_lib]]. Bash uses
+#           the PATH environment variable to locate the file to be sourced. It is
+#           recommended to add the script base folder path temporarily when loading
+#           the proxy. Example:
+#
+#.          PATH+=":${0%/*}" . _centauri_bash_lib -a -d - '0.01' || exit 2
 #
 #+Environment:°At loading time the proxy always sets the following variables to
 #           fixed values that were set at proxy creation time:

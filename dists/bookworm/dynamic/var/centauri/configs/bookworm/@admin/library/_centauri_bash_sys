@@ -296,7 +296,7 @@ sysversion() {
 #           <orig>      origin folder
 #           <rootdef>   see below, overrides CEN_INSTALL
 #
-#+Rootdef:  A colon seperated list of paths, that can be used to override
+#+Rootdef:  A colon separated list of paths, that can be used to override
 #           the "defaults shared" or "defaults private" config entries in
 #           section **[library]** of **centauri-bash-lib**:
 #
@@ -394,7 +394,7 @@ syssetup() {
 #           to determine an action. Form (1) outputs various version information and
 #           terminates execution via quit(). Form (2) handles symlinking into system
 #           folders and (un)registering system services. Form (3) is used to copy all
-#           files from <repo> to <dest> (with **setup**) or to udate existing files
+#           files from <repo> to <dest> (with **setup**) or to update existing files
 #           (with **refresh**). See [[Installation]] for more usage details.
 #
 # Keywords: **detailed**  § detailed version info, see [[_centauri_bash_use]]
@@ -501,7 +501,7 @@ sysinfo() {
 # Options:  -c  generate bash completion (for root only)
 #           -p  generate the centauri-bash-lib proxy
 #           -s  check if systemd is to be used
-#           -u  update if neccessary
+#           -u  update if necessary
 #
 #+Reads the **[library]** section of **${CEN_PATHS[6]}/centauri_bash_lib**
 # (for Debian this path is equal to **/etc/default/centauri_bash_lib**).
@@ -512,7 +512,7 @@ sysinfo() {
 #
 #+Bootstrap:Usually there should be no **$CEN_ROOT/centauri_bash_lib** file.
 # But is it exists, it will override **${CEN_PATHS[6]}/centauri_bash_lib**.
-# This might be usefull for setup programs.
+# This might be useful for setup programs.
 # ------------------------------------------------------------------------------
 sysconfig() {
     $CEN_DEBUG -c -- "$*"

@@ -4,14 +4,122 @@
 #
 # Call:     . _centauri_bash_rep
 #
-# The module implements exactly one public function: [[repository()]]
+# The module implements exactly two public functions:
+#,  [[override()]]
+#,  [[repository()]]
 #
-# Copyright Dr. J. Pfennig (c) 2024
+# Copyright Dr. J. Pfennig (c) 2024-2025
 # ------------------------------------------------------------------------------
 
 CEN_MODULES['_centauri_bash_rep']='0.02:4'
 
-CEN_REP_DKEY=                   # distribution key, see 'distro'
+embed -c '_centauri_bash_ext'               # dependency
+
+CEN_REP_DKEY=                               # distribution key, see 'distro'
+
+# ------------------------------------------------------------------------------
+# override - mechanism to pass extra information to scripts
+#
+# Call:     (1) override -c <name>|- <value>
+#           (2) override -d <name>|-
+#           (3) override -r [-f] <name>|- <vnam>
+#
+#+      Form (1) creates a file named "$CEN_ROOT/persistent/<name>-override" with
+# <value> as contents.
+#
+#+      Form (2) deletes a file created by (1).
+#
+#+      Form (3) is used to read the content of an ''override'' file into variable
+#       <vnam>.
+#
+# Options:  -c  create file
+#           -d  delete file
+#           -f  make errors fatal
+#           -r  read file
+#
+# Arguments:<name>      file name part (use '-' for script name)
+#           <value>     string to be written (must be a single line)
+#           <vnam>      name of a variable that returns the file content
+#
+#+Form (2) and (3) do nothing if no ''override'' file exists. Only read or write
+# errors get reported.
+# ------------------------------------------------------------------------------
+override() {
+    local _name="$CEN_NAME" _file _fcre _fdel _frea
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      -)    break ;;
+      --)   shift ; break ;;
+      -c)   _fcre=1 ;;
+      -d)   _fdel=1 ;;
+      -f)   [ -n "$CEN_OPT_FORCE" ] && return 1
+            _frea=1 ;;
+      -r)   _frea=1 ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    [ "${1:--}" != '-' ] && _name="$1" ; shift
+    _file="$CEN_ROOT/persistent/$_name-override"
+    if [ -n "$_fcre" ] ; then
+        writeline -c - -e -o "$_file" -t -- "$1" ; return
+    elif [ -n "$_fdel" ] ; then
+        remove -- "$_file" ; return
+    elif [ -n "$_frea" ] ; then
+        readline -i "$_file" -s "$1" ; return
+    fi
+    _cen_abort =
+}
+
+# ------------------------------------------------------------------------------
+# Override Arguments + Passing extra information to Scripts
+#
+#+General:  This mechanism manages files in "$CEN_ROOT/persistent" using file
+# names built like: "<script-name>-override". The target script can implement
+# whatever it wants to handle information read from such a file. Typically a
+# script will capture a set of action verbs and replace matching verbs by data
+# read from the override file.
+#
+#+A simple implementation of the file handling mechanics is provided by function
+# [[override()]].
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Override Options + Overriding option defaults via "/etc/default"
+#
+#+General: The framework can source a bash script at early startup (before parsing
+# the command line). This mechanism is intended to set option defaults and is
+# activated by passing option '-o' to the proxy.
+#
+#+Whilst the sourced code can do whatever is likes to do, it is recommended to
+# follow this example:
+#
+#.  PATH+=":${0%/*}" . _centauri_bash_lib -a -d -o - '0.01' || exit 2
+#.
+#.  CEN_DEF_BASE="/opt/$CEN_NAME"           # default for option --base
+#.  CEN_OPT_BASE=                           # option argument value
+#.
+#.  # ...
+#.
+#.  options() {
+#.  case "$1" in
+#.  °   '')     [ -z "$CEN_OPT_BASE" ] && CEN_OPT_BASE="$CEN_DEF_BASE"
+#.  °           ;;
+#.  °   -B|--bas|--base)
+#.  °           optarg 'base'   -   -t
+#.  °           ;;
+#.  °   # ...
+#.  esac
+#.
+#.  # ...
+#.
+#.  main "$@" ; quit
+#
+#+For a script named "mytool" that follows the example above, the content of file
+# "/etc/default/mytool" could be:
+#
+#. # overriding the default for option --base
+#. CEN_DEF_BASE='/somewhere/$CEN_NAME"
+# ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
 # repository - Repository basic operations
@@ -70,11 +178,11 @@ CEN_REP_DKEY=                   # distribution key, see 'distro'
 #+General:
 # The repository is a data tree and closely related to centauri-bash-lib but not
 # a part of it. Anyhow the library documentation is a good place to briefly describe
-# its structure. Data is organised as folders and files around three main axes:
+# its structure. Data is organized as folders and files around three main axes:
 #
 #,      - <<by distribution>>   like debian/raspbian bookworm, debian trixie or others
 #,      - <<by configuration>>  instances of configurations of computers in a network
-#,      - <<by computer>>       machine dependent configs
+#,      - <<by computer>>       machine dependent configurations
 # °
 #- $CEN_ROOT                        # the installation root
 #- °  ├── configs                   # the repository part ...
@@ -82,7 +190,7 @@ CEN_REP_DKEY=                   # distribution key, see 'distro'
 #- °  │   │   ├── @admin            # non-configuration dependent things ...
 #- °  │   │   │   ├── library       # centauri-bash-lib bash code
 #- °  │   │   │   ├── locale        # centauri-bash-lib translations
-#- °  │   │   │   ├── systemd       # systemd services and configs
+#- °  │   │   │   ├── systemd       # systemd services and configurations
 #- °  │   │   │   ├── tools         # centauri-tools bash code
 #- °  │   │   │   └── ...
 #- °  │   │   ├── <conf>            # a configuration instance, example: worms
@@ -167,7 +275,7 @@ CEN_REP_DKEY=                   # distribution key, see 'distro'
 # The configuration file '/etc/rsyncd.conf' is managed by 'centaurimachines'.
 # Whenever a host is added to or removed from staging the config is rewritten.
 # The file 'rsyncd.static' contains the static configuration data and for each
-# host a fragement 'repository.rsyncd' is added.
+# host a fragment 'repository.rsyncd' is added.
 #
 #+master: Some administrative hosts (including the servers) can be configured
 # to to bypass staging and keep a full copy of the main repository. This is
