@@ -4,7 +4,7 @@ CEN_LEGAL="Dr. Jürgen Pfennig (c) 2021-2025; BSD License"
 CEN_TITLE=$"Handle differences between text files"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -s -y - '0.06:3' 2 2 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -s -y - '0.07:4' 2 2 || exit 2
 
 # Data
 CEN_OPT_ACCEPT=             # see --accept
@@ -52,7 +52,9 @@ do_compare() {
         return 3 ;;
     esac
 
-    if [ "$fsrc" -nt "$fdes" ] ; then
+    if [ "$CEN_OPT_TIME" = 0 ] ; then
+        :
+    elif [ "$fsrc" -nt "$fdes" ] ; then
         temp=$"Source is newer"
     elif [ "$fdes" -nt "$fsrc" ] ; then
         temp=$"Source is older"
@@ -569,7 +571,7 @@ options() {
     -S|--she*)
         optarg 'shell'      -       ;;   # simple flag
     -T|--tim|--time)
-        optarg 'time'       -       ;;   # simple flag
+        optarg 'time'       - '0|1' ;;
     -U|--roo|--root)
         optarg 'root'       -       ;;   # simple flag
 
@@ -582,15 +584,15 @@ options() {
 usage() {
 
     usageset \
-        -u "(1) $CEN_NAME <opt>... [-E|-K|-M|-P|-S] [-A|-R|-T] [-F] <arg1> <arg2>" \
-        -u "(2) $CEN_NAME <opt>... [-M] [-T] <dir1> <dir2>" \
+        -u "(1) $CEN_NAME <opt>... [-E|-K|-M|-P|-S] [-A|-R] [-T <time>] [-F] <arg1> <arg2>" \
+        -u "(2) $CEN_NAME <opt>... [-M] [-T <time>] <dir1> <dir2>" \
         -u - \
         -u "$CEN_TITLE. Form (1) works for single files," \
         -u "whereas form (2) operates recursively on folders." \
         -o - \
         -o '-A --accept'         $"accept changes" \
         -o '-R --revert'         $"revert changes" \
-        -o '-T --time'           $"treat pair with same timestamp as equal" \
+        -o '-T --time    <time>' $"handling of equal/different timestamps" \
         -o - \
         -o '-C --change  <expr>' $"fix ownership, mode and timestamp" \
         -o '-F --fix'            $"fix ownership, mode and timestamp" \
@@ -608,6 +610,7 @@ usage() {
         -p '<argN>'   '         '$"folder, file or @<dist> (repository argument)" \
         -p '<dirN>'   '         '$"folder or @<dist>       (repository argument)" \
         -p '<expr>'   '         '$"path string change expression: <from>/<to>" \
+        -p '<time>'   '         '$"0:=always run diff  1:=no diff if equal" \
         -p '<what>'   '         '$"one of ..." \
 
     local tlnk="${CEN_INSTALL#*:*:}" ; tlnk="${tlnk%%:*}"

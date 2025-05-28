@@ -145,9 +145,9 @@ cfg_params() {
             source "$file" ||
                 fatal $"Parameter loading failed:" "$file"
             [ -n "$wrks" ] && SOHO_WORKSPACE="$wrks"
-            trace -a -c "Parameters read" "$file"
+            trace -a -c $"Parameters read" "$file"
         else
-            trace -a -c "Got no parameters" "$file"
+            trace -a -c $"Got no parameters" "$file"
             return 1
         fi
     fi
@@ -281,19 +281,17 @@ cfg_alone() {
 #
 #   <dest>  mountpoint of root-fs or '-' for this machine
 #   <name>  machine name or '-' for $HOSTNAME
-#   <para>  '+'         query mode
-#           '-'         read only
-#           ':'         statnd-alone
+#   <para>  '+'         query mode (default)
+#           '-'         templates update only
 #           <path>      load from path
 # ------------------------------------------------------------------------------
 cfg_apply() {
     local dest="${1%/}" ; dest="${dest:--}"
-    local name="${2:--}" para="$3"
+    local name="${2:--}" para="${3:-+}"
     local list wrks dcfg="$DAT_SOHO_PARAMS"
     [ "$name" = '-' ] && name="$HOSTNAME" || SOHO_HOST="$name"
 
     if  [ "$dest" = '-' ] ; then
-        allowInstall                                # check permission to install
         get_yesno -y $"Update configuration of local host" || quit -a -u
         wrks="$SOHO_WORKSPACE" ; dest='/'
     else
@@ -303,7 +301,7 @@ cfg_apply() {
         DAT_SOHO_PARAMS="$dcfg"
         DAT_SOHO_DEST="${dest%/}"
         DAT_SOHO_ROOT="$DAT_SOHO_DEST/var/centauri"
-        if [ "${para:--}" != '-' -a "$para" != '+' ] ; then
+        if [ "$para" != '-' -a "$para" != '+' ] ; then
             message -a -c $"Parameter file" "$para"
             dcfg="$para"
         elif [ ! -e "$dcfg" ] ; then
@@ -316,11 +314,11 @@ cfg_apply() {
         if [ -n "$wrks" ] && [ -d "$dest$wrks" ] ; then
             SOHO_WORKSPACE="$dest$wrks"
         else
-            trace -a -c "wrong workspace" "$wrks"
+            trace -a -c $"wrong workspace" "$wrks"
             get_workspace -c || return 1                # use --base option
         fi
         wrks="$SOHO_WORKSPACE"
-        trace -a -c "dest workspace" "$wrks"
+        trace -a -c $"dest workspace" "$wrks"
         get_config -n "$dcfg" || return 1               # complete and validate only
 
         if [ "$name" = '-' ] ; then
@@ -334,15 +332,15 @@ cfg_apply() {
         DAT_SOHO_NETCFG='/etc/default/centaurinetcfg'
     fi
 
-    [ "$para" ] &&
-        get_yesno -n $"Make this computer stand-alone (dhcp based)" && para=':'
-
     # if we have a <para> argument ...
     case "$para" in
-    '') ;;
     +)  while true ; do
-            cfg_params -q "$dcfg" || return 1
-            confirm -d - -v $"yes no quit" -p $" [y/n/q]? " $"Apply configuration"
+            if get_yesno -n $"Make this computer stand-alone (DHCP based)" ; then
+                cfg_alone
+            else
+                cfg_params -q "$dcfg" || return 1
+            fi
+            confirm -d - -p $" [y/n/q]? " -v $"yes no quit" $"Apply configuration"
             case $? in
             0)  break ;;
             1)  ;;
@@ -350,9 +348,7 @@ cfg_apply() {
             esac
         done
         ;;
-    -)  [ "$CEN_ACTION" = 'restore' ] && return 0
-        cfg_params -r || return 1 ;;
-    :)  cfg_alone ;;
+    -)  cfg_params -r || return 1 ;;
     *)  cfg_params -r "$para" || return 1
     esac
     if [ "$para" != '-' ] ; then
@@ -389,7 +385,7 @@ cfg_apply() {
     # not enable yet. So we touch the config and expect 'centauriswitch' to
     # do the update at next boot ...
     system -e -p touch touch --date=@$((EPOCHSECONDS + 2)) "${dest%/}$DAT_SOHO_NETCFG"
-    message "Touched to trigger re-config:" "${dest%/}$DAT_SOHO_NETCFG"
+    message $"Touched to trigger re-config:" "${dest%/}$DAT_SOHO_NETCFG"
     return 0
 }
 
@@ -404,10 +400,11 @@ cfg_wlan() {
     else
         trace -a "Setting wlan password"
     fi
-    [ "${SOHO_NET_WLAN:--}" = '-' ] || set -- "$@" --wlan   "$SOHO_NET_WLAN:$pasw"
-    [ "${SOHO_NET_APNT:--}" = '-' ] || set -- "$@" --apoint "$SOHO_NET_APNT:$pasw"
+    local opts=('nmcon')
+    [ "${SOHO_NET_WLAN:--}" = '-' ] || opts+=('--' 'wpasup' "$SOHO_NET_WLAN" "$pasw")
+    [ "${SOHO_NET_APNT:--}" = '-' ] || opts+=('--' 'hostap' "$SOHO_NET_APNT" "$pasw")
     folder -f -m "$DAT_SOHO_DEST/etc/hostapd"
-    embed -v 'centaurinetgen' -f -s "$@" --host="$host" nmcon -- wpasup -- hostapd
+    embed -v 'centaurinetgen' -f -s "$@" --host="$host" "${opts[@]}"
 }
 
 # ------------------------------------------------------------------------------
@@ -678,8 +675,8 @@ get_value() {
     [ "$_prom" = '-' -o "${_dflt:--}" != '-' ] && _prom="$_dflt"
 
     printf -v _text '%s%%s[%s]' "$4" "$_prom"
-    local _leng ; printf -v _leng '%56s'
-    local _fill=$((${#_leng} - ${#_text}))
+    local _leng _temp="${_text//[[:alpha:]]/.}" ; printf -v _leng '%56s'
+    local _fill=$((${#_leng} - ${#_temp}))
     [ "$_fill" -lt 1 ] && _fill=1
     printf -v _text "$_text" "${_leng::_fill}"
 
@@ -727,7 +724,7 @@ get_workspace() {
         if [ -z "$CEN_OPT_BASE" ] && matchpath -f -o -p -- \
             "$DAT_SOHO_DEST"/root/centaurisoho-*-*/seed.tgz ; then
                 SOHO_WORKSPACE="${CEN_MATCHPATH%/*}"
-            message -a -c "Found workspace" "$SOHO_WORKSPACE"
+            message -a -c $"Found workspace" "$SOHO_WORKSPACE"
         fi
         [ -n "$SOHO_WORKSPACE" ] && return 0
     elif [ -n "$SOHO_WORKSPACE" ] ; then            # previous call
@@ -743,13 +740,13 @@ get_workspace() {
         splitkeyval "$CEN_OPT_CURRENT" SOHO_DISTRO SOHO_CONFIG ':'
     if [ -z "$SOHO_WORKSPACE" ] ; then
         [ "$1" = '-q' ] && return 1
-        quit -e "No known workspace, use option '--base=<fldr>'"
+        quit -e $"No known workspace, use option '--base=<fldr>'"
     elif [ ! -d "$SOHO_WORKSPACE/dists" ] ; then
         [ "$1" = '-q' ] && return 1
-        quit -e "Not a valid workspace:" "$SOHO_WORKSPACE"
+        quit -e $"Not a valid workspace:" "$SOHO_WORKSPACE"
     elif [ -z "$SOHO_DISTRO" -o -z "$SOHO_CONFIG" ] ; then
         [ "$1" = '-q' ] && return 1
-        quit -e "No configuration info, use option '--current=<dist>:<inst>'"
+        quit -e $"No configuration info, use option '--current=<dist>:<inst>'"
     fi
 
     # find root folder by walking up from workspace
@@ -759,7 +756,7 @@ get_workspace() {
         [ -d "$root/usr/bin" -a -d "$root/etc/default" ] && break
     done
     [ "${root:-/}" -ef "$dest" ] ||
-        quit -e -p "Workspace is not a child of '%s': %s" "$dest" "$SOHO_WORKSPACE"
+        quit -e -p $"Workspace is not a child of '%s': %s" "$dest" "$SOHO_WORKSPACE"
 
     # optionally change to workspace folder and check seed
     [ "$1" = '-c' -o "$1" = '-n' -o "$1" = '-q' ] && return 0
@@ -773,8 +770,8 @@ get_workspace() {
     # check for existing seed file
     [ "$1" = '-f' ] && return 0                     # no seed check
     matchpath -o -e -s DAT_SOHO_SEED -- "$DAT_SEED" ||
-        quit -e "No known seed file, use options '--base=<fldr> --current=<dist>:<inst>'"
-    trace -a -c "Seed file" "$DAT_SOHO_SEED"
+        quit -e $"No known seed file, use options '--base=<fldr> --current=<dist>:<inst>'"
+    trace -a -c $"Seed file" "$DAT_SOHO_SEED"
     return 0
 }
 
@@ -782,19 +779,24 @@ get_workspace() {
 # confirm y/n in same format as get_value
 # ------------------------------------------------------------------------------
 get_yesno() {
-    local text yopt="$1" ; shift
+    local text asci ugly yopt="$1" ; shift
     [ $# -gt 1 ] && printf -v text "$@" || text="$1"
-    confirm -a $yopt -f "%-48s" "$text"
+
+    # confirm -a $yopt -f "%-48s" "$text"           # not ok for unicode
+
+    asci="${text//[[:alpha:]]/.}"                   # this is unicode aware
+    printf -v ugly "%-48s" "$asci"                  # get correct padding
+    confirm -a $yopt -- "${ugly/$asci/$text}"       # back to unicode
 }
 
 # ------------------------------------------------------------------------------
 # source the install helper: <verb> [<dist>|- [<conf>|-]]
 # ------------------------------------------------------------------------------
 run_installer() {
-    [ -x './installer' ] || quit -e "Install helper not found:" "$PWD/installer"
+    [ -x './installer' ] || quit -e $"Install helper not found:" "$PWD/installer"
     local opts=('./installer' "$@")
     DAT_SELF="$CEN_NAME"
-    trace -a -c "Sourcing" "${opts[@]}"
+    trace -a -c $"Sourcing" "${opts[@]}"
     source "${opts[@]}"
 }
 
@@ -808,9 +810,9 @@ samba_check() {
     role="${role#*=}" ; role="${role// /}"
     case "$role" in
     memberserver*)  mesg='renserver'
-                    warn="Samba domain members must re-join the domain after rename" ;;
+                    warn=$"Samba domain members must re-join the domain after rename" ;;
     activedirect*)  mesg='renclient'
-                    warn="AD/DC servers cannot rename domain, samba must be re-provisioned" ;;
+                    warn=$"AD/DC servers cannot rename domain, samba must be re-provisioned" ;;
     *)              return 0
     esac
     case "$1" in
@@ -939,8 +941,8 @@ templ_subst() {
 templ_warning() {
     trimjoin -- "$text"
     DAT_SOHO_SUB='[ERROR]'
-    warning -m "Invalid template substitution: ""%$xkey$xsuf%" \
-               "Line: ""$CEN_TRIMJOIN" "File: ""${tmpl##*templates/}"
+    warning -m $"Invalid template substitution: ""%$xkey$xsuf%" \
+               $"Line: ""$CEN_TRIMJOIN" $"File: ""${tmpl##*templates/}"
 }
 
 # ------------------------------------------------------------------------------
@@ -989,13 +991,13 @@ templ_expand() {
     elif [ -f "$SOHO_WORKSPACE/templates/@shared/$tmpl" ] ; then
         tmpl="$SOHO_WORKSPACE/templates/@shared/$tmpl"
     elif [ "$CEN_ACTION" = 'template' ] ; then
-        error $"Not a template:" "$tmpl" ; return 1
+        error $"Not a template"':' "$tmpl" ; return 1
     else
-        trace -a -c "Not a template" "$tmpl" ; return 1
+        trace -a -c $"Not a template" "$tmpl" ; return 1
     fi
 
     if [ "$2" = '-' ] ; then                    # to stdout
-        trace -a -c "expand template" "$tmpl -> (stdout)"
+        trace -a -c $"expand template" "$tmpl -> (stdout)"
         inpdata -r -c templ_subst -- "$tmpl" ; return
     elif [ -d "${2:-/}" ] ; then                # into a folder
         repository -u esc dest "${tmpl%.TEMPLATE}"
@@ -1007,11 +1009,11 @@ templ_expand() {
     CEN_OUTFILE="${CEN_OUTFILE//\/\//\/}"
 
     if [ -n "$fexi" ] && [ ! -f "$CEN_OUTFILE" ] ; then
-        trace -a -c "skip template" "$tmpl -> $CEN_OUTFILE"
+        trace -a -c $"skip template" "$tmpl -> $CEN_OUTFILE"
         return 0
     fi
     dryrun -s "template $tmpl -> $CEN_OUTFILE" && return
-    trace -a -c "expand template" "$tmpl -> $CEN_OUTFILE"
+    trace -a -c $"expand template" "$tmpl -> $CEN_OUTFILE"
     inpdata -c templ_subst -- "$tmpl" >"$CEN_OUTFILE"
     [ -x "$tmpl" ] && attributes -m 775 -- "$CEN_OUTFILE"
     return 0
@@ -1336,7 +1338,7 @@ actionConfig() {
 
     get_config                                          # initialize config
     case "$ccmd" in
-    que*)       cfg_apply "$1" "$2" "${3:-+}" ;;
+    que*)       cfg_apply "$1" "$2" "$3" ;;
     sho|show)   cfg_params -w '-' ;;
     upd*)       cfg_apply - - - ;;
     *)          if [ -f "$ccmd" ] ; then
@@ -1790,10 +1792,10 @@ actionRestore() {
         ext4|btrfs) fsys="$1" ;;
         [1-9]*M)    swap=1 ;;
         [1-9]*G)    swap="${1%G}"
-                    [ -n "${swap//[0-9]}" ] && quit -e "Invalid swap size:" "$1"
+                    [ -n "${swap//[0-9]}" ] && quit -e $"Invalid swap size:" "$1"
                     ;;
         [a-z]*)     [ -z "$name" ] && name="$1" || para="$1";;
-        *)          invoke -e "Invalid argument or hostname:" "$1" ; return
+        *)          invoke -e $"Invalid argument or hostname:" "$1" ; return
         esac ; shift
     done
 
@@ -1802,10 +1804,10 @@ actionRestore() {
     inpfile -c -l -- "${imag:-+}" || return
     if [ "${para:--}" != '-' ] ; then
         if ! resolve -e -q -p -- "$para" ; then
-            error "Parameter file not found:" "$para" ; return
+            error $"Parameter file not found:" "$para" ; return
         else
             para="$CEN_RESOLVE"
-            trace -a -c "Param file" "$para"
+            trace -a -c $"Param file" "$para"
         fi
     fi
 
@@ -1832,23 +1834,23 @@ actionRestore() {
     fi
 
     if [ -n "$item" ] ; then
-        warning "A minimal system must be renamed or will not boot:" "$host"
+        warning $"A minimal system must be renamed or will not boot:" "$host"
         name="$item"
     elif [ -z "$name" ] ; then
         name="$host" ; item='-'
     fi
-    [ -n "$item" ] && get_value name "$name" - "Set hostname of installed image"
-    [ -z "$swap" ] && get_value swap "$swad" - "Size of swap partition in GByte"
+    [ -n "$item" ] && get_value name "$name" - $"Set hostname of installed image"
+    [ -z "$swap" ] && get_value swap "$swad" - $"Size of swap partition in GByte"
 
-    [[ "$name" =~ [a-z][-a-z]*[a-z] ]] || quit -e "Invalid host name:" "$name"
-    [ "$name" = "$HOSTNAME" ] && quit -e "Cannot use current host name"
-    [ -n "${swap//[0-9]}" ] && quit -e "Invalid swap size:" "$swap"
+    [[ "$name" =~ [a-z][-a-z]*[a-z] ]] || quit -e $"Invalid host name:" "$name"
+    [ "$name" = "$HOSTNAME" ] && quit -e $"Cannot use current host name"
+    [ -n "${swap//[0-9]}" ] && quit -e $"Invalid swap size:" "$swap"
 
     local opts=('-y' '-D' "$CEN_BLKDEVICE")
     if [ "${#labl[@]}" = 1 ] ; then                     # bios boot, no gpt ...
         labl=('' "$labl") ; opts+=('-B' '-M')
     elif [ "${#labl[@]}" != 2 ] ; then
-        error "Input data unusable ($host):" "$CEN_INPFILE" ; return
+        error -p $"Input data unusable (%s):" "$host" "$CEN_INPFILE" ; return
     fi
 
     if [ "$fsys" = 'ext4' ] ; then
@@ -1957,10 +1959,10 @@ actionRestore() {
     # appl='' do nothing, appl=1 do query or params, appl=2 network only
     if [ "$appl" = 1 ] ; then
         # 3 args: do parameter-file or query update
-        cfg_apply "$CEN_MOUNT_DIR" "$name" "${para:-+}"
+        cfg_apply "$CEN_MOUNT_DIR" "$name" "$para"
     elif [ -n "$appl" ] ; then
-        # 2 args: system was renamed
-        cfg_apply "$CEN_MOUNT_DIR" "$name"
+        # 2 args: system was renamed, need wpa update
+        cfg_apply "$CEN_MOUNT_DIR" "$name" -
     fi
 
     # remove tmp data

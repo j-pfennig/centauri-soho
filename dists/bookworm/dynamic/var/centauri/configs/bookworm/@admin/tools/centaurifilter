@@ -17,7 +17,7 @@ CEN_SVC_SHORT="Firewall and Masquerade Service"
 
 # Import the bash library, set name and version
 PATH+=':/usr/local/bin'
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -v - '0.55:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -v - '0.56:4' || exit 2
 
 CEN_OPT_IPV4=                   # see --ipv4
 CEN_OPT_IPV6=                   # see --ipv6
@@ -53,7 +53,7 @@ do_addrule() {
     if [ "${3:--}" = '-' ] ; then
         trace -a -c "${4^} range" "$2"
     else
-        trace -a -c "${4^} host" "$2"
+        trace -a -c "${4^} host" "ip=$2  name=$3"
     fi
     do_tables -x -- -A INPUT $maca $neta -j "$4"
 }
@@ -85,12 +85,12 @@ do_dynamic() {
 }
 
 # ------------------------------------------------------------------------------
-# expand a list if host names: [-a|-m] [-t <tag>] <callback> <name>...
+# expand a list if host names: [-a] [-m|-n|-o] [-t <tag>] <callback> <name>...
 #
 #       -a      allow IPv4 address
 #       -m      callback needs configured mac address
 #       -n      like -m but ignore 'option nomac'
-#       -o      callback for name and mac (if known) (implied for 'alien')
+#       -o      callback for name and mac (if known)
 #       -t      pass tag to callback
 #
 # The function expands host names including globs. With '-a' ip-addresses or
@@ -115,7 +115,7 @@ do_expand() {
       -m)   [ -z "$DAT_NO_MAC" ] && _fmac=1 ;;
       -n)   _fmac=1 ;;
       -o)   _fmac=2 ;;
-      -t)   shift ; _ftag="$1" ; [ "$ftag" = 'alien' ] && _fmac=2 ;;
+      -t)   shift ; _ftag="$1" ;;
       *)    fatal -t - "$1"
       esac ; shift
     done
@@ -152,12 +152,17 @@ do_expand() {
             _hmap["$whos"]=1
         done
     done
+    # $CEN_TRACE2 -c ' ' "${!_hmap[@]}"
 
     # loop over host table and do callbacks
     for host in "${CEN_NET_HOSTS[@]}" ; do
-        set -- $host
+        set -- $host                                    # <mac> <ip> <name>
+        [ -z "${_hmap["$3"]}" ] && continue
         if [ "$_fmac" = 1 ] ; then                      # filter unique macs
-            [ "$1" = '-' ] && continue                  # option -m (need mac)
+            if [ "$1" = '-' ] ; then                    # option -m (need mac)
+                trace -a -c "Missing MAC" "tag=$_ftag  ip=$2  name=$3"
+                continue
+            fi
             [ -n "${_mmap["$1"]}" ] && continue
             _mmap["$1"]=1
         elif [ -n "$_fmac" ] ; then                     # option -o ...
@@ -167,10 +172,10 @@ do_expand() {
                 _mmap["$1"]=1
             fi
         fi
-        [ "$_fmac" = 1 ] && amac="$1" || amac='-'; aadr="$2"
+        [ "$_fmac" = 1 ] && amac="$1" || amac='-'
         while [ "$#" -gt 2 ] ; do                       # loop over (alias-)names
             if [ "${_hmap["$3"]}" = 1 ] ; then          # name not yet seen...
-                _hmap["$3"]=2 ; $xrun "$amac" "$aadr" "$3" "$_ftag"
+                _hmap["$3"]=2 ; $xrun "$amac" "$2" "$3" "$_ftag"
                 [ "$_fmac" = 1 ] && break               # can have only one mac
             fi
             shift
@@ -205,6 +210,7 @@ do_list() {
     for item in "${CEN_NET_FILTERS[@]}" ; do
         splitjoin -s aitm -d ' ' "$item"
         [ "${aitm[0]}" = "$1" ] || continue
+        $CEN_TRACE2 -a -c ' ' "$1 -> ${aitm[@]:1}"
         avar+=("${aitm[@]:1}")
     done
 }
@@ -224,7 +230,7 @@ do_list() {
 # ------------------------------------------------------------------------------
 do_tables() {
     $CEN_TRACE2 -a -c ' ' "$*"
-    local sarr fipv fcmt flit
+    local sarr fadr fipv fcmt flit addr
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -250,7 +256,8 @@ do_tables() {
             args+=('--')
             do_tables -4 "${args[@]}" "$@"
             for item in "$@" ; do
-                if [ "${item//[0-9\/]/}" = '...' ] ; then
+                addr="${item%/*}"
+                if [ "${addr//[0-9\/]/}" = '...' ] ; then
                     netconv -u "$item"
                     args+=("$_netconv")
                 else
@@ -615,7 +622,7 @@ rules_comment() {
 #           filter <chain> <host>...
 #           filter <chain> <range>
 #
-#           option alien|friend|player|trusted <host>...
+#           option thing|friend|player|trusted <host>...
 #
 #   In zone 'wild' the chains 'player' and 'trusted' are not generated, e.g.
 #   these chains are can be used in 'home' to grant port permissions to some
@@ -624,7 +631,7 @@ rules_comment() {
 #   all zones
 #           alert       host                log and drop
 #           trash       host                partial log and drop
-#           alien       option|host         disable access
+#           thing       option|host         disable access
 #           friend      option|host         grant limited access
 #   home zone only
 #           player      option|host+mac     grant player access
@@ -658,13 +665,14 @@ rules_chains() {
         fi
         trace -a -c -p "creating chain" "%-7s [%2s tcp, %2s udp entries, %2s lit entries]" \
                        "$1" "${#ltcp[@]}" "${#ludp[@]}" "${#llit[@]}"
-
         do_tables -- -N "$1"
-        for item in "${llit[@]}" ; do ___set_literal "$1" $item ; done
 
         # chain 'trash' does DROP, other chains ACCEPT matching packets
         do_tables -a ltcp -- -A "$1" -p tcp @orig @dest @sport @dport -j "$jump"
         do_tables -a ludp -- -A "$1" -p udp @orig @dest @sport @dport -j "$jump"
+
+        # literals follow tcp and udp
+        for item in "${llit[@]}" ; do ___set_literal "$1" $item ; done
 
         # chains 'trash' and 'alert' DROP matching packets
         if [ "$1" = 'trash' ] ; then
@@ -686,7 +694,7 @@ rules_chains() {
     ___set_chain 'alert'
 
     # chains for all zones
-    ___set_chain 'alien'
+    ___set_chain 'thing'
     ___set_chain 'friend'
     ___set_chain 'trusted'
 
@@ -757,6 +765,12 @@ rules_early() {
         trace -a "Block interface:" "$neta"
         do_tables -- -A INPUT -i $neta -j DROP
     done
+
+    # drop alien
+    if netoption 'alien' ; then
+        rules_comment - "Block by option 'alien'"
+        do_expand -t 'DROP' do_addrule "${_netoption[@]}"
+    fi
 
     # icmp is always on
     rules_comment - "Early filter rules (icmp)"
@@ -844,14 +858,13 @@ rules_global() {
 
     # by port
     if [ "${CEN_NET_EXTERNAL:--}" != '-' ] ; then
-
         if netmask "$CEN_NET_EXTERNAL" "$CEN_NET_NETWORKS" ; then
             warning -p "External network: dhcp allowed from '%s' only" "$CEN_NET_NETWORKS"
-            do_tables -a udp_always_drop -- -A INPUT -p udp @dport -s "$CEN_NET_NETWORKS" -j ACCEPT
+            do_tables -a udp_always_drop -x -- -A INPUT -p udp @dport -s "$CEN_NET_NETWORKS" -j ACCEPT
         else
             warning -p "External network: dhcp from '%s' gets blocked" "$CEN_NET_EXTERNAL"
         fi
-        do_tables -a udp_always_drop -- -A INPUT -p udp @dport -s "$CEN_NET_EXTERNAL" -j DROP
+        do_tables -a udp_always_drop -x -- -A INPUT -p udp @dport -s "$CEN_NET_EXTERNAL" -j DROP
 
 # base          external      mask              route  dhcp   config    opt 'other'
 # ------------  ------------  ---- -----------  -----  -----  --------  -----------
@@ -901,23 +914,18 @@ rules_global() {
 # ------------------------------------------------------------------------------
 # Processing for a 'home' location
 #
+#       option thing    -> thing
 #       early accept    -> ACCEPT
-#       early drop      -> chain trash
-#       alien           -> chain trash
-#       trusted + mac   -> ACCEPT
-#       player          -> player
+#       early drop      -> trash
 #       router          -> router
+#       opt. trusted + mac   -> ACCEPT
+#       player          -> player
 #       early rules     -> trusted
-# allow remotessh
+#       allow remotessh
 #       *               -> trash (logging)
 # ------------------------------------------------------------------------------
 rules_home() {
     local trgt aadr=()
-
-    # discard alien data (by host)
-    rules_comment - "Rules by option 'alien'"
-    netoption 'alien'
-    do_expand -t 'alien' do_addrule "${_netoption[@]}"
 
     # built-in rules for servers
     rules_server
@@ -927,16 +935,21 @@ rules_home() {
     do_list 'accept' aadr ; CEN_AUTOIND=
     do_expand -a -n -t 'ACCEPT' do_addrule "${aadr[@]}"
 
+    # router rules (mandatory mac)
+    if [ -n "$CEN_NET_ROUTERS" ] ; then
+        rules_comment - "Rules for routers"
+        do_expand -n -t 'router' do_addrule "${CEN_NET_ROUTERS[@]}"
+    fi
+
     # enter chains by option
-    for trgt in 'friend:'"Friendly hosts" 'player:'"Media Players" \
-                'router:'"Routers" 'trusted:'"Trusted hosts" ; do
-        trace "${trgt#*:}" ; trgt="${trgt%%:*}" ; DAT_ADDRULE=0
-        rules_comment - "Rules by option '$trgt'"
+    for trgt in 'trusted' 'friend' 'player' 'thing' ; do
+        netoption "$trgt" || continue
+        rules_comment - "Rules by option '$trgt'" ; DAT_ADDRULE=0
         case "$trgt" in
-        router) do_expand -n -t "$trgt" do_addrule "${CEN_NET_ROUTERS[@]}"
-                ;;
-        *)      netoption "$trgt"
-                do_expand -n -t "$trgt" do_addrule "${_netoption[@]}"
+        player|thing)
+            do_expand -t "$trgt" do_addrule "${_netoption[@]}" ;;
+        *)
+            do_expand -n -t "$trgt" do_addrule "${_netoption[@]}"
         esac
         trace -a -c "'$trgt' chain" "$DAT_ADDRULE" "entries"
     done
@@ -949,8 +962,8 @@ rules_home() {
     done
 
     # enter chains by hostname (ACCEPT needs mac)
-    rules_comment - "Rules by host 'drop trash alien'"
-    for trgt in 'drop:DROP' 'trash' 'alien' ; do
+    rules_comment - "Rules by host 'drop|trash|thing'"
+    for trgt in 'drop:DROP' 'trash' 'thing' ; do
         do_list "${trgt%:*}" aadr ; CEN_AUTOIND=
         do_expand -a -t "${trgt#*:}" do_addrule "${aadr[@]}"
     done
@@ -961,7 +974,7 @@ rules_home() {
    # do_tables -- -A INPUT -p tcp --dport 1194 -j ACCEPT
    # do_tables -- -A INPUT -p udp --dport 1194 -j ACCEPT
                                                 # last chance ...
-    do_tables -- -A INPUT -j 'alien'
+    do_tables -- -A INPUT -j 'thing'
 
     CEN_AUTOIND=
 }
@@ -1045,13 +1058,13 @@ rules_wild() {
 #   Trusted ('option trusted') : bypass most of the firewall
 #   Player  ('option player')  : media player with smb and upnp access
 #   Friend  ('option friend')  :
-#   Alien   ('option alien')   :
+#   Thing   ('option thing')   :
 #   Default: all hosts without special rights
 #
 #   Server  (statement 'servers'): allow openvpn
 #   Router  (statement 'routers'): bypass most of the firewall
 #
-#   Per default input is assigned to class 'alien'.
+#   Per default input is assigned to class 'thing'.
 #
 # Early rules are the 1st mechanism to assign input to classes:
 #
@@ -1066,7 +1079,7 @@ rules_wild() {
 #   Options can be used for named hosts (wildcards are allowed). Some
 #   options only work for hosts with a known (registered) mac address:
 #
-#   no mac dependency:  option alien|friend <host>...
+#   no mac dependency:  option thing|friend <host>...
 #   known mac only:     option trusted|player
 #
 # Filter chains implement class behaviour:
@@ -1076,7 +1089,7 @@ rules_wild() {
 #   trusted: zone 'home' - allow a default set of packets
 #   player:  zone 'home' - allow packets for smb an upnp
 #   friend:  zone 'home' - ...
-#   alien:   zone 'wild' - restricted set of packets
+#   thing:   zone 'wild' - restricted set of packets
 #   trash:   drop some packets (no logging), the jump to 'alert'
 #   alert:   log and drop all packets
 #

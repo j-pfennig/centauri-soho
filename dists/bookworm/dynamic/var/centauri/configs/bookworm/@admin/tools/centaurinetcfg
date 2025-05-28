@@ -4,7 +4,7 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2025; BSD License"
 CEN_TITLE="Manage network configuration files, resolv.conf and routing"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a - '0.62:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a - '0.63:4' || exit 2
 
 # Import the net library, don't read config
 embed -m _centauri_bash_net -n
@@ -395,7 +395,7 @@ do_config() {
         case "$what" in
         bypass|deny)
             ;;
-        accept|drop|trusted|player|friend|alien|trash)
+        accept|drop|trusted|player|thing|friend|trash)
             local nidx list=()
             for addr in "$@" ; do
                 if [ -z "${addr//[a-z0-9\[\]\?\*-]/}" ] ; then
@@ -1331,7 +1331,7 @@ $host.$domn
 
     elif [ "$CEN_OPT_OUTPUT" = '.' ] ; then             # clone, force full setup
         message "Name setup: server='$CFG_SERVER_DEF'  router='$CEN_NET_ROUTER_DEF'  hostname='$host'"
-        embed -v 'centaurinetgen' -O . -H "$host" --nm=0 -W - -A - create
+        embed -v 'centaurinetgen' -O . -H "$host" --nm=0 create
     else                                                # create real files
         embed -v 'centaurinetgen' -O "$CEN_OPT_OUTPUT" -H "$host" create
     fi
@@ -1455,8 +1455,8 @@ actionOptions() {
 #### option  hotplug       ether-* wlan-*
 
         case "$name" in
-        alien)  ;;
         addc)   desc="provides AD/DC service" ;;
+        alien)  desc="firewall: blocked device" ;;
         apoint) desc="network: enable access point config" ;;
         auto)   desc="use 'smart' mode with nm or 'simple' otherwise" ;;
         coun*)  desc="WLAN: ISO country must be set" ;;
@@ -1465,6 +1465,7 @@ actionOptions() {
         ether)  desc="interfaces: interface is ethernet (cable)" ;;
         exte*)  desc="network: enable extender config" ;;
      #   hotp*)  desc="" ;;
+        friend) desc="firewall: friendly host" ;;
         ipv6)   desc="enable IPv6 protocol" ;;
         ldap)   desc="provides LDAP service" ;;
         manual) desc="not managed by centaurinetcfg/centauriswitch" ;;
@@ -1472,6 +1473,7 @@ actionOptions() {
         metr*)  desc="interface IP metric priority" ;;
         mobile) desc="mobile device, notebook" ;;
         nm)     desc="use NetwokManager" ;;
+        nofir*) desc="firewall: disable" ;;
         nomac)  desc="firewall: don't check MAC addresses" ;;
         ntp)    desc="provides NTP time service" ;;
         other)  desc="sub-net <other> is external" ;;
@@ -1487,6 +1489,7 @@ actionOptions() {
         switch) desc="network: enable switch mode" ;;
         sysdn*) desc="network: use systemd interface naming" ;;
         smtp)   desc="provides Samba basic service" ;;
+        thing)  desc="firewall: IOT device" ;;
         track*) desc="firewall: use connection tracking" ;;
         trust*) desc="firewall: make this host trusted" ;;
         wlan)   desc="interfaces: interface is wlan (wifi)" ;;

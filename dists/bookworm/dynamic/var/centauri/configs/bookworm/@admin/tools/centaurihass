@@ -11,7 +11,7 @@ CEN_TITLE=$"Tool to (un)install and run HomeAssistant Core"
 # ------------------------------------------------------------------------------
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m con -o -s -t -y - '0.24:5' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m con -o -s -t -y - '0.25:5' || exit 2
 
 # configurable data, see default file
 DAT_NICK='HomeAssistant'                # friendly product name
@@ -26,7 +26,7 @@ DAT_EXEC="$DAT_VENV/bin/hass"           # weewx daemon
 # map quirks, HA version to minimal python version
 DAT_VERSIONS=('2024.3.3' '3.11:0'       # debian bookworm last 3.11 version
               '2025.1.4' '3.12:1'       # known working 3.12 version
-              '2025.5.1' '3.13:2'       # debian trixie
+              '2025.5.3' '3.13:2'       # debian trixie
              )
 
 # see https://wheels.home-assistant.io/musllinux-index/... for wheel versions
@@ -474,7 +474,8 @@ actionSetup() {
     folder -c -f "$DAT_BASE"
     vers_quirk
 
-    local slnt ; [ -n "$CEN_OPT_SILENT" ] && slnt='-q'
+    local slnt cpip="$1" ; [ -n "$CEN_OPT_SILENT" ] && slnt='-q'
+    local what="$DAT_NAME" ; [ "${DAT_HAVER:--}" = '-' ] || what+="==$DAT_HAVER"
 
     if [ "$1" = 'install' ] ; then
         venv_setup -c || return
@@ -489,23 +490,16 @@ actionSetup() {
             message -i "    sudo ${0##*/} --version='$DAT_HAVER' install"$'\n'
         fi
         confirm -y -f $"Continue to install '%s'" "$DAT_NICK" || return
-
         [ -n "$slnt" ] && progress -a -l -- $"Installing..."
-        inst_extra_pre "${CEN_OPT_QUIRK:-0}" || return
-        if [ "${DAT_HAVER:--}" = '-' ] ; then
-            system -e -- pip3 $slnt install "$DAT_NAME" || return
-        else
-            system -e -- pip3 $slnt install "$DAT_NAME==$DAT_HAVER" || return
-        fi
-        inst_extra_post "${CEN_OPT_QUIRK:-0}" || return
      else
         venv_setup || return
         confirm -y -f $"Continue to upgrade %s" "$DAT_NICK" || return
         [ -n "$slnt" ] && progress -a -l -- $"Upgrading..."
-        inst_extra_pre "${CEN_OPT_QUIRK:-0}" || return
-        system -e -- pip3 $slnt install --upgrade "$DAT_NAME==$DAT_HAVER" || return
-        inst_extra_post "${CEN_OPT_QUIRK:-0}" || return
+        cpip='upgrade'
      fi
+     inst_extra_pre "${CEN_OPT_QUIRK:-0}" || return
+     system -e -- pip3 $slnt install "--$cpip" "$what" || return
+     inst_extra_post "${CEN_OPT_QUIRK:-0}" || return
      [ -n "$slnt" ] && error -t && message -a -- $"Done."
 }
 

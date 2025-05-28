@@ -1016,7 +1016,7 @@ do_passphrase() {
     local _pass _spsk="${3:--}"
     if [ "$_spsk" = '-' ] ; then
         printf -v _spsk '%4.4x-%4.4x' "$RANDOM" "$RANDOM"
-        message -a -c "Random psk" -- "$_spsk"
+        message -a -c "Random PSK" -- "$_spsk"
     fi
     if [ -n "$CEN_OPT_PLAIN" ] ; then
         _pass="\"$_spsk\""
@@ -1128,17 +1128,20 @@ actionHostapd() {
     netconfig -f                                    # load config or die
 
     # /etc/hostapd.conf  ==>  /etc/hostapd/<name>.conf
-    local file ssid='-' spsk='-' link cntr
+    local file ssid spsk link cntr
 
     # get ssid and psk
-    if [ "${1/=/}" = "${1:--}" ] ; then
+    if [ $# -gt 2 ] ; then
         ssid="$1" ; shift
-        if [ "${1/=/}" = "${1:--}" ] ; then
+        spsk="$1" ; shift
+    elif [ "${1/=/}" = "$1" ] ; then
+        ssid="$1" ; shift
+        if [ "${1/=/}" = "$1" ] ; then
             spsk="$1" ; shift
         fi
     fi
-    [ "$ssid" = '-' ] && ssid="${DAT_APNT_SSID:--}"
-    [ "$spsk" = '-' ] && spsk="${DAT_APNT_PASW:--}"
+    [ "${ssid:--}" = '-' ] && ssid="${DAT_APNT_SSID:--}"
+    [ "${spsk:--}" = '-' ] && spsk="${DAT_APNT_PASW:--}"
 
     # get country code from 'country=xx' argument
     if listsearch -g -m cntr -- 'country=*' "$@" ; then
@@ -1347,8 +1350,8 @@ actionNaming() {
                                                 # generated iface files status
     netpath -- "$CEN_ROOT/persistent/$CEN_NAME"
     readline -a atag -i "$_netpath"
-    if [ "${atag:-$HOSTNAME}" != "$HOSTNAME" ] ; then
-        warning -a "generated interfaces don't match host name:" "$atag"
+    if [ "${atag:-$CEN_OPT_HOST}" != "$CEN_OPT_HOST" ] ; then
+        warning -a "current interface config don't match host name:" "$atag"
     else
         stag="${atag[2]}"
     fi
@@ -1574,13 +1577,6 @@ interface $_netiface
 }
 
 # ------------------------------------------------------------------------------
-#
-# ------------------------------------------------------------------------------
-actionWake() {
-    system -c -e wakeonlan
-}
-
-# ------------------------------------------------------------------------------
 # wpa_supplicant configuration: [<ssid>|- [<psk>|-]] <opt=val>...
 # ------------------------------------------------------------------------------
 actionWpa() {
@@ -1594,14 +1590,17 @@ actionWpa() {
     local file link ssid='-' spsk='-' data sopt
 
     # get ssid and psk if 1st argument is not <opt>=<val> ...
-    if [ "${1/=/}" = "${1--}" ] ; then
-        ssid="${1:--}" ; shift
-        if [ "${1/=/}" = "${1--}" ] ; then
-            spsk="${1:--}" ; shift
+    if [ $# -gt 2 ] ; then
+        ssid="$1" ; shift
+        spsk="$1" ; shift
+    elif [ "${1/=/}" = "$1" ] ; then
+        ssid="$1" ; shift
+        if [ "${1/=/}" = "$1" ] ; then
+            spsk="$1" ; shift
         fi
     fi
-    [ "$ssid" = '-' ] && ssid="${DAT_WLAN_SSID:--}"
-    [ "$spsk" = '-' ] && spsk="${DAT_WLAN_PASW:--}"
+    [ "${ssid:--}" = '-' ] && ssid="${DAT_WLAN_SSID:--}"
+    [ "${spsk:--}" = '-' ] && spsk="${DAT_WLAN_PASW:--}"
 
     # do we need a country code? Assume yes on a Raspberry Pi
     local cntr='#country=XX'
@@ -1722,8 +1721,6 @@ actions() {
         invoke -r 'radvd'     -        0   ;;
     rem*)
         invoke -r 'remove'    -        1   ;;
-    wak*)
-        invoke -r 'wake'      -        1 ;;
     wpa*)
         invoke -r 'wpa'       -        0 + ;;
 

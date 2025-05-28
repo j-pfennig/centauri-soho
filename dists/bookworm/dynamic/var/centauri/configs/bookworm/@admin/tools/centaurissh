@@ -4,7 +4,7 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2025; BSD License"
 CEN_TITLE="Opens a SSH connection to the given host"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f - '0.69:2' 1 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f - '0.70:4' 1 || exit 2
 
 # Data
 DAT_SERVER_GEN=                 # default host (generic server name)
@@ -170,10 +170,23 @@ actionExec() {
 }
 
 # ------------------------------------------------------------------------------
+# Action - call stat for file: <file>
+# ------------------------------------------------------------------------------
+actionStat() {
+    local sres
+    system -g 255 -n -p -s sres -- do_ssh stat -c '%a\ %U:%G\ %u:%g\ %s' "$1"
+    case $? in
+    0)      [ "$CEN_VERB" = 0 ] || printf '%s\n' "$sres" ;;
+    255)    error -s $? ; error -- "$sres" ;;
+    *)      error -s $? ; [ "$CEN_VERB" = 0 ] || printf '%s\n' "$sres"
+    esac
+}
+
+# ------------------------------------------------------------------------------
 # Action - Login
 # ------------------------------------------------------------------------------
 actionLogin() {
-    if [ "$CEN_OPT_SOUND" = "1" ] ; then
+    if [ "$CEN_OPT_SOUND" = 1 ] ; then
         warning "Type 'export PULSE_SERVER=localhost' to enable sound forwarding"
     elif [ "$CEN_OPT_SOUND" != "0" ] ; then
         trace "Sound forwarding implicitly disabled for 'login'"
@@ -183,7 +196,7 @@ actionLogin() {
     do_parse "$1"
     local user="$CEN_OPT_USER"
     [ -z "$user" -a -n "$1" ] && user="$USER"
-    CEN_OPT_USER="remote"
+    CEN_OPT_USER='remote'
 
     if [ -n "$user" ] ; then
         do_ssh -t -- su -l "$user"
@@ -399,8 +412,9 @@ actions() {
     case "$CEN_ACTION" in
 
     '') [ "${CEN_OPT_USER/@/}" = "$CEN_OPT_USER" ] || do_parse "$CEN_OPT_USER"
-        [ -z "$CEN_OPT_HOST" ] && CEN_OPT_HOST="$DAT_SERVER_GEN"
-        [ -z "$CEN_OPT_HOST" ] && fatal "No known server, please use '--host=<serv>'"
+         [ -z "$CEN_OPT_HOST" ] && CEN_OPT_HOST="$DAT_SERVER_GEN"
+         [ -z "$CEN_OPT_HOST" ] &&
+            [ "${CEN_CMDARGS/@/}" != "$CEN_CMDARGS" ] && do_parse "$CEN_CMDARGS"
         [ -z "$DAT_SERVER_GEN" ] && DAT_SERVER_GEN="UNKNOWN"
         ;;
 
@@ -420,6 +434,8 @@ actions() {
         invoke 'exec'   actionExec  ;;
     ope|open)
         invoke 'open'   -           0 1 ;;
+    sta*)
+        invoke 'stat'   -           1 ;;
 
     cop|copy|scp)
         invoke 'copy'   -           2 2 ;;
@@ -468,6 +484,7 @@ actions:
        exec    <cmd> <arg>...     # run a command via SSH   (sound/x11 enabled)
        bash                       # launch a local login shell (sudo if needed)
        open    [<user>@][<host>]  # opens a SSH connection to a shell
+       stat    <file>             # get remote file status
 
        copy    <orig> <dest>      # copy (scp), optional proxy user "remote"
        desk    [<user>@<addr>]    # remote desktop (krdc), proxy user "remote"
