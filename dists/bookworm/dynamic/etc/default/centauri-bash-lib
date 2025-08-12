@@ -1,0 +1,242 @@
+# This is configuration data for 'Centauri Bash Library'. See documentation for
+# library module "_centauri_bash_run".
+
+# WARNING about bash variable use:
+#   The content of this file will be preprocessed and cached, unquoted variables
+#   resolved at preprocessing. Do not use '$HOME' (try '~<loginname>' instead.
+ 
+# ------------------------------------------------------------------------------
+# The sections [shortpaths] [launcher] and [terminal] are processed at runtime
+# by the functions with the same names as the sections.
+#
+# It is possible to have a private version of this configuration file at
+# "~/.config/centauri-bash-lib" or at "~/.centauri-bash-lib".
+# ------------------------------------------------------------------------------
+[shortpath]
+
+    # paths defined/overridden by the library
+    #path "root"       "$CEN_ROOT"          "centauritools installation root"
+    #path "library"    "$CEN_LIBRARY"       "centauri_bash_lib library files"
+    #path "tools"      "$CEN_TOOLS"         "centauritools applications"
+    #path "locale"     "$CEN_ROOT/locale"   "centauritools/library translations"
+    #path "default"    "$CEN_ROOT/default"  "centauritools/library configuration files"
+    #path "persistent" "$CEN_ROOT/persistent" "centauritools persistent cache"
+    #path "transient"  "$CEN_ROOT/transient" "centauritools volatile cache"
+    #path "temporary"  "$XDG_RUNTIME_DIR|$TMPDIR|$TMP" "the user's temporary folder"
+
+    # repository paths (most installations wan't have this) ...
+    path "repository" "$CEN_ROOT/configs"       "repository root"
+    path "shared"     "$CEN_ROOT/shared"        "repository branch - shared files"
+    path "private"    "$CEN_ROOT/private"       "repository branch - private files"
+    path "configs"    ".. $CEN_ROOT/shared"     "repository branch - for machine"
+    path "$CEN_SYS_NICKNAME" "$CEN_ROOT/configs/$CEN_SYS_NICKNAME" "$CEN_SYS_NICKNAME repository"
+    path "bullseye"   "$CEN_ROOT/configs/bullseye" "bullseye repository"
+    path "staging"    "$CEN_ROOT/machines"      "repository staging area"
+
+    # network
+    path "network"    "$CEN_PATHS/network|$CEN_PATHS/data"  "Network shared data"
+    path "server"     "@network/$CEN_NET_SERVER_GEN"        "Network server data"
+    path "primary"    "@network/${CEN_NET_SERVERS[0]}"      "Network primary server"
+    path "secondary"  "@network/${CEN_NET_SERVERS[1]}"      "Network secondary server"
+
+    # autosave, backup, history  base folders
+    
+    path "autosave" \ 
+        "$CEN_PATHS/mnt/backup/Autosave|$CEN_PATHS/shared/backup/Autosave|$CEN_PATHS/shared/Autosave|$CEN_PATHS/backup/Autosave|$CEN_PATHS/Autosave" \
+        "Backup: autosave base folder"
+
+    path "backup" \
+        "$CEN_PATHS/mnt/backup/Backup|$CEN_PATHS/shared/backup/Backup|$CEN_PATHS/shared/Backup|$CEN_PATHS/backup/Backup|$CEN_PATHS/Backup" \
+        "Backup: backup base folder"
+
+    path "history" \
+        "$CEN_PATHS/mnt/backup/History|$CEN_PATHS/shared/backup/History|$CEN_PATHS/shared/History|$CEN_PATHS/backup/History|$CEN_PATHS/History" \
+        "Backup: history base folder"
+
+    # backup disk, data, ...
+
+    path "disk"       "@backup/disk"            "Backup: folder for disk archives"
+    path "data"       "@backup/data"            "Backup: folder for data archives"
+    path "phys"       "@backup/phys"            "Backup: folder for disk images"
+
+    path "mirror"     "/mnt/mirror/Volumes|/mnt/backup/Mirror|$ROOT/Mirror" \
+                                                "Backup: mirror volume/folder"
+
+    # virtual box paths
+    path "vbox"       "~vbox"                   "Virtualbox home folder"
+    path "drives"     "~vbox/Drives"            "Virtualbox virtual drives"
+    path "machines"   "~vbox/Machines"          "Virtualbox virtual machines"
+    path "vms"        "~vbox/Machines"          "Virtualbox virtual machines"
+
+    # snapshots
+    path "snapshots" "/mnt/vol0/Snapshots"      "Snapshot base folder (vol0)"
+    path "daily"     "@snapshots/daily"         "Daily snapshots (vol0)"
+    path "weekly"    "@snapshots/weekly"        "Weekly snapshots (vol0)"
+    path "monthly"   "@snapshots/monthly"       "Monthly snapshots (vol0)"
+
+    # others
+    path "docs"      "/usr/share/doc"           "Linux Dokumentation"
+    path "rezepte"   "/export/Rezepte"          "Kochrezepte"
+
+# ------------------------------------------------------------------------------
+# Configuration for launcher() - run application by generic name
+# ------------------------------------------------------------------------------
+[launcher]
+    ### part 1: session dependencies
+
+    # desktop apps (* is for any desktop session)
+    editor      kde     kwrite featherpad
+    editor      *       featherpad kwrite
+    files       *       dolphin pcmanfm-qt
+    browser     gnome   firefox epiphany falkon qml6 qml5
+    browser     *       firefox falkon epiphany qml6 qml5
+    kiosk       *       falkon firefox epiphany qml6 qml5
+    webapp      *       .
+    viewer      *       qml6 qml5 falkon epiphany firefox
+
+    # run a function to start the app (see terminal function)
+    console     *       @terminal
+
+    # terminal apps (tty is for non-desktop mode)
+    editor      tty     editor nano vim
+    files       tty     mc ls
+    browser     tty     w3m
+
+    # apps for all session types (- used to flag this)
+    library     -       .
+    httpd       -       lighttpd
+    service     *       @launcher_service
+
+    ### part 2: information texts (for apps, not commands)
+
+    -info:browser       "open a web browser"
+    -info:console       "command line terminal"
+    -info:editor        "open a text editor"
+    -info:files         "open a file manager"
+
+    #-info:clock         "show a clock as full screen"
+    -info:kiosk         "web browser in kiosk mode"
+    -info:viewer        "html viewer (qml or browser)"
+
+    -info:httpd         "launch a private web server"
+    -info:webapp        "run a centauri-bash-lib web application"
+    -info:library       "interactive centauri-bash-lib console"
+    -info:service       "manage a systemd service (optional GUI)"
+
+    ### part 3: quirks and application options
+
+    # qml5/6 need a few hints (@_cen_win_qmlweb creates the qml script)
+    -wants:qml6         /usr/lib/*/libQt6WebEngineWidgets.so.?
+    -path:qml6          /usr/lib/qt6/bin/qml
+    browser:qml6        @launcher_qmlweb - - -
+    kiosk:qml6          @launcher_qmlweb + + 1.2
+    viewer:qml6         @launcher_qmlweb - - - 
+
+    -ignore:qml5        qtchooser
+    -wants:qml5         /usr/lib/*/libQt5WebEngineWidgets.so.?
+    -path:qml5          /usr/lib/*/qt5/bin/qml
+    browser:qml5        @launcher_qmlweb - - -
+    kiosk:qml5          @launcher_qmlweb + + 1.2
+    viewer:qml5         @launcher_qmlweb - - - 
+
+    # lighttpd needs a script that gets the configuration
+    httpd:lighttpd      @launcher_lighttpd 8080 /var/www
+    -path:lighttpd      /usr/*bin/lighttpd
+
+    # command line args
+    files:ls            "--color=auto --time-style='+%F %H:%M' -l"      # needs double quoting
+
+    kiosk:firefox       @launcher_html  --new-window --kiosk
+    browser:firefox     @launcher_html --new-window 
+                        # firefox problem: if an instance is already open, a new window is created but the new
+                        # process that was launched will exit. Thus we cannot wait for the window to be closed
+    viewer:firefox      @launcher_html --new-window "$CEN_PATHS/var/www/html/index.html" "$CEN_ROOT/html/index.html"
+
+    kiosk:falkon        @launcher_html --fullscreen --new-window --no-extensions --profile=kiosk
+    browser:falkon      @launcher_html --new-window --no-extensions
+    viewer:falkon       @launcher_html --new-window --no-extensions --profile=viewer \
+                                       "$CEN_PATHS/var/www/html/index.html" "$CEN_ROOT/html/index.html"
+
+    webapp:.            @launcher_webapp 
+    library:.           @launcher_library
+
+    -flags:def_http     duckduckgo.com
+    -flags:def_file     "$CEN_PATHS/var/www/html/index.html"
+    -flags:def_file     "$CEN_ROOT/html/index.html"
+
+# ------------------------------------------------------------------------------
+# Configuration for terminal() - run terminal emulator
+# ------------------------------------------------------------------------------
+[terminal]
+    # emulators for KDE/Gnome sessions:
+    emulator    kde     konsole qterminal gnome-terminal xterm
+    emulator    gnome   gnome-terminal konsole qterminal xterm
+    # other desktop session types (must be last emulator line):
+    emulator    *       qterminal xterm gnome-terminal konsole
+
+    # options for emualator applications. Traditionally option -e is used to
+    # run a program, add option -- for emulators that use -- instead ... 
+    -args:konsole       --hide-tabbar --hide-menubar --nofork
+    -title:konsole      --title
+
+    -args:gnome-terminal    --hide-menubar --wait --
+    -title:gnome-terminal   --title
+
+    -args:xterm         -fa Monospace -fs 14 -geometry 100x30
+
+    # in many case we don't need to run an emulator, so we check our ancestors until
+    #  we find something blacklisted (start emulator) or whitelisted (no emulator):
+
+    # no emulator if we find a login shell
+    login               -bash|-dash|-csh|-sh
+    # continue search if ancestor is a shell
+    shell               bash|dash|csh|sh
+    # no emulator for these ...
+    white               sudo|kdeinit.*\ konsole.*|konsole.*|gnome.*|qterminal|xterm 
+    # needing to launch emulator ...
+    black               krunner.*|lx.*-session|plasma.*|xinit
+                        # no desktop, no xroot
+    black-startup       sddm.*|startkde.*|startplasma.*
+                        # embedded konsole, check KONSOLE_DBUS_SERVICE
+    black-konsole       dolphin.*|kde.*
+
+# ------------------------------------------------------------------------------
+# This is configuration data for centauriXXXX --info install|uninstall|update
+#
+# The sections [library] and [proxy] are used at install time to generate the
+# library proxy. If you edit these sections run 'centauriXXXX --info update'
+# to regenerate the proxy.
+# ------------------------------------------------------------------------------
+[library]
+    # include list for tool links (centauri* and _centauri_bash_lib are default)
+    include "utilities/show-unattended-upgrades" "virtualbox/vbox"
+
+    # exclude list for tool links (applies to centauri* default includes)
+    exclude ""
+
+    # obsolete tool files, tool links to be removed
+    obsolete ""
+
+    # service tools to be enabled (systemd or SysV services) ...
+        # execute an optional service installation tool and ignore further 'service'
+        # entries. The entry is ignored if the tool does not exist
+    service "?centaurirunlevel"
+        # run if installation tool does not exist
+    service "+centaurisysinit" "+centauriswap"
+    service "+centauriswitch" "+centauriroute" "+centaurifilter" "+centaurisecrets" 
+
+    # redirections used by _centauri_bash_ext prettypath (option: -l local, -n network)
+    repath -n "/network/%2/%3%4" "/network/%2/.mount/%2_%3%4" "/network/%2/.mount/%3%4"
+
+    repath -l "/var/lib/centauri/import/([a-z]+[0-9a-z]*)_([a-z]+[0-9a-z]*)(/.*)?" "/network/home" "/network/%1/%2%3"
+    repath -l "/dev/shm(/.*)?" "/tmp%1"
+    repath -l "$CEN_ROOT/configs/$CEN_SYS_NICKNAME/@admin/tools(/.*)?" "/centauritools%1"
+    repath -l "$CEN_ROOT/tools(/.*)?" "/centauritools%1"
+    repath -l "$CEN_ROOT/default" "/etc/default"
+
+[proxy]
+    # non-comment lines get copied verbatim into the proxy
+    CEN_MONITOR_FILE=/var/centauri/persistent/centauri-monitor
+    [ -w "$CEN_MONITOR_FILE" ] && CEN_MONITOR_MASK=1
+
+# End
