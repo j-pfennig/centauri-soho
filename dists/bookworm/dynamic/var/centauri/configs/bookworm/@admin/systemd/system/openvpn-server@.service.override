@@ -1,4 +1,5 @@
 [Unit]
+ConditionPathExists=/etc/openvpn/server.conf
 ConditionPathExists=/etc/openvpn/server/%i/ca.crt
 ConditionPathExists=/etc/openvpn/server/%i/server.conf
 

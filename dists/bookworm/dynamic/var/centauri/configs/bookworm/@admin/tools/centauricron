@@ -4,7 +4,7 @@ CEN_TITLE="Tool to run Centauri Cron Jobs"
 CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2025; BSD License"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.35:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s - '0.36:6' || exit 2
 
 # Data
 DAT_LOGDIR='/var/log'
@@ -174,10 +174,10 @@ default_shutdown() {
     remove "$DAT_MIDNIGHT"
 
     # run daily shutdown if configured
-    [ -f "${CEN_PATHS[6]}/daily_shutdown" ] && . "${CEN_PATHS[6]}/daily_shutdown"
+    [ -f "$CEN_DEFAULT/daily_shutdown" ] && . "$CEN_DEFAULT/daily_shutdown"
     [ -n "$SHUTDOWN_TIME" ] || return
 
-    message -a "daily shutdown triggered by ${CEN_PATHS[6]}/daily_shutdown"
+    message -a "daily shutdown triggered by $CEN_DEFAULT/daily_shutdown"
     system -e -p -- shutdown -h "$SHUTDOWN_TIME" "$SHUTDOWN_MESSAGE"
 }
 
@@ -373,7 +373,7 @@ runlevel_check() {
 autoshutdown() {
     local down hhmm mesg="trace -a"
     [ "$1" = "-v" ] && mesg="message -a"
-    [ -f "${CEN_PATHS[6]}/daily_shutdown" ] && . "${CEN_PATHS[6]}/daily_shutdown"
+    [ -f "$CEN_DEFAULT/daily_shutdown" ] && . "$CEN_DEFAULT/daily_shutdown"
 
     if [ -z "$SHUTDOWN_TIME" ] ; then
         $mesg "Daily shutdown not configured"

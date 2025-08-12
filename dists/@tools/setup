@@ -43,6 +43,7 @@ if [ "$SOHO_SETUP" != 0 ] ; then
     DAT_SWAP=                           # swap partition size
     DAT_ONLINE=                         # flag for network being online
     DAT_CLONE_SVR=                      # clone as server flag, see cloneName()
+    DAT_PERCONF="$DAT_PERSIST/centaurisoho-conf"    # installation protection
 fi
 
 # ------------------------------------------------------------------------------
@@ -99,6 +100,7 @@ DAT_SELF="${0##*/}"                 # the name of this script
 # generate defaults for things that are not in setup.conf
 : ${SOHO_DISTRO:='bookworm'}
 : ${SOHO_DOMAIN:='soho.home'}
+: ${SOHO_DOMUSR:='domain'}
 : ${SOHO_DNAME:=${SOHO_DOMAIN%%.*}}
 : ${SOHO_CONFIG:=$SOHO_DNAME}
 : ${SOHO_SONAME:='machine'}
@@ -209,13 +211,16 @@ checkSeed() {
     # now load centauri-bash-lib (but not if run by centaurisoho)
     # --------------------------------------------------------------------------
     if [ -z "$CEN_NAME" ] ; then                    # we are stand alone ...
-        PATH+=":${0%/*}" . _centauri_bash_lib -a - '0.00:4' || exit 2
+        PATH+=":${0%/*}" . _centauri_bash_lib -a - '0.50:4' || exit 2
         console -m 1                                # enable fancy output
     fi
 
     # to protect the development system ...
-    [ -e "$CEN_ROOT/tools/utilities" ] &&
-        quit -e "Cannot install 'centaurisoho' on this system"
+    if [ ! -e "$DAT_PERCONF" ] ; then
+        message    "Cannot install 'centaurisoho' on this system, to enable"
+        message -i "run this command:" "touch $DAT_PERCONF"
+        quit
+    fi
 
     if [ "${DAT_STATE_PATH::1}" != '/' ] ; then         # create state folder ...
         folder -f -m "${DAT_STATE_PATH%/*}"
@@ -389,6 +394,26 @@ configureHass() {
     outputMessage 'hass'
 }
 
+# check of fix server boot config
+configureIfaceServer() {
+    [ '/etc/network/interfaces' -ef '/etc/network/interfaces.server' ] && return
+    [ '/etc/network/interfaces' -ef '/etc/network/interfaces.apoint' ] && return
+
+    if [ -z "$1" ] ; then
+        error "The boot configuration must be be fixed..."
+        outputMessage 'fixboot' ; quit -e
+    elif ! confirm -y "Not booted as a server, try to fix configuation" ; then
+        outputMessage 'fixboot' ; quit -u
+    fi
+    if [ -n "$DAT_RASPI" ] ; then
+        embed -v centauriraspi --yes entry server +
+    else
+        embed -v centauriefilinux --yes menu
+    fi
+    embed -t -v centaurinetgen --keep interfaces server
+    embed -t -v centauriswitch init 'static:server'
+}
+
 # setup locale-gen localepurge and the en_SE dummy locale
 #
 #   1.  tzdata          -
@@ -491,7 +516,7 @@ configurePasswords() {
     if ! netquery server ; then
         embed -t -v centauriswitch local
         [ -e '/etc/samba/smb.conf.local' ] &&
-            symlink -f -m '/etc/samba/smb.conf.local' '/etc/samba/smb.conf'
+            symlink -n -m 'smb.conf.local' '/etc/samba/smb.conf'
     fi
     embed -t -v centaurisecrets secrets 'passwords' -- init # set passwords from seed file
     netquery server || embed -t -v centauriswitch --force auto
@@ -852,9 +877,8 @@ setupStep1() {
     copyFromRepo /etc/DIR_COLORS                    # colors for ls et al.
     copyFromRepo /etc/adduser.conf                  # gid and uid ranges
     copyFromRepo /etc/nsswitch.conf                 # add sssd and extrausers
-    copyFromRepo /etc/default/centauri-bash-lib     # library config
     copyFromRepo /etc/default/centauribackup
-    copyFromRepo /etc/default/centauriconfig        # repository config
+    copyFromRepo /etc/default/centauriconfig    /etc/default/centauri-bash-lib    # repository config
     copyFromRepo /etc/default/centauricopy
     copyFromRepo /etc/default/centaurisysinit
     copyFromRepo /etc/kernel-img.conf
@@ -863,7 +887,8 @@ setupStep1() {
     copyFromRepo /usr/lib/sysusers.d/centauri.conf  # seed for systemd
                                                     # managing users/groups ...
     copyFromRepo -l /etc/default/centauriusers "$PWD/centauriusers"
-
+                                                    # # library config ...
+    embed -t -v centauricreate --yes --template config /etc/default/centauri-bash-lib
     remove "$DAT_PERSIST/centauri-bash-lib.dat"     # remove cache data
     quitOnError
 
@@ -1293,7 +1318,6 @@ QUEUERUNNER=nodaemon
     copyFromRepo /etc/default/centauripower
     copyFromRepo /etc/default/dnsmasq
     copyFromRepo /etc/dnsmasq.conf
-    copyFromRepo /etc/dnsmasq.d/static
     copyFromRepo /etc/fuse.conf
     copyFromRepo /etc/mail.rc
     copyFromRepo /etc/minidlna.conf
@@ -1319,8 +1343,8 @@ QUEUERUNNER=nodaemon
     # let centauripower register it's hooks
     embed -t -v centauripower setup
 
-    # network configuration (keep resolv.conf)
-    embed -t -v centaurinetcfg --keep --quiet setup "$SOHO_HOST"
+    # full network configuration
+    embed -t -v centaurinetcfg --quiet setup "$SOHO_HOST"
 
     printHeader "A basic system is installed, now configure things the centauri way"
 
@@ -1441,9 +1465,11 @@ setupStep3Client() {
     copyFromRepo /etc/tinyproxy/tinyproxy.conf.template
     configureMounter                                # modify fstab, restart
     quitOnError
+    remove -- "$DAT_MODE_OVERRIDE"*                 # no longer override anything
 
     if confirm -y "Register with server" ; then
-        embed -v centaurissh -f import
+        symlink -n -m 'smb.conf.client' '/etc/samba/smb.conf'
+        embed -v centaurissh -f import              # ssh identities by device class
         embed -t -v centaurikerberos --force --seed='passwords' client -
         if ! error -t ; then
             confirm -y "Something went wrong, continue anyhow" || quit -a -u
@@ -1468,11 +1494,12 @@ setupStep3Appli() {
     copyFromRepo /etc/services                      # we really depend on this
 
     configureCertificates -c
+    remove -- "$DAT_MODE_OVERRIDE"*                 # no longer override anything
 
     if [ -d '/var/log/journal' ] &&
        confirm -y "Keep system log in memory ('/run/log/...')" ; then
         remove -d '/var/log/journal'
-        systemctl restart systemd-journald
+        system -e -- systemctl restart systemd-journald
     fi
 
     for home in ~clock ~kiosk ~homeassistant ~weewx ; do
@@ -1509,12 +1536,14 @@ setupStep3Appli() {
 }
 
 # ------------------------------------------------------------------------------
-# step3 server - install server
+# step3 server - install samba AD/DC server
 # ------------------------------------------------------------------------------
 setupStep3Server() {
     serverNetwork ; quitOnError                         # check configuration
-    local styp="primary"
-    [ "$HOSTNAME" != "${CEN_NET_SERVERS[0]}" ] && styp="secondary"
+    local styp='primary'
+    [ "$HOSTNAME" != "${CEN_NET_SERVERS[0]}" ] && styp='secondary'
+
+    ### install packages, files, services, certificates ###
 
     if ! checkInstalled 'certs' ; then
 
@@ -1526,9 +1555,9 @@ setupStep3Server() {
 
         folder -m /var/log/ntpsec 664 ntpsec:ntpsec     # make ntpsec happy
 
-        copyFromRepo /etc/samba/smb.conf.master
-        copyFromRepo /etc/samba/smb.conf.slave
-        copyFromRepo /etc/samba/smbpass.conf.master
+        copyFromRepo -t /etc/samba/smb.conf.master
+        copyFromRepo -t /etc/samba/smb.conf.slave
+        copyFromRepo    /etc/samba/smbpass.conf.master
 
         system -e -p -t -- systemctl disable sssd       # could make re-boot hang
         embed -t -v centaurikerberos setup krb5 sssd    # init kerberos via sssd
@@ -1559,38 +1588,41 @@ setupStep3Server() {
         copyFromRepo /etc/squid/squidGuard.conf
 
         # create home of domain user
-        folder -m "/home/$SOHO_DOMUSR" 751 nobody:users # pam not yet configured
-        copy /etc/skel/.[a-z]* "/home/$SOHO_DOMUSR"
+        local flds ; splitjoin -d ':' -s flds -i SOHO_DOMUSR
+        [ "${flds[5]:--}" = '-' ] && flds[5]="/home/$flds"
+        folder -m "${flds[5]}" 751 nobody:users         # dummy, pam not yet configured
+        copy /etc/skel/.[a-z]* "${flds[5]}"
 
         # create archive and backup volumes
         embed -t -v centaurisnapshot --yes --quiet create 'Archive' -- create 'Backup'
         checkInstalled 'certs' true
     fi
 
-    if [ "$HOSTNAME" != "${CEN_NET_SERVERS[0]}" ] ; then
-        printHeader "Prepare secondary Samba AD/DC"
-        checkInstalled 'populate' true
-        remove -- "$DAT_MODE_OVERRIDE"*             # no longer override centauiswitch=xxx
-        checkInstalled 'addc' true
-        styp=
+    ### do we need samba provisioning? ###
+
+    if [ "$HOSTNAME" = "${CEN_NET_SERVERS[0]}" ] ; then
+        printHeader "Provisioning Samba AD/DC"      # primary server only
     else
-        printHeader "Provisioning Samba AD/DC"
+        printHeader "Prepare secondary Samba AD/DC"
+        checkInstalled 'populate' true              # populated by directory replication
+      #  styp=
+        embed -v centaurinetcfg resolv default      # need AD DNS service
     fi
 
     if ! netoption 'addc' "$HOSTNAME" ; then
         message "AD/DC is not configured, see 'option addc'"
         checkInstalled 'populate' true
-        styp=
+        styp=                                       # skip provisioning
     elif [ -n "$styp" ] && checkInstalled 'addc' &&
         confirm -y "Samba AD/DC already configured. Keep configuration" ; then
-        styp=
+        styp=                                       # skip provisioning
     fi
 
     # --------------------------------------------------------------------------
-    # primary server only
+    # Samba provisioning is run on primary and secondary server
     # --------------------------------------------------------------------------
     if [ -n "$styp" ] ; then
-        checkInstalled 'addc' false ; checkInstalled 'populate' false
+        checkInstalled 'addc' false # ; checkInstalled 'populate' false
         netquery server || error "Must be on a server - check your net config"
         # stop server services
         system -t -q systemctl start centauri-public.target
@@ -1615,12 +1647,13 @@ setupStep3Server() {
         quitOnError
 
         # Provisioning, add users, add users to groups
-        embed -t -v centaurikerberos --yes --quiet --force --seed='passwords' provsion
+        embed -t -v centaurikerberos --yes --quiet --force --seed='passwords' provision
         embed -t -v centaurikerberos --zombie --seed='passwords' \
-                    user create smbadmin -- user create smbtrust -- user create smbworld -- \
-                    user create root -- user create local -- user create "$SOHO_DOMUSR" -- \
-                    user create cyrus
+                    user create smbadmin -- user create smbtrust -- \
+                    user create smbworld -- user create "$SOHO_DOMUSR" -- \
+                    user create root -- user create local -- user create cyrus
         system -e -t samba-tool group addmembers Administrators root,local,smbadmin
+        quitOnError
 
         printHeader "Samba is ready, restarting network"
 
@@ -1628,7 +1661,7 @@ setupStep3Server() {
         symlink -m -n 'smb.conf.master' '/etc/samba/smb.conf'
 
         move -q /etc/krb5.conf /etc/krb5.conf.samba # save samba generated config
-        embed -t -v centaurikerberos setup krb5     # get our config again
+        embed -t -v centaurikerberos setup krb5     # get our own config again
 
         remove -- "$DAT_MODE_OVERRIDE"*             # no longer override centauiswitch=xxx
         checkInstalled 'addc' true
@@ -1637,32 +1670,47 @@ setupStep3Server() {
         # network mode used by a server ...
 
         embed -t -v centauriswitch init
+        quitOnError
+
+        # when this image was not created by cloning the centauriswitch boot
+        # parameter may not be set to server/apoint, so /etc/network/interfaces
+        # is not correct ...
+        configureIfaceServer fix
+
+        # init brigde and dns
         embed -t -v centauriroute --force --quiet open
         embed -t -v centaurifilter --zombie restart
         quitOnError
     fi
 
+    # at this point we can no longer recover bad configs
+    configureIfaceServer
+
     # --------------------------------------------------------------------------
-    # any server
+    # Primary server - start and test AD/DC and get keytab
     # --------------------------------------------------------------------------
     if ! checkInstalled 'populate' ; then
+        printHeader "Starting samba-ad-dc and populating AD"
 
-        printHeader "Starting samba-ad-dc and populating and AD"
-
-        embed -t -v centaurinetcfg resolv default   # generate resolv.conf
-
-        # temporarily disable IPv6 support
-        #embed -t -v centauriroute ipv6 off
+        # dns must be passed to samba's dns implementation
+        embed -t -v centaurinetcfg dnsmasq master -- resolv local
 
         # it is important to map port 53 via 'centaurifilter dnsmap'. Usually this
         # happens when the firewall is started. But better check it:
         embed -q -t -v centauriroute wait 127.0.0.2 5354 - ||
-            embed -t -v centaurifilter dnsmap
+            embed -t -v centaurifilter dnsmap - -
+
+        system -e -t systemctl start dnsmasq        # start early to catch errors
+        quitOnError
+
+        symlink -m -n 'smb.conf.master' '/etc/samba/smb.conf'
+        netserver -w PRIMARY MASTER "$SOHO_HOST"    # fake MASTER role
 
         # it takes a moment for ifup to process callbacks to centauiswitch that do
         # add ipv6 addresses to the bridge. The samba-ad-dc service waits 5 seconds
         # and checks for DNS before starting the samba deamon ...
         system -e -t systemctl start centauri-master.target
+        quitOnError
 
         # wait until samba services are ready ...
         testActiveAdDc  88 30 "No Kerberos server"  &&
@@ -1680,11 +1728,13 @@ setupStep3Server() {
     # --------------------------------------------------------------------------
     # primary server only
     # --------------------------------------------------------------------------
-    if [ -n "$styp" ] ; then
+    if [ "$HOSTNAME" = "${CEN_NET_SERVERS[0]}" ] ; then
+        printHeader "Test if Primary DC is working"
         system -e -p -t -- systemctl enable sssd        # should be ok now
         system -e -p -t -- systemctl start sssd
                                                         # simple test for working ad/dc
-        system -w -p -t -- chown --recursive "$SOHO_DOMUSR:" "/home/$SOHO_DOMUSR"
+        local dhom dusr="${SOHO_DOMUSR%%:*}" ; eval dhom=~$dusr
+        system -e -p -t -- chown --recursive "${SOHO_DOMUSR%%:*}:" "$dhom"
         quitOnError
 
         # A server has a repository staging folder
@@ -1715,30 +1765,31 @@ setupStep3Server() {
                                 -H "$CLASS" --create --no create root local @other
                 done
             fi
-            embed -t -v centaurikeys -D "$SOHO_DNAME" --yes install root local "$SOHO_DOMUSR"
+            embed -t -v centaurikeys -D "$SOHO_DNAME" --yes install root local "${SOHO_DOMUSR%%:*}"
             quitOnError
         fi
 
-        if [ ! -e "$PRIV/CertificateAuthority-$SOHO_DNAME" ] ; then
+        local CAFLDR="$PRIV/CertificateAuthority-$SOHO_DNAME"
+        local CAARCH="private/CertificateAuthority-$SOHO_DNAME.tgz"
+        if [ ! -d "$CAFLDR" ] ; then
 
             printHeader "Creating the Certificate Authority for domain: $SOHO_DNAME"
 
-            if [ -e "private/CertificateAuthority-$SOHO_DNAME.tgz" ] &&
+            if [ -e "$CAARCH" ] &&
                 ! confirm -n -b "Do not use default, generate a new CA" ; then
-                system -e -p -- tar -xaf "private/CertificateAuthority-$SOHO_DNAME.tgz" \
-                                --directory="$PRIV"
+                system -e -p -- tar -xaf "$CAARCH" --directory="$PRIV"
                 embed -t -v centauricerts --yes --host --install create server
             elif confirm -y "Do you want to create this CA now" ; then
                 embed -t -v centauricerts --yes --host --install setup -- \
-                            create revoked  -- create server
+                            create revoked -- create server
                 embed -t -v centauricerts --yes --host create 'computer' -- create 'mobile'
                 quitOnError
             fi
         fi
 
-        local CAFLDR="$PRIV/CertificateAuthority-ovpn"
-        local CAARCH="private/CertificateAuthority-ovpn.tgz"
-        if [ ! -e "$CAFLDR" ] ; then
+        CAFLDR="$PRIV/CertificateAuthority-ovpn"
+        CAARCH="private/CertificateAuthority-ovpn.tgz"
+        if [ ! -d "$CAFLDR" ] ; then
 
             printHeader "Creating the Certificate Authority for openvpn"
 
@@ -1750,7 +1801,7 @@ setupStep3Server() {
                 copyFromRepo "/etc/openvpn/client/$SOHO_DNAME/client.conf" \
                              "$CAFLDR/client.template"
                 embed -t -v centauricerts --yes --ovpn --install setup -- \
-                            create revoked  -- create server
+                            create revoked -- create server
                 embed -t -v centauricerts --yes --ovpn create 'computer' -- \
                             export 'computer' -- create 'mobile' -- export 'mobile'
                 quitOnError
@@ -1761,22 +1812,39 @@ setupStep3Server() {
     # --------------------------------------------------------------------------
     # Secondary server only
     # --------------------------------------------------------------------------
-    if [ "$HOSTNAME" != "${CEN_NET_SERVERS[0]}" ] ; then
-
+    if [ "$HOSTNAME" != "${CEN_NET_SERVERS[0]}" ] && ! checkInstalled 'secondary' ; then
         printHeader "Register at primary server"
 
+        embed -v centaurinetcfg resolv default      # need AD DNS server
         # check if server is alife and get 'ssh_server_key.pub'
-        embed -v centaurisecrets client +
-        embed -t -v centaurikerberos client
+        embed -t -v centaurisecrets client +
         quitOnError
 
         printHeader "Joining $SOHO_DOMAIN as controller"
+        # run ssh-keygen if needed and ssh-copy-id
+        embed -t -v centaurikeys idkey "$CEN_NET_SERVERS"
+        embed -t -v centaurissh --host="$CEN_NET_SERVERS" import hostkey
+        quitOnError
+
+        # make sure that inetd is running to allow receiving the keytab
+        system -e -- systemctl start inetd
+
+        # get keytab - needs to add machine account ...
+        passwordFromFile 'Administrator'
+        embed -n -t -v centaurikerberos --server --password "$DAT_PASSWD" --force \
+                                        --quiet machine del "$HOSTNAME"
+        embed -t -v centaurikerberos --server --password "$DAT_PASSWD" --force --yes \
+                    machine add "$HOSTNAME" -- send "$HOSTNAME"
+        embed -t -v centaurinetgen dnsmasq slave
+        quitOnError
 
         symlink -m -n 'smb.conf.slave' '/etc/samba/smb.conf'
         embed -t -v centaurikerberos join --seed='passwords'
-        embed -t -v centaurikerberos --server --force --yes send "$HOSTNAME"
-        embed -t -v centauriswitch local -- auto
         quitOnError
+
+        checkInstalled 'secondary' true
+        remove -- "$DAT_MODE_OVERRIDE"*         # no longer override centauiswitch=xxx
+        embed -t -v centauriswitch local -- auto
     fi
 
     # --------------------------------------------------------------------------
@@ -1796,7 +1864,6 @@ setupStep3Server() {
     quitOnError
 
     outputMessage 'server' '/etc/motd' '' "step 3 ($DAT_WHAT)"
-
 }
 
 # ------------------------------------------------------------------------------

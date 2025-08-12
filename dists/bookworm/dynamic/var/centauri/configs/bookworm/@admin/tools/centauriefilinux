@@ -4,7 +4,7 @@ CEN_LEGAL="Dr. J. Pfennig (c) 2021-2025; BSD License"
 CEN_TITLE="Tool to manage EFI boot and to create systemd-boot menu and UKI"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -y - '0.30:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -s -y - '0.32:4' || exit 2
 
 CEN_OPT_BASE=           # see --base, EFI partition mount point
 CEN_OPT_EXTERN=         # see --external, external disk
@@ -60,8 +60,8 @@ DAT_DIST_STUB='/usr/lib/systemd/boot/efi/linuxx64.efi.stub'
 DAT_DIST_SYSD='/usr/lib/systemd/boot/efi/systemd-bootx64.efi'
 
 # repository paths
-DAT_REPO_PRIVATE='/var/centauri/private'
-DAT_REPO_SHARED='/var/centauri/shared'
+DAT_REPO_PRIVATE="$CEN_ROOT/private"
+DAT_REPO_SHARED="$CEN_ROOT/shared"
 
 # prefix these names with CEN_OPT_ROOT
 DAT_PREFIX=(DAT_ROOTDIR DAT_BOOTDIR DAT_DKMSDIR DAT_ETCDIR DAT_LIBDIR DAT_MOKDIR
@@ -74,7 +74,7 @@ DAT_PREFIX=(DAT_ROOTDIR DAT_BOOTDIR DAT_DKMSDIR DAT_ETCDIR DAT_LIBDIR DAT_MOKDIR
 
 # helper for 'update' to install legacy grub: <no args>
 do_bios() {
-    confirm -n -q "install grub for legacy bios at '$CEN_MOUNT_DEV'" || return
+    confirm -n -q "Install grub for legacy bios at '$CEN_MOUNT_DEV'" || return
     system -z grub-install --target=i386-pc --boot-directory="$DAT_MOUNT" "$CEN_BLKDEVICE"
 }
 
@@ -91,10 +91,12 @@ do_cmdline() {
         root=*)             ;;
         rootflags=*)        ;;
         centauriswitch=*)   ;;
+        initrd=*)           ;;  # trixie
+        kernel=*)           ;;  # trixie
         loglevel=*)         ;;
         lsm=*)              ;;
         mitigations=off)    ;;
-        net.ifnames=0)      ;;
+        net.ifnames=*)      ;;
         resume=*)           ;;
         security=)          ;;
         quiet|ro|nosplash|splash) ;;
@@ -139,7 +141,7 @@ do_efichk() {
     fi
 
     case "$CEN_CMDARGS" in
-    cmd*|cre*|mok|set*)  ;;
+    cmd*|cre*|efi*|mok|set*)  ;;
     *)  if [ ! -s "$DAT_UKIPATH" ] ; then
             quit -e -m -p $"No unified kernel image: %s\nPlease run '%s' or '%s' first." \
                         "$DAT_UKIPATH" "$CEN_NAME create" "$CEN_NAME setup"
@@ -913,14 +915,14 @@ link_in_boot = yes
         [ "${item/$1/}" = "$item" ] || ncur="$item"
         [ "${item/$2/}" = "$item" ] || nbak="$item"
 
-        if [ "$item" -ef "vmlinuz" ] ; then
+        if [ "$item" -ef 'vmlinuz' ] ; then
             curr="$item" ; stat="[current]"
-        elif [ "$item" -ef "vmlinuz.old" ] ; then
+        elif [ "$item" -ef 'vmlinuz.old' ] ; then
             back="$item" ; stat="[old]"
         else
             stat=
         fi
-        [ $# = 0 ] && message -a -p "%-20s %s" "$item" "$stat"
+        [ $# = 0 ] && message -a -p '%-20s %s' "$item" "$stat"
     done
     [ $# = 0 ] && return                # list only
 
@@ -946,13 +948,13 @@ link_in_boot = yes
     fi
 
     ___set_kernel() {
-        symlink -f "$1" "vmlinuz$2"
+        symlink -n -f "$1" "vmlinuz$2"
         local init="initrd.img${1#vmlinuz}"
-        symlink -f "$init" "initrd.img$2"
+        symlink -n -f "$init" "initrd.img$2"
     }
 
     [ "$curr" != "$ncur" ] && ___set_kernel "$ncur"
-    [ "$back" != "$nbak" ] && ___set_kernel "$nbak" ".old"
+    [ "$back" != "$nbak" ] && ___set_kernel "$nbak" '.old'
 }
 
 # ------------------------------------------------------------------------------
@@ -1200,7 +1202,7 @@ Details:
 
 # The grub EFI stuff is installed via:
 
-    > grub-install --no-nvram --target=x86_64-efi \
+    > grub-install --no-nvram --target=x86_64-efi \\
                    --efi-directory=/mnt/boot /dev/sda
 
 # grub adds it's efi modules into /mnt/boot/grub and additionally creates
@@ -1212,12 +1214,12 @@ Details:
 
 # To build a stand-alone custom grub bootloader use the following command:
 
-   > grub-mkimage -d /usr/lib/grub/x86_64-efi -o /mnt/boot/EFI/Debian/boot$DAT_ARCH_EFI \
-                  -p "/grub" -O x86_64-efi \
-                  fat exfat ext2 btrfs iso9660 part_gpt part_msdos efifwsetup \
-                  boot linux multiboot loopback chain reboot  configfile normal \
-                  test loadenv keystatus  cat echo ls sleep search search_label \
-                  search_fs_uuid search_fs_file  font efi_gop efi_uga gfxterm \
+   > grub-mkimage -d /usr/lib/grub/x86_64-efi -o /mnt/boot/EFI/Debian/boot$DAT_ARCH_EFI \\
+                  -p "/grub" -O x86_64-efi \\
+                  fat exfat ext2 btrfs iso9660 part_gpt part_msdos efifwsetup \\
+                  boot linux multiboot loopback chain reboot  configfile normal \\
+                  test loadenv keystatus  cat echo ls sleep search search_label \\
+                  search_fs_uuid search_fs_file  font efi_gop efi_uga gfxterm \\
                   gfxterm_background gfxterm_menu all_video
 
 # WARNING: the default boot loader must be named 'BOOT${DAT_ARCH_EFI^^}' !
@@ -1331,7 +1333,7 @@ owner key that is built into shim).
 
 # ... or ...
 
-    > cp -a /usr/lib/systemd/boot/efi/systemd-bootx64.efi \
+    > cp -a /usr/lib/systemd/boot/efi/systemd-bootx64.efi \\
             /mnt/boot/EFI/systemd/systemd-bootx64.efi
 
 # ... or /admin/centauriefilinux which also manages the
@@ -1391,7 +1393,7 @@ actionUpdate() {
     do_unconf   systemd
 
     if [ -z "$CEN_OPT_PLAIN" ] ; then
-        message "Configure for secure-boot:" "${1/-/boot, systemd, grub}"
+        message -a "Configure for secure-boot:" "${1/-/boot, systemd, grub}"
         case "$1" in
         -)      do_shim "$DAT_EFI_BOOTDIR" &&
                 do_shim "$DAT_EFI_DISTDIR" &&
@@ -1403,7 +1405,7 @@ actionUpdate() {
         mem*)   do_memt ;;
         sys*)   do_shim "$DAT_EFI_SYSDDIR" ;;
         *)
-                invoke -e "Invalid argument:" "$1"
+                invoke -e - "$1"
         esac
     else
         message "No secure-boot support"
@@ -1418,7 +1420,7 @@ actionUpdate() {
         mem*)   do_memt ;;
         sys*)   do_plain "$DAT_EFI_SYSDDIR" ;;
         *)
-                invoke -e "Invalid argument:" "$1"
+                invoke -e - "$1"
         esac
     fi
     folder -c -f -- "$curr"
@@ -1533,7 +1535,7 @@ actions:
                             create UKI (unified kernel image) EFI binary
        efimgr  --- <arg>... run efibootmgr on EFI partition
        efimgr  add <label> <path>
-                            add a boot entry, <path> is relative
+                            add a boot entry, <path> is relative to EFI part.
        efimgr  delete <n>   delete boot entry <n>
        efimgr  entry grub|systemd
                             add a boot entry for grub or systemd boot

@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. Jürgen Pfennig (c) 2020-2024 ; all rights reserved"
+CEN_LEGAL="Dr. Jürgen Pfennig (c) 2020-2025 ; all rights reserved"
 CEN_TITLE="Automounter tool and service for local and network filesystems"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -v - '0.15:3' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -v - '0.17:6' || exit 2
 
 CEN_SVC_AFTER='networking.service network-online.target remote-fs.target'
 CEN_SVC_WANTS='avahi-daemon.service'    # service dependency
@@ -82,7 +82,7 @@ DAT_STATE=
 # Read config and check if required programs are installed
 # ------------------------------------------------------------------------------
 do_tools() {
-    [ "$DAT_HAVE_CONFIG" = '2' ] && return
+    [ "$DAT_HAVE_CONFIG" = 2 ] && return
     do_config
     DAT_HAVE_CONFIG=2
     do_spindown check
@@ -123,7 +123,7 @@ do_spindown() {
             [ -b "$driv" ] || continue
             idev="${driv##*/}"
             [ -r "/sys/block/$idev/queue/rotational" ] || continue
-            [ "$(</sys/block/$idev/queue/rotational)" = '0' ] && continue
+            [ "$(</sys/block/$idev/queue/rotational)" = 0 ] && continue
             dlst+=("$idev")
             dsta+=("$idev $(</sys/block/$idev/stat)")
         done
@@ -138,7 +138,7 @@ do_spindown() {
         wxxx="${arg1:-20}" ; dlst=()
         while [ "$wxxx" -gt 0 ] ; do                        # interruptible sleep...
             [ "$CEN_SVC_RUNNING" = 'stopped' ] && return    # service terminated
-            sleep "$DAT_SLEEP_TIME" ; ((wxxx-=DAT_SLEEP_TIME))
+            timer -w "$DAT_SLEEP_TIME" ; ((wxxx-=DAT_SLEEP_TIME))
         done
 
         # check for activity, spin down
@@ -279,7 +279,7 @@ do_config() {
     DAT_HAVE_CONFIG=1
 
     # create import/export folders
-    folder "$CEN_ROOT/persistent" || CEN_FOLDER="/var/lib/$CEN_NAME"
+    folder "$CEN_PERSISTENT" || CEN_FOLDER="/var/lib/$CEN_NAME"
     resolve -c -f "$CEN_FOLDER"                         # systemd uses absolute paths
     DAT_FOLDER_IMPORT="$CEN_RESOLVE/import" ; attributes -d -k -m 775 "$DAT_FOLDER_IMPORT"
     DAT_FOLDER_EXPORT="$CEN_RESOLVE/export" ; attributes -d -k -m 775 "$DAT_FOLDER_EXPORT"
@@ -657,14 +657,14 @@ do_options() {
         MOUNT_NAME=*|MOUNT_POINT=*|MOUNT_BASE=*)
             DAT_OPTMAP["${oopt%%=*}"]="${oopt#*=}" ;;
         FS_TYPE=*|fstype=*)
-            DAT_OPTMAP["FS_TYPE"]="${oopt#*=}" ;;
+            DAT_OPTMAP['FS_TYPE']="${oopt#*=}" ;;
         *)
             DAT_OPTIONS+=",$oopt"
         esac
     done
 
-    [ -z "${DAT_OPTMAP["FS_TYPE"]}" -a -n "${DAT_OPTMAP["type"]}" ] &&
-        DAT_OPTMAP["FS_TYPE"]="${DAT_OPTMAP["type"]}"
+    [ -z "${DAT_OPTMAP['FS_TYPE']}" -a -n "${DAT_OPTMAP['type']}" ] &&
+        DAT_OPTMAP['FS_TYPE']="${DAT_OPTMAP['type']}"
     DAT_OPTIONS="${DAT_OPTIONS:1}"
 }
 
@@ -687,10 +687,10 @@ do_systemd() {
     [ "$1" = "$_verb" ] && _ftyp= ; shift
 
     if [ "$_verb" = 'mount' ] ; then
-        [ -n "${DAT_OPTMAP["IS_STATIC"]}" ] && _cmnt=1
-        [ -n "${DAT_OPTMAP["NO_UNMOUNT"]}" ] && _cmnt=1
+        [ -n "${DAT_OPTMAP['IS_STATIC']}" ] && _cmnt=1
+        [ -n "${DAT_OPTMAP['NO_UNMOUNT']}" ] && _cmnt=1
 #### TODO always check?
-_cmnt=1
+#_cmnt=1
         _mlis+=('--no-ask-password')
         if [ -z "${DAT_OPTMAP['IS_STATIC']}" ] ; then
             _mlis+=('--automount=yes')
@@ -706,8 +706,8 @@ _cmnt=1
         _want=2                                 # wants 2 arguments
 
     elif [ "$_verb" = 'check' ] ; then
-        [ -n "${DAT_OPTMAP["IS_STATIC"]}" ] && return 1
-        [ -n "${DAT_OPTMAP["NO_UNMOUNT"]}" ] && return 1
+        [ -n "${DAT_OPTMAP['IS_STATIC']}" ] && return 1
+        [ -n "${DAT_OPTMAP['NO_UNMOUNT']}" ] && return 1
         return 0
 
     elif [ "$_verb" = 'unmount' ] ; then
@@ -749,7 +749,7 @@ _cmnt=1
         message -a -c "Unmounted" -- "$1"
 
         remove -q -- "$1" && return 0
-        sleep 0.2                               # retry after small delay...
+        timer -w 0.2                                # retry after small delay...
         remove -q -- "$1" && return 0
         message -a -c "rmdir failed" -- "$1"
         return 1
@@ -1296,7 +1296,7 @@ do_poll() {
     local item hcur nbak="${#DAT_POLL_LIST[@]}"
     if [ -z "$host" -o "$nbak" -gt $DAT_POLL_BATCH ] ; then
         [ "$nbak" -gt $DAT_POLL_BATCH ] &&                  # add extra delay
-            [ -n "$DAT_POLL_DELAY" ] && sleep "$DAT_POLL_DELAY"
+            [ -n "$DAT_POLL_DELAY" ] && timer -w "$DAT_POLL_DELAY"
 
         # fetch the poll results
         for item in "${DAT_POLL_LIST[@]}" ; do
@@ -1547,12 +1547,9 @@ run() {
 
     DAT_REMOVE_LIST=()                                      # list of mountpoints
     do_tree                                                 # cleanup tree folder
-if [ "$DAT_STATE" != 'quit' ] ; then
-    do_local -u                                             # local unmount
-fi
+    [ "$DAT_STATE" != 'quit' ] &&  do_local -u              # local unmount
     if [ -n "$DAT_REMOVE_LIST" ] ; then                     # queued removes...
-        sleep 1                                             # wait for unmounts
-       # system -e -p -- sync "${DAT_REMOVE_LIST[@]}"        # io wait
+        timer -w 1                                          # wait for unmounts
         local item ldel=()
         splitjoin -x 'remove -q' -i DAT_REMOVE_LIST         # 1st try, ignore errs
         for item in "${DAT_REMOVE_LIST[@]}" ; do
@@ -1560,7 +1557,7 @@ fi
         done
         if [ -n "$ldel" ] ; then
             message -a -c "Retry remove" -- "${#ldel[@]} item(s)"
-            sleep 1 ; splitjoin -x 'remove' -i ldel         # retry after delay
+            timer -w 1 ; splitjoin -x 'remove' -i ldel      # retry after delay
         fi
     fi
     message "Terminated"
@@ -1653,7 +1650,7 @@ fi
             stat="${DAT_HOSTS["$host"]}"
             [ "$stat" = 'i' ] && continue               # ignore host
             hlow="${host,,}"                            # lower case name
-            if [ "$fnfs" = '1' ] ; then                 # nfs hosts only
+            if [ "$fnfs" = 1 ] ; then                   # nfs hosts only
                 [ "$hlow" = "$host" ] || continue
             else                                        # samba hosts only
                 [ "$hlow" = "$host" ] && continue
@@ -1778,7 +1775,7 @@ actionList() {
 actionNetwork() {
     local narg pipe entr glob item coun=11 plur='s' nmnt
     if ! listsearch -u -m narg -- "$1" 'rescan' 'connect' 'disconnect' 'quit' 'busy'; then
-        error "invalid argument:" "network $1" ; return
+        invoke -e - "$1" ; return
     fi
 
     # busy: show network mounts or wait until all are unmounted (--quiet)
@@ -1800,7 +1797,7 @@ actionNetwork() {
                                                             # option -q does wait
             ((coun--)) || quit -s 2 -l -p "%s export mount%s, quit." "$nmnt" "$plur"
             message -l -a -p "%s export mount%s, wait %s" "$nmnt" "$plur" "$coun"
-            sleep 0.75
+            timer -w 0.75
         done
         quit -s 1
     fi

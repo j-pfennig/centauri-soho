@@ -1,79 +1,202 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-# _centauri_bash_rep = centauri-bash-lib: Repository basic operations
+# _centauri_bash_rep = centauri-bash-lib: Monitoring, Overrides and Repository
 #
-# Call:     . _centauri_bash_rep
+# Call:     . _centauri_bash_rep [-m]
 #
-# The module implements exactly two public functions:
+# Options:  -m      execute "monitor init"
+#
+# The module implements exactly three public functions:
+#
+#,  [[monitor()]]       'tool start' monitoring
 #,  [[override()]]
 #,  [[repository()]]
 #
 # Copyright Dr. J. Pfennig (c) 2024-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_rep']='0.02:4'
+CEN_MODULES['_centauri_bash_rep']='0.03:6'
 
 embed -c '_centauri_bash_ext'               # dependency
 
 CEN_REP_DKEY=                               # distribution key, see 'distro'
 
+CEN_REP_HOOK_MAIN=
+CEN_REP_HOOK_QUIT=
+CEN_REP_HOOK_OPTIONS=
+CEN_REP_HOOK_ACTIONS=
+
+# ------------------------------------------------------------------------------
+# monitor - init 'tool start' monitoring and default logger implementation
+#
+# Call:     monitor <kind> <text>...
+#
+# Arguments:<kind>      kind of hook: init|main|args|opts|quit|exit
+#           <text>      text to be logged
+#
+# Variables:CEN_HOOK_MONITOR    hook used to log something
+#           CEN_MONITOR_CALL    call-back to override log implementation
+#           CEN_MONITOR_FILE    enable only if this is a writable file
+#           CEN_MONITOR_MASK    enable bit mask 1:main 2:acts 4:args 8:quit
+#
+#
+#+Proxy:    The library proxy can be used to configure system wide logging
+#           by adding two lines of code, see "/etc/default/centauri_bash_lib":
+#
+#.          [proxy]
+#.          °   # non-comment lines get copied verbatim into the proxy
+#.          °   CEN_MONITOR_FILE=/var/centauri/persistent/centauri-monitor
+#.          °   [ -w "$CEN_MONITOR_FILE" ] && CEN_MONITOR_MASK=1
+#
+#+Tools:    The systemd service script of [[centaurisysinit]] truncates the
+# log file at early boot time.
+#
+#+          Use [[centauriinfo]] to display log data with optional filtering and
+# high-lighting.
+#
+#+The write access permission controls which user's 'tool starts' get logged.
+#
+#+The main library module loads this module with option -m to initialize the
+# monitor if CEN_MONITOR_MASK is set. The default implementation just writes
+# the argumnents to CEN_MONITOR_FILE:
+#
+# °     <epochseconds> <ppid> <pid> <user> <text>...
+#
+#+The predefined <kind> values are implemented by the library itself. Additional
+# log entries can be generated calling monitor() directly of via CEN_HOOK_MONITOR.
+#
+#+After initialization CEN_MONITOR_MASK can be modified to select <kind> or to
+# suspend monitoring.
+# ------------------------------------------------------------------------------
+monitor() {
+    # initialization: for security resons hook only a funtion ...
+    if [ "$CEN_HOOK_MONITOR" = ':' ] ; then
+        if [ -n "$CEN_MONITOR_CALL" ] ; then
+            is_function -f "$CEN_MONITOR_CALL" && CEN_HOOK_MONITOR="$CEN_MONITOR_CALL"
+        else
+            CEN_HOOK_MONITOR='cen_monitor_call'
+        fi
+        [ -z "$CEN_MONITOR_FILE" ] && CEN_MONITOR_FILE="$CEN_PERSISTENT/monitor"
+        if ! [ -w  "$CEN_MONITOR_FILE" ] ; then
+            warning -c $" disabled" "Cannot write:" "$CEN_MONITOR_FILE"
+            CEN_MONITOR_MASK= ; return 1
+        fi
+
+        if ((CEN_MONITOR_MASK & 1)) ; then
+            eval 'cen_monitor_main() { $CEN_HOOK_MONITOR main "$@" ; shift ; $CEN_REP_HOOK_MAIN "$@" ; }'
+            context -h CEN_HOOK_MAIN CEN_REP_HOOK_MAIN  'cen_monitor_main'
+        fi
+        if ((CEN_MONITOR_MASK & 2)) ; then
+            eval 'cen_monitor_acts() { $CEN_HOOK_MONITOR acts "$@" ; shift ; $CEN_REP_HOOK_ACTIONS "$@" ; }'
+            context -h CEN_HOOK_ACTIONS CEN_REP_HOOK_ACTIONS 'cen_monitor_acts'
+        fi
+        if ((CEN_MONITOR_MASK & 4)) ; then
+            eval 'cen_monitor_opts() { $CEN_HOOK_MONITOR opts "$@" ; shift ; $CEN_REP_HOOK_OPTIONS "$@" ; }'
+            context -h CEN_HOOK_OPTIONS CEN_REP_HOOK_OPTIONS 'cen_monitor_opts'
+        fi
+        if ((CEN_MONITOR_MASK & 8)) ; then
+            eval 'cen_monitor_quit() { $CEN_HOOK_MONITOR quit "$@" ; shift ; $CEN_REP_HOOK_QUIT "$@" ; }'
+            context -h CEN_HOOK_QUIT CEN_REP_HOOK_QUIT 'cen_monitor_quit'
+        fi
+    elif [ "${CEN_HOOK_MONITOR:--}" = '-' ] ; then
+        return 1
+    fi
+    $CEN_HOOK_MONITOR "$@"
+}
+
+cen_monitor_call() {
+    # default implementation
+    [ -z "$CEN_MONITOR_MASK" ] && return 1
+    local name="${USER:-${LOGNAME:-$EUID}}"
+    [ "$name" = 0 ] && name='root'
+    echo "$EPOCHSECONDS" "$PPID" "$$" "${name:--}" "$CEN_NAME" "${@@Q}" >> "$CEN_MONITOR_FILE"
+    return 0
+
+}
+
 # ------------------------------------------------------------------------------
 # override - mechanism to pass extra information to scripts
 #
-# Call:     (1) override -c <name>|- <value>
-#           (2) override -d <name>|-
-#           (3) override -r [-f] <name>|- <vnam>
+# Call:     (1) override [-b <base>] [-f] -c <name>|-|-- <word>...
+#           (2) override [-b <base>]      -d <glob>|-|--
+#           (3) override [-b <base>]      -l <glob>|-|-- <vnam>
+#           (4) override [-b <base>] [-f] -r <name>|-|-- <varr>
+#           (5) override [-b <base>]      -p <name>|-|-- [<vnam>]
 #
-#+      Form (1) creates a file named "$CEN_ROOT/persistent/<name>-override" with
-# <value> as contents.
+#-      Form (1) creates a file named "$CEN_PERSISTENT/<name>-override" with
+#-      °        <value> as content -or- "<base>/<name>-override".
+#-      Form (2) delete one or more files created by (1).
+#-      Form (3) returns a list of matching ''override'' names (**not file paths**).
+#-      Form (4) is used to read the content of an ''override'' file into variable
+#-      °        <vnam>.
+#-      Form (5) return the file path and **TRUE** if existing or **FALSE** if not.
 #
-#+      Form (2) deletes a file created by (1).
-#
-#+      Form (3) is used to read the content of an ''override'' file into variable
-#       <vnam>.
-#
-# Options:  -c  create file
-#           -d  delete file
+# Options:  -b  base (optional prefix for path)
+#           -c  create an override file
+#           -d  delete override files by name (glob expression match)
 #           -f  make errors fatal
+#           -l  get list of override names (glob expression match)
+#           -p  return a path, check if existing
 #           -r  read file
 #
-# Arguments:<name>      file name part (use '-' for script name)
-#           <value>     string to be written (must be a single line)
+# Arguments:<base>      path that overrides $CEN_PERSISTENT
+#           <glob>      bash glob expression
+#           <name>      file name part (use '-' for script name)
+#           <varr>      name of an array that returns names (**not file paths**)
 #           <vnam>      name of a variable that returns the file content
+#           <word>      string to be written (joined to a single line)
 #
 #+Form (2) and (3) do nothing if no ''override'' file exists. Only read or write
 # errors get reported.
+#
+#.Examples: override -c -- hello world
+#.          override -p && message "have override"
+#.          override -r -- data && message "data: $data"
+#
+#.          override -c 'other' -- 'hi!'
+#.          override -p 'other' path && message "see: $path"
+#.          override -d 'other'
+#
+#.          override -l 'test*' list
+#.          override -d 'test*'
 # ------------------------------------------------------------------------------
 override() {
-    local _name="$CEN_NAME" _file _fcre _fdel _frea
+    local _name="$CEN_NAME" _base="$CEN_PERSISTENT" _fopt _ferr='-e'
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
-      -)    break ;;
       --)   shift ; break ;;
-      -c)   _fcre=1 ;;
-      -d)   _fdel=1 ;;
-      -f)   [ -n "$CEN_OPT_FORCE" ] && return 1
-            _frea=1 ;;
-      -r)   _frea=1 ;;
+      -b)   shift ; _base="${1%/}" ;;
+      -f)   _ferr="$1" ;;
+      -[cdlpr])
+            _fopt="$1" ; shift
+            [ -z "$1" -o "${1::1}" = '-' ] || _name="$1" ;;
       *)    _cen_abort - "$1"
-      esac ; shift
+      esac
+      [ "$1" = '--' ] && { shift ; break ; }
+      shift
     done
-    [ "${1:--}" != '-' ] && _name="$1" ; shift
-    _file="$CEN_ROOT/persistent/$_name-override"
-    if [ -n "$_fcre" ] ; then
-        writeline -c - -e -o "$_file" -t -- "$1" ; return
-    elif [ -n "$_fdel" ] ; then
-        remove -- "$_file" ; return
-    elif [ -n "$_frea" ] ; then
-        readline -i "$_file" -s "$1" ; return
-    fi
-    _cen_abort =
+
+    _file="$_base/${_name//[[:space:]]/}-override"
+    case "$_fopt" in
+    -c) writeline $_ferr -c - -o "$_file" -t -- "$*" ;;
+    -d) remove -- "$_base/"${_name//[[:space:]]/}'-override' ;;
+    -l) local _list
+        local -n _cen_override_var="$1" ; _cen_override_var=()
+        matchpath -e -a _list -- "$_base/"${_name//[[:space:]]/}'-override'
+        for _name in "${_list[@]##*/}" ; do
+            _cen_override_var+=("${_name%-override}")
+        done ;;
+    -p) [ -n "$1" ] && printf -v "$1" '%s' "$_file"
+        [ -f "$_file" ] ;;
+    -r) readline $_ferr -i "$_file" -s "$1" ;;
+    esac
+    return                                          # return status
 }
 
 # ------------------------------------------------------------------------------
 # Override Arguments + Passing extra information to Scripts
 #
-#+General:  This mechanism manages files in "$CEN_ROOT/persistent" using file
+#+General:  This mechanism manages files in "$CEN_PERSISTENT" using file
 # names built like: "<script-name>-override". The target script can implement
 # whatever it wants to handle information read from such a file. Typically a
 # script will capture a set of action verbs and replace matching verbs by data
@@ -95,14 +218,14 @@ override() {
 #
 #.  PATH+=":${0%/*}" . _centauri_bash_lib -a -d -o - '0.01' || exit 2
 #.
-#.  CEN_DEF_BASE="/opt/$CEN_NAME"           # default for option --base
+#.  DAT_DEF_BASE="/opt/$CEN_NAME"           # default for option --base
 #.  CEN_OPT_BASE=                           # option argument value
 #.
 #.  # ...
 #.
 #.  options() {
 #.  case "$1" in
-#.  °   '')     [ -z "$CEN_OPT_BASE" ] && CEN_OPT_BASE="$CEN_DEF_BASE"
+#.  °   '')     [ -z "$CEN_OPT_BASE" ] && CEN_OPT_BASE="$DAT_DEF_BASE"
 #.  °           ;;
 #.  °   -B|--bas|--base)
 #.  °           optarg 'base'   -   -t
@@ -118,7 +241,7 @@ override() {
 # "/etc/default/mytool" could be:
 #
 #. # overriding the default for option --base
-#. CEN_DEF_BASE='/somewhere/$CEN_NAME"
+#. DAT_DEF_BASE='/somewhere/$CEN_NAME"
 # ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
@@ -393,9 +516,10 @@ _cen_repo_loc() {
 }
 
 # ------------------------------------------------------------------------------
-# Startup: [-n]
+# Startup: [-m]
 # ------------------------------------------------------------------------------
 
+[ "$1" = '-m' ] && monitor init
 :                                           # return true to indicate success
 
 # end

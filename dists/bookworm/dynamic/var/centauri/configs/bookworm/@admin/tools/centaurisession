@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2025; BSD License"
 CEN_TITLE="Session configuration script"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t -m sys -y - '0.18:4' 2 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t -m sys -y - '0.19:6' 2 || exit 2
 
 # Data
 #context -v 2      ##### DEBUG
@@ -27,7 +27,7 @@ DAT_LOCAL=('Local'     $"Local"     'Lokal')
 DAT_ENCFS=('Private'   $"Private"   'Privat')
 
 # folder for issue data
-DAT_ISSUE_DIR="$CEN_ROOT/persistent/issue.d"
+DAT_ISSUE_DIR="$CEN_PERSISTENT/issue.d"
 
 DAT_AUTOLOGIN='.centauriautologin'
 
@@ -344,12 +344,12 @@ actionRoaming() {
         # are we a roaming user?
         local agrp item mwhy
         if [ "$EUID" \< 10000 ] ; then           # id < 10000 cannot be roaming
-            mwhy='UID < 1000'
+            mwhy='UID < 10000'
         else
             mwhy=$"not a member of group 'roaming'"
             system -a agrp -d " \t" -e -p -r -- id -Gn
-            for item in "${agrp[@]}" "" ; do
-                [ "$item" = "roaming" ] && break
+            for item in "${agrp[@]}" '' ; do
+                [ "$item" = 'roaming' ] && break
             done
         fi
         if [ -z "$item" ] ; then

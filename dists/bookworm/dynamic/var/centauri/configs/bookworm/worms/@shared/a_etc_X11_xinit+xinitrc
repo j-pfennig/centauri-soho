@@ -18,6 +18,10 @@
 # the default window manager
 CEN_WM='/usr/bin/x-window-manager'
 
+# disable KDE, lxqt
+CEN_NO_KDE='-xxx'
+CEN_NO_LXQT='-xxx'
+
 # wait until WM is up and run payload
 run_wmctrl() {
     # run WM in background
@@ -46,25 +50,28 @@ fi
 # centaurilogin fall-back, appliances should provide custom ~/.xinitrc files  
 if [ -x .centauristartup ] ; then
     if [ -x "$CEN_WM" ] ; then
-        [ "$CEN_WM" -ef '/usr/bin/xfwm4' ] && CEN_WM+=' --sm-client-disable' 
+        [ "$CEN_WM" -ef '/usr/bin/xfwm4' ] && CEN_WM="$CEN_WM --sm-client-disable" 
         run_wmctrl ./.centauristartup
     else
         xmessage "Please install a x-window-manager like 'twm' or 'xfwm4'"
     fi
 
 # start a desktop
-elif [ -x /usr/bin/startplasma-x11 ] ; then
-    #export XDG_CURRENT_DESKTOP="KDE"
+elif [ -x /usr/bin/startplasma-wayland$CEN_NO_KDE ] ; then
+    startplasma-wayland
+    pkill -g 0 plasma_session
+elif [ -x /usr/bin/startplasma-x11$CEN_NO_KDE ] ; then
     startplasma-x11
     pkill -g 0 plasma_session
-elif [ -x /usr/bin/startlxqt ] ; then
+elif [ -x /usr/bin/startlxqt$CEN_NO_LXQT ] ; then
     export XDG_CURRENT_DESKTOP="LXQt"
     startlxqt
-elif [ -x /usr/bin/startkde ] ; then
-    export XDG_CURRENT_DESKTOP="KDE"
-    startkde
 elif [ -x "$CEN_WM" ] ; then
-    run_wmctrl xterm -fullscreen -sb -rightbar -ls 
+    if [ -x /usr/bin/qterminal ] ; then
+        run_wmctrl qterminal --geometry 5000x5000
+    else
+        run_wmctrl xterm -fullscreen -sb -rightbar -ls 
+    fi
 else
     . /etc/X11/Xsession
 fi

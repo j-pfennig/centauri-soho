@@ -33,6 +33,10 @@ msgstr "Kann Datei nicht lesen:"
 msgid "Change label of partition '%s'. Continue"
 msgstr "Ändere Label von Partition '%s'. Weiter"
 
+#: /var/centauri/tools/centaurimedia:125
+msgid "%s will delete all data of '%s'. Continue"
+msgstr ""
+
 #: /var/centauri/tools/centaurimedia:136
 msgid "Unsupported for this device:"
 msgstr "Für das Gerät nicht unterstützt:"
@@ -92,31 +96,35 @@ msgstr "Nicht unterstütztes Dateisystem: %s"
 
 #: /var/centauri/tools/centaurimedia:366
 msgid "Creating '%s' filesystem on '%s', label '%s'"
-msgstr ""
+msgstr "Erstelle '%s' Dateisystem auf '%s', Label '%s'"
 
 #: /var/centauri/tools/centaurimedia:368
 msgid "Creating '%s' filesystem on '%s', no label"
-msgstr ""
+msgstr "Erstelle '%s' Dateisystem auf '%s', ohne Label"
 
 #: /var/centauri/tools/centaurimedia:465
 msgid "No filesystem type identified"
-msgstr ""
+msgstr "Kein Dateisystemtyp erkannt"
 
 #: /var/centauri/tools/centaurimedia:472
 msgid "Labeling filesystem on '%s', label '%s'"
-msgstr ""
+msgstr "Label von Dateisystem '%s' auf '%s' setzen"
+
+#: /var/centauri/tools/centaurimedia:533
+msgid "Unmount folder '%s'"
+msgstr "Verzeichnis '%s' ausgehängen"
 
 #: /var/centauri/tools/centaurimedia:552
 msgid "Partition table type must be 'msdos' or 'gpt': %s"
-msgstr ""
+msgstr "Typ der Partionstabelle muss 'msdos' oder 'gpt' sein: %s"
 
 #: /var/centauri/tools/centaurimedia:557
 msgid "Need at least one partition size (use '+' for whole device)"
-msgstr ""
+msgstr "Wenigstens eine Partitionsgröße angeben ('+' für ganzes Laufwerk)"
 
 #: /var/centauri/tools/centaurimedia:566
 msgid "'+' can be used for the last partition only"
-msgstr ""
+msgstr "Nur die letzte Partition kann '+' verwenden"
 
 #: /var/centauri/tools/centaurimedia:571 /var/centauri/tools/centaurimedia:580
 msgid "Not a valid partition size: %s"
@@ -124,15 +132,15 @@ msgstr "Ist keine gültige Partitions-Größe:"
 
 #: /var/centauri/tools/centaurimedia:589
 msgid "Creating '%s' partition table with %s partition(s)"
-msgstr ""
+msgstr "Erstelle '%s' Partitionstabelle mit %s Partition(en)"
 
 #: /var/centauri/tools/centaurimedia:614
 msgid "Created partition table"
 msgstr "Partitions-Tabelle erstellt"
 
-#: /var/centauri/tools/centaurimedia:643
-msgid "Invalid argument:"
-msgstr "Argument ungültig:"
+#: /var/centauri/tools/centaurimedia:675
+msgid "Mountpoint '%s' not found"
+msgstr "Einhängepunkt '%s' nicht gefunden"
 
 #: /var/centauri/tools/centaurimedia:697
 msgid "Unmounted %s %s"
@@ -148,7 +156,7 @@ msgstr "Partitionen"
 
 #: /var/centauri/tools/centaurimedia:774
 msgid "Bad use of '--label' option"
-msgstr ""
+msgstr "Option '--label' falsch verwendet"
 
 #: /var/centauri/tools/centaurimedia:834 /var/centauri/tools/centaurimedia:835
 #: /var/centauri/tools/centaurimedia:836 /var/centauri/tools/centaurimedia:837
@@ -367,4 +375,3 @@ msgstr ""
 #: /var/centauri/tools/centaurimedia:909
 msgid "Only the 'format' action can be used with <dev> being an image file."
 msgstr ""
-

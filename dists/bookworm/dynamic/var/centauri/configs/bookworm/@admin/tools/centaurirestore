@@ -1,9 +1,9 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2017-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2017-2025; BSD License"
 CEN_TITLE="Restore a centauribackup, optionally cloning an existing machine"
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -m bat -r -y - '0.60:3' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -m bat -r -y - '0.61:4' || exit 2
 
 # Options
 
@@ -114,21 +114,22 @@ do_fixup() {
     CEN_DAT_FIXUP=1
 
     # make /tmp a symlink if missing
-    [ -d "tmp" ] || symlink -m "/dev/shm" "tmp"
+    [ -d 'tmp' ] || symlink -m '/dev/shm' 'tmp'
 
     # in case that udev is not used
-    if [ -d "dev" ] ; then
-        [ -e "dev/console" ] || system -e -p mknod -m 660 "dev/console" c 5 1
-        [ -e "dev/null"    ] || system -e -p mknod -m 660 "dev/null"    c 1 3
+    if [ -d 'dev' ] ; then
+        [ -e 'dev/console' ] || system -e -p mknod -m 660 'dev/console' c 5 1
+        [ -e 'dev/null'    ] || system -e -p mknod -m 660 'dev/null'    c 1 3
     fi
 
-    system -e -p chmod 755 "."
-    system install -d "dev" "proc" "sys" "var/lib/centauri"
+    system -e -p chmod 755 '.'
+    attributes -d -k -m 755 -- 'dev' 'proc' 'sys' 'var' 'var/lib'
+    attributes -d -k -m 755 -o root:wheel -- 'var/lib/centauri'
 
     # fix apt permissions (same code as in centaurisecurity)
-    if [ -d "var/lib/apt" ] ; then
-        attributes -d -m 755 -o root:root -- "var/lib/apt/lists"         "var/cache/apt/archives"
-        attributes -d -m 700 -o _apt:root -- "var/lib/apt/lists/partial" "var/cache/apt/archives/partial"
+    if [ -d 'var/lib/apt' ] ; then
+        attributes -d -m 755 -o root:root -- 'var/lib/apt/lists'         'var/cache/apt/archives'
+        attributes -d -m 700 -o _apt:root -- 'var/lib/apt/lists/partial' 'var/cache/apt/archives/partial'
     fi
 }
 
@@ -136,18 +137,18 @@ do_fixup() {
 # handle formatting and labelling
 # ------------------------------------------------------------------------------
 do_format() {
-    [ -n "$CEN_DAT_LABEL" ] && message -a "Will label root partition as: $CEN_DAT_LABEL"
+    [ -n "$CEN_DAT_LABEL" ] && message -a "Will label root partition as:" "$CEN_DAT_LABEL"
 
     # do we need a mount point?
     if [ -n "$CEN_FLG_MOUNT" ] ; then
         if [  -d "$CEN_FLG_MOUNT" ] ; then
-            message -a "Using moint point: $CEN_FLG_MOUNT"
+            message -a "Using moint point:" "$CEN_FLG_MOUNT"
         else
-            folder -f -m -r -t "_mount" ; CEN_FLG_MOUNT="$CEN_FOLDER"
-            message -a "Created moint point: $CEN_FLG_MOUNT"
+            folder -f -m -r -t '_mount' ; CEN_FLG_MOUNT="$CEN_FOLDER"
+            message -a "Created moint point:" "$CEN_FLG_MOUNT"
         fi
-        [ -d "$CEN_FLG_MOUNT" ] || fatal "Not a directory: $CEN_FLG_MOUNT"
-        [ -w "$CEN_FLG_MOUNT" ] || fatal "Cannot write to: $CEN_FLG_MOUNT"
+        [ -d "$CEN_FLG_MOUNT" ] || fatal "Not a directory:" "$CEN_FLG_MOUNT"
+        [ -w "$CEN_FLG_MOUNT" ] || fatal "Cannot write to:" "$CEN_FLG_MOUNT"
     fi
 
     # --- formatting ---
@@ -161,7 +162,7 @@ do_format() {
            message -a "Creating ext$CEN_FLG_EXTFS filesystem ..."
            confirm -a "Format $CEN_FLG_PART" || quit -t
            mopt="-t ext4"
-           [ "$CEN_FLG_EXTFS" = "3" ] && mopt="-O dir_index"
+           [ "$CEN_FLG_EXTFS" = 3 ] && mopt="-O dir_index"
            system -f -p mke2fs -q -j -m0 $mopt "$CEN_FLG_PART"
         else
            message -a "Creating btrfs filesystem ..."
@@ -314,7 +315,9 @@ do_rename() {
         embed -i -v centaurikeys -y -q hostkeys 'etc/ssh'
 
     # remove persistent device names (legacy)
-    remove -f "etc/udev/rules.d/"*-persistent-*
+    remove -f 'etc/udev/rules.d/'*-persistent-*
+    # remove name override
+    remove -f 'etc/sysctl.d/host+domain.conf'
 
     # clean dhcp and samba caches
     remove -f 'var/lib/dhcp'/*

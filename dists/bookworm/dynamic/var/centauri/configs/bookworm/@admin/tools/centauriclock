@@ -4,7 +4,7 @@ CEN_LEGAL="Dr. J. Pfennig (c) 2024-2025; all rights reserved"
 CEN_TITLE=$"An extendable HTML based Day-Time-Clock"
 
 # Import the bash library
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g - '0.12:5' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -g -o 'centauriclock' '0.16:5' || exit 2
 
 #context -v 2                       # debug output
 
@@ -23,21 +23,29 @@ DAT_UNCLUTTER=
 
 # started as an appliance?
 
-if [ "$CEN_NAME" = '.centauristartup' ] ; then
-    CEN_NAME='centauriclock' ; CEN_OPT_BASE='-' ;  CEN_OPT_TIMER=1
+if [ "${BASH_ARGV0##*/}" = '.centauristartup' ] ; then
+    CEN_OPT_BASE='-' ;  CEN_OPT_TIMER=1
     [ $# = 0 ] && set -- run --gui=0
 fi
 
-
 DAT_BASEDIR="~/.local/$CEN_NAME"    # defaults ...
 DAT_HTMLTXT="$CEN_NAME.html"
-DAT_SIZEPNT='10vw'
+
+# We prefer a tabular font and googles's 'noto' is the best known.
+# If it is installed on this computer we can safely use 10vw size...
+if [ -d '/usr/share/fonts/truetype/noto' ] ; then
+    DAT_SIZEPNT='10vw'              # 'noto' font is smaller than others
+# other fonts tend to renders larger ...
+else
+    DAT_SIZEPNT='8.8vw'             # conservative choice
+fi
+
 DAT_STARTUP="./${CEN_NAME}.bash"
 DAT_LANGGUI='en'
 
 if [ -z "$LANG" ] ; then            # get system default ...
-    embed -b '/etc/default/locale'
-    DAT_LANGGUI="${LANG::2}"        # intentionally ignore *_US* here
+    embed -b -n "$CEN_DEFAULT/locale" &&
+        DAT_LANGGUI="${LANG::2}"    # intentionally ignore *_US* here
 else
     case "${LANG,,}" in             # get internal language code...
     *_us*)  DAT_LANGGUI='us' ;;
@@ -92,13 +100,16 @@ create_html() {
       font-size: 3.9rem;
       font-weight: bold;
       color: #ccf;
-      margin-top: calc(10vh - 2.0rem);
+      margin-top: calc(3vh - 2rem);
+      /* margin-top: -15vh;   set via dom when no temperatures are shown */
       margin-bottom: calc(15vh - 1.5rem);
     }
+
     .cdigit {
       display: inline-block;
       width: 46vw;
     }
+
     .cdsepa {
       display: inline-block;
       font-size: 2.5rem;
@@ -109,33 +120,76 @@ create_html() {
     .csecs {
         color: #00ffff;
         width: 95%;
-      margin-bottom: calc(20vh - 1.2rem);
+        margin-bottom: calc(20vh - 1.2rem);
     }
+
     .csecs-bar {
         height: 0.12rem;
         background-color: beige;
+        /* it seems that only 'px' is working here */
         border-radius: 0.1rem;
     }
 
     .cidate {
       color: #aff;
-      font-size: 0.7rem;
+      font-size: 0.6rem;
       text-align: center;
       margin-top: calc(20vh - 0.8rem);
     }
+    .citemp {
+      color: #aff;
+      margin-bottom: -10vh;
+      margin-bottom: calc(-18vh + 0.3rem);
+    }
+
+    .ctemp {
+      position: absolute;
+      /* justify-content: center; */
+      font-size: 1.8rem;
+      text-align: right;
+    }
+
+    .cdate {
+      display: inline-block;
+      font-size: 0.65rem;
+      line-height: 0.7rem;
+      margin-top: 9vh;
+      margin-top: calc(8vh - 0.1rem);
+      margin-top: calc(6vw - 0.2rem);
+      text-align: center;
+    }
+    .cdegr {
+      position: absolute;
+      justify-content: top;
+      margin-top: 2vh;
+      font-size: 0.9rem;
+    }
+
   </style>
 </head>
 
 <body>
-<div class="cclock">
-  <div class="ctime">
-    <span id="ahour" class="cdigit" style="text-align: right;">--</span><span id="asepa" class="cdsepa">:</br>&nbsp;</span><span id="aminu" class="cdigit">--</span>
+  <div class="cclock">
+    <div class="ctime">
+        <span id="ahour" class="cdigit" style="text-align: right;">--</span><span id="asepa" class="cdsepa">:</br>&nbsp;</span><span id="aminu" class="cdigit">--</span>
+    </div>
+    <div class="csecs"><div id="asecs" class="csecs-bar"></div></div>
+    <div class="cidate" hidden></div>
+    <div class="citemp">
+        <span class="ctemp" style="right: 80vw"><span id="atmp1"></span><span class="cdegr" id="adeg1">°</span></span>
+        <span class="cdate" id="adate"></span>
+        <span class="ctemp" style="right: 4vw"><span id="atmp2"></span><span class="cdegr" id=adeg2>°</span></span>
+    </div>
   </div>
-  <div class="csecs"><div id="asecs" class="csecs-bar"></div></div>
-  <div class="cidate"></div>
-</div>
 
 <script>
+var centauriclock_data='';     // CORS http url to load data, use file if empty
+var temperature_inside='--';
+var temperature_outside='--';
+</script>
+<script src='centauriclock.js'></script>
+<script>
+
 // query parameter: language and font scaling
 var lang='de'
 var ourl = window.location.search.substring(1);
@@ -159,21 +213,27 @@ htmld.setAttribute('ontouchstart', 'touch(event)');
 var vhour = document.getElementById("ahour");
 var vminu = document.getElementById("aminu");
 var vdate = document.getElementById("adate");
+var vtmp1 = document.getElementById("atmp1");
+var vtmp2 = document.getElementById("atmp2");
+var vdeg1 = document.getElementById("adeg1");
+var vdeg2 = document.getElementById("adeg2");
 
 // store day and month name in an array
 switch (lang) {
   case 'de':
     var dayNames = 'Montag Dienstag Mittwoch Donnerstag Freitag Sonnabend Sonntag';
-    var monthNames = 'Januar Februar März April Mai Juni' +
-                     'Juli August September Oktober November Dezember' ; break;
+    var monthNames = 'Januar Februar März April Mai Juni ' +
+                     'Juli August September Oktober November Dezember ' +
+                     '- - - - - - - - Sept. Okt. Nov. Dez.'; break;
   case 'fr':
     var dayNames = 'Lundi Mardi Mercredi Jeudi Vendredi Samedi Dimanche';
-    var monthNames = 'Janvier Février Mars Avril Mai Juin' +
+    var monthNames = 'Janvier Février Mars Avril Mai Juin ' +
                      'Juillet Août Septembre Octobre Novembre Décembre'; break;
   default:
     var dayNames = 'Monday Tuesday Wednesday Thursday Friday Saturday Sunday';
     var monthNames = 'January February March April May June ' +
-                     'July August September October November December';
+                     'July August September October November December ' +
+                     'Jan Feb Mar Apr - Jun Jul Aug Sep Oct Nov Dec';
 }
 dayNames = dayNames.split(' ')
 monthNames = monthNames.split(' ')
@@ -207,31 +267,91 @@ function updateClock() {
 
   // display date and time
   var line1 = dayNames[day] ; var line2 = monthNames[month]
+  if (temperature_outside != '--' && monthNames[month+12] != '-') {
+    line2 = monthNames[month+12] ?? line2
+  }
+
   switch (lang) {
     case 'de': line2 = date + '. '+ line2 + ' ' + year; break;
-    case 'en': line2 = date + ' ' + line2 + ' ' + year; break
+    case 'en': line2 = date + ' ' + line2 + ' ' + year; break;
     case 'fr': line1 = line1 + ' ' + date; line2 = line2 + ' ' + year; break;
     case 'us': hours = hours % 12 || 12;
                line2 = date + ' ' + line2 + ' ' + year; break;
     default:  line1 = dayNames[day];
               month = (month < 9) ? '0' + (month+1) : month + 1;
-              date = (date < 10) ? '0' + date : date;
+              data = (date < 10) ? '0' + date : date;
               line2 = year + '-' + month + '-' + date;
   }
 
   vhour.innerHTML = hours; vminu.innerHTML = minutes;
-  document.querySelector('.cidate').innerHTML = line1 + ' ' + line2;
+
+  if (temperature_outside == '--') {
+    document.querySelector('.cidate').innerHTML = line1 + ' ' + line2;
+  } else {
+    vdate.innerHTML = line1 + '</br>' + line2;
+  }
+
+  // load temperatures from server via http
+  if (centauriclock_data != '') {
+    fetch(centauriclock_data)
+      .then(x => x.text())
+      .then(y => updateTemp(y));
+  }
+}
+
+function updateTempDisp(eltt, eltd, temp) {
+   var color
+   if (temp == '' || temp == '-') {
+     temp='--';
+   }
+   else if (temp.substring(0,1) == '-') {
+     temp = -Math.round(temp);
+     color = '#66f';
+   }
+   else {
+     temp = Math.round(temp);
+     color = '#f88';
+  }
+  eltt.innerHTML = temp;
+  eltt.style.color=color; eltd.style.color=color;
+}
+
+function updateTemp(text) {
+  eval(text)
+  updateTempDisp(vtmp1, vdeg1, temperature_outside)
+  updateTempDisp(vtmp2, vdeg2, temperature_inside)
 }
 
 // keys q/Escape and touch are handled in qml code via console logging
 function keydown(event) {
   switch(event.key) {
+    case 'd': vhour.innerHTML=44; vminu.innerHTML=44;
+    updateTempDisp(vtmp1, vdeg1, -44);
+    updateTempDisp(vtmp2, vdeg2, 44);
+    break;
+    case 'f': console.log("FULL"); break;
+    case 'w': console.log("WIND"); break;
     case 'q':
     case 'Escape': console.log("QUIT"); break;
   }
 }
 function touch(event) {
   console.log("EXIT") ;
+}
+
+// load temperatures from via file using refresh
+if (centauriclock_data == '') {
+  // disable temperature display (no data file)
+  if (temperature_outside == '--') {
+    document.querySelector('.citemp').style.display='none'
+    document.querySelector('.cidate').style.display='block'
+    document.querySelector('.ctime').style.marginTop='-25vh';
+    document.querySelector('.ctime').style.marginBottom='-8vh';
+  } else {
+    setTimeout(function() { location.reload(); }, 300000);
+    updateTempDisp(vtmp1, vdeg1, temperature_outside);
+    updateTempDisp(vtmp2, vdeg2, temperature_inside);
+  }
 }
 
 // main script part ...
@@ -243,11 +363,23 @@ setInterval(updateClock, 1000);
 }
 
 # ------------------------------------------------------------------------------
+# action html: <file>|<folder>|-
+# ------------------------------------------------------------------------------
+actionHtml() {
+  local surl="${1:-.}"
+  [ "$surl" = '.' ] && surl="$PWD"
+  [ -d "$surl" ] && surl+="/$DAT_HTMLTXT"
+  confirm -y -f $"Extract clock HTML to '%s'" "$surl" || quit -t
+  remove -f -- "$surl" ; create_html "$surl"
+}
+
+# ------------------------------------------------------------------------------
 # action run: -no args-
 # ------------------------------------------------------------------------------
 actionRun() {
     export XDG_CURRENT_DESKTOP=xinit
 
+    # detect raspberry pi display (old version)
     if [ -z "$CEN_OPT_INVERT" -a -e '/sys/class/backlight/10-0045/brightness' ] ; then
         CEN_OPT_INVERT=1
         message -a $"Assuming input coordinates to be inverted"
@@ -265,8 +397,6 @@ actionRun() {
 
     local stmp surl
 
-    [ -n "$CEN_OPT_HTML" ] && DAT_HTMLTXT="$CEN_OPT_HTML"
-
     # configuration folder
     if [ "$CEN_OPT_BASE" = '-' ] ; then
         eval CEN_OPT_BASE="$DAT_BASEDIR"
@@ -278,7 +408,7 @@ actionRun() {
     if folder -q -c -- "$CEN_OPT_BASE" ; then
         surl="$DAT_HTMLTXT"
     else
-        warning "Missing configuration:" "$CEN_OPT_BASE"
+        warning $"Missing configuration:" "$CEN_OPT_BASE"
         surl=
     fi
     if [ -z "$surl" ] ; then
@@ -288,7 +418,6 @@ actionRun() {
             tmpfile -f -b - -n -s stmp ; surl="${stmp%/*}/${DAT_HTMLTXT##*/}"
         fi
     fi
-    # TODO update using --force
     create_html "$surl"
 
     # run startup tool
@@ -297,10 +426,10 @@ actionRun() {
 
      # without --exec the startup tool is optional
     if PATH=".:$PATH" system -c "$DAT_STARTUP" ; then
-        trace -a -c "Run startup tool" "$DAT_STARTUP"
+        trace -a -c $"Run startup tool" "$DAT_STARTUP"
     elif [ -z "$CEN_OPT_EXEC" ] ; then      # no startup skript ...
         DAT_STARTUP='false'
-        trace -a "No startup tool to be executed"
+        trace -a $"No startup tool to be executed"
     fi
 
     # this can intentionally be fatal if --exec=<tool> is invalid
@@ -351,7 +480,8 @@ actionTimer() {
 # ------------------------------------------------------------------------------
 options() {
     case "$1" in
-
+    '') [ -n "$CEN_OPT_HTML" ] && DAT_HTMLTXT="$CEN_OPT_HTML"
+        ;;
     -B|--bas|--base)
         optarg 'base'           -    -t ;;          # text
     -E|--exe*)
@@ -375,13 +505,12 @@ options() {
 # ------------------------------------------------------------------------------
 actions() {
     case "$1" in
+    htm|html)
+        invoke 'html'   -           0 1 ;;      # one optional arg
     run)
         invoke 'run'    -           0   ;;      # no args
     tim*)
         invoke 'timer'  -           0   ;;      # no args
-
-# TODO 'run start|status|stop'  or a systemd --user service?
-
     esac
 }
 
@@ -418,6 +547,7 @@ usage() {
         -p '<tool>'              $"Tool/script executed at startup, \"-\" to ignore" \
 
     usageset \
+        -a 'html  [<path>]'      $"extract HTML code to folder or file (see --html)" \
         -a 'run'                 $"start clock (implied for '.centauristartup' symlink)" \
         -a 'timer'               $"used by brightness timer to run 'centauripower'" \
 
@@ -431,11 +561,6 @@ usage() {
         -t $"implied." \
 
 }
-
-#   show=$(PATH="$CEN_TOOLS/Display/weewx/weewx2hass:$PATH" type -p weewx2watch)
-#   sysfind weewx2show || return 0
-#   [ -w clock-data.js ] || return 0
-#   weewx2show &
 
 # ------------------------------------------------------------------------------
 # Finally call the library to execute the script

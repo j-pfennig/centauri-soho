@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. J. Pfennig (c) 2021-2024; BSD License"
+CEN_LEGAL="Dr. J. Pfennig (c) 2021-2025; BSD License"
 CEN_TITLE="User identity management tool"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -i -s -y - '0.22:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -i -s -y - '0.23:6' || exit 2
 
 # modules referenced for stand-alone version
 embed -c _centauri_bash_ext
@@ -96,7 +96,7 @@ DAT_FILE_MAP=(
     [shadow-extra]='/var/lib/extrausers/shadow'
     [shadow-shared]='/etc/shadow.shared'
     [group-pam]='/etc/security/group.conf'
-    [timestamp]="$CEN_ROOT/persistent/$CEN_NAME"
+    [timestamp]="$CEN_PERSISTENT/$CEN_NAME"
 )
                                                 # range data
 DAT_URANGE_COUNT=0 ; DAT_URANGE_NAME=() ; DAT_URANGE_MIN=() ; DAT_URANGE_MAX=()

@@ -4,11 +4,11 @@
 #       Other scripts may use '/usr/bin/bash' or '/bin/bash' see --shell option.
 
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2019-2025; BSD License"
 CEN_TITLE=$"Create a script, module or configuration from a template"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -s -t -y - '0.21:2' 1 1 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -r -s -t -y - '0.22:6' 1 1 || exit 2
 
 # Data
 CEN_OPT_AUTHOR=                 # see --author
@@ -78,7 +78,7 @@ get_templates() {
         [ -n "$DAT_NAME_REG" ] && DAT_NAME_REG+='|'
         DAT_NAME_REG+='config'
         DAT_NAME_MAP['config']='centauri-bash-lib'
-        [ -n "$1" ] && usageset -t '' -t "config        '$CEN_ROOT/default/centauri-bash-lib' "$"configuration"
+        [ -n "$1" ] && usageset -t '' -t "config        '$CEN_DEFAULT/centauri-bash-lib' "$"configuration"
     fi
 }
 
@@ -350,8 +350,8 @@ usage() {
              -t '' \
              -t "# "$"replace shebang for bash scripts in a folder" \
              -t "$CEN_NAME --shell ${CEN_PATHS[1]}/bash --dryrun --yes myfolder" \
-             -t "$CEN_NAME -S + /var/centauri/tools -i centauricreate" \
-             -t "$CEN_NAME -S - /var/centauri/tools -x centauricreate"
+             -t "$CEN_NAME -S + $CEN_TOOLS -i centauricreate" \
+             -t "$CEN_NAME -S - $CEN_TOOLS -x centauricreate"
 }
 
 # ------------------------------------------------------------------------------

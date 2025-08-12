@@ -24,7 +24,7 @@
 # Copyright Dr. J. Pfennig (c) 2015-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_con']='0.25:4'
+CEN_MODULES['_centauri_bash_con']='0.26:6'
 
 CEN_ROWS=               # console rows
 CEN_COLS=               #         columns
@@ -252,7 +252,6 @@ decorate() {
     local -n _varg="$_fset" ; [ -n "$_fclr" ] && _varg=
     _stxt="$*"
     if [ -n "$_ffix" ] ; then
-        #printf -v _stxt "%-${_ffix}.${_ffix}s" "$_stxt"
         _stxt="${_stxt::_ffix}"
         _npad=$((_ffix - ${#_stxt}))
         [ -z "$_stxt" ] && _deco='-'
@@ -477,7 +476,7 @@ tabulator() {
             _llen=$((_nlen + 1)) ; _nlen="-$_nlen"
         fi
         printf -v stmp "%${_nlen}s" "${atxt[_nidx]}"
-        [ -n "$stxt" ] && stxt+=" " ; stxt+="$stmp" ; _nidx=$((_nidx + 1))
+        [ -n "$stxt" ] && stxt+=' ' ; stxt+="$stmp" ; _nidx=$((_nidx + 1))
         [ "${_smod#*:}" = '-' ] && ncol=$((ncol - 1))    # no decoration
     done
 
@@ -494,7 +493,7 @@ tabulator() {
             decorate -a stmp -d ${_smod#*:} -m -- "$sout" ; break
         fi
         decorate -a stmp -d ${_smod#*:} -- "${sout::_slen}"
-        sout="${sout:_slen+1}" ; stmp+=" "
+        sout="${sout:_slen+1}" ; stmp+=' '
     done
     output -l -i "$_idnt" -- "$stmp"
     return 0
@@ -527,23 +526,23 @@ _cen_con_break() {
 
     local _balg="${_offs#*:}" _idnt _ftrm _fwrd _fhyp _mlen
     if [ "$_balg" != "$_offs" ] ; then
-        [ $((_balg & 1)) = 0 ] || _ftrm=1
-        [ $((_balg & 2)) = 0 ] || _fwrd=1
-        [ $((_balg & 2)) = 0 ] || _fhyp=1
+        ((_balg & 1)) && _ftrm=1
+        ((_balg & 2)) && _fwrd=1
+        ((_balg & 4)) && _fhyp=1
         _offs="${_offs%%:*}" ; [ -z "$_offs" ] && _offs=0
     fi
 
     # follow-up line
     if [ "$CEN_CON_BREAK_END" = 1 ] ; then
         _sinp="$CEN_CON_BREAK_MSG"
-        [ "${_sinp::1}" = " " ] && [ -n "$_ftrm" ] &&
+        [ "${_sinp::1}" = ' ' ] && [ -n "$_ftrm" ] &&
             _sinp="${_sinp#"${_sinp%%[![:space:]]*}"}"     # left trim
         [ $((_offs + 8)) -gt "$_cols" ] && _offs=0
         _cols=$((_cols - _offs)) ; _mlen=0
     # left-trim 1st line
     elif  [ -n "$_ftrm" ] ; then
         _mlen="$_offs" ; _offs=0 ;
-        [ "${_sinp::1}" = " " ] && _sinp="${_sinp#"${_sinp%%[![:space:]]*}"}"
+        [ "${_sinp::1}" = ' ' ] && _sinp="${_sinp#"${_sinp%%[![:space:]]*}"}"
     # no offset 1st line...
     else
         _mlen="$_offs" ; _offs=0
@@ -566,7 +565,7 @@ _cen_con_break() {
 
     # word breaking
     local _clen _curr="${_sinp::_cols}"
-    if [ "${_sinp:_cols:1}" = " " ] ; then      # next is a space
+    if [ "${_sinp:_cols:1}" = ' ' ] ; then      # next is a space
         _clen="$_cols"
     else                                        # stop at last space
         _curr="${_curr% *}" ; _clen="${#_curr}"
@@ -638,30 +637,34 @@ _cen_con_mesg() {
     if [ -n "$CEN_CONS_DISABLED" ] ; then
         $CEN_CONS_HOOK_MESSAGE "$@" ; return    # next in chain, return status
     fi
-    local _eopt _hasi _fatl _fbrk _ffmt _fmul _fnnl _fxnl=$'\n' _scal _args _deco
-    local _verb="$CEN_VERB" _stat=0
+    local _eopt _hasi _fatl _fbrk _ffmt _fmul _fnnl _fxnl=$'\n' _scal _args=() _deco
+    local _ecfy _verb="$CEN_VERB" _stat=0 _recu
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
 
       # added here
-      -b)   shift ; [ "${CEN_COLS:-0}" = 0 ] || _fbrk="$1" ;;
-      -d)   shift ; [ "${1::1}" = '+' ] || _deco="$1" ;;
+      -b)   shift ; [ "${CEN_COLS:-0}" -ge 40 ] & _fbrk="$1" ;;
+      -d)   shift ; [ "${1::1}" = '+' ] || _deco="-d $1" ;;
 
       # standard options
       -a)   [ -n "$CEN_AUTOIND" ] && { _hasi=1 ; _args+=('-i') ; } ;;
       -c)   _scal=1 ;;
       -e)   _eopt="$1" ; _stat="$CEN_EXIT" ; _verb=1 ;;
       -f)   _eopt="$1" ; _stat="$CEN_EXIT" ; _verb=1 ; _fatl=1 ;;
+      -h)   [ "$CEN_VERB" -lt 2 -a -n "$CEN_AUTOIND" ] && { _hasi=1 ; _args+=('-i') ; }  ;;
       -i|-r)
             _args+=("$1") ;;
       -l)   _args+=("$1") ; _hasi=1 ; _verb=1 ;;
-      -m)   _fmul=2 ;;
+      -m)   _ffmt=2 ;;
       -n)   _fmul=1 ;;
       -p)   _ffmt=1 ;;
       -s)   _args+=("$1") ; _fnnl=1 ; _fxnl= ;;
       -t)   _eopt="$1" ;;
       -w)   _eopt="$1" ;;
+      -y) #  _args+=("$1") ;
+      _ecfy="$1" ;;
+      -R)   _recu=1 ;;                      # flag that indicates recursing
       *)    _cen_abort -2 - "$1"
       esac ; shift
     done
@@ -670,50 +673,74 @@ _cen_con_mesg() {
 
     # must handle printf here because of padding
     local _mesg _mlen _mret=:
+
+    # must handle printf here
     if [ -n "$_scal" ] ; then               # option -c
         _cen_shortfmt _scal - "$1" ; shift
         [ "$1" == '--' ] && shift           # backward compatibility
     fi
-    if [ -n "$_ffmt" ] ; then
+
+    if [ "$_ffmt" = 1 ] ; then
         printf -v _mesg "$@"
+    elif [ -n "$_fnnl" ] ; then
+        _mesg="$*"
+    elif [ "$_ffmt" = 2 ] ; then
+        printf -v _mesg '%s\n' "$@"
+    elif [ -n "$_fbrk$_fmul" ] ; then       # simple case, no -p or -m
+        _mesg="$*" ; _mesg="${_mesg// \\n /$'\n'}" ; _mesg="${_mesg//\\n/$'\n'}"
     else
         _mesg="$*"
-    fi
-    [ -n "$_scal" ] && _mesg="${_scal:1} $_mesg"
-
-    # simplified handling of -b for fatal/error/warning/trace
-    if [ -n "$_eopt" ] ; then
-        [ -n "$_fbrk" ] && _args+=('-b' "$_fbrk")
-        case "$_fmul" in
-        1)  _cen_message $_eopt -n "${_args[@]}" -- "$_mesg" ;;
-        2)  _cen_message $_eopt -m "${_args[@]}" -- "$@" ;;
-        *)  _cen_message $_eopt "${_args[@]}" -- "$_mesg"
-        esac
-        return
+        [ -n "$_scal" ] && _mesg="${_scal:1} $_mesg"
+        [ -n "$_ecfy" ] && _cen_compactify _mesg
+        [ -n "$_deco" ] && decorate $_deco -s _mesg -- "$_mesg"
+        _cen_message $_eopt "${_args[@]}" -- "$_mesg" ; return $_stat
     fi
 
-    # must handle multi line here
-    if [ -n "$_fmul" ] ; then
-        if [ "$_fmul" = 1 ] ; then
-            local _sifs="$IFS" ; IFS=$'\n'
-            _mesg="${_mesg// \\n /$IFS}" ; _mesg="${_mesg//\\n/$IFS}"
-            set -f ; set -- $_mesg ; set +f ; IFS="$_sifs"
+    # run on non-recursive call only
+    if [ -z "$_recu" ] ; then
+
+        # simplified handling of -b for fatal/error/warning/trace
+        if [ -n "$_eopt" ] ; then
+            [ -n "$_fbrk" ] && _args+=('-b' "$_fbrk")
+            case "$_fmul" in
+            1)  _cen_message $_eopt $_ecfy -n "${_args[@]}" -- "$_mesg" ;;
+            *)  _cen_message $_eopt $_ecfy -m "${_args[@]}" -- "$_mesg"
+            esac
+            return
         fi
-        [ -n "$_deco" ] && _args+=('-d' "$_deco")
-        while [ "$#" != 0 ] ; do
-            _cen_con_mesg "${_args[@]}" -- "$1"
-            shift ; [ -z "$_hasi" ] && _args+=('-i') ; _hasi=1
-        done ; return "$_stat"
+
+        [ -n "$_scal" ] && _mesg="${_scal:1} $_mesg"
+        [ -n "$_ecfy" ] && _cen_compactify _mesg
+
+        # handle line splitting
+        local _sifs="$IFS" ; IFS=$'\n'
+        _mesg="${_mesg// \\n /$IFS}" ; _mesg="${_mesg//\\n/$IFS}"
+        set -f ; set -- $_mesg ; set +f ; IFS="$_sifs"
+
+        if [ -n "$_ecfy" ] ; then
+            set -- "$*" ; _fbrk=
+        fi
+
+        # recurse for multiple lines
+        while [ $# -gt 1 ] ; do
+            if [ -z "$_fbrk" ] ; then
+                _cen_con_mesg -R $_deco "${_args[@]}" -- "$1"
+            else
+                _cen_con_mesg -R $_deco -b "$_fbrk" "${_args[@]}" -- "$1"
+            fi
+            shift ; _args+=('-i') ; _eopt=
+        done
+        _mesg="$1"
     fi
 
-    # handle line breaking
+    # handle line breaking (full implementation)
     if [ -n "$_fbrk" ] ; then
-        local _snam="${CEN_EMBED:-$CEN_NAME}" _sdec
-        local _obrk="$((CEN_COLS - ${#_snam} - 2))"
-        [ -n "$_deco" ] && _sdec="-d $_deco"
+        local _snam="${CEN_EMBED:-$CEN_NAME}"
+        local _obrk="$((CEN_COLS - ${#_snam} - 2))"     # BUG: not aware of -r
         while _cen_con_break "$_obrk" "$_fbrk" "$_mesg" "$_fxnl" ; do
-            _cen_con_mesg -s $_sdec "${_args[@]}" -- "$CEN_CON_BREAK_RES"
-            [ -z "$_hasi" ] && _args+=("-i") ; _hasi=1
+            [ "$CEN_CON_BREAK_RES" = "$_fxnl" ] && return "$_stat"
+            _cen_con_mesg -R $_deco -s "${_args[@]}" -- "$CEN_CON_BREAK_RES"
+            [ -z "$_hasi" ] && _args+=('-i') ; _hasi=1
         done ; return "$_stat"
     fi
 
@@ -738,7 +765,7 @@ _cen_con_mesg() {
 
     # do the output
     if [ -n "$_deco" ] ; then
-        decorate -d "$_deco" -s _mesg "$_mesg"
+        decorate $_deco -s _mesg -- "$_mesg"
         _cen_message -s "${_args[@]}" -- "$_mesg$_fxnl"
     else
         _cen_message "${_args[@]}" -- "$_mesg"

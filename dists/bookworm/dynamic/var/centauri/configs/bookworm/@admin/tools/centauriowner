@@ -1,9 +1,9 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2025; BSD License"
 CEN_TITLE="Save and restore system file ownership and rights"
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -y - '0.16:3' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -y - '0.17:4' || exit 2
 
 # Options
 CEN_OPT_ALL=            # see --all
@@ -11,6 +11,7 @@ CEN_OPT_BASE=           # see --path
 CEN_OPT_CHECK=          # see --check
 CEN_OPT_FULL=           # see --full
 CEN_OPT_GROUP=          # see --group
+CEN_OPT_IDNUM=          # see --idnum
 CEN_OPT_MAXID=999       # see --maxid
 CEN_OPT_NOMODE=         # see --nomode
 CEN_OPT_USER=           # see --user
@@ -26,12 +27,12 @@ do_checkpath() {
 
 _excludes=()
 do_exclude() {
-    local or="-o"
-    if [ "$1" = "-i" ] ; then
+    local or='-o'
+    if [ "$1" = '-i' ] ; then
         _excludes=() ; shift
     fi
     case "$1" in
-    "")             return ;;
+    '')             return ;;
     /*|./*|../*)    error "invalid exclusion: $1" ;;
     *)              [ -z "$_excludes" ] && or=
                     _excludes+=($or -wholename "$CEN_OPT_BASE$1")
@@ -64,7 +65,9 @@ actionSave() {
         outfile -l -s file -- "$1" || return
     fi
 
-    local pusr pgrp maxg maxu
+    local pusr pgrp maxg maxu pfmt
+    [ -z "$CEN_OPT_IDNUM" ] && pfmt='%-8u %-8g %4m %P\n' || pfmt="%-8U %-8G %4m %P\n"
+
     if [ "${CEN_OPT_MAXID:-0}" != 0 ] ; then
         maxg="-gid -$((CEN_OPT_MAXID + 1))"
         maxu="-uid -$((CEN_OPT_MAXID + 1))"
@@ -75,12 +78,12 @@ actionSave() {
                                 pgrp="( -gid +$((CEN_OPT_GROUP - 1)) $maxg )"
 
     if [ -z "$CEN_OPT_FULL" ]  ; then
-        system -e -p -a list -- find "$CEN_OPT_BASE" -xdev \
-            \( "${_excludes[@]}" \) -prune -o \( \
-            \( $pusr -o $pgrp \) -printf "%-8u %-8g %4m %P\n" \)
+        sysrun -e -p -a list -- find "$CEN_OPT_BASE" -xdev \! -type l \
+            \( \( "${_excludes[@]}" \) -prune -o \( \
+               \( $pusr -o $pgrp \) -printf "$pfmt" \) \)
     else
-        system -e -p -a list -- find "$CEN_OPT_BASE" -xdev \
-            \( "${_excludes[@]}" \) -prune -o -printf "%-8u %-8g %4m %P\n"
+        sysrun -e -p -a list -- find "$CEN_OPT_BASE" -xdev \! -type l \
+            \( \( "${_excludes[@]}" \) -prune -o -printf "$pfmt" \)
     fi
 
     if [ "$file" != '-' ] ; then
@@ -89,7 +92,7 @@ actionSave() {
 # Created by: $CEN_NAME ${CEN_CMDOPTS[@]} ${CEN_CMDARGS[@]}
 
 !EOF
-        create -f -a -v list -- "$file"
+        outdata -o list -- "$file"
     fi
 
     if [ -n "$CEN_OPT_CHECK" ] ; then
@@ -112,7 +115,8 @@ actionRestore() {
     redirect -h 0 -i "${1:--}"
     error -q
 
-    local ouid ogid mode path lpat lown lmod list
+    local ouid ogid mode path lpat lown lmod list sfmt
+    [ -z "$CEN_OPT_IDNUM" ] && sfmt='%U:%G %a %n\n' || sfmt='%u:%g %a %n\n'
 
     # change owner/mode: <owner>|- <mode>|- <path>
     ___restore_file() {
@@ -132,7 +136,7 @@ actionRestore() {
     ___restore_block() {
         [ -z "$lpat" ] && return
         local stat indx=0
-        system -r -w -p -a stat -- stat --printf "%U:%G %a %n\n" "${lpat[@]}"
+        system -r -w -p -a stat -- stat --printf "$sfmt" "${lpat[@]}"
         $CEN_TRACE2 -a -c "restore block" "${#lpat[@]} ${#stat[@]}"
         while [ -n "${lpat[indx]}" ] ; do
             mode="${stat[indx]}" ; ouid="${mode%% *}"
@@ -197,6 +201,8 @@ options() {
         optarg 'full'    -             ;;       # flag
     -G|--gro*)
         optarg 'group'   -          -n ;;       # number
+    -I|--idn*)
+        optarg 'idnum'   -             ;;       # flag
     -M|--max*)
         optarg 'maxid'   -          -n ;;       # number
     -N|--nom*)
@@ -237,6 +243,7 @@ $CEN_USE_OPTIONS
        -C --check           [*] check for unknown (numeric) user or group id
        -F --full            [*] include all user/group ids
        -G --group   <gid>   [*] minimum group id
+       -I --idnum           use numeric grout/user id
        -M --maxid   <max>   [*] maximum group/user id
        -N --nomode          [**] do not modify file modes
        -U --user    <uid>   [*] minimum user id

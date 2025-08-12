@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2024 BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2025 BSD License"
 CEN_TITLE="Tool to manage btrfs volumes and snapshots"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -m bat -m win -s -y - "0.56:2" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -m bat -m win -s -y - '0.57:4' || exit 2
 
 # Data
 
@@ -352,14 +352,14 @@ property_tool() {
     local ddir dvol pval="$3" snap="${2:--}"
     _property_tool=
 
-    if [ "$1" = "-d" ] ; then
+    if [ "$1" = '-d' ] ; then
         if subvol_id "$snap" ; then
             system -e -p btrfs subvolume set-default "$_subvol_id" "$snap"
             return
         fi
         error "Could not find id for subvolume, default not set"
         return 1
-    elif [ "$1" = "-r" ] ; then
+    elif [ "$1" = '-r' ] ; then
         system -e -p btrfs property set -ts "$snap" ro "$pval"
         return
     fi
@@ -431,7 +431,7 @@ actionCopy() {
     fi
 
     # search a parent (must be older than 1st snapshot to be sent)
-    if [ "$prnt" = "+" -a -d "$orig/$item" ] ; then
+    if [ "$prnt" = '+' -a -d "$orig/$item" ] ; then
         local inam mvol="${1%_*}" ; mvol="${mvol%.*}"
         local ppre="$CEN_DAT_ROOT/Snapshots"
         prnt=
@@ -617,12 +617,12 @@ actionDelete() {
         wee*)       opts=("--level=1" "--folder=./weekly")  ; mage=32  ; shift ;;
         mon*)       opts=("--level=1" "--folder=./monthly") ; mage=124 ; shift ;;
         all)        opts=("--level=2") ; shift ;;
-        "+"|'-')    opts=("--level=2") ; peri="all"
+        '+'|'-')    opts=("--level=2") ; peri="all"
     esac
 
     archive_opts opts
     case "$1" in
-        "+")        shift ; set -- 1 .. 1 ;;
+        '+')        shift ; set -- 1 .. 1 ;;
         '-')        opts+=("--reverse") ; shift ; set -- 1 .. 1 ;;
         *)          [ -n "$mage" ] && opts+=("--minage=$mage")
     esac
@@ -798,7 +798,7 @@ actionList() {
     [ "${lfil:-.}" != "." ] && [ ! -f "$lfil" ] && lfil="."
 
     local lres resu=()
-    if [ "$fmod" = "+" ] ; then
+    if [ "$fmod" = '+' ] ; then
         ___result()  { echo "$1" ; anam=() ; }
         ___dolphin() { : ; }
     elif [ "$fmod" = '-' ] ; then
@@ -895,16 +895,19 @@ actionMain() {
 # ------------------------------------------------------------------------------
 actionOpen() {
     folder -f -c "$CEN_DAT_DIR"                 # back to initial folder
-    local bdir name logi
-    if [ -d "$1" ] ; then
-        bdir="$1"
-    else
-        system -r -e -p -s logi readlink -f "$1" || return
-        bdir="${logi%/*}"
-        name="${logi##*/}"
-    fi
-    embed -r -s logi centauripaths --logical "$bdir" || return
-    system -e -p dolphin --select "$logi/$name"
+    resolve -e -c -p -- "$1" || return
+    system -e -p dolphin --select "$CEN_RESOLVE"
+
+   # local bdir name logi
+   # if [ -d "$1" ] ; then
+   #     bdir="$1"
+   # else
+   #     resolve -c -p -s logi -- "$1" || return
+   #     bdir="${logi%/*}"
+   #     name="${logi##*/}"
+   # fi
+   # embed -r -s logi centauripaths --logical "$bdir" || return
+   # system -e -p dolphin --select "$logi/$name"
 }
 
 # ------------------------------------------------------------------------------
@@ -913,11 +916,11 @@ actionOpen() {
 actionProperty() {
     local prop pval
     case "$2" in
-    "")         ;;
-    wri*)       prop="-r" ; pval="false" ;;
-    rea*)       prop="-r" ; pval="true"  ;;
-    def*)       prop="-d" ;;
-    *)          fatal "Invalid property: $2 (use readonly|writable|default)"
+    '')         ;;
+    wri*)       prop='-r' ; pval='false' ;;
+    rea*)       prop='-r' ; pval='true'  ;;
+    def*)       prop='-d' ;;
+    *)          invoke -a 2 'readonly|writable|default' ; return
     esac
 
     local dvol ddir smsg snap
@@ -943,7 +946,7 @@ actionPurge() {
     ___purge() {
         local keep="$3" ; [ "${keep:--}" = '-' ] && return
         local fldr="$1/Snapshots/$2" ; [ -d "$fldr" ] || return
-        [ "$keep" = "+" ] && keep="$4"
+        [ "$keep" = '+' ] && keep="$4"
         if [ -n "${keep//[0-9]/}" ] ; then
             error "Positive integer expected:" "$keep" ; return
         fi
@@ -974,7 +977,7 @@ actionPurge() {
         ___purge "$root" "daily"   "$3" 4 -
     done
     error -t || return 1
-    if [ "${pflg:-0}" = "0" ] ; then
+    if [ "${pflg:-0}" = 0 ] ; then
         message -a "Found no snapshots that can be purged" ; return
     elif [ "$pflg" != '-' ] ; then
         message -a -p "Found %s snapshot(s) that can be purged" "$pflg"
@@ -1109,8 +1112,7 @@ actionScrub() {
     start)      mode='start' ;;
     stop|can*)  mode='cancel' ;;
     stat*|"")   ;;
-    *)          invoke -e "argument must be one of: start stop status"
-                return
+    *)          invoke -a - 'cron|start|stop|status' ; return
     esac
     for root in "${CEN_DAT_ROOT[@]}" ; do
         if [ "$mode" = 'cron' ] ; then
@@ -1123,10 +1125,10 @@ actionScrub() {
             *)              continue ;;
             esac
             [ -r "/sys/block/$bdev/queue/rotational" ] || continue
-            [ "$(</sys/block/$bdev/queue/rotational)" = "0" ] || continue
+            [ "$(</sys/block/$bdev/queue/rotational)" = 0 ] || continue
             mode='start'
         fi
-        if [ "$mode" = "start" ] ; then
+        if [ "$mode" = 'start' ] ; then
             echo -n "$CEN_NAME: " >&2 ; btrfs scrub $mode "$root"
         else
             system -e -m btrfs scrub $mode "$root"
@@ -1145,13 +1147,13 @@ actionShow() {
         mon*)       opts=("--level=1" "--folder=./monthly") ; shift ;;
         all)        opts=("--level=2") ; shift ;;
         vol*)       peri= ;;
-        "+"|'-')    opts=("--level=2") ; peri="all"
+        '+'|'-')    opts=("--level=2") ; peri="all"
     esac
 
     if [ -n "$peri" ] ; then                            # get snapshot info...
         archive_opts opts
         case "$1" in
-            "+")        shift ; set -- 1 .. 1 ;;
+            '+')        shift ; set -- 1 .. 1 ;;
             '-')        opts+=("--reverse") ; shift ; set -- 1 .. 1
         esac
 
@@ -1163,10 +1165,10 @@ actionShow() {
                 name="${item##*/}" ; fldr="${item%/*}"
                 filter -i -- "$name" || continue
                 case "$fldr" in
-                *daily)         skey="1" ;;
-                *weekly)        skey="2" ;;
-                *monthly)       skey="3" ;;
-                *)              skey="4"
+                *daily)         skey=1 ;;
+                *weekly)        skey=2 ;;
+                *monthly)       skey=3 ;;
+                *)              skey=4
                 esac
                 list+="$skey"$'\t'"$name"$'\t'"$fldr"$'\n'
             done
@@ -1175,7 +1177,7 @@ actionShow() {
     fi
 
     ___show_vol() {
-        [ "$CEN_WALK_LEVEL" = "1" ] && return 1
+        [ "$CEN_WALK_LEVEL" = 1 ] && return 1
         anam+=('-' "${2##*/}" "${2%/*}")
         return 1
     }
@@ -1249,7 +1251,7 @@ actionSnap() {
     for root in "${CEN_DAT_ROOT[@]}" ; do
         base="$root/Snapshots"
         snapshot_folder -b "$base" -- "$1" || continue
-        local mode="$PWD/$CEN_DAT_PERIOD" snap vnam ropt="-r"
+        local mode="$PWD/$CEN_DAT_PERIOD" snap vnam ropt='-r'
         message -i -c "Snapshots at" "$mode"
 
         [ -n "$CEN_OPT_WRITE" -o -n "$CEN_OPT_POST" ] && ropt=
@@ -1407,7 +1409,7 @@ options() {
     -O|--pos*)
         optarg 'post'     -     -t  ;;   # text
     -S|--suf*)
-        optarg 'suffix'   -     "[^/.]+" ;;
+        optarg 'suffix'   -     '[^/.]+' ;;
     -W|--wri*)
         optarg 'write'    -         ;;   # simple flag
 
@@ -1424,46 +1426,46 @@ actions() {
 
     case "$CEN_ACTION" in
     cop|copy)
-        invoke -r "copy"        -           4 + ;;          # 4 or more args
+        invoke -r 'copy'        -           4 + ;;          # 4 or more args
     cre*)
-        invoke -r "create"      actionSnap  0 2 ;;          # 0 or 1 arg
+        invoke -r 'create'      actionSnap  0 2 ;;          # 0 or 1 arg
     cro|cron)
-        invoke -r "cron"        -           1 ;;            # one arg
+        invoke -r 'cron'        -           1 ;;            # one arg
     ded*)
-        invoke -r "dedup"       -           0 1 ;;          # 0 or 1 arg
+        invoke -r 'dedup'       -           0 1 ;;          # 0 or 1 arg
     def*)
-        invoke -r "defrag"      -           0 ;;            # no args
+        invoke -r 'defrag'      -           0 ;;            # no args
     del*)
-        invoke -r "delete"      -           1 + ;;          # one or more args
+        invoke -r 'delete'      -           1 + ;;          # one or more args
     ini|init)
-        invoke -r "init"        actionInit  1 4 ;;          # 1..4 args
+        invoke -r 'init'        actionInit  1 4 ;;          # 1..4 args
     lis|list)
-        invoke    "list"        -           0 2 ;;          # 0 or 1 arg
+        invoke    'list'        -           0 2 ;;          # 0 or 1 arg
     mai|main)
-        invoke -r "main"        -           0 1 ;;          # 0 or 1 arg
+        invoke -r 'main'        -           0 1 ;;          # 0 or 1 arg
     ope|open)
-        invoke    "open"        -           1 ;;            # one arg
+        invoke    'open'        -           1 ;;            # one arg
     pre*)
-        invoke -r "prepare"     actionInit  1 4 ;;          # 1..4 args
+        invoke -r 'prepare'     actionInit  1 4 ;;          # 1..4 args
     pro*)
-        invoke -r "property"    -           0 2 ;;          # 1..2 args
+        invoke -r 'property'    -           0 2 ;;          # 1..2 args
     quo*)
-        invoke -r "quota"       -           0 1 ;;          # 0 or 1 arg
+        invoke -r 'quota'       -           0 1 ;;          # 0 or 1 arg
     pur*)
-        invoke -r "purge"       -           0 3 ;;          # 0..3 args
+        invoke -r 'purge'       -           0 3 ;;          # 0..3 args
     res*)
-        invoke -r "restore"     -           1 + ;;          # one or more args
+        invoke -r 'restore'     -           1 + ;;          # one or more args
     sav|save)
-        invoke -r "save"        -           1 + ;;          # one or more args
+        invoke -r 'save'        -           1 + ;;          # one or more args
     scr*)
-        invoke -r "scrub"       -           0 1 ;;          # 0 or 1 arg
+        invoke -r 'scrub'       -           0 1 ;;          # 0 or 1 arg
     sho|show)
-        invoke    "show"        -           - - ;;          # no check
+        invoke    'show'        -           - - ;;          # no check
     siz|size)
-        invoke -r "size"        -           0 1 ;;          # 0 or 1 arg
+        invoke -r 'size'        -           0 1 ;;          # 0 or 1 arg
 
     da[iy]*|wee*|mon*)
-        invoke    "cron"        -           1 - "$@"        # implied action
+        invoke    'cron'        -           1 - "$@"        # implied action
     esac
 }
 
@@ -1471,18 +1473,6 @@ actions() {
 # usage info
 # ------------------------------------------------------------------------------
 usage() {
-#    usagecat << !EOF
-#$CEN_USE_HEADER
-#
-#$CEN_USE_OPTIONS
-#
-#       -A --all             exclude no volumes, list command: show all files
-#       -B --base   <fldr>   override location              (default: $CEN_DAT_BDEF)
-#       -O --post   <exec>   run <exec> as post-processor   ("cron" or "create")
-#       -S --suffix <text>   suffix for "save|restore|revert"    (default "$CEN_OPT_SUFFIX")
-#       -W --writable        create writable snapshot       ("cron" or "create")
-    #usageset \
-    #-u "$CEN_TITLE"
     usageset \
     -o  - \
     -o '-A --all'            "exclude no volumes, list command: show all files" \
@@ -1497,48 +1487,48 @@ usage() {
     -a -                     "copy snapshots incrementally      (see: man brtfs-send)" \
     -a 'create   [<period>]' "create snapshots                  (default: daily)" \
     -a 'create   [-] <path>|<name>' \
-    -a -                     "create subvolume by path or name"
+    -a -                     "create subvolume by path or name" \
+    -a 'dedup    [reset]'    "deduplicate volumes         ('reset' to rescan all)" \
+    -a 'defrag'              "defragment volumes" \
+    -a 'delete   [[<period>|all] [+|-]] | <snap>...' '' \
+    -a -                     "delete snapshots by expiration or snapshot name" \
+    -a 'delete   (<path>|<name>)...' \
+    -a -                     "delete subvolumes by path or name" \
+    -a 'init     <fldr> [<part> [<label>|-]]' \
+    -a -                     "initialize BTRFS partition mounted at <fldr>," \
+    -a -                     "<label>|- triggers formatting, <part> does mount" \
+    -a 'list     [<item> [+|-|.]]' \
+    -a -                     "timeline in snapshots for a file or folder" \
+    -a 'main     [<snap>|root]' \
+    -a -                     "default mount volume      ('root' for Volumes/Root)" \
+    -a 'property <volu|snap> [readonly|writable|default]' \
+    -a -                     "set/show readonly/writable or default property" \
+    -a 'purge    [<keep> [<keep> [<keep>]]]' \
+    -a -                     "purge old snapshots, keep monthly/weekly/daily" \
+    -a 'quota    [on|off]'   "enable/disable brtfs quota       (used with 'size')" \
+    -a 'restore  <snap>...'  "restore snapshot(s), create backup volume(s)" \
+    -a 'save     <volu>...'  "backup volumes(s)" \
+    -a 'scrub    [start|stop|status]' \
+    -a -                     "use btrfs scrub to check data consistency" \
+    -a 'size     [<period>|all|volumes]' \
+    -a -                     "show snapshot sizes, needs quota on  (default: all)" \
+    -a 'show     [<period>|all|volumes] [+|-]' \
+    -a -                     "show snapshots, details w. --verbose (default: all)" \
+
+    usageset \
+    -p '<exec>'     "command string, snapshot path gets appended" \
+    -p '<fldr>'     "path of a folder" \
+    -p '<item>'     "path of a folder or file" \
+    -p '<keep>'     "num. of snapshots to keep: '-' for all, '+' default" \
+    -p '<label>'    "partition label  -or-  '-' for no label" \
+    -p '<part>'     "disk partition" \
+    -p '<period>'   "snapshot period: daily, weekly, monthly" \
+    -p '<prnt>'     "parent name  -or- '-' for none  -or- '+' to guess" \
+    -p '<snap>'     "a snapshot name  -or-  a folder path (/* or ./*)" \
+    -p '<volu>'     "a volume name" \
+
     usageset -x
     usagecat << !EOF
-       dedup    [reset]     deduplicate volumes         ('reset' to rescan all)
-       defrag               defragment volumes
-       delete   [[<period>|all] [+|-]] | <snap>...
-                            delete snapshots by expiration or snapshot name
-       delete   (<path>|<name>)...
-                            delete subvolumes by path or name
-       init     <fldr> [<part> [<label>|-]]
-                            initialize BTRFS partition mounted at <fldr>,
-                            <label>|- triggers formatting, <part> does mount
-       list     [<item> [+|-|.]]
-                            timeline in snapshots for a file or folder
-       main     [<snap>|root]
-                            default mount volume      ('root' for Volumes/Root)
-       property <volu|snap> [readonly|writable|default]
-                            set/show readonly/writable or default property
-       purge    [<keep> [<keep> [<keep>]]]
-                            purge old snapshots, keep monthly/weekly/daily
-       quota    [on|off]    enable/disable brtfs quota       (used with 'size')
-       restore  <snap>...   restore snapshot(s), create backup volume(s)
-       save     <volu>...   backup volumes(s)
-       scrub    [start|stop|status]
-                            use btrfs scrub to check data consistency
-       size     [<period>|all|volumes]
-                            show snapshot sizes, needs quota on  (default: all)
-       show     [<period>|all|volumes] [+|-]
-                            show snapshots, details w. --verbose (default: all)
-
-arguments:
-       <exec>               command string, snapshot path gets appended
-       <fldr>               path of a folder
-       <item>               path of a folder or file
-       <keep>               num. of snapshots to keep: '-' for all, '+' default
-       <label>              partition label  -or-  '-' for no label
-       <part>               disk partition
-       <period>             snapshot period: daily, weekly, monthly
-       <prnt>               parent name  -or- '-' for none  -or- '+' to guess
-       <snap>               a snapshot name  -or-  a folder path (/* or ./*)
-       <volu>               a volume name
-
 examples:
        $CEN_NAME create weekly --base=/mnt/xxx    # snapshots at /mnt/xxx
        $CEN_NAME create monthly --include=Shared  # snapshot volume Shared

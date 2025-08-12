@@ -23,8 +23,8 @@ _cen_completion_func() {
         local _xall="$(CEN_COMPLETION=opts $1 --help) --info --help --verbose --quiet"
         COMPREPLY=($(compgen -W "$_xall" -- $2))
         # no space for option argument
-        if [ "${#COMPREPLY[@]}" = "1" ] ; then
-            [ "${COMPREPLY:${#COMPREPLY}-1}" = "=" ] && compopt -o nospace
+        if [ "${#COMPREPLY[@]}" = 1 ] ; then
+            [ "${COMPREPLY:${#COMPREPLY}-1}" = '=' ] && compopt -o nospace
         fi
 
     # filenames or verbs
@@ -32,7 +32,7 @@ _cen_completion_func() {
         compopt -o filenames
 
         # forced filename completion
-        if [ "${2::1}" = "." ] ; then
+        if [ "${2::1}" = '.' ] ; then
             :
         # filename completion after verb (bash bug, needs && here)
         elif [ -z "${3//[a-z]/}" ] && [ "$1" != "$3" ] ; then

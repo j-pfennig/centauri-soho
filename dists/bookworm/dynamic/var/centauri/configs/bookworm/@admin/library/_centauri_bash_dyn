@@ -253,6 +253,8 @@ sysloop() { _cen_dyn_load pip "$@" ; }
 
 progress() { _cen_dyn_load pro "$@" ; }
 
+monitor() { _cen_dyn_load rep "$@" ; }
+cen_monitor_call() { _cen_dyn_load rep "$@" ; }
 override() { _cen_dyn_load rep "$@" ; }
 repository() { _cen_dyn_load rep "$@" ; }
 

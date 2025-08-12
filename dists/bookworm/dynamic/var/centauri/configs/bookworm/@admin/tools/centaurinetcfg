@@ -4,33 +4,30 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2025; BSD License"
 CEN_TITLE="Manage network configuration files, resolv.conf and routing"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a - '0.63:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d - '0.66:6' || exit 2
 
 # Import the net library, don't read config
 embed -m _centauri_bash_net -n
 
 # Data
-                    # invalid host (reject route)
+                            # invalid host (reject route)
 CEN_NET_REJECT_HOST=(bad-host 10.255.255.1)
-DAT_CONFIG_LINES=   # lines in config file
-DAT_LIST=           # see 'validate list'
-                    # helper lookup tables
+DAT_CONFIG_LINES=           # lines in config file
+DAT_LIST=                   # see 'validate list'
+                            # helper lookup tables
 declare -A DAT_MAP_ALLOW
-                    # maps for IP-Addr Mac-Addr Host-Name
+                            # maps for IP-Addr Mac-Addr Host-Name
 declare -A DAT_MAP_IP DAT_MAP_MAC DAT_MAP_NAME
 
-                    # see do_override() ...
-DAT_OVERRIDE="$CEN_ROOT/persistent/$CEN_NAME-override"
-DAT_OVER_RESOLV=
+DAT_OVER_RESOLV=            # see do_override() ...
 DAT_OVER_GATEWAY=
 
 # Data for extra options
-CEN_OPT_CONFIG="/etc/default/$CEN_NAME"
-CEN_OPT_KEEP=       # see --keep
-CEN_OPT_NOREST=     # see --norestart
-CEN_OPT_OUTPUT=     # see --output, '-' for stdout or an existing folder
-CEN_OPT_ROUTER=     # see --router
-CEN_OPT_SERVER=     # see --server
+CEN_OPT_CONFIG="$CEN_DEFAULT/$CEN_NAME"
+CEN_OPT_NOREST=             # see --norestart
+CEN_OPT_OUTPUT=             # see --output, '-' for stdout or an existing folder
+CEN_OPT_ROUTER=             # see --router
+CEN_OPT_SERVER=             # see --server
 
 export CEN_SVC_SYSLOG       # actual logging mode (environment import)
 
@@ -40,8 +37,44 @@ DAT_PORT_ADNS=
 DAT_PORT_HTTP=
 DAT_PORT_HTTPS=
 
+DAT_UNMANAGED='not-at-home' # config flag
+
+declare -A DAT_MAP_OPTS     # option cache, see has_option
+
 # set umask to give all created files 0644 protection
 umask 022
+
+# ------------------------------------------------------------------------------
+# test if dnsmasq is used: <host>
+# ------------------------------------------------------------------------------
+has_nameserv() {
+    local name="${1:-$HOSTNAME}"
+    has_option 'dns' "$name" || return 1            # no dns configured
+
+    # do not run dnsmasq if computer was booted as 'switch'
+    nettemp -s 'centauriswitch' || return 1         # source state file
+    [ "$DAT_SWITCH_MODE" = 'switch' ] && return 1
+    # mode 'router' uses dnsmasq
+    [ "$DAT_SWITCH_MODE" = 'router' ] && return 0
+
+    netquery CLIENT && return 1                     # clients never run DNS
+    netquery MASTER && return 0                     # master must run DNS
+    netquery SLAVE  && return 1                     # slave never runs DNS
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Option caching:   <opt> <host>
+# ------------------------------------------------------------------------------
+has_option() {
+    local rslt keys="$1:$2"
+    rslt="${DAT_MAP_OPTS["$keys"]}"
+    [ -n "$rslt" ] && return "$rslt"
+    if netoption "$1" "$2" ; then
+        DAT_MAP_OPTS["$keys"]=0 ; return 0
+    fi
+    DAT_MAP_OPTS["$keys"]=1 ; return 1
+}
 
 # ------------------------------------------------------------------------------
 # Config tests
@@ -71,12 +104,12 @@ addr_list() {
     local host="${1%[-_][0-9]}" addr
     CEN_NET_ADDR_IPLIST=()
     if [ "$1" != "$host" ] ; then
-        warning "Hostname '$1' should be '$host' [no interface suffix]"
+        warning -p "Hostname '%s' should be '%s' [no interface suffix]" "$1" "$host"
         return 1
     fi
 
     # hostname should have the logical address
-    nethost "$host" || return 1
+    nethost -- "$host" || return 1
     CEN_NET_ADDR_IPLIST+=("$_nethost_ip")
 
     # add interface addresses
@@ -89,7 +122,7 @@ addr_list() {
     done
 
     [ "$_nethost_mac" != '-' -a -n "${CEN_NET_ADDR_IPLIST[1]}" ] &&
-        warning "The logical '$host' address should not have a MAC value"
+        warning -p "The logical '%s' address should not have a MAC value" "$host"
 }
 
 # ------------------------------------------------------------------------------
@@ -113,26 +146,12 @@ load_port() {
 # Write config cache file: [<domain>]
 # ------------------------------------------------------------------------------
 do_coca() {
-    ___array() {
-        local name="$1" ; shift
-        local list="'$1'" ; shift
-        local aelt
-        for aelt in "$@" ; do
-            list+=" '$aelt'"
-        done
-        echo "$name=($list)"
-    }
-
     local domn="${1:-$CEN_NET_DOMAIN}"
-    local ddir="$CEN_ROOT/persistent"
-    [ "$CEN_OPT_OUTPUT" = '.' ] && ddir="$CEN_OPT_OUTPUT$ddir"
-    resolve -m -- "$ddir" && folder -m -- "$CEN_RESOLVE" 775
     [ "$domn" = '-' ] && return
-
     [ "$domn" = "$CEN_NET_DOMAIN" ] || \
         warning -a "Overriding domain: '$CEN_NET_DOMAIN'  =>  '$domn'"
 
-    local radr
+    local radr data
     [ -n "$CEN_NET_ROUTER_DEF" ] && radr="${DAT_MAP_IP[$CEN_NET_ROUTER_DEF]}"
 
     load_port 'centauriadns'    DAT_PORT_ADNS  5354
@@ -144,50 +163,36 @@ do_coca() {
         CEN_NET_PREFIX_IP6="${CEN_NET_PREFIX_IP6_DFLT%/*}/$((128 - $CEN_NET_NETBITS))"
         trace -a -c "ipv6 prefix" "$CEN_NET_PREFIX_IP6"
     fi
-
-    netfile -h -- "$CEN_NET_FILE_CONF" <<!EOF
-CEN_NET_CONFIG='${CEN_NET_CONFIG:-${domn%%.*}}'
-CEN_NET_DOMAIN='$domn'
-CEN_NET_WIRELESS='$CEN_NET_WIRELESS'
-CEN_NET_PUBLIC='$CEN_NET_PUBLIC'
-
-$(___array CEN_NET_REJECT_HOST "${CEN_NET_REJECT_HOST[@]}")
-
-CEN_NET_SERVER_GEN='$CEN_NET_SERVER_GEN'
-
-CEN_NET_ROUTER_GEN='$CEN_NET_ROUTER_GEN'
-CEN_NET_ROUTER_DEF='$CEN_NET_ROUTER_DEF'
-CEN_NET_ROUTER_IP4='$radr'
-
-CEN_NET_PREFIX_IP6='$CEN_NET_PREFIX_IP6'
-
-CEN_NET_NETMASK='$CEN_NET_NETMASK'
-CEN_NET_NETBITS='$CEN_NET_NETBITS'
-
-CEN_NET_EXTERNAL='$CEN_NET_EXTERNAL'
-
-$(___array CEN_NET_ADDR_IPLIST "${CEN_NET_ADDR_IPLIST[@]}")
-CEN_NET_ADDR_METHOD='$CEN_NET_ADDR_METHOD'
-
-$(___array CEN_NET_NETWORKS "${CEN_NET_NETWORKS[@]}")
-$(___array CEN_NET_SERVERS  "${CEN_NET_SERVERS[@]}")
-$(___array CEN_NET_ROUTERS  "${CEN_NET_ROUTERS[@]}")
-$(___array CEN_NET_FILTERS  "${CEN_NET_FILTERS[@]}")
-
-$(___array CEN_NET_OPTIONS  "${CEN_NET_OPTIONS[@]}")
-
-$(___array CEN_NET_HOMEDNS  "${CEN_NET_HOMEDNS[@]}")
-
-$(___array CEN_NET_HOSTS    "${CEN_NET_HOSTS[@]}")
-$(___array CEN_NET_IFACES   "${CEN_NET_IFACES[@]}")
-
-$(___array CEN_NET_FAKES    "${CEN_NET_FAKES[@]}")
-
-CEN_NET_PORT_SECR=$DAT_PORT_SECR
-CEN_NET_PORT_ADNS=$DAT_PORT_ADNS
-CEN_NET_PORT_HTTP=$DAT_PORT_HTTP
-CEN_NET_PORT_HTTPS=$DAT_PORT_HTTPS
-!EOF
+    data=("CEN_NET_CONFIG='${CEN_NET_CONFIG:-${domn%%.*}}'"
+          "CEN_NET_DOMAIN='$domn'"
+          "CEN_NET_WIRELESS='$CEN_NET_WIRELESS'"
+          "CEN_NET_PUBLIC='$CEN_NET_PUBLIC'" ''
+          "CEN_NET_REJECT_HOST=(${CEN_NET_REJECT_HOST[*]@Q})" ''
+          "CEN_NET_SERVER_GEN='$CEN_NET_SERVER_GEN'" ''
+          "CEN_NET_ROUTER_GEN='$CEN_NET_ROUTER_GEN'"
+          "CEN_NET_ROUTER_DEF='$CEN_NET_ROUTER_DEF'"
+          "CEN_NET_ROUTER_IP4='$radr'" ''
+          "CEN_NET_PREFIX_IP6='$CEN_NET_PREFIX_IP6'" ''
+          "CEN_NET_NETMASK='$CEN_NET_NETMASK'"
+          "CEN_NET_NETBITS='$CEN_NET_NETBITS'" ''
+          "CEN_NET_EXTERNAL='$CEN_NET_EXTERNAL'" ''
+          "CEN_NET_ADDR_IPLIST=(${CEN_NET_ADDR_IPLIST[*]@Q})"
+          "CEN_NET_ADDR_METHOD='$CEN_NET_ADDR_METHOD'" ''
+          "CEN_NET_NETWORKS=(${CEN_NET_NETWORKS[*]@Q})"
+          "CEN_NET_SERVERS=(${CEN_NET_SERVERS[*]@Q})"
+          "CEN_NET_ROUTERS=(${CEN_NET_ROUTERS[*]@Q})"
+          "CEN_NET_FILTERS=(${CEN_NET_FILTERS[*]@Q})" ''
+          "CEN_NET_OPTIONS=(${CEN_NET_OPTIONS[*]@Q})" ''
+          "CEN_NET_HOMEDNS=(${CEN_NET_HOMEDNS[*]@Q})" ''
+          "CEN_NET_HOSTS=(${CEN_NET_HOSTS[*]@Q})"
+          "CEN_NET_IFACES=(${CEN_NET_IFACES[*]@Q})" ''
+          "CEN_NET_FAKES=(${CEN_NET_FAKES[*]@Q})" ''
+          "CEN_NET_PORT_SECR=$DAT_PORT_SECR"
+          "CEN_NET_PORT_ADNS=$DAT_PORT_ADNS"
+          "CEN_NET_PORT_HTTP=$DAT_PORT_HTTP"
+          "CEN_NET_PORT_HTTPS=$DAT_PORT_HTTPS"
+    )
+    netfile -a -h -v data -- "$CEN_NET_FILE_CONF"
 }
 
 # ------------------------------------------------------------------------------
@@ -205,16 +210,17 @@ do_config() {
       *)    fatal "Bad 'do_config' argument:" "$1"
       esac ; shift
     done
-
     if [ -n "$optu" ] ; then
         if ! [ "$CEN_OPT_CONFIG" -nt "$CEN_NET_FILE_CONF" ] ; then
             netconfig && return 0
         fi ; optc=1
     fi
-    if [ -n "$CEN_NET_DOMAIN" -a -z "$optv" ] ; then    # already parsed
+    if [ -n "$DAT_CONFIG_LINES" -a -z "$optv" ] ; then  # already parsed
         [ -n "$optc" ] && do_coca "$domn"               # write config file
         return 0
     fi
+
+    netconfig -u                            # must reset config
 
     # setup vars
     local host="${1:-$HOSTNAME}" domn="$2"
@@ -288,6 +294,17 @@ do_config() {
     ___arg_max_chk() {
         [ "$1" -le "$2" ] && return 0
         ___error "Too many arguments: got $1 (max $2): $3"
+    }
+
+    # remove '-' args: <vstr> <args>...
+    ___arg_rm_void() {
+        local _vstr="$1" _list ; shift
+        while [ $# -gt 0 ] ; do
+            [ "${1::1}" = '-' ] || _list+=" $1"
+            shift
+        done
+        [ -z "$_list" ] && return 1
+        printf -v "$_vstr" '%s' "${_list:1}"
     }
 
     ___filter_chk_port() {
@@ -378,7 +395,7 @@ do_config() {
 
     ___config_config() {
         ___arg_rng_chk $# 1 1 'config' || return 1
-        CEN_NET_CONFIG="$1"
+        [ "$1" = '-' ] && CEN_NET_CONFIG="$DAT_UNMANAGED" || CEN_NET_CONFIG="$1"
         ___message "%-10s %s" 'config' "$1"
     }
 
@@ -437,7 +454,7 @@ do_config() {
         ___arg_min_chk $# 3 'host' || return 1
         local maca="$1" ; shift
         local ip4a="$1" ; shift
-        local name="$1"
+        local name="${1:--}" ; [ "$name" = '-' ] && return 0
 
         if [ "$ip4a" = '+' ] ; then
             ip4a="${_netparse_addr##*.}" ; ((ip4a += 1))
@@ -492,18 +509,16 @@ do_config() {
         local indx
         case "$1" in
         *.*)        indx=0 ; CEN_NET_DOMAIN="$1" ;;
-        external)   indx=7 ;;
+        external)   indx=8 ;;
         *)          netindex "$1" && indx="$_netindex"
         esac
         ___arg_network "$indx" "$1" "$2" || quit -e
 
-        if [ "$indx" = 0 ] ; then
+        if [ "$indx" = 0 ] ; then                   # domain network
             CEN_NET_NETWORKS=("$_netparse_addr/$_netparse_bits")
             CEN_NET_NETMASK="$_netparse_mask"
             CEN_NET_NETBITS="$_netparse_bits"
-        elif [ -z "$CEN_NET_NETWORKS" ] ; then
-             ___error "No base network defined:" "$1" || quit -e
-        elif [ "$1" = 'external' ] ; then
+        elif [ "$indx" = 8 ] ; then                 # external network
                if [ "$_netparse_bits" -lt "$CEN_NET_NETBITS" ] ; then
                     CEN_NET_NETBITS="$_netparse_bits"
                     CEN_NET_NETMASK="$_netparse_mask"
@@ -512,20 +527,21 @@ do_config() {
                CEN_NET_EXTERNAL="$_netparse_addr/$_netparse_bits"
                netmask "$CEN_NET_NETWORKS" "$CEN_NET_EXTERNAL" && ((over += 1))
                netmask "$CEN_NET_EXTERNAL" "$CEN_NET_NETWORKS" && ((over += 2))
+               #[ "$CEN_ACTION" != 'validate' ] &&
                case "$over" in
                1)   message -p $"External network '%s' is sub-net of base '%s'" \
                                "$CEN_NET_EXTERNAL" "$CEN_NET_NETWORKS" ;;
                2)   message -p $"Base network '%s' is sub-net of external '%s'" \
                                "$CEN_NET_NETWORKS" "$CEN_NET_EXTERNAL" ;;
-               3)   __error $"Base and external are the same network" ;;
-               *)   __error $"Base and external network must overlap completely"
+               3)   ___error $"Base and external are the same network" ;;
+               *)   ___error $"Base and external network must overlap completely"
                esac
-               CEN_NET_NETWORKS[7]="$CEN_NET_EXTERNAL"
+               #CEN_NET_NETWORKS[7]="$CEN_NET_EXTERNAL"
+        elif [ -z "$CEN_NET_NETWORKS" ] ; then
+             ___error "No base network defined:" "$1" || quit -e
         elif [ -n "${CEN_NET_NETWORKS[indx]}" ] ; then
             ___error "Network already defined:" "$1"
-        elif ! netmask -- "$CEN_NET_NETWORKS" "$2" ; then
-            ___error "Sub-net not in base network:" "$1"
-        else
+        elif ___subnetchk "$indx" "$2" ; then
             CEN_NET_NETWORKS[indx]="$_netparse_addr/$_netparse_bits"
         fi
         ___message "%-10s %-16s %s" 'network' "$1" "$2"
@@ -534,9 +550,10 @@ do_config() {
 
     ___config_option() {
         ___arg_min_chk $# 2 'option' || return 1
-        local what="$1" ; shift
-        mopt["$what"]+="$* "
-        ___message "%-10s %s %s" 'option' "$what" "$*"
+        local what="$1" list ; shift
+        ___arg_rm_void list "$@" || return 0
+        mopt["$what"]+="$list"
+        ___message "%-10s %s %s" 'option' "$what" "$list"
     }
 
     ___config_prefix() {
@@ -572,6 +589,11 @@ do_config() {
     ___config_server() {
         ___arg_rng_chk $# 2 3 'server' || return 1
         CEN_NET_SERVER_GEN="$1" ; ___mapname "$1" ; shift
+        if [ "${2:--}" = '-' -a "${3:--}" = '-' ] ; then
+            shift ; shift ; shift
+        elif [ "${1:--}" = '-' ] ; then
+            ___error $"Generic server name missing"
+        fi
         CFG_SERVER_DEF="$1"
         CEN_NET_SERVERS=("$@")
         ___message "%-10s %s %s" 'server' "$CEN_NET_SERVER_GEN" "$*"
@@ -581,6 +603,22 @@ do_config() {
         ___arg_rng_chk $# 0 2 'wireless' || return 1
         CEN_NET_WIRELESS="${1:--} ${2:--}"
         ___message "%-10s %s" 'wireless' "$CEN_NET_WIRELESS"
+    }
+
+    # assert that net is a subnet of domain or external: <name> <addr>
+    ___subnetchk() {
+        netmask -- "$CEN_NET_NETWORKS" "$2" && return 0
+        if [ "$indx" != 7 ] ; then
+            ___error "Sub-net not in base network:" "$1"
+            return 1
+        # <other> net can also be a sub-net of external ...
+        elif [ -z "$CEN_NET_EXTERNAL" ] ; then
+            ___error "Sub-net not in base network (no external network):" "$1"
+        elif netmask -- "$CEN_NET_EXTERNAL" "$2" ; then
+            return 0
+        fi
+        ___error "Sub-net neither in base nor external network:" "$1"
+        return 1
     }
 
     # --------------------------------------------------------------------------
@@ -617,11 +655,16 @@ do_config() {
     error -t || return
 
     # general checks ...
-    [ -n "$CEN_NET_DOMAIN" ]  || error   "Missing 'network' statements"
-    [ -n "$CEN_NET_ROUTERS" ] || warning "No 'router' statement"
-    [ -n "$CEN_NET_SERVERS" ] || warning "No 'server' statement"
-    [ -n "$CEN_NET_HOSTS" ]   || error   "Got no 'host' statement"
+    [ -n "$CEN_NET_DOMAIN" ] || error "Missing 'network' statements"
+    [ -n "$CEN_NET_HOSTS" ]  || error "Got no 'host' statement"
+    [ -n "$CEN_NET_CONFIG" ] || error "Got no 'config' statement"
+    if [ "$CEN_NET_CONFIG" != "$DAT_UNMANAGED" ] ; then
+        [ -n "$CEN_NET_ROUTERS" ] || warning "No 'router' statement"
+        [ -n "$CEN_NET_SERVERS" ] || warning "No 'server' statement"
+    fi
     error -t || return
+#    # sub-network 'other' defaults to 'external' ...
+#    [ -z "$CEN_NET_NETWORKS[7]" ] && CEN_NET_NETWORKS[7]="$CEN_NET_EXTERNAL"
 
     local name stat
     # check router ....
@@ -684,7 +727,30 @@ do_config() {
         CEN_NET_FILTERS+=("$name ${mflt[$name]% }")
     done
 
+    # imply option 'dns' and 'dhcp' for 'repeater' or 'router'
+    CEN_NET_OPTIONS=()                              # temporarily set options...
+    for name in 'repeater' 'router' 'dns' 'dhcp' ; do
+        CEN_NET_OPTIONS+=("$name ${mopt[$name]% }")
+    done
+    local adns=() adhc=()
+    for name in "${!DAT_MAP_IP[@]}" ; do            # loop over hosts...
+        [ "$name" = "${name%-[0-9]}" ] || continue
+        if has_option 'repeater' "$name" || has_option 'router' "$name" ; then
+            has_option 'dns' "$name" || adns+=("$name")
+            has_option 'dhcp' "$name" || adhc+=("$name")
+        fi
+    done
+    if [ -n "$adns" ] ; then
+        trace -a -c -y "Implicit DNS" -- "${adns[*]}"
+        mopt['dns']="${mopt['dns']% } ${adns[*]}"
+    fi
+    if [ -n "$adhc" ] ; then
+        trace -a -c -y "Implicit DHCP" -- "${adhc[*]}"
+        mopt['dhcp']="${mopt['dhcp']% } ${adhc[*]}"
+    fi
+
     # collect options, imply 'option other ...'
+    CEN_NET_OPTIONS=()
     for name in "${!mopt[@]}" ; do
         CEN_NET_OPTIONS+=("$name ${mopt[$name]% }")
     done
@@ -696,11 +762,11 @@ do_config() {
     if [ -z "$ndef" ] ; then
         hdef=()
         for name in "${CEN_NET_SERVERS[@]}" - ; do
-            if [ "${name:--}" = '-' ] ; then
+            if [ "${name:--}" = '-' ] ; then        # end of list ...
                 name="$CEN_NET_ROUTER_DEF"
                 [ -z "$name" ] && continue
             else
-                netoption 'dns' "$name" || continue
+                has_option 'dns' "$name" || continue
             fi
             args="${DAT_MAP_IP[$name]}"
             [ -n "$args" ] &&
@@ -718,31 +784,28 @@ do_config() {
 }
 
 # ------------------------------------------------------------------------------
-# Link /etc/hosts: [-f] <target>
+# Link /etc/hosts: [-f] <target>|-
 #
 # Options:  -f      force nameservice restart (implied if link changes)
 # ------------------------------------------------------------------------------
-do_link() {
+do_linkhosts() {
     [ "$CEN_OPT_OUTPUT" = '-' ] && return
 
-    local nscd
+    local nscd base='/etc/hosts'
     if [ "$1" = '-f' ] ; then
         nscd=1 ; shift
     fi
-
-    local base='/etc/hosts'
-    [ -n "$CEN_OPT_OUTPUT" -a "$CEN_OPT_OUTPUT" != '.' ] &&
-        base="$CEN_OPT_OUTPUT/hosts"
+    [ "${1:--}" = '-' ] && set 'local'
 
     if netlink -m -k "$base" '_' "$1" ; then
         [ -n "$_netlink" ] && message "Hosts config switched to: $1"
-    elif [ -z "$CEN_OPT_KEEP" ] ; then
+    else
         netlink -m -k "$base" '_' 'local'
         warning "Hosts config switched to: local ('$1' not found)"
     fi
 
     [ -n "$_netlink" ] && nscd=1
-    [ -z "$CEN_OPT_OUTPUT" -a -n "$nscd" ] && do_restart -c nscd
+    [ -z "$CEN_OPT_OUTPUT" -a -n "$nscd" ] && do_restart -c 'dnsmasq'
 }
 
 # ------------------------------------------------------------------------------
@@ -755,7 +818,7 @@ do_hosts() {
 
     local self nov6
     [ -n "${DAT_MAP_IP[$host]}" ] || self=" $host"
-    netoption 'ipv6' "$host" || nov6='#'
+    has_option 'ipv6' "$host" || nov6='#'
 
     local lnam                                  # to insert separator lines
     local smas='master' sslv='slave'
@@ -763,17 +826,18 @@ do_hosts() {
     # write a host entry: <ip> <name>...
     ___hosts_writer() {
         [ "${1:--}" = '-' -o -z "$2" ] && return    # need at least ip and one name
-        printf "%-25s " "$1" ; shift
-        local name
+        local name entr temp
+        printf -v entr '%-25s ' "$1" ; shift
         for name in "$@" ; do
             [ -z "$name" ] && continue
             if [ "${name#*.}" = "$name" ] ; then
-                printf "%-24s %-10s " "$name.$CEN_NET_DOMAIN" "$name"
+                printf -v temp '%-24s %-10s ' "$name.$CEN_NET_DOMAIN" "$name"
             else
-                printf "%-24s " "$name"
+                printf -v temp '%-24s ' "$name"
             fi
+            entr+="$temp"
         done
-        echo
+        dtmp+=("$entr")
     }
 
     # generate host entry: <mac> <ipv4> <host> [<alias>...]
@@ -782,37 +846,37 @@ do_hosts() {
         local ip4a="$1" ; shift
         local bnam="${1%-[0-9]}"                 # base name, strip suffix
 
-        if [ "$maca" = '-' ] && netoption "mdns" "$1" ; then
-            printf "#%-24s %-24s %s\n" "$ip4a" "$bnam" "(using mdns)"
-            return
+        if [ "$maca" = '-' ] && has_option 'mdns' "$1" ; then
+            printf -v maca '#%-23s %-24s # %s' "$ip4a" "$bnam" $"(using mdns)"
+            dtmp+=("$maca") ; return
         fi
 
         # the host has ip6v
-        if netoption 'ipv6' "$1" ; then
+        if has_option 'ipv6' "$1" ; then
             if [ "$bnam" != "$lnam" ] && [ -n "$bnam" ] ; then
-                lnam="$bnam" ; echo " "
+                lnam="$bnam" ; dtmp+=('')
             fi
             ___hosts_writer "$ip4a" "$@"
             netconv -u -- "$ip4a" && ___hosts_writer "$_netconv" "$@"
 
         # is ipv4 only
         else
-            [ "$lnam" != '-' ] && echo " " ; lnam='-'
+            [ "$lnam" != '-' ] && dtmp+=('') ; lnam='-'
             ___hosts_writer "$ip4a" "$@"
         fi
     }
 
+    local drtr dsvr dhst dfak drej dtmp data=()
+
     # Generate a filtered host list: servers|routers|hosts
     ___hosts_hostlist() {
-        local what="$1"
-        local serv="$2"
+        local what="$1" serv="$2"
         local addr maca defr defs defm
 
         if [ "$what" = 'servers' ] ; then
             # fake line for 'local' mode
             if [ "$serv" = 'local' -a -n "$CEN_NET_SERVER_GEN" ] ; then
-                echo
-                echo "# Fake: local mode, no valid server"
+                dtmp+=('' "# Fake: local mode, no valid server")
                 ___hosts_writer "${CEN_NET_REJECT_HOST[1]}" "$CEN_NET_SERVER_GEN" $smas $sslv
 
             # ip entry for generic host
@@ -825,7 +889,6 @@ do_hosts() {
             set -- $addr ; maca="$1" ; shift                # pop ip4 and mac addr
             [ "$1" = '-' ] && continue                      # no ip4 addr
             addr="$1" ; shift                               # ip4 addr
-
             if is_server "$1" ; then                        # select by group ...
                 [ "$what" = 'servers' ] || continue
                 [ "$1" = "$serv" ] && defs="$CEN_NET_SERVER_GEN"
@@ -833,10 +896,10 @@ do_hosts() {
                     [ "$1" = "$serv" ] && defm="$smas" || defm="$sslv"
                 fi
             elif is_router "$1" ; then
-                [ "$what" = "routers" ] || continue
+                [ "$what" = 'routers' ] || continue
                 [ "$1" = "$CEN_NET_ROUTER_DEF" ] && defr="$CEN_NET_ROUTER_GEN"
             else
-                [ "$what" = "hosts" ] || continue
+                [ "$what" = 'hosts' ] || continue
             fi
 
             # use generic server with own ip
@@ -850,360 +913,231 @@ do_hosts() {
         done
     }
 
+    dtmp=() ; ___hosts_hostlist routers      ; drtr=("${dtmp[@]}")
+    dtmp=() ; ___hosts_hostlist servers "$1" ; dsvr=("${dtmp[@]}")
+    dtmp=() ; ___hosts_hostlist hosts        ; dhst=("${dtmp[@]}")
+
     # Generate the fake list
-    ___hosts_fakelist() {
-        local name reje="${CEN_NET_REJECT_HOST[1]}"
-        for name in "${CEN_NET_FAKES[@]}" ; do
-            echo "$reje       $name"
-        done
-    }
+    local name reje="${CEN_NET_REJECT_HOST[1]}"
+    for name in "${CEN_NET_FAKES[@]}" ; do
+        dfak+=("$reje       $name")
+    done
 
-    netfile <<!EOF -h "/etc/hosts_$1"
-127.0.0.1       localhost.localdomain   localhost$self
-
-${nov6}# The following lines are desirable for IPv6 capable hosts
-${nov6}::1     localhost ip6-localhost ip6-loopback
-${nov6}ff02::1 ip6-allnodes
-${nov6}ff02::2 ip6-allrouters
-
-# Routers ...
-$(___hosts_hostlist routers)
-
-# Servers ...
-$(___hosts_hostlist servers "$1")
-
-# Address that cannot be reached
-$(printf "%-25s %-24s %s\n" "${CEN_NET_REJECT_HOST[1]}" "${CEN_NET_REJECT_HOST[0]}.$CEN_NET_DOMAIN" "${CEN_NET_REJECT_HOST[0]}")
-
-# Computers ...
-$(___hosts_hostlist hosts)
-
-# Fake entries point to badhost ...
-$(___hosts_fakelist)
-!EOF
+    printf -v drej '%-25s %-24s %s\n' "${CEN_NET_REJECT_HOST[1]}" \
+                   "${CEN_NET_REJECT_HOST[0]}.$CEN_NET_DOMAIN" "${CEN_NET_REJECT_HOST[0]}"
+    data=("127.0.0.1       localhost.localdomain   localhost$self" ''
+          "${nov6}# The following lines are desirable for IPv6 capable hosts"
+          "${nov6}::1     localhost ip6-localhost ip6-loopback"
+          "${nov6}ff02::1 ip6-allnodes"
+          "${nov6}ff02::2 ip6-allrouters" ''
+          "# Routers ..." "${drtr[@]}" ''
+          "# Servers ..." "${dsvr[@]}" ''
+          "# Address that cannot be reached" "${drej[@]}"
+          "# Computers ..." "${dhst[@]}" ''
+          "# Fake entries point to badhost ..." "${dfak[@]}"
+    )
+    netfile -h -v data -- "/etc/hosts_$1"
 }
 
 # ------------------------------------------------------------------------------
-# Write the /etc/resolv.conf file: [<server>|- [<domain>|-]]
+# Write the /etc/dnsmasq.d/xxx_dnsserv drop-in: [/dev/<iface>] <server>|+|-...
 # ------------------------------------------------------------------------------
-do_resolv() {
-    local rcon='/etc/resolv.conf'
-    [ "$CEN_NET_OUTPUT" = '.' ] && rcon=".$rcon"
-
-    # always rewrite 'local' conf
-    if [ "${1:-local}" = 'local' ] ; then
-        netresolv - -
-    # don't overwrite on --keep
-    elif [ -n "$CEN_OPT_KEEP" -a -e "$rcon" ] ; then
-        trace "Nameserver '$1' - keeping '$rcon'" ; return 0
-    # localhost
-    elif [ "$1" = '127.0.0.1' ] ; then
-        netresolv '' - "$1"
-    # rewrite only if nameserver is known
-    elif ! nethost "$1" ; then
-        warning "Unknown nameserver '$1' - keeping '$rcon'"
-        return 1
-    else
-        netresolv -d "$1" "$2"
-    fi
-    message "Nameserver '$1' - updated '$rcon'" ; return 0
-}
-
-# ------------------------------------------------------------------------------
-# Write the /etc/dnsmasq.d/xxx_dnsserv drop-in: <iface>|none|- <server>|+|-...
-# ------------------------------------------------------------------------------
+# This routine is used to:
+#       write a '/etc/dnsmasq.d.<mode>/<domn>_dnsserv' file
+#       restart dnsmasq
+#
+#
+#
+#   centaurikerberos server     TODO:  centaurinetgen - centaurinetcfg - centaurifilter
+#   centautirouter open         # router mode only
+#   centauri-master.target      # via centauriswitch, see /etc/default/centauriswitch
+#
+# dnsmasq configuration are only relevant for the following network modes:
+#
+#   master      -> dnsmasq.d.local (!)      # use AD/DC + router
+#   slave       -> dnsmasq.d.slave          # use master + router
+#   repeater    -> dnsmasq.d.repeater       # use resolv.conf (dhcp)
+#   router      -> dnsmasq.d.router         # use resolv.conf (dhcp)
+#
+# By default these files a empty, e.g. dnsmasq will use '/etc/resolv.conf' to
+# upstream DNS queries.
+#
+# Only a master server should disable '/etc/resolv.conf' and use localhost via
+# loopback.
+#
 # Fall back to resolv.conf if 1st arg is 'none'.  There can be up to 3 <server>
 # arguments, default is '-'.  If <server> is '-' a configured server is used
 # (primary, sencodary, router).  If <server> is '+' an entry is pulled from the
 # current resolv.conf
 # ------------------------------------------------------------------------------
-do_dnsserv() {
-    # get an output folder (true for stdout and debug)
-    netpath -d '/etc/dnsmasq.d' || return
+do_dnsmasq() {
+    local ifce base serv rslv=1 nook
+    if [ "${1::5}" = '/dev/' ] ; then               # eat interace argument
+        ifce="@${1:5}" ; shift
+    fi
+    local mode="${1:--}"
 
-    local xout="$_netpath/${CEN_NET_DOMAIN%%.*}_dnsserv"
+    # no mode specified, autodetect master/slave/local
+    if [ "$mode" = '-' ] ; then
+        netoption 'dns' "$name" || return 2             # no dns configured
 
-    # fall-back to resolv.conf
-    if [ "$1" = 'none' ] ; then
-        netfile <<!EOF -h "$xout"
-### using /etc/resolv.conf ###
-!EOF
-        return
-    elif [ "$CEN_ACTION" = 'switch' ] ; then
-        :                               # don't check _dnsmasq.d
-    elif [ '/etc/dnsmasq.d' -ef '/etc/dnsmasq.d.slave' ] ; then
-        invoke -e "A 'slave' server cannot be a dns server"
-        return
+        if netquery MASTER ; then
+            mode='master'
+        elif netquery SLAVE ; then
+            mode='slave'
+        else
+            mode='local'
+        fi
     fi
 
-    local serv ifce item psrv pcur nrdy= nuse=0
-    [ "${1:--}" != '-' ] && ifce="@$1" ; shift
+### TODO and mode switch or route
+    # do not run dnsmasq if computer was booted as 'switch'
+  #  nettemp -s 'centauriswitch' || return 1             # source state file
+  #  [ "$DAT_SWITCH_MODE" = 'switch' ] && return 1
+  #      # mode 'router' uses dnsmasq
+  #      [ "$DAT_SWITCH_MODE" = 'router' ] && return 0
+  #          mode='local'
+    trace -a -c 'dnsmasq mode' "$mode"
 
-    # helper to pull server from resolv.conf (pop $pcur -> $item)
-    ___dnsserv_resolv() {
-        if [ -z "$pcur" ] ; then                # 1st call: get nameservers
-            local addr
-            netresolv -r 'nameserver'
-            for addr in "${_netresolv[@]}" ; do
-                [ "$addr" = '127.0.0.1' ] || pcur+=("$addr")
-            done
+    case "$mode" in
+    loc*)   base='.local' ; nook=1 ;;   # ok if not running
+    mas*)   base='.local' ; rslv= ;;
+    sla*)   base='.slave' ; rslv= ;;
+    rep*)   base='.repeater' ;;
+    rou*)   base='.router' ;;
+    non*)   return ;;
+    *)      invoke -e "Invalid 1st argument:" "$1" ; return 1
+    esac
+
+    # get an output folder (true for stdout and debug)
+    if ! netpath -d "/etc/dnsmasq.d$base" ; then
+        [ -n "$nook" ] && return 0
+        invoke -e "No configuration folder:" "dnsmasq.d$base" ; return 1
+    fi
+
+    netconfig -f
+
+    local xtxt xout="$_netpath/${CEN_NET_DOMAIN%%.*}_dnsserv"
+    if [ -z "$_netpath" ] ; then
+        xout=
+    elif [ -f "${xout%_*}_static" ] ; then
+        [ "$mode" = 'local' ] && return 0
+        invoke -w "Static configuration:" "$xout" ; return
+    fi
+
+    ### using resolv.conf (no server arguments, not master) ###
+
+    if [ -n "$rslv" -a $# -le 1 ] ; then
+        xtxt="### using /etc/resolv.conf ###"
+        netfile -h -v xtxt -- "$xout"
+        return 1
         fi
-        item="$pcur" ; pcur=("${pcur[@]:1}")
-    }
 
-    # helper to pull server from configuration
-    ___dnsserv_config() {
-        [ -z "$psrv" ] && psrv=("${CEN_NET_SERVERS[@]}" "${CEN_NET_ROUTERS[@]}")
-        item="$psrv" ; psrv=("${psrv[@]:1}")
-    }
+    ### using localhost or server(s) ###
 
-    local -A conf
-    for item in "$@" ; do
-        [ "$item" = '+' ] && ___dnsserv_resolv
-        [ "$item" = '-' ] && ___dnsserv_config
-        [ -z "$item" ] && continue
-        [ "$item" = "$HOSTNAME" ] && continue
-
-        if [ "${item//[0-9]/}" != '...' ] ; then        # name -> ip
-            if ! nethost "$item" ; then
-                invoke -w "not a known host:" "$item"
-                continue
-            fi
-            item="$_nethost_ip"
+    if [ $# -le 1 ] ; then                          # got no server argument...
+        local prim scnd
+        # get names of master and slave ...
+        if netquery -s prim MASTER ; then
+            netquery -s scnd SLAVE
+        elif netquery -s prim SLAVE ; then
+            netquery -s scnd MASTER
+        else
+            prim='127.0.0.1' ; ifce=
         fi
-        [ -n "${conf[$item]}" ] && continue
-        conf[$item]=1 ; ((nrdy += 1))
-        [ -n "$serv" ] && serv+=$'\n'
-        [ "$nuse" -ge 3 ] && continue
-        serv+="server=$item$ifce" ; ((nuse += 1))
+        set -- - "$prim" "$scnd" "${CEN_NET_ROUTERS[@]}"
+    fi
 
+    local nuse=0 nrdy=0
+    while [ $# -gt 1 ] ; do                         # generate dnsmasq opts...
+        shift ; [ "${1:--}" = '-' ] && continue
+        if [ "${1//[0-9]/}" = '...' ] ; then
+            _nethost_ip="$1"
+        else
+            nethost -e -- "$1" || continue
+        fi
+        ((nrdy += 1))
+        # do not include addresses of this host ...
+        listsearch -i CEN_NET_ADDR_IPLIST -- "$_nethost_ip" && continue
+        # limit to 3 nameservers
+        [ "$nuse" -ge 3 ] && continue ; ((nuse += 1))
+        serv+=$'\n'"server=$_nethost_ip$ifce"
     done
+
     if [ -z "$serv" ] ; then
-        invoke -w "got no name server"
+        invoke -w "Got no name server"
         serv="# No known server"
     else
-        message -a -c 'resolv' "using $nuse of $nrdy nameservers"
+        message -a -p "Using %s of %s nameservers" "$nuse" "$nrdy"
     fi
-    netfile <<!EOF -h "$xout"
-### (1) ignore /etc/resolv.conf ###
-
-no-resolv
-
-### (2) DNS server(s) to use ###
-
-$serv
-!EOF
-}
-
-# general dnsmasq configuration options - "/etc/dnsmasq.d/(local|slave)" only
-do_dnsmasq() {
-    ___dnsmasq_dns() {
-        local hash
-        if [ -z "$xdns" ] ; then
-            echo "# DNS not configured"
-            hash='#' ; xown='#'
-        fi
-        echo "${hash}domain=$CEN_NET_DOMAIN"
-        echo "${hash}local=/home/"
-        echo "${hash}local=/${CEN_NET_DOMAIN%%.*}/"
-
-        if [ -n "$xsvr" ] ; then
-            if [ -n "$xadc" ] ; then
-                load_port 'centauriadns' DAT_PORT_ADNS 5354
-                echo -e "\n# samba4 ad/dc - must use alternate port\n"
-                echo "${hash}port=$DAT_PORT_ADNS"
-                echo
-                echo "# The main dns (port 53) is handled by samba. So we must use a private port with"
-                echo "# a firewall rule to receive requests forwarded from samba to address 127.0.0.2."
-                echo "# For iptable the following rules would do the mapping:"
-                echo
-                echo "# iptables -t nat -I OUTPUT -p udp -d 127.0.0.2 --dport 53 -j REDIRECT --to-ports $DAT_PORT_ADNS"
-                echo "# iptables -t nat -I OUTPUT -p tcp -d 127.0.0.2 --dport 53 -j REDIRECT --to-ports $DAT_PORT_ADNS"
-            elif [ -n "$xldp" ] ; then
-                echo -e "\n# this lets windows find the LDAP service\n"
-                echo "srv-host=_ldap._tcp.dc._msdcs.${CEN_NET_DOMAIN%%.*},$CEN_NET_ADDR_IPLIST,389"
-                echo "srv-host=_ldap._tcp.dc._msdcs.$CEN_NET_DOMAIN,$CEN_NET_ADDR_IPLIST,389"
-            fi
-        fi
-    }
-     ___dnsmasq_fake() {
-        local hash=
-        [ -z "$xdns" ] && hash='#'
-        local entr reje="${CEN_NET_REJECT_HOST[1]}"
-        for entr in "${CEN_NET_FAKES[@]}" ; do
-            echo "${hash}address=/$entr/$reje"
-        done
-    }
-
-    # dhcp-range from base and offset: <base> <offs> <vout>
-    ___dnsmsq_range() {
-        netparse -a -b "$1" || return 1
-        local mbit=$((-1 << (32 - _netparse_bits)))
-        netconv -b -- "$_netparse_addr"
-        local strt=$((_netconv + $2))
-        ((_netconv |= ~mbit)) ; ((_netconv &= ~1))
-        netconv -d -- "$_netconv" ; mbit="$_netconv"
-        netconv -d -- "$strt" ; strt="$_netconv"
-        netparse -a -b "$CEN_NET_NETWORKS" || return 1
-        printf -v "$3" '%s,%s,%s' "$strt" "$mbit" "$_netparse_mask"
-    }
-
-    ___dnsmasq_dhopt() {
-        if [ -z "$xdhc" ] ; then
-            echo "# DHCP not configured"
-            echo ; return
-        fi
-        local dhcp ; netindex -f -s dhcp 'dynamic'
-        ___dnsmsq_range "$dhcp" 0 dhcp || fatal -t "cannot get dchp config"
-        echo "${hash}dhcp-range=$dhcp,12h"
-        [ -n "$xsvr" -a -n "$xadc" ] &&
-            echo "${hash}dhcp-option=option:dns-server,$CEN_NET_ADDR_IPLIST"
-
-        [ -n "$xadr" ] && echo "${hash}dhcp-option=option:router,$xadr"
-        [ -n "$xntp" ] && echo "${hash}dhcp-option=option:ntp-server,$CEN_NET_ADDR_IPLIST"
-        [ -n "$xsmt" ] && echo "${hash}dhcp-option=option:smtp-server,$CEN_NET_ADDR_IPLIST"
-        [ -n "$xpop" ] && echo "${hash}dhcp-option=option:pop3-server,$CEN_NET_ADDR_IPLIST"
-
-        if [ -n "$xpad" ] ; then
-            echo -e "\n# automatic proxy detection\n"
-            echo "${hash}dhcp-option=252,http://$xpad.$CEN_NET_DOMAIN/wpad.dat"
-            echo "address=/wpad.$CEN_NET_DOMAIN/$CEN_NET_ADDR_IPLIST"
-            echo "address=/wpad.${CEN_NET_DOMAIN%%.*}/$CEN_NET_ADDR_IPLIST"
-            echo "address=/wpad/$CEN_NET_ADDR_IPLIST"
-        fi
-    }
-    ___dnsmasq_dhaddr() {
-        local hash=
-        [ -z "$xdhc" ] && hash='#'
-        local addr name
-        for addr in "${CEN_NET_HOSTS[@]}" ; do
-            set -- $addr
-            [ "$2" = '-' ] && continue                  # no IP addr
-            name="${3%%.*}"                             # strip domain
-            echo "${hash}dhcp-host=${1%-},id:$name,$2,$name,30d"
-        done
-    }
-
-    # get an output folder (true for stdout and debug)
-    netpath -d "/etc/dnsmasq.d" ".local" || return
-    local xmas xdir="$_netpath"
-
-    # generated statements depend on options
-    local xldp xdns xdhc xntp xsmt xpop xpad xadc
-    netoption 'dns'   "$1" && xdns=1
-    netoption 'dhcp'  "$1" && xdhc=1
-    netoption 'ldap'  "$1" && xldp=1
-    netoption 'ntp'   "$1" && xntp=1
-    netoption 'smtp'  "$1" && xsmt=1
-    netoption 'pop3'  "$1" && xpop=1
-    netoption 'proxy' "$1" && xpad="$CEN_NET_SERVER_GEN"
-    netoption 'addc'  "$1" && xadc=1                # ad/dc overrides ldap
-
-    # are we a server?
-    local xsvr ; is_server "$1" && xsvr="$1"
-    if [ -n "$xsvr" -a -z "$xldp" ] ; then
-        if [ -z "$xadc" ] ; then
-            warning "Server should have 'option ldap $1' or 'option addc $1'"
-        else
-            warning "Server should have 'option ldap $1'"
-        fi
-    fi
-    [ -n "$xadc" -a -z "$xdns" ] &&
-        warning "AD/DC Server should have 'option dns $1'"
-
-    # special case: have dnsmasq but not a server -> so it is a router config
-    local xown xadr="${DAT_MAP_IP[${CEN_NET_ROUTER_DEF:--}]}"
-    if [ -n "$xdns$xdhc" -a -z "$xsvr" ] ; then
-        xown='#' ; xadr="${DAT_MAP_IP[$1]}"
-        [ -z "$xadr" ] && fatal "Need host statement for '$1' to enable dns/dhcp"
-        [ -n "$xpad" ] && xpad="$1"
-    fi
-
-    # write local (master) dnsmasq config
-
-    netfile <<!EOF -h "$xdir/${CEN_NET_DOMAIN%%.*}_dnsmasq"
-### Part 1 - DNS ###
-
-$(___dnsmasq_dns)
-
-### Part 2 - DHCP ###
-
-$(___dnsmasq_dhopt)
-!EOF
-
-    netfile <<!EOF -h "$xdir/${CEN_NET_DOMAIN%%.*}_hosts"
-# List of preassigned dhcp ip addresses
-
-$(___dnsmasq_dhaddr)
-
-# from Fake entries
-
-$(___dnsmasq_fake)
-!EOF
-
-    # write slave dnsmasq config
-    if [ "$1" = "${CEN_NET_SERVERS[0]}" ] ; then
-        xmas="${CEN_NET_SERVERS[1]}"
-    elif [ "$1" = "${CEN_NET_SERVERS[1]}" ] ; then
-        xmas="${CEN_NET_SERVERS[0]}"
-    fi
-
-    if [ -n "$xmas" ] && netpath -d "/etc/dnsmasq.d.slave" ; then
-        netfile <<!EOF -h "$_netpath/${CEN_NET_DOMAIN%%.*}_dhcp"
-# disable DNS
-port=0
-
-# relay DHCP from '$1' to '$xmas'
-dhcp-relay=${DAT_MAP_IP[$1]},${DAT_MAP_IP[$xmas]}
-
-# end
-!EOF
-    fi
-}
-
-# test if dnsmasq is used: <host>
-do_nameserv() {
-    local name="${1:-$HOSTNAME}"
-    netoption 'dns' "$name" || return 1     # no dns configured
-
-    # do not run dnsmasq if computer was booted as 'switch'
-    nettemp -s 'centauriswitch' || return 1 # source state file
-    [ "$DAT_SWITCH_MODE" = 'switch' ] && return 1
-    # mode 'router' uses dnsmasq
-    [ "$DAT_SWITCH_MODE" = 'router' ] && return 0
-
-    netquery CLIENT && return 1             # clients never run DNS
-    netquery MASTER && return 0             # master must run DNS
-    netquery SLAVE  && return 1             # slave never runs DNS
-    return 0
-}
-
-# block generic server name: <server>
-do_notgen() {
-    [ "${1%%.*}" = "$CEN_NET_SERVER_GEN" ] || return
-    fatal "Cannot use generic server name"
+    xtxt=('### (1) ignore /etc/resolv.conf ###' ''
+          'no-resolv' ''
+          '### (2) DNS server(s) to use ###' ''
+          "$serv")
+    netfile -h -v xtxt "$xout"
+    [ -z "$CEN_OPT_OUTPUT" ] && do_restart -c 'dnsmasq' # (re)start if avtive
 }
 
 # ------------------------------------------------------------------------------
-# get override data
+# block generic server name: <server>
+# ------------------------------------------------------------------------------
+do_notgen() {
+    [ "${1%%.*}" = "$CEN_NET_SERVER_GEN" ] || return 0
+    invoke -e $"Cannot use generic server name" ; return 1
+}
+
+# ------------------------------------------------------------------------------
+# get override data, returns: DAT_OVER_RESOLV and DAT_OVER_GATEWAY
 # ------------------------------------------------------------------------------
 do_override() {
     [ -n "$CEN_OPT_FORCE" ] && return 1
     local args stat=0
-    readline -e -s args -i "$DAT_OVERRIDE" && return 1
-    for sarg in "${args[@]}" ; do
-        case "$stat-$sarg" in
+    override -r - args || return 1
+    set -f ; set -- $args ; set +f
+    while [ $# -gt 0 ] ; do
+        case "$stat-$1" in
         ?---)   stat=0 ;;
         0-res*) stat=1 ; DAT_OVER_RESOLV=() ;;
-        1-*)    DAT_OVER_RESOLV+=("$sarg") ;;
+        1-*)    DAT_OVER_RESOLV+=("$1") ;;
         0-rou*) stat=2 ; DAT_OVER_GATEWAY=() ;;
-        2-*)    DAT_OVER_GATEWAY+=("$sarg") ;;
-        0-*)    warning "Invalid override command:" "$sarg" ;
+        2-*)    DAT_OVER_GATEWAY+=("$1") ;;
+        0-*)    warning "Invalid override command:" "$1"
                 stat=9 ;;
         9-*)    ;;
         *)      _cen_abort "bad state:" "$stat"
-        esac
+        esac ; shift
     done
+}
+
+# ------------------------------------------------------------------------------
+# helper to restart a service: [-c|-e] <name>
+#
+# Option:   -c      restart only if active
+#           -e      restart only if enabled
+# ------------------------------------------------------------------------------
+do_restart() {
+    if [ -n "$CEN_OPT_NOREST" ] ; then
+        message -a "Service: $2 [restart disabled]"
+        return 0
+    fi
+
+    local _rest _stat=0
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -c)   _rest='status' ;;
+      -e)   _rest='enabled' ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+
+    if [ -n "$_rest" ] && ! runservice "$_rest" "$1" ; then
+        [ -z "$CEN_RUNSERVICE" ] && return 0
+    else
+        runservice restart "$1" ; _stat=$?
+    fi
+    message -a -c "Service restart" "$1 ${CEN_RUNSERVICE:-[not available]}"
+    return $_stat
 }
 
 # ------------------------------------------------------------------------------
@@ -1261,19 +1195,14 @@ hosts deny  = 0.0.0.0/0 ::0
 hosts allow = ${nets// \* / }
 !EOF
 
-    local hcfg host="${1:-$HOSTNAME}" domn="${2:-$CEN_NET_DOMAIN}"
-    if [ -n "$host" ] ; then
-        hcfg="kernel.hostname=$host"
-        HOSTNAME="$host"
-    fi
-
-    netfile <<!EOF -h '/etc/sysctl.d/host+domain.conf'
-kernel.domainname=$domn
-$hcfg
-!EOF
+    local hcfg host="${1:--}" domn="${2:-$CEN_NET_DOMAIN}"
+    [ "$host" = '-' ] && fatal -t - "$host"
+    hcfg=("kernel.domainname=$domn" "kernel.hostname=$host")
+    netfile -h -v hcfg -- '/etc/sysctl.d/host+domain.conf'
+    HOSTNAME="$host"                    # TODO ugly!
 
     local ipv4='#' ipv6='#'
-    netoption 'ipv6' "$host" && ipv6= || ipv4=
+    has_option 'ipv6' "$host" && ipv6= || ipv4=
     local ipf6="$ipv6"
     is_server "$host" || ipf6='#'
     netfile <<!EOF -h '/etc/sysctl.d/ipv4+ipv6.conf'
@@ -1294,95 +1223,39 @@ ${ipv4}net.ipv6.conf.all.disable_ipv6 = 1
 ${ipv4}net.ipv6.conf.default.disable_ipv6 = 1
 !EOF
 
-    do_dnsmasq "$host"
-
     # do a full setup if a hostname is given
 
     [ -z "$1" ] && return
-    [ -n "${DAT_MAP_IP[$host]}" ] || warning "No host statement for <hostname>: $host"
+    [ -n "${DAT_MAP_IP[$host]}" ] || warning "No host statement for <hostname>:" "$host"
 
-    netfile <<!EOF '/etc/hostname'
-$host
-!EOF
-
-    netfile <<!EOF '/etc/mailname'
-$host.$domn
-!EOF
-
-    # setup for dnsmasq
-    if do_nameserv "$host" ; then
-        do_resolv '127.0.0.1' "$domn"
-        do_dnsserv - "${CEN_NET_SERVERS[@]}" "${CEN_NET_ROUTERS[@]}"
-    else
-        do_resolv "$CFG_SERVER_DEF" "$domn"
-        do_dnsserv 'none'
-    fi
-
-    do_readme                                           # README.centauri in /etc/network
+    netfile -v host -- '/etc/hostname'
+    hcfg=("$host.$domn")
+    netfile -v hcfg -- '/etc/mailname'
 
     if [ -z "$CEN_OPT_OUTPUT" ] ; then                  # real setup
         # migrate, fix things ...
         netlink -m -k -s '/etc/hosts' '_'
-        [ -e '/etc/nsswitch.local' ] && netlink -m -k '/etc/nsswitch.conf'
 
-        message "Full setup: server='$CFG_SERVER_DEF'  router='$CEN_NET_ROUTER_DEF'  hostname='$host'"
-        embed -v 'centaurinetgen' -H "$host" create     # interfaces, wpa, hostapd, dnsmasq.d
-        do_link -f "${CFG_SERVER_DEF:-local}"
+        message -c "Network setup" \
+                "server='$CFG_SERVER_DEF'  router='$CEN_NET_ROUTER_DEF'  hostname='$host'"
+        embed -i -v 'centaurinetgen' -H "$host" create  # interfaces, wpa, hostapd, dnsmasq.d
+        do_linkhosts -f "${CFG_SERVER_DEF:-local}"
+
+### TODO should this run after netgen (if at all)
+### TODO does centaurisecrets do this if it finds a server?
+        if has_nameserv "$host" ; then                      # setup for dnsmasq
+            netresolv "$domn" - '127.0.0.1'
+            do_dnsmasq - "${CEN_NET_SERVERS[@]}" "${CEN_NET_ROUTERS[@]}"
+        fi
 
     elif [ "$CEN_OPT_OUTPUT" = '.' ] ; then             # clone, force full setup
-        message "Name setup: server='$CFG_SERVER_DEF'  router='$CEN_NET_ROUTER_DEF'  hostname='$host'"
+        message -c "Name setup" \
+                "server='$CFG_SERVER_DEF'  router='$CEN_NET_ROUTER_DEF'  hostname='$host'"
+### TODO don't use -nm, centaurinetgen should check centauriswitch-setup-override
         embed -v 'centaurinetgen' -O . -H "$host" --nm=0 create
     else                                                # create real files
         embed -v 'centaurinetgen' -O "$CEN_OPT_OUTPUT" -H "$host" create
     fi
-}
-
-# ------------------------------------------------------------------------------
-# helper to restart a service: [-c] <name>
-# ------------------------------------------------------------------------------
-do_restart() {
-    if [ -n "$CEN_OPT_NOREST" ] ; then
-        message -a "Service: $2 [restart disabled]"
-        return 0
-    fi
-
-    if [ "$1" = "-c" ] ; then
-        if ! runservice status "$2" ; then
-            [ -n "$CEN_RUNSERVICE" ] && message -a "Service restart: $2 [$CEN_RUNSERVICE]"
-            return 0
-        fi ; shift
-    fi
-
-    local stat
-    runservice restart "$1" ; stat=$?
-    message -a "Service (re)start: $1 ${CEN_RUNSERVICE:-[not available]}"
-    return $stat
-}
-
-# ------------------------------------------------------------------------------
-# README.centauri in /etc/network
-# ------------------------------------------------------------------------------
-do_readme() {
-    netfile <<!EOF "/etc/network/README.centauri"
-The 'interfaces' and 'interfaces.*' files or links are managed by centaurinetcfg
-and centauriroute (centauriswitch).  ... when 'centaurinetcfg setup -' is run.
-This tool also links the configuration to 'interfaces' and to:
-
-'interfaces.static'  for a static address configuration (Server, Workstation)
-'interfaces.simple'  for a single address configuration (Workstation)
-'interfaces.smart'   for a multiple address configuration (Notebook)
-
-These links are used by '/boot/grub/grub.cfg' to select entries in grub's boot
-menu. Two additional options for grub and for centauriroute (centauriswitch)
-can be manually configured:
-
-'interfaces.switch'  to run the computer like a hardware switch (optional DHCP)
-'interfaces.router'  to run the computer like a router with a WWLAN connection.
-
-At boot time the 'centauriswitch=' parameter is used to link 'interfaces' to an
-actual configuration (if any).  This is done by centauriroute.  This tool tries
-to use reasonable defaults if a configuration does not exist.
-!EOF
 }
 
 # ------------------------------------------------------------------------------
@@ -1394,14 +1267,26 @@ actionConfig() {
 }
 
 # ------------------------------------------------------------------------------
+# action "dnsmasq" - set active DNS provider config: [<iface>] <mode> <addr>...
+# ------------------------------------------------------------------------------
+# Arguments:
+#   <iface>     limit interface (kernel name), format is: /dev/<name>
+#   <mode>      router|repeater|master|slave|local|none
+#   <addr>      optional upstream DNS
+#
+# There is only one external to this action for modem dial-up. This action does
+# not modify resolv.conf or switch any symlinks. Anyhow is restart a running
+# instance of dnsmasq.service.
+# ------------------------------------------------------------------------------
+actionDnsmasq() {
+    do_dnsmasq "$@"
+    [ "$?" = 2 ] && error "DNS not enabled (see 'option dns ...')"
+}
+
+# ------------------------------------------------------------------------------
 # action "edit" - run editor, validate and setup
 # ------------------------------------------------------------------------------
 actionEdit() {
-# centauriraspi default wird nicht gesetzt
-# kiosk not updated
-# centaurisysinit def <delay>
-# centauristartup vterm
-# hotplug: usb0 -> eth0 !!!! end0|eth0 -> eth1
     local errs cbak="$CEN_OPT_CONFIG.bak"
     copy -a -f -- "$CEN_OPT_CONFIG" "$cbak"
     while : ; do
@@ -1450,7 +1335,7 @@ actionOptions() {
     fi
     for opts in "${CEN_NET_OPTIONS[@]}" ; do        # loop over options
         name="${opts%% *}"
-        netoption -- "$name" "$host" || continue
+        has_option "$name" "$host" || continue
 
 #### option  hotplug       ether-* wlan-*
 
@@ -1510,23 +1395,30 @@ actionOptions() {
 }
 
 # ------------------------------------------------------------------------------
-# action "resolv" - update '/etc/resolv.conf' and reconfigure dnsmasq
+# action "resolv" - update '/etc/resolv.conf'
 # ------------------------------------------------------------------------------
-#       (1) <domain>    <serv1> [<serv2> [<serv3>]]
-#       (2) any         none|<ip>|+|- ...
-#       (3) none
-#       (4) default
-#       (5) status
-#       (6) <ifce>      none|<ip>|+|- ...
-#       (7) domain                                          # set domainname
+# call  (1) none                                # create empty resolv.conf
+#       (2) default                             # create default resolv.conf
+#       (3) local                               # create resolv.conf for localhost
+#       (4) <domain>    [<serv>|-]...           # pass arguments to netresolv()
+#       (5) status                              # show file content
+#       (6) domain                              # set domainname from resolv.conf
+#
+# args: <ifce>      interface name (like 'wlan0') or path (like '/dev/wlan0')
+#
+# By default dnsmasq is expected as DNS server. It polls '/etc/resolv.conf' by
+# default, so no restart is required after updates.
+#
+# actionResolv: does DNS resolver configuration
+# actionSwitch: does DNS provider configuration
 # ------------------------------------------------------------------------------
 actionResolv() {
     # helper to show status
     ___resolv_cat() {
-        local line emty="# file is empty"
+        local line emty=$"# file is empty"
         message "$1:"
         if [ ! -r "$1" ] ; then
-            message -i "# cannot be read" ; return
+            message -i $"# cannot be read" ; return
         fi
         while read line ; do
             [ -z "$line" -o "${line::1}" = '#' ] && continue
@@ -1535,68 +1427,38 @@ actionResolv() {
         [ -n "$emty" ] && message -i "$emty"
     }
 
-    if [ "$1" = 'domain' ] ; then
-        if [ -z "$2" ] && netresolv -r 'domain' ; then
-            set -- "$1" "$_netresolv"
-        fi
-        if [ "${2:--}" = '-' ] ; then
-            error "Domain name is unknown" ; return
-        fi
-        message -a "Seting domain name:" "$2"
-        writeline -e -o '/proc/sys/kernel/domainname' -t -- "$2"
-        return
-    fi
+    case "$1" in
+    *.*)    ;;
+    dom*)   # set domainname from resolv.conf
+            if [ -z "$2" ] && netresolv -r ; then
+                set -- "$1" "$_netresolv"
+            fi
+            if [ "${2:--}" = '-' ] ; then
+                error $"Domain name is unknown" ; return
+            fi
+            message -a $"Seting domain name:" "$2"
+            writeline -e -o '/proc/sys/kernel/domainname' -t -- "$2"
+            return ;;
+    sta*)   # display status
+            netconfig -f
+            ___resolv_cat '/etc/resolv.conf'
+            ___resolv_cat "/etc/dnsmasq.d/${CEN_NET_DOMAIN%%.*}_dnsserv"
+            return
+    esac
 
     # replace command arguments if there is an override file
     if do_override && [ -n "$DAT_OVER_RESOLV" ] ; then
-        warning "From override file:" "resolv ${DAT_OVER_RESOLV[*]}"
+        warning $"From override file:" "resolv ${DAT_OVER_RESOLV[*]}"
         set -- "${DAT_OVER_RESOLV[@]}"
     fi
 
-    local ifce nsrv=()
     case "$1" in
-    *.*)        netresolv "$@" ; return ;;
-    any|none)   ifce="$1" ;;
-    def*)       ifce='default' ;;
-    sta*)       ___resolv_cat '/etc/resolv.conf'
-                ___resolv_cat '/etc/dnsmasq.d/centauri_dnsserv'
-                return ;;
-    *)          netiface -k -s ifce -- "$1"     # get kernel interface name
+    *.*)        netresolv "$@" ;;                   # custom config
+    loc*)       netresolv - - '127.0.0.1' ;;        # local DNS server
+    non*)       netresolv ;;                        # empty resolv.conf
+    def*)       netresolv - - ;;                    # default resolv.conf
+    *)          invoke -e - "$*"
     esac
-    netconfig -f                                # cannot run without config
-
-    # must have dnsmasq
-    if ! [ "$ifce" = 'none' -o "$ifce" = 'default' ] ; then
-        do_nameserv || { invoke -e "no dns configured:" "$*" ; return ; }
-    fi
-
-    if do_nameserv ; then
-        message "Update resolv.conf and dnsmasq:" "$*"
-        nsrv=("$CEN_NET_DOMAIN" - '127.0.0.1')
-    elif runservice -r enabled 'dnsmasq' ; then
-        message "Update resolv.conf (dnsmasq not used):" "$*"
-    else
-        message "Update resolv.conf:" "$*"
-    fi
-
-    # reset to empty or default
-    if [ "$ifce" = 'none' -o "$ifce" = 'default' ] ; then
-        if [ "$ifce" = 'none' ] ; then
-            netresolv - -                       # empty resolv.conf
-        else
-            netresolv "${nsrv[@]}"              # default resolv.conf
-        fi
-        do_dnsserv 'none'                       # dnsmasq uses resolv.conf
-
-    # use any interface for dns
-    elif [ "${ifce:--}" = '-' -o "$ifce" = 'any' ] ; then
-        shift ; do_dnsserv - "$@" ; netresolv "$sdom" - '127.0.0.1'
-    else
-        [ -d "/sys/class/net/$ifce" ] || invoke -w "no such interface:" "$ifce"
-        do_dnsserv "$@" ; netresolv "$sdom" - '127.0.0.1'
-    fi
-
-    do_restart -c 'dnsmasq'
 }
 
 # ------------------------------------------------------------------------------
@@ -1604,7 +1466,7 @@ actionResolv() {
 #
 #   mode 1: have argument or --output
 #           full update
-#   mode 2: no "$CEN_ROOT/persistent/centaurinetcfg"
+#   mode 2: no "$CEN_PERSISTENT/centaurinetcfg"
 #           update cache only (unless argument given)
 #   mode 3: valid cache, no argument
 #           do nothing
@@ -1612,29 +1474,44 @@ actionResolv() {
 actionSetup() {
     if [ -n "$1" -o -n "$CEN_OPT_OUTPUT" ] ; then
         :
-    elif [ ! -e "$CEN_ROOT/persistent/$CEN_NAME" ] ; then
+    elif [ ! -e "$CEN_NET_FILE_CONF" ] ; then
         actionValidate cache ; return
-    elif [ "$CEN_ROOT/persistent/$CEN_NAME" -nt "$CEN_ROOT/default/centaurinetcfg" ] ; then
-        message "No update (cache is current)" ; return
+    elif [ "$CEN_NET_FILE_CONF" -nt "$CEN_DEFAULT/centaurinetcfg" ] ; then
+        message $"No update (cache is current)" ; return
     fi
 
-    local domn host="${1:--}"
+    local domn host="${1:--}" md5x md5y
     [ "$host" = '-' ] && host="$HOSTNAME"
     domn="${host#*.}" ; [ "$domn" = "$host" ] && domn=
     host="${host%%.*}"
 
     do_config -c "$host" "$domn"        # create new config cache
+    do_notgen "$host"                   # disallow generic server name
     error -t || return
-    do_notgen "$1"                      # disallow generic server name
+
+    # on MASTER check hosts file to run dns update if needed
+    if netquery MASTER && netoption 'addc' "$HOSTNAME" ; then
+        [ -e '/etc/hosts_local' ] && sysrun -e -p -s md5x -- md5sum '/etc/hosts_local'
+        trace -a "Current hosts file md5sum:" "${md5x:--}"
+    fi
 
     # create hosts files
-    local name
+    local name md5x md5y
     for name in 'local' "${CEN_NET_SERVERS[@]}" ; do
         do_hosts "$host" "$name"
     done
 
     # setup (full if hostname is given)
     do_setup "$host" "$domn"
+
+    # upd dns if hosts file changed
+    if [ -n "$md5x" ] ; then
+        sysrun -e -p -s md5y -- md5sum '/etc/hosts_local'
+        if [ "$md5x" != "$md5y" ] ; then
+            message -- $"Updating Samba DNS (can be slow) ..."
+            embed -i -v centaurinetdns -y
+        fi
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -1718,57 +1595,71 @@ actionStatus() {
 }
 
 # ------------------------------------------------------------------------------
-# action "switch" - set active server: [<server>|local|-]
+# action "switch" - set active host name service config: [@<server>|local]
+# ------------------------------------------------------------------------------
+# This action configures /etc/dnsmasq.d/xxx_dnsserv, symlinks /etc/hosts and
+# updates ... It does not alter '/etc/resolv.conf', see actionResolv().
+#
+#   like actions dnsmasq and resolv combined
+#
+#       @<serv>             # server name
+#       local
+#       status
+#
 # ------------------------------------------------------------------------------
 actionSwitch() {
-    do_config -u                # get/update config
+    netconfig -f                                    # get config or die
+    local host
+    case "$1" in
+    @*)     host="${1:1}" ; shift
+            ;;
+    *.*)    host="$1" ; shift                       # IPv4 of fqdn
+            ;;
+    loc*)   set -- 'local' ;;
+
+    sta*)   netpath -r '/etc/hosts' ; resolve -m -- "$_netpath"
+            local fsta ; [ -e "$CEN_RESOLVE" ] && fsta=$"OK" || fsta=$"missing"
+            message -a -c -p $"Hosts file" '%-39s (%s)' "$CEN_RESOLVE" "$fsta"
+
+            netpath -r '/etc/dnsmasq.d' ; resolve -m -- "$_netpath"
+            [ -e "$CEN_RESOLVE" ] && fsta=$"OK" || fsta=$"missing"
+            message -a -c -p $"DNS config" '%-39s (%s)' "$CEN_RESOLVE" "$fsta"
+
+            runservice status 'dnsmasq'
+            message -a -c $"Service dnsmasq" "${CEN_RUNSERVICE:-[not available]}"
+
+            netresolv -r nameserver
+            message -a -c $"Nameserver" "${_netresolv[1]}"
+            return
+            ;;
+    *)      invoke -e - "$1"
+    esac
+
+    if [ -n "$host" ] ; then
+        nethost -e -- "$host" ; host="$_nethost_name"
+        set -- "$host"
+        do_notgen "$host"                           # disallow generic server name
+    fi
     error -t || return
-    do_notgen "$1"              # disallow generic server name
 
-    # get configuration
-    local serv="${1:-local}" ; [ "$serv" = '-' ] && serv='local'
-    local snam="${serv%%.*}" sdom="${serv#*.}"
-    [ "$serv" = "$sdom" ] && sdom=
-
-    # get domain from host (only 1st name checked)
-    if [ -z "$sdom" ] ; then
-        nethost "$snam" ; sdom="${_nethost_name#*.}"
-        [ "$sdom" = "$_nethost_name" ] && sdom="$CEN_NET_DOMAIN"
-    fi
-
-    # switch nss name services (not using sssd)
-    local nscd ; _netlink=
-    if [ -e '/etc/nsswitch.local' ] ; then
-        if [ "$snam" = 'local' ] ; then
-            netlink -k -m '/etc/nsswitch.conf' '.' 'local' "$CEN_NAME"
-        elif [ -z "$CEN_OPT_KEEP" ] ; then
-            netlink -k -m '/etc/nsswitch.conf' '.' "$snam" 'client'
-        else
-            netlink -k -m '/etc/nsswitch.conf' '.' "$snam"
-        fi
-        [ $? = 0 -a -n "$_netlink" ] && nscd='-f'
-        [ -n "$nscd" ] && message -c "nsswitch.conf switched to" "$_netlink_suff"
-    fi
-
-    # switch /etc/hosts and (re)create resolv.conf
-    do_link $nscd "$snam"
-
-    # setup for dnsmasq
-    [ "$snam" = 'local' ] && snam="$HOSTNAME"
-    if do_nameserv ; then
-        do_resolv '127.0.0.1' "$sdom"
-        do_dnsserv - "$snam" "${CEN_NET_SERVERS[@]}" "${CEN_NET_ROUTERS[@]}"
+    if [ -z "$host" ] ; then
+        netresolv - - "${CEN_NET_ROUTERS[@]}"
+    elif [ "$host" = "${CEN_NET_SERVERS[0]}" ] ||
+         [ "$host" = "${CEN_NET_SERVERS[1]}" ] ; then
+        netresolv -d "$host" - "${CEN_NET_SERVERS[@]}" - "${CEN_NET_ROUTERS[@]}"
     else
-        do_resolv "$snam" "$sdom"
-        do_dnsserv 'none'
+        netresolv - "$host" - "${CEN_NET_ROUTERS[@]}"
     fi
+
+   do_linkhosts -f "$host"
+   do_dnsmasq -                                    # handle config and restart
 }
 
 # ------------------------------------------------------------------------------
 # validate the config file: [cache|nocache|list]
 # ------------------------------------------------------------------------------
 actionValidate() {
-    local coca args="OK"
+    local coca args='OK'
     case "${1:-noc}" in
     cac*)   coca=1 ;;
     lis*)   DAT_LIST=1 ;;
@@ -1782,10 +1673,15 @@ actionValidate() {
     message "File '$CEN_OPT_CONFIG' [$DAT_CONFIG_LINES lines]: $args"
     error -t || return
 
-    local name="'${CFG_SERVER_DEF}.$CEN_NET_DOMAIN'"
-    [ -n "$CFG_SERVER_DEF" ] || name="(none)"
-    message -i -p "Server %-10s =>  %s" "'$CEN_NET_SERVER_GEN'" "$name"
-    message -i -p "Router %-10s =>  '%s'" "'$CEN_NET_ROUTER_GEN'" "${CEN_NET_ROUTER_DEF}.$CEN_NET_DOMAIN"
+    if [ "$CEN_NET_CONFIG" = "$DAT_UNMANAGED" ] ; then
+        message -i "This configuration is not managed (no server/router)"
+    else
+        local name="'${CFG_SERVER_DEF}.$CEN_NET_DOMAIN'"
+        [ -n "$CFG_SERVER_DEF" ] || name="(none)"
+        message -i -p "Server %-10s =>  %s" "'$CEN_NET_SERVER_GEN'" "$name"
+        message -i -p "Router %-10s =>  '%s'" "'$CEN_NET_ROUTER_GEN'" \
+                      "${CEN_NET_ROUTER_DEF}.$CEN_NET_DOMAIN"
+    fi
     [ -n "$coca" ] && do_coca
 }
 
@@ -1795,11 +1691,7 @@ actionValidate() {
 options() {
     case "$CEN_ACTION" in
     '') [ "${CEN_SVC_SYSLOG:-0}" != 0 ] && embed -m '_centauri_bash_svc'
-        [ "$CEN_OPT_OUTPUT" = '/' ] && CEN_OPT_OUTPUT=
-        if [ "${CEN_OPT_OUTPUT:--}" != '-' -a "$CEN_OPT_OUTPUT" != '.' ] ; then
-            folder -c -f "$CEN_OPT_OUTPUT" ; CEN_OPT_OUTPUT="$PWD"
-        fi
-        CEN_NET_OUTPUT="$CEN_OPT_OUTPUT"                    # see netfile()
+        [ "${CEN_OPT_OUTPUT:-/}" != '/' ] && syssetup -o "$CEN_OPT_OUTPUT"
         ;;
 
     -l|--sys*)
@@ -1807,8 +1699,6 @@ options() {
 
     -C|--con*)
         optarg 'config'  -           -t ;;                  # any text
-    -K|--kee*)
-        optarg 'keep'    -              ;;                  # simple flag
     -N|--nor*)
         optarg 'norest'  -              ;;                  # simple flag
     -O|--out*)
@@ -1828,6 +1718,8 @@ actions() {
 
     con*)
         invoke -r 'config'   -         0 3 ;;               # 0...3 args
+    dns*)
+        invoke -r 'dnsmasq'  -         1 + ;;               # at least 1 arg
     edi*)
         invoke -s 'edit'     -         0   ;;               # no arg
     gat*)
@@ -1841,7 +1733,7 @@ actions() {
     sta*)
         invoke    'status'   -         0 ;;                 # no arg
     swi*)
-        invoke -r 'switch'   -         0 1 ;;               # one optional arg
+        invoke -r 'switch'   -         1 ;;                 # one arg
     val*)
         invoke    'validate' -         0 1 ;;               # one optional arg
     esac
@@ -1851,37 +1743,44 @@ actions() {
 # Print usage info
 # ------------------------------------------------------------------------------
 usage() {
+    usageset \
+        -o '-l --syslog  [012]'   $"control output to syslog (0:no 1:also 2:only)" \
+        -o - \
+        -o '-C --config  <file>'  $"configuration  (default $CEN_OPT_CONFIG)" \
+        -o '-N --norestart'       $"do not restart nscd/dnsmasq" \
+        -o '-O --output  <fldr>'  $"modify output locations                 (default: /)" \
+        -o '-R --router <router> '$"router name       (default is 1st configured router)" \
+        -o '-S --server <server> '$"server name       (default is 1st configured server)" \
+
+    usageset \
+        -a 'config  [<role>|- [<mode> [<master>|-]]]' \
+        -a -                      $"write status files in $CEN_TRANSIENT" \
+        -a 'dnsmasq [/dev/<iface>] router|repeater|master|slave|local|none [<addr>...]' \
+        -a -                      $"write dnsmasq upstream provider configuration file" \
+        -a 'edit'                 $"edit configuration, run 'validate' and 'setup'" \
+        -a 'gateway [<gateway>|-°[<iface>]]]' \
+        -a -                      $"set/remove the default gateway" \
+        -a 'options [<host>]'     $"show configuration options" \
+        -a 'resolv  <fqdn> ...'   $"pass arguments to function netresolv()" \
+        -a 'resolv  default|local|none' \
+        -a -                      $"update dnsmasq dns server config, restart dnsmasq" \
+        -a 'resolv  domain [<name>]' \
+        -a -                      $"set domain name, use '/etc/resolv.conf' for default" \
+        -a 'resolv  status'       $"show '/etc/resolv.conf' and dnsmasq config" \
+        -a 'setup   [<hostname>] '$"create config files, full setup with <hostname>" \
+        -a 'status'               $"show the current status" \
+        -a 'switch  @<server>'    $"switch '/etc/hosts' and write '/etc/resolv.conf'" \
+        -a 'switch  local'        $"switch '/etc/hosts' and write '/etc/resolv.conf'" \
+        -a 'validate [cache|nocache]' \
+        -a -                      $"validate config, optionally generate cache file" \
+        -a 'validate list'        $"validate and list config" \
+
     usagecat << !EOF
 $CEN_USE_HEADER
 
 $CEN_USE_OPTIONS
-       -l --syslog  [012]   control output to syslog (0:no 1:also 2:only)
 
-       -C --config <file>   configuration  (default $CEN_OPT_CONFIG)
-       -K --keep            do not update resolv.conf, switch ns not to client
-       -N --norestart       do not restart nscd/dnsmasq
-       -O --output <fldr>   modify output locations                 (default: /)
-       -R --router <router> router name       (default is 1st configured router)
-       -S --server <server> server name       (default is 1st configured server)
-
-actions:
-       config  [<role>|- [<mode> [<master>|-]]]
-                            write status files in $CEN_ROOT/transient
-       edit                 edit configuration, run 'validate' and 'setup'
-       gateway [<gateway>|-°[<iface>]]]
-                            set/remove the default gateway
-       options [<host>]     show configuration options
-       resolv  [<fqdn>] default|none|any|<iface> [<dns>...]
-                            update dnsmasq dns server config, restart dnsmasq
-       resolv  domain [<name>]
-                            set domain name, use resolv.conf for default
-       resolv  status       show '/etc/resolv.conf' and dnsmasq config
-       setup   [<hostname>] create config files, full setup with <hostname>
-       status               show the current status
-       switch  [<server>]   switch /etc/hosts and write /etc/resolv.conf
-       validate [cache|nocache]
-                            validate config, optionally generate cache file
-       validate list        validate and list config
+$CEN_USE_ACTIONS
 
 arguments:
        <dns>                server ip  -or-  '-' pull default server  -or-  '+'
@@ -1911,9 +1810,9 @@ setup: When action 'setup' is used with a <hostname> a full set of configuration
        /etc/samba/networks.conf                § (setup)
        /etc/sysctl.d/host+domain.conf          § (setup)
        /etc/sysctl.d/ipv4+ipv6.conf            § (setup)
-       $CEN_ROOT/persistent/centaurinetcfg § (setup, switch, config)
-       $CEN_ROOT/transient/network_proxy   § (switch, config)
-       $CEN_ROOT/transient/network_status  § (switch, config)
+       $CEN_PERSISTENT/centaurinetcfg § (setup, switch, config)
+       $CEN_TRANSIENT/network_proxy   § (switch, config)
+       $CEN_TRANSIENT/network_status  § (switch, config)
 
 config:
        The arguments for action 'config' are:

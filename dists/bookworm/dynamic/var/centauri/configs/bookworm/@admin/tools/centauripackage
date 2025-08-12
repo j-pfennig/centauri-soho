@@ -5,7 +5,7 @@ CEN_TITLE="Compare package lists, run apt update/install/remove"
 
 # Import the bash library, set name and version
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -s -t -y - '0.33:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -s -t -y - '0.35:4' || exit 2
 
 # Data
 
@@ -22,7 +22,8 @@ CEN_OPT_DEVEL=          # see --development option
 CEN_OPT_UPDATE=         # see --update
 CEN_OPT_UPGRADE=        # see --upgrade
 
-CEN_CONFIG_DIR="$CEN_ROOT/shared/.."
+DAT_CONFIG_DIR="$CEN_ROOT/shared/.."
+DAT_DIFF_ARG=           # see check_diff
 DAT_EATMYDATA=          # set by option nosync
                         # dpkg install package status ...
 DAT_STATUS='/var/lib/dpkg/info'
@@ -141,7 +142,7 @@ process_apt() {
         local cols=$((cols - ${#snam} - 2))
 
         ___aptgui_orig() {
-            DEBIAN_FRONTEND='noninteractive' LC_MESSAGES=C DISPLAY= COLUMNS=$cols \
+            DEBIAN_FRONTEND=noninteractive LC_MESSAGES=C DISPLAY= COLUMNS=$cols NO_COLOR=yes \
             system -e "$@" --yes -o Dpkg::Options::='--force-confold' 2>&1 </dev/null ; echo STAT=$?
         }
 
@@ -234,7 +235,7 @@ process_apt() {
         [ -n "$lall" ] && return 0
         local mesg
         printf -v mesg "$1" "$3"
-        confirm -a -c ___aptend -p "[a/y/N/q]? " -v "all yes no quit" "$mesg"
+        confirm -a -c ___aptend -d $"n" -p $"[a/y/N/q]? " -v $"all yes no quit" "$mesg"
         case $? in
         0)  lall=1 ;;
         1)  return 0 ;;
@@ -272,20 +273,19 @@ process_apt() {
     ___aptend                           # apt install|remove
 }
 
-# resolve destination arguments: <arg>
-CEN_DIFF_ARG=
+# resolve destination arguments: <arg> (result in DAT_DIFF_ARG)
 check_diff() {
-    CEN_DIFF_ARG="${1:--}"
-    [ "$CEN_DIFF_ARG" = '-' ] && return
-    if [ "${1::1}" = "@" ] ; then
-        if [ "$1" = "@" ] ; then
-            CEN_DIFF_ARG="$CEN_CONFIG_DIR/@shared/PACKAGES"
+    DAT_DIFF_ARG="${1:--}"
+    [ "$DAT_DIFF_ARG" = '-' ] && return
+    if [ "${1::1}" = '@' ] ; then
+        if [ "$1" = '@' ] ; then
+            DAT_DIFF_ARG="$DAT_CONFIG_DIR/@shared/PACKAGES"
         else
-            CEN_DIFF_ARG="$CEN_CONFIG_DIR/${1:1}/PACKAGES"
+            DAT_DIFF_ARG="$DAT_CONFIG_DIR/${1:1}/PACKAGES"
         fi
     fi
-    prettypath -c -e -f -s CEN_DIFF_ARG -- "$CEN_DIFF_ARG"
-    [ -r "$CEN_DIFF_ARG" ] || fatal $"Cannot read:" "$CEN_DIFF_ARG"
+    prettypath -c -e -f -s DAT_DIFF_ARG -- "$DAT_DIFF_ARG"
+    [ -r "$DAT_DIFF_ARG" ] || fatal $"Cannot read:" "$DAT_DIFF_ARG"
 }
 
 # ------------------------------------------------------------------------------
@@ -341,14 +341,14 @@ run() {
     fi
     arguments 1 2 "$@" || return
     check_diff "$2"
-    local dest="$CEN_DIFF_ARG"
+    local dest="$DAT_DIFF_ARG"
     check_diff "$1"
-    [ "$CEN_DIFF_ARG" = '-' ] && fatal $"1st arg must be <path>, @ or @<host>"
+    [ "$DAT_DIFF_ARG" = '-' ] && fatal $"1st arg must be <path>, @ or @<host>"
     system -f -c diff dpkg apt
 
     # get input data
     local lsrc ldes hinp
-    splitjoin -s lsrc -d '\n' -i - <"$CEN_DIFF_ARG"
+    splitjoin -s lsrc -d '\n' -i - <"$DAT_DIFF_ARG"
     if [ "$dest" = '-' ] ; then
         system -a ldes -d '\n' -e -n -p -r -- dpkg --get-selections
     else

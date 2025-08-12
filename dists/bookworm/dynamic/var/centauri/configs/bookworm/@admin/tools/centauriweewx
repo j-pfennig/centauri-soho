@@ -5,7 +5,9 @@ CEN_TITLE=$"Tool to (un)install and run WeeWX"
 
 # ------------------------------------------------------------------------------
 # Note: this tool implements service actions like start/stop/status but does not
-#       use the _centauri_bash_svc module. So using opt -g with the proxy is OK.
+#       use the _centauri_bash_svc module. Together with a few other code lines
+#       this keeps the size of a packaged version small at the cost of slightly
+#       reduced functionality. See CEN_PACKAGE and centauri-bash-lib's uglify.
 # ------------------------------------------------------------------------------
 
 # Import the bash library, set name and version
@@ -28,18 +30,23 @@ DAT_BROWSER=('x-www-browser')
 DAT_EDITOR=('editor')
 
 # nothing configurable below ...
+
+if [ "${CEN_NAME::1}" = '.' ] ; then    # started as appliance ...
+    CEN_NAME='centauriweewx' ; set -- --quiet web
+fi
 if [ -n "$CEN_PACKAGE" ] ; then         # packaged script...
-    # to be sourced instead of /etc/default/$CEN_NAME
-    CEN_DEFAULTS="$CEN_ROOT/$CEN_NAME.default"
+    # file to be sourced instead of /etc/default/$CEN_NAME
+    CEN_APPCONF="$CEN_ROOT/$CEN_NAME.default"
     # in a packaged script CEN_ROOT is the base folder of the script
     # source. Here we replace it with the base folder path ...
-    CEN_ROOT="$DAT_BASE" ; folder -f -m "$CEN_ROOT"
-    DAT_HOME="$CEN_ROOT/home"           # config/transient data
+    CEN_ROOT="$DAT_BASE"
+    DAT_HOME="$CEN_ROOT/home"           # config and transient data
+    TEXTDOMAINDIR="$CEN_ROOT/locale"
     embed -c '_centauri_bash_atr'       # dependencies ...
     embed -c '_centauri_bash_cfm'
     embed -c '_centauri_bash_utl'
 else                                    # shared script ...
-    DAT_HOME="$CEN_ROOT/home/$DAT_USER" # config/transient data
+    DAT_HOME="$CEN_ROOT/home/$DAT_USER" # config and transient data
 fi
 DAT_DATA="$DAT_HOME/weewx-data"         # weewx data folder
 DAT_CONF="$DAT_DATA/weewx.conf"         # default config file (created by weewx)
@@ -180,7 +187,7 @@ venv_setup() {
             ((CEN_OPT_QUIRK |= 128)) ; break
         done
 
-        system -p -- python3 -m venv "$DAT_VENV" || return 1
+            system -p -- python3 -m venv "$DAT_VENV" || return 1
         message -a $"Using python virtual environment:" "$DAT_VENV"
     fi
 
@@ -402,8 +409,8 @@ actionSystemctl() {
             service_unit                            # create unit if needed
             system -e -p -- systemctl enable "$DAT_SVCC" || return
             if [ ! -e "$DAT_ENAB" ] ; then
-                temp=1 ; create -- "$DAT_ENAB"      # enable temporarily
-            fi
+            temp=1 ; create -- "$DAT_ENAB"          # enable temporarily
+        fi
         fi
     elif [ ! -e "$DAT_ENAB" ] ; then
         error -m "Service '$DAT_SERV' is not enabled. Please" \

@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2005-2023; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2005-2025; BSD License"
 CEN_TITLE="Tool to handle fetchmail and to do some exim4/cyrus maintenance"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -s -y - '0.36:3' 0 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -s -y - '0.37:5' 0 || exit 2
 
 # data for extra options
 CEN_OPT_CLIENT=         # see --client
@@ -277,7 +277,7 @@ actionFetch() {
     fi
 
     # do not execute if we are not the domain master
-    [ -f $CEN_ROOT/transient/network_status ] && . $CEN_ROOT/transient/network_status
+    [ -f $CEN_TRANSIENT/network_status ] && . $CEN_TRANSIENT/network_status
     if [ "${CEN_NET_MODE:-MASTER}" != "MASTER" ] ; then
         trace "fetch: will run on MASTER only:" "$CEN_NET_MODE" ; return
     fi

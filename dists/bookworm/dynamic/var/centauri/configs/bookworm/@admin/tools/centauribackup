@@ -267,7 +267,7 @@ do_parse() {
                 ;;
 
         ski*)   [ -z "$arg1" ] && fatal "Missing argument: $cmd (line $line)"
-                _chk_target && $htar "skiptag" "$arg1" "$arg2"
+                _chk_target && $htar 'skiptag' "$arg1" "$arg2"
                 ;;
 
         fol*)   [ -z "$arg1" ] && fatal "Missing argument: $cmd (line $line)"
@@ -314,10 +314,10 @@ do_parse() {
 # ------------------------------------------------------------------------------
 do_checks() {
     local incl
-    if [ "$1" = "include" ] ; then
+    if [ "$1" = 'include' ] ; then
         incl=1
     elif [ "$1" != 'exclude' ] ; then
-        fatal "invalid do_checks: $*"
+        fatal "Invalid do_checks: $*"
     fi
 
     case "$2" in
@@ -656,13 +656,13 @@ actionList() {
     ___print() {
         local text
         if [ "$1" = 'target' -o "$1" = 'group' ] ; then
-            do_print "%-8s %-16s %s" "$1" "$2" "$3"
+            do_print '%-8s %-16s %s' "$1" "$2" "$3"
             found="$1" ; tag="$2"
         elif [ "$found" = 'target' -o "$found" = 'group' ] ; then
-            [ "$1" = "include" ] && DAT_INCLUDE+=("$2")
+            [ "$1" = 'include' ] && DAT_INCLUDE+=("$2")
             [ "$1" = 'clone'   ] && DAT_INCLUDE+=('-')
             [ "$1" = 'member'  ] && DAT_INCLUDE+=("$2")
-            do_print -i "%-8s %s %s %s %s" "$@"
+            do_print -i '%-8s %s %s %s %s' "$@"
         fi
     }
     ___check()  {
@@ -695,7 +695,7 @@ actionRun() {
    # callbacks
     ___target() {   if [ "$1" = 'member' ] ; then
                         DAT_INCLUDE+=("$2")
-                    elif [ "$1" = "skiptag" ] ; then
+                    elif [ "$1" = 'skiptag' ] ; then
                         DAT_SKIP_TAG="$2"
                     elif [ "$1" = 'folder' ] ; then
                         [ ! -d "$relf" ] && relf="$2"
@@ -991,22 +991,22 @@ actions() {
 
     # real actions
     arc*)
-        invoke 'archive' actionArchive 1 + ;;
+        invoke 'archive' -          1 + ;;
     clo*)
-        invoke 'clone'   actionClone   1 ;;
+        invoke 'clone'   -          1   ;;
     gro*)
-        invoke 'groups'  actionGroups  0 ;;
+        invoke 'groups'  -          0   ;;
     lis*)
-        invoke 'list'    actionList  1 + ;;
+        invoke 'list'    -          1 + ;;
     run*)
-        invoke 'run'     actionRun   1 + ;;
+        invoke 'run'     -          1 + ;;
     tar*)
-        invoke 'targets' actionTargets 0 ;;
+        invoke 'targets' -          0   ;;
 
     # the run action is implied
     *)
         DAT_RUN_IMPLIED=1
-        invoke 'run'     actionRun   - - "$@" ;;
+        invoke 'run'     -          - - "$@" ;;
     esac
 }
 

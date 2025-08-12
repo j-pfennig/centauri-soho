@@ -267,7 +267,7 @@ launcher_html() {
     fi
 
     # the remaining args should be html files or urls ...
-    shift ; [ $# = 0 ] && set -- 'http://'
+    shift ; [ $# = 0 -o "$*" = '-' ] && set -- 'http://'
     DAT_URL=() ; url_builder "$@"
     url_finder || quit $"No valid URL found" "($CEN_ACTION)"
     args+=("$DAT_URL")
@@ -472,7 +472,7 @@ $CEN_DEBUG -c -- "$@"
     #   qt5-webengine5
 
     # the remaining args should be html files or urls ...
-    [ $# = 0 ] && set -- 'file://' 'http://'
+    [ $# = 0 -o "$*" = '-' ] && set -- 'file://' 'http://'
     DAT_URL=() ; url_builder "$@"
     url_finder || quit $"No valid URL found" "($CEN_ACTION)"
 
@@ -877,6 +877,7 @@ actions() {
         # only accept option arguments that are valid for launcher()
         while [ "${1::1}" = '-' ] ; do
             case "$1" in
+            -)      ;;
             --)     shift ; break ;;
             -f|-q|-r)                           # know flag options ...
                     list+=("$1") ;;

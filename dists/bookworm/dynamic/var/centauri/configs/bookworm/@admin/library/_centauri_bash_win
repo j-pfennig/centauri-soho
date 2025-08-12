@@ -38,7 +38,7 @@
 # Copyright Dr. J. Pfennig (c) 2015-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_win']='0.48:5'
+CEN_MODULES['_centauri_bash_win']='0.49:5'
 
 embed -c '_centauri_bash_ext'       # reference modules ...
 embed -c '_centauri_bash_txt'
@@ -230,8 +230,9 @@ _cen_win_pdlg() {
 
     if [ -n "$_fini" ] ; then
         if [ -z "$CEN_WIN_PROGRESS" ] ; then
-            sysfind -f -s CEN_WIN_APPQDBUS -- 'qdbus'   # check and save path
-            windialog -l CEN_WIN_PROGRESS -- - " "      # set minimum size
+            # check and save path of a qdbus tool ...
+            sysfind -f -s CEN_WIN_APPQDBUS -o -- qdbus6 qdbus5 qdbus
+            windialog -l CEN_WIN_PROGRESS -- - ' '     # set minimum size
             [ -z "$CEN_WIN_PROGRESS" ] && fatal $"Failed to init progress dialog"
             _cen_win_pdlg showCancelButton 1
         fi
@@ -243,7 +244,7 @@ _cen_win_pdlg() {
 
     elif [ -n "$_fqui" ] ; then
         if [ -n "$CEN_WIN_APPQDBUS" -a -n "$CEN_WIN_PROGRESS" ] ; then
-            "$CEN_WIN_APPQDBUS" $CEN_WIN_PROGRESS "close" &>/dev/null
+            "$CEN_WIN_APPQDBUS" $CEN_WIN_PROGRESS 'close' &>/dev/null
         fi
         CEN_WIN_PROGRESS= ; CEN_WIN_PROGVCUR= ; CEN_WIN_PROGTEXT= ; CEN_WIN_PROGVALU=
         [ "$_fqui" = 2 ] && quit -s 2 -- "$*"
@@ -252,8 +253,8 @@ _cen_win_pdlg() {
 
     # check for cancel and send command to dialog
     [ -z "$CEN_WIN_PROGRESS" ] && return 1
-    if [ "$1" = "value" ] ; then
-        [ "$2" = "$CEN_WIN_PROGVCUR" -a "$2" != "99" ] && return 0
+    if [ "$1" = 'value' ] ; then
+        [ "$2" = "$CEN_WIN_PROGVCUR" -a "$2" != 99 ] && return 0
         CEN_WIN_PROGVCUR="$2"
     fi
 
@@ -756,7 +757,7 @@ _cen_win_txtfold() {
             _txtf="$_nout" ; _txtf="$_tinp"
         fi
     else                                            # text folding ...
-        txtfold -d "$_deli" -m "$_wide" -s _temp _tinp
+        txtfold -d "$_deli" -m "$_wide" -s _temp -i _tinp
         _txtf="$_nout" ; _txtf="$_temp"
     fi
     return 0
@@ -781,6 +782,7 @@ _cen_windmesg() {
             [ "$1" = "?" ] && _ftwo=1
             [ "$1" = '-' ] && _flib=1
             [ "${1::1}" = "+" ] && _popw="${1:1}" ;;
+      -h)   [ "$CEN_VERB" -lt 2 ] && _argx+=('-i') ;;
       -i)   _argx+=("$1") ;;
       -l)   _argx+=("$1") ; _verb=1 ;;
       -m)   _argx+=("$1") ;;
@@ -1038,7 +1040,7 @@ _cen_win_hook() {
 
 [ -n "${CEN_MODULES[_centauri_bash_con]}" ] &&
     console -d
-    trace -c $"window module load" $"Disabled 'console' module"
+    $CEN_TRACE -c $"window module load" $"Disabled 'console' module"
 [ -n "${CEN_MODULES[_centauri_bash_svc]}" ] &&
     fatal $"module conflict:" "_centauri_bash_win/svc"
 

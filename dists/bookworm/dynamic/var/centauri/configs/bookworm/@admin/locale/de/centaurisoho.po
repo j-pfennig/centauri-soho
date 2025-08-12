@@ -9,544 +9,897 @@ msgstr "BSD Lizenz"
 msgid "Installer tool for centaurisoho linux machines"
 msgstr "Einrichtungswerkzeug für centaurisoho Linux Rechner"
 
-#: /var/centauri/tools/centaurisoho:78
-msgid "The command cannot be used on this host:"
-msgstr "Befehl nicht auf diesem Rechner benutzbar:"
+#: /var/centauri/tools/centaurisoho:79
+msgid "I am not daring to execute '%s' on this system. To allow"
+msgstr "Ausführen von '%s' auf diesem System verweigert. Dieses Kommando"
 
-#: /var/centauri/tools/centaurisoho:97
+#: /var/centauri/tools/centaurisoho:81
+msgid "this run '%s'"
+msgstr "zum Erlauben starten '%s'"
+
+#: /var/centauri/tools/centaurisoho:83
+msgid "or use option '--force'"
+msgstr "oder Option '--force' benutzen"
+
+#: /var/centauri/tools/centaurisoho:104
 msgid "Option '-p' needs <file> and <wrks> arguments"
 msgstr "Option '-p' braucht <file> und <wrks> Argumente"
 
-#: /var/centauri/tools/centaurisoho:104
+#: /var/centauri/tools/centaurisoho:111
 msgid "Missing password file:"
 msgstr "Fehlende Passwortdatei:"
 
-#: /var/centauri/tools/centaurisoho:111
+#: /var/centauri/tools/centaurisoho:118
 msgid "<please enter>"
 msgstr "<Eingeben>"
 
-#: /var/centauri/tools/centaurisoho:111
+#: /var/centauri/tools/centaurisoho:118
 msgid "<optional>"
 msgstr "<Optional>"
 
-#: /var/centauri/tools/centaurisoho:113
-msgid "Domain name  (updates certs)"
-msgstr "Domänenname (aktualisiert Zert.)"
+#: /var/centauri/tools/centaurisoho:120
+msgid "Domain name    (for certificates)"
+msgstr "Domänenname  (aktualisiert Zert.)"
 
-#: /var/centauri/tools/centaurisoho:115
+#: /var/centauri/tools/centaurisoho:122
 msgid "Repository configuration name"
-msgstr ""
+msgstr "Konfigurationsname im Respository"
 
-#: /var/centauri/tools/centaurisoho:116
-msgid "External DNS (- for none)"
-msgstr "Externes DNS (- für keines)"
+#: /var/centauri/tools/centaurisoho:123
+msgid "External Dyn-DNS     (- for none)"
+msgstr "Externes Dyn-DNS   (- für keines)"
 
-#: /var/centauri/tools/centaurisoho:117
+#: /var/centauri/tools/centaurisoho:124
 msgid "Default machine name prefix"
 msgstr "Vorgabe Machinenamen Präfix"
 
-#: /var/centauri/tools/centaurisoho:119
-msgid "Primary server name"
-msgstr "Primärer Servername"
+#: /var/centauri/tools/centaurisoho:126
+msgid "Primary server name  (- for none)"
+msgstr "Primärer Servername (- f. keinen)"
 
-#: /var/centauri/tools/centaurisoho:125
+#: /var/centauri/tools/centaurisoho:133
 msgid "Network IPv4 address and mask"
 msgstr "Netzwerk IPv4 Adresse und Maske"
 
-#: /var/centauri/tools/centaurisoho:126
+#: /var/centauri/tools/centaurisoho:134
 msgid "External Network addr. and mask"
-msgstr ""
+msgstr "Externe IPv4 Adresse und Maske"
 
-#: /var/centauri/tools/centaurisoho:128
+#: /var/centauri/tools/centaurisoho:136
 msgid "Primary router name"
 msgstr "Primärer Routername"
 
-#: /var/centauri/tools/centaurisoho:129
+#: /var/centauri/tools/centaurisoho:137
 msgid "Primary router IPv4 address"
-msgstr ""
+msgstr "IPv4 Addresse für primären Router"
 
-#: /var/centauri/tools/centaurisoho:130
-msgid "APT proxy IPv4    (- to disable)"
-msgstr ""
+#: /var/centauri/tools/centaurisoho:138
+msgid "APT proxy IPv4     (- to disable)"
+msgstr "IPv4 APT Proxy      (- für keine)"
 
-#: /var/centauri/tools/centaurisoho:132 /var/centauri/tools/centaurisoho:269
-msgid "WLAN client SSID  (- to disable)"
-msgstr ""
+#: /var/centauri/tools/centaurisoho:140
+msgid "WLAN client SSID   (- to disable)"
+msgstr "WLAN Klient SSID    (- für keine)"
 
-#: /var/centauri/tools/centaurisoho:133
-msgid "WLAN AP SSID      (- to disable)"
-msgstr ""
+#: /var/centauri/tools/centaurisoho:141
+msgid "WLAN AP SSID       (- to disable)"
+msgstr "WLAN Zugang SSID    (- für keine)"
 
-#: /var/centauri/tools/centaurisoho:136
+#: /var/centauri/tools/centaurisoho:144
 msgid "SSIDs of WLAN client and WLAN AP must not be equal"
-msgstr ""
+msgstr "SSIDs von WLAN Klient und Zugang dürfen nicht gleich sein"
 
-#: /var/centauri/tools/centaurisoho:137 /var/centauri/tools/centaurisoho:271
-msgid "WLAN password     (- for random)"
-msgstr "WLAN Passwort  (- für Zufällig)"
+#: /var/centauri/tools/centaurisoho:145
+msgid "WLAN password      (- for random)"
+msgstr "WLAN Passwort    (- für zufällig)"
 
-#: /var/centauri/tools/centaurisoho:146
+#: /var/centauri/tools/centaurisoho:154
 msgid "Parameter loading failed:"
 msgstr "Laden der Parameter fehlgeschlagen:"
 
-#: /var/centauri/tools/centaurisoho:165
+#: /var/centauri/tools/centaurisoho:156
+msgid "Parameters read"
+msgstr "Parameter gelesen"
+
+#: /var/centauri/tools/centaurisoho:158
+msgid "Got no parameters"
+msgstr "Keine Parameter"
+
+#: /var/centauri/tools/centaurisoho:173
 msgid "Current parameter values..."
 msgstr "Aktuelle Parameterwerte..."
 
-#: /var/centauri/tools/centaurisoho:239
+#: /var/centauri/tools/centaurisoho:242
+msgid "<copy current>"
+msgstr "<übernehmen>"
+
+#: /var/centauri/tools/centaurisoho:247
 msgid "Keyboard layout (fr,de,us,...)"
 msgstr "Tastatursprache (fr,de,us,...)"
 
-#: /var/centauri/tools/centaurisoho:267
+#: /var/centauri/tools/centaurisoho:274
 msgid "Private network only (firewall disabled)"
-msgstr ""
+msgstr "Ausschliesslich privates Netzwerk (Firewall aus)"
 
-#: /var/centauri/tools/centaurisoho:297
+#: /var/centauri/tools/centaurisoho:276
+msgid "WLAN client SSID  (- to disable)"
+msgstr "WLAN Klient SSID (- für keine)"
+
+#: /var/centauri/tools/centaurisoho:278
+msgid "WLAN password     (- for random)"
+msgstr "WLAN Passwort (- für zufällig)"
+
+#: /var/centauri/tools/centaurisoho:302
 msgid "Update configuration of local host"
-msgstr ""
+msgstr "Lokalen Rechner neu konfigurieren"
 
-#: /var/centauri/tools/centaurisoho:307
+#: /var/centauri/tools/centaurisoho:315
 msgid "Parameter file"
 msgstr "Parameterdatei"
 
-#: /var/centauri/tools/centaurisoho:310
+#: /var/centauri/tools/centaurisoho:322
 msgid "This image cannot be configured (missing: %s)"
-msgstr ""
+msgstr "Dieses Abbild ist nicht konfigurierbar ('%s' fehlt)"
 
-#: /var/centauri/tools/centaurisoho:329
+#: /var/centauri/tools/centaurisoho:331
+msgid "wrong workspace"
+msgstr "Arbeitsbereich falsch"
+
+#: /var/centauri/tools/centaurisoho:335
+msgid "dest workspace"
+msgstr "Ziel-Arbeitsbereich"
+
+#: /var/centauri/tools/centaurisoho:341
 msgid "Configuration needs a hostname"
-msgstr ""
+msgstr "Konfiguration erfordert Rechnernamen"
 
-#: /var/centauri/tools/centaurisoho:332
-msgid "Update configuration of '%s'"
-msgstr ""
+#: /var/centauri/tools/centaurisoho:344
+msgid "Edit configuration of '%s'"
+msgstr "Konfiguration von '%s' editieren"
 
-#: /var/centauri/tools/centaurisoho:338
-msgid "Make this computer stand-alone (dhcp based)"
-msgstr ""
+#: /var/centauri/tools/centaurisoho:350
+msgid "Make this computer stand-alone (DHCP based)"
+msgstr "Einzelplatzrechner einrichten (DHCP basiert)"
 
-#: /var/centauri/tools/centaurisoho:345
-msgid "yes no quit"
-msgstr ""
-
-#: /var/centauri/tools/centaurisoho:345
+#: /var/centauri/tools/centaurisoho:355
 msgid " [y/n/q]? "
-msgstr ""
+msgstr " [j/n/a] ? "
 
-#: /var/centauri/tools/centaurisoho:345
+#: /var/centauri/tools/centaurisoho:355
+msgid "yes no quit"
+msgstr "ja nein abbrechen"
+
+#: /var/centauri/tools/centaurisoho:355 /var/centauri/tools/centaurisoho:363
 msgid "Apply configuration"
-msgstr ""
+msgstr "Konfiguration anwenden"
 
-#: /var/centauri/tools/centaurisoho:403
+#: /var/centauri/tools/centaurisoho:363
+msgid " [y/q]? "
+msgstr " [j/a] ? "
+
+#: /var/centauri/tools/centaurisoho:363
+msgid "yes quit"
+msgstr "ja abbrechen"
+
+#: /var/centauri/tools/centaurisoho:401
+msgid "Configuration failed, fix errors and try again"
+msgstr "Konfiguration fehlgeschlagen, Fehler korrigieren und neu versuchen"
+
+#: /var/centauri/tools/centaurisoho:408
+msgid "Touched to trigger re-config:"
+msgstr "Zur Neukonfiguration markiert:"
+
+#: /var/centauri/tools/centaurisoho:409
+msgid "Please reboot your system to complete all updates"
+msgstr "Zum Abschliessen aller Ändrerungen System neu starten"
+
+#: /var/centauri/tools/centaurisoho:420
 msgid "WLAN password set to random, use 'centaurinetgen' to fix"
-msgstr ""
+msgstr "WLAN Passwort ist zufällig, mit 'centaurinetgen wpa' ändern"
 
 #: /var/centauri/tools/centaurisoho:422
+msgid "Setting wlan password"
+msgstr "WLAN Passwort setzen"
+
+#: /var/centauri/tools/centaurisoho:440
 msgid "Network base has invalid syntax"
-msgstr ""
+msgstr "Sytaxfehler in Netzwerkbasis"
 
-#: /var/centauri/tools/centaurisoho:424
+#: /var/centauri/tools/centaurisoho:442
 msgid "Network mask bits value must be >= 10"
-msgstr ""
+msgstr "Netzwerk Maskenbits Anzahl muss >= 10 sein"
 
-#: /var/centauri/tools/centaurisoho:426
-msgid "Network mask bits value must be <= 22"
-msgstr ""
+#: /var/centauri/tools/centaurisoho:444
+msgid "Network mask bits value must be <= 21"
+msgstr "Netzwerk Maskenbits Anzahl muss <= 21 sein"
 
-#: /var/centauri/tools/centaurisoho:437
+#: /var/centauri/tools/centaurisoho:455
 msgid "Network mask too short for base address"
-msgstr ""
+msgstr "Netwerk-Maske für Basisadresse zu kurz"
 
-#: /var/centauri/tools/centaurisoho:499
+#: /var/centauri/tools/centaurisoho:517
 msgid "Updating parameters from 'setup.conf'"
-msgstr ""
+msgstr "Paramenter aus 'setup.conf' aktualisieren"
 
-#: /var/centauri/tools/centaurisoho:541
+#: /var/centauri/tools/centaurisoho:559
 msgid "Creating network configuration cache"
-msgstr ""
+msgstr "Erstelle Netwerk-Konfiguration Zwischenspeicher"
 
-#: /var/centauri/tools/centaurisoho:544
+#: /var/centauri/tools/centaurisoho:562
 msgid "Replace the existing network configuration"
-msgstr ""
+msgstr "Vorhandene Netzwerkkonfiguration ersetzen"
 
-#: /var/centauri/tools/centaurisoho:628
+#: /var/centauri/tools/centaurisoho:646
 msgid "Update '%s' files from repository"
-msgstr ""
+msgstr "Aktualisiere '%s' Dateien aus dem Repository"
 
-#: /var/centauri/tools/centaurisoho:653
+#: /var/centauri/tools/centaurisoho:671
 msgid "File not in repository"
-msgstr ""
+msgstr "Datei nicht im Repository"
 
-#: /var/centauri/tools/centaurisoho:658
+#: /var/centauri/tools/centaurisoho:676
 msgid "items"
-msgstr ""
+msgstr "Objekte"
 
-#: /var/centauri/tools/centaurisoho:665
+#: /var/centauri/tools/centaurisoho:683
 msgid "Updated %s folders, %s items, %s not in repository"
-msgstr ""
+msgstr "%s Verzeichnisse aktualisiert, %s Einträge, %s nicht im Repository"
 
-#: /var/centauri/tools/centaurisoho:701
+#: /var/centauri/tools/centaurisoho:713
+msgid "Top level domain not allowed (needs '.')"
+msgstr "Top-Level Domäne nicht erlaubt (braucht '.')"
+
+#: /var/centauri/tools/centaurisoho:726
 msgid "Minimum password length is 8 chars"
-msgstr ""
+msgstr "Passwort Mindestlänge ist acht Zeichen"
 
-#: /var/centauri/tools/centaurisoho:954
+#: /var/centauri/tools/centaurisoho:731
+msgid "IPv4 address required"
+msgstr "Eine IPv4 Adresse wird benötigt"
+
+#: /var/centauri/tools/centaurisoho:735
+msgid "Invalid address (not in base or external network)"
+msgstr "Adresse ungültig (nicht im Basis- oder Externen Netzwerk)"
+
+#: /var/centauri/tools/centaurisoho:739
+msgid "Not a valid name"
+msgstr "Kein gültiger Name"
+
+#: /var/centauri/tools/centaurisoho:765
+msgid "Found workspace"
+msgstr "Arbeitsbereich ist"
+
+#: /var/centauri/tools/centaurisoho:781
+msgid "No known workspace, use option '%s'"
+msgstr "Arbeitsbereich nicht bekannt, Option '%s' benutzen"
+
+#: /var/centauri/tools/centaurisoho:784
+msgid "Not a valid workspace:"
+msgstr "Kein gültiger Arbeitsbereich:"
+
+#: /var/centauri/tools/centaurisoho:787
+msgid "No configuration info, use option '%s'"
+msgstr "Keine Konfigurationsdaten, Option '%s' benutzen"
+
+#: /var/centauri/tools/centaurisoho:797
+msgid "Workspace is not a child of '%s': %s"
+msgstr "Arbeitsbereich ist nicht Teil von '%s': %s"
+
+#: /var/centauri/tools/centaurisoho:811
+msgid "No known seed file, use options '%s'"
+msgstr "Keine bekannte Saat-Datei, Optionen '%s' benutzen"
+
+#: /var/centauri/tools/centaurisoho:813
+msgid "Seed file"
+msgstr "Saat-Datei"
+
+#: /var/centauri/tools/centaurisoho:835
+msgid "Install helper not found:"
+msgstr "Installationshelfer nicht gefunden:"
+
+#: /var/centauri/tools/centaurisoho:838
+msgid "Sourcing"
+msgstr "Einlesen"
+
+#: /var/centauri/tools/centaurisoho:852
+msgid "Samba domain members must re-join the domain after rename"
+msgstr "Nach Umbenennung müssen Samba Mitglieder der Domäne erneut beitreten"
+
+#: /var/centauri/tools/centaurisoho:854
+msgid "AD/DC servers should not be renamed, samba must be re-provisioned"
+msgstr "AD/DC Server sollte nicht umbenannt werden, Samba Neueinrichtung nötig"
+
+#: /var/centauri/tools/centaurisoho:986
+msgid "Invalid template substitution: "
+msgstr "Ungültige Template-Ersetzung: "
+
+#: /var/centauri/tools/centaurisoho:987
+msgid "Line: "
+msgstr "Zeile: "
+
+#: /var/centauri/tools/centaurisoho:987
+msgid "File: "
+msgstr "Datei: "
+
+#: /var/centauri/tools/centaurisoho:998
 msgid "Cannot locate the 'templates' folder"
-msgstr ""
+msgstr "Kann 'templates' Verzeichnis nicht finden"
 
-#: /var/centauri/tools/centaurisoho:978
+#: /var/centauri/tools/centaurisoho:1024
 msgid "Template expression"
-msgstr ""
+msgstr "Template Ausdruck"
 
-#: /var/centauri/tools/centaurisoho:992
-msgid "Not a template:"
-msgstr ""
+#: /var/centauri/tools/centaurisoho:1038 /var/centauri/tools/centaurisoho:1040
+msgid "Not a template"
+msgstr "Ist kein Template"
 
-#: /var/centauri/tools/centaurisoho:1138
+#: /var/centauri/tools/centaurisoho:1044 /var/centauri/tools/centaurisoho:1060
+msgid "expand template"
+msgstr "Erweitere Template"
+
+#: /var/centauri/tools/centaurisoho:1056
+msgid "skip template"
+msgstr "Überspinge Template"
+
+#: /var/centauri/tools/centaurisoho:1187
 msgid "Wait for network becoming online"
-msgstr ""
+msgstr "Warten bis Neztwerk Online ist"
 
-#: /var/centauri/tools/centaurisoho:1153
+#: /var/centauri/tools/centaurisoho:1203
 msgid "Perhaps no network interface is available"
-msgstr ""
+msgstr "Möglicherweise ist keine Netzwerkschnittstelle bereit"
 
-#: /var/centauri/tools/centaurisoho:1162
+#: /var/centauri/tools/centaurisoho:1212
 msgid "Waiting for network since %s [s]"
-msgstr ""
+msgstr "Warten auf Netzwerk seit %s [s]"
 
-#: /var/centauri/tools/centaurisoho:1171
+#: /var/centauri/tools/centaurisoho:1221
 msgid "Check if apt proxy can be reached (use ^C to stop)"
-msgstr ""
+msgstr "Prüfe 'APT proxy' auf Erreichbarkeit (Abbrechen mit ^C)"
 
-#: /var/centauri/tools/centaurisoho:1173
+#: /var/centauri/tools/centaurisoho:1223
 msgid "Cannot connect to apt proxy:"
-msgstr ""
+msgstr "Kein Verbindung zu 'APT proxy'"
 
-#: /var/centauri/tools/centaurisoho:1180
+#: /var/centauri/tools/centaurisoho:1230
 msgid "Network check interrupted, continue anyhow"
-msgstr ""
+msgstr "Netzwerkprüfung abgebrochen, dennoch weiter"
 
-#: /var/centauri/tools/centaurisoho:1183
+#: /var/centauri/tools/centaurisoho:1233
 msgid "Network is online"
+msgstr "Netzwerk ist Online"
+
+#: /var/centauri/tools/centaurisoho:1279
+msgid "Backup of a running system may result in garbage if not using a"
+msgstr "Die Sicherung eines laufenden System kann ohne Verwendung eines"
+
+#: /var/centauri/tools/centaurisoho:1280
+msgid "snapshot. Continue using the most recent daily snapshot"
+msgstr "Snapshots Müll ergeben. Mit dem jüngsten Tages-Snapshot weiter"
+
+#: /var/centauri/tools/centaurisoho:1282
+msgid "Mount option 'subvol=/' might be missing. Continue"
+msgstr "Einhängeoption 'subvol=/' könnte fehlen. Weiter"
+
+#: /var/centauri/tools/centaurisoho:1290
+msgid "Skip existing"
+msgstr "Nicht verändern"
+
+#: /var/centauri/tools/centaurisoho:1323
+msgid "Backup file missing for:"
+msgstr "Sicherungsdatei fehlt für:"
+
+#: /var/centauri/tools/centaurisoho:1333
+msgid "Backups are complete, creating dist tar (%s)"
+msgstr "Sicherungen vollständig, Dist-Tar erstellen (%s)"
+
+#: /var/centauri/tools/centaurisoho:1354
+msgid "Missing file:"
+msgstr "Fehlende Datei:"
+
+#: /var/centauri/tools/centaurisoho:1359
+msgid "Distribution tar created, remove constituent tars"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:1369
+#: /var/centauri/tools/centaurisoho:1381
+msgid "Only 'query' can have a arguments"
+msgstr "Nur 'query' kann Argumente haben"
+
+#: /var/centauri/tools/centaurisoho:1416
 msgid "Not a valid distribution:"
-msgstr ""
+msgstr "Keine gültige Distribution:"
 
-#: /var/centauri/tools/centaurisoho:1374
+#: /var/centauri/tools/centaurisoho:1421
 msgid "Must unpack distribution tar, see:"
-msgstr ""
+msgstr "Distributions-Tar muss entpackt werden, siehe:"
 
-#: /var/centauri/tools/centaurisoho:1376
+#: /var/centauri/tools/centaurisoho:1423
 msgid "Not a valid configuration:"
-msgstr ""
+msgstr "Keine gültige Distribution:"
 
-#: /var/centauri/tools/centaurisoho:1383
+#: /var/centauri/tools/centaurisoho:1430
 msgid "Packing workspace:"
-msgstr ""
+msgstr "Arbeitsbereich packen:"
 
-#: /var/centauri/tools/centaurisoho:1393
+#: /var/centauri/tools/centaurisoho:1440
 msgid "Missing dynamic|static but seed tar exists"
-msgstr ""
+msgstr "Fehlend: 'dynamic|static'  Vorhanden: 'seed' Tar"
 
-#: /var/centauri/tools/centaurisoho:1395
+#: /var/centauri/tools/centaurisoho:1442
 msgid "Missing dynamic|static and missing seed tar"
+msgstr "Fehlend: 'dynamic|static' sowie 'seed' Tar"
+
+#: /var/centauri/tools/centaurisoho:1525
+msgid "HW architecture"
+msgstr "HW Architektur"
+
+#: /var/centauri/tools/centaurisoho:1526
+msgid "Configuration"
+msgstr "Konfiguration"
+
+#: /var/centauri/tools/centaurisoho:1529 /var/centauri/tools/centaurisoho:1535
+#: /var/centauri/tools/centaurisoho:1536 /var/centauri/tools/centaurisoho:1540
+msgid "<missing>"
+msgstr "<fehlend>"
+
+#: /var/centauri/tools/centaurisoho:1530
+msgid "Workspace"
+msgstr "Arbeitsbereich"
+
+#: /var/centauri/tools/centaurisoho:1542
+msgid "Distributable"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2050
+#: /var/centauri/tools/centaurisoho:1543
+msgid "Seed tar"
+msgstr "'seed' Tar-Archiv"
+
+#: /var/centauri/tools/centaurisoho:1544
+msgid "current"
+msgstr "aktuell"
+
+#: /var/centauri/tools/centaurisoho:1546 /var/centauri/tools/centaurisoho:1772
+msgid "Completed"
+msgstr "Fertig"
+
+#: /var/centauri/tools/centaurisoho:1607
+msgid "Missing dynamic|static (run unpack):"
+msgstr ""
+
+#: /var/centauri/tools/centaurisoho:1616
+msgid "Missing OWNERS file:"
+msgstr "Fehlende 'OWNERS' Datei:"
+
+#: /var/centauri/tools/centaurisoho:1627
+msgid "Create distribution tars and delete the tar sources"
+msgstr "Distribution Tars erstellen und Tar Quellen löschen"
+
+#: /var/centauri/tools/centaurisoho:1639
+msgid "Missing dynamic|static but seed tar exists:"
+msgstr ""
+
+#: /var/centauri/tools/centaurisoho:1641
+msgid "Missing dynamic|static and missing seed tar:"
+msgstr ""
+
+#: /var/centauri/tools/centaurisoho:1649
+msgid "Got no valid seed tar:"
+msgstr "Kein nutzbares 'seed' Tar-Archiv:"
+
+#: /var/centauri/tools/centaurisoho:1655
+msgid "Remove %s static|dynamic|configs folders"
+msgstr "Lösche %s static|dynamic|config Verzeichnisse"
+
+#: /var/centauri/tools/centaurisoho:1668
+msgid "Same hostname specified:"
+msgstr "Kein Rechnername angegeben:"
+
+#: /var/centauri/tools/centaurisoho:1670
+msgid "New hostname is already in use:"
+msgstr "Rechnername wird bereits verwendet:"
+
+#: /var/centauri/tools/centaurisoho:1672
+msgid "Current hostname not valid:"
+msgstr "Aktueller Rechnername ist ungültig:"
+
+#: /var/centauri/tools/centaurisoho:1691
+msgid "Found no boot/EFI partition"
+msgstr "Keine 'boot' oder 'EFI' Partition gefunden"
+
+#: /var/centauri/tools/centaurisoho:1692
+msgid "Found no swap partition"
+msgstr "Keine 'swap' Partition gefunden"
+
+#: /var/centauri/tools/centaurisoho:1693
+msgid "Found no root partition"
+msgstr "Keine 'root' Partition gefunden"
+
+#: /var/centauri/tools/centaurisoho:1695
+msgid "Please install the 'udisks2' package"
+msgstr "Bitte Paket 'udisks2' installieren"
+
+#: /var/centauri/tools/centaurisoho:1703
+msgid "inplace"
+msgstr ""
+
+#: /var/centauri/tools/centaurisoho:1705
+msgid "mounting"
+msgstr ""
+
+#: /var/centauri/tools/centaurisoho:1717
+msgid "Update '/etc/fstab' and 'grub.cfg'"
+msgstr "Aktualisiere '/etc/fstab' und 'grub.cfg'"
+
+#: /var/centauri/tools/centaurisoho:1719
+msgid "Update systemd boot and splash"
+msgstr "Aktualisiere 'systemd boot' und Logo"
+
+#: /var/centauri/tools/centaurisoho:1725
+msgid "Update '/etc/fstab'"
+msgstr "Aktualisiere '/etc/fstab'"
+
+#: /var/centauri/tools/centaurisoho:1728
+msgid "Update boot firmware config"
+msgstr "Aktualisiere 'boot firmware' Einstellung"
+
+#: /var/centauri/tools/centaurisoho:1739
+msgid "Found no files matching 'cmdline-*.txt'"
+msgstr ""
+
+#: /var/centauri/tools/centaurisoho:1745
+msgid "renaming"
+msgstr ""
+
+#: /var/centauri/tools/centaurisoho:1764
+msgid "Unmount and change partition labels"
+msgstr ""
+
+#: /var/centauri/tools/centaurisoho:1768
+msgid "Change partition labels of '%s'"
+msgstr ""
+
+#: /var/centauri/tools/centaurisoho:1774
+msgid "Reload systemd and mount"
+msgstr "Systemd neu laden und einhängen"
+
+#: /var/centauri/tools/centaurisoho:1777
+msgid "Completed, please reboot soon"
+msgstr "Fertig, bitte baldigst neu Booten"
+
+#: /var/centauri/tools/centaurisoho:1840 /var/centauri/tools/centaurisoho:1891
+msgid "Invalid swap size:"
+msgstr "Ungültige Swap Größe:"
+
+#: /var/centauri/tools/centaurisoho:1843
+msgid "Invalid argument or hostname:"
+msgstr "Ungültiges Argument bzw. Rechnername:"
+
+#: /var/centauri/tools/centaurisoho:1852
+msgid "Parameter file not found:"
+msgstr "Parameterdatei nicht gefunden:"
+
+#: /var/centauri/tools/centaurisoho:1855
+msgid "Param file"
+msgstr "Parameterdatei"
+
+#: /var/centauri/tools/centaurisoho:1881
+msgid "A minimal system must be renamed or will not boot:"
+msgstr "Ein Minimalsystem muss umbenannt werden oder es bootet nicht:"
+
+#: /var/centauri/tools/centaurisoho:1886
+msgid "Set hostname of installed image"
+msgstr "Rechnernamen dieser Installation setzen"
+
+#: /var/centauri/tools/centaurisoho:1887
+msgid "Size of swap partition in GByte"
+msgstr "Größe der Swap Partition in GByte"
+
+#: /var/centauri/tools/centaurisoho:1889
+msgid "Invalid host name:"
+msgstr "Ungültiger Rechnername:"
+
+#: /var/centauri/tools/centaurisoho:1890
+msgid "Cannot use current host name"
+msgstr "Kann nicht den aktuellen Rechnernamen verwenden"
+
+#: /var/centauri/tools/centaurisoho:1897
+msgid "Input data unusable (%s):"
+msgstr "Unbrauchbare Eingabedaten (%s):"
+
+#: /var/centauri/tools/centaurisoho:2101
 msgid "Cannot unpack"
-msgstr ""
+msgstr "unpack Fehler"
 
-#: /var/centauri/tools/centaurisoho:2050
+#: /var/centauri/tools/centaurisoho:2101
 msgid "no seed tar"
-msgstr ""
+msgstr "Kein 'seed' Tar-Archiv"
 
-#: /var/centauri/tools/centaurisoho:2053
+#: /var/centauri/tools/centaurisoho:2104
 msgid "'dynamic' or 'static' folder already exists"
-msgstr ""
+msgstr "Verzeichnis 'dynamic' oder 'static' besteht schon"
 
-#: /var/centauri/tools/centaurisoho:2054
+#: /var/centauri/tools/centaurisoho:2105
 msgid "Possibly overwriting with older content, continue anyhow"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2056
+#: /var/centauri/tools/centaurisoho:2107
 msgid "Run unpack"
-msgstr ""
+msgstr "Ausführen von 'unpack'"
 
-#: /var/centauri/tools/centaurisoho:2065
+#: /var/centauri/tools/centaurisoho:2116
 msgid "This will remove all cache data and log files"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2069
+#: /var/centauri/tools/centaurisoho:2120
 msgid "Zero-fill unused disk space (good for VMs)"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2101
+#: /var/centauri/tools/centaurisoho:2152
 msgid "Existing workspace, continue anyhow"
-msgstr ""
+msgstr "Existierender Arbeitsbeteich, dennoch weiter"
 
-#: /var/centauri/tools/centaurisoho:2108
+#: /var/centauri/tools/centaurisoho:2159
 msgid "Workspace not found"
-msgstr ""
+msgstr "Arbeitsbereich nicht gefunden"
 
-#: /var/centauri/tools/centaurisoho:2112
+#: /var/centauri/tools/centaurisoho:2163
 msgid "1st argument must be 'get' or 'put'"
-msgstr ""
+msgstr "1. Argument muss 'get' oder 'put' sein"
 
-#: /var/centauri/tools/centaurisoho:2114
+#: /var/centauri/tools/centaurisoho:2165
 msgid "Workspace folder"
-msgstr ""
+msgstr "Arbeitsbereich"
 
-#: /var/centauri/tools/centaurisoho:2123
+#: /var/centauri/tools/centaurisoho:2174
 msgid "Repository"
-msgstr ""
+msgstr "Repository"
 
-#: /var/centauri/tools/centaurisoho:2237
+#: /var/centauri/tools/centaurisoho:2288
 msgid "internal: used by setup helper to register"
-msgstr ""
+msgstr "Intern: von Einrichtungshelfer zum Registrieren einer"
 
-#: /var/centauri/tools/centaurisoho:2238
+#: /var/centauri/tools/centaurisoho:2289
 msgid "          a dispatch function for commands"
-msgstr ""
+msgstr "          Befehlsverteiler-Funktion benutzt"
 
-#: /var/centauri/tools/centaurisoho:2239
+#: /var/centauri/tools/centaurisoho:2290
 msgid "workspace folder containing the seed tar"
-msgstr ""
+msgstr "Der Arbeitsbereich mit dem Saat Archiv"
 
-#: /var/centauri/tools/centaurisoho:2241
+#: /var/centauri/tools/centaurisoho:2292
 msgid "select the current distribution and installation"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2244
+#: /var/centauri/tools/centaurisoho:2295
 msgid "••• setup commands •••"
 msgstr "••• Setup-Kommandos •••"
 
-#: /var/centauri/tools/centaurisoho:2245
+#: /var/centauri/tools/centaurisoho:2296
 msgid "# step 1: unpack seed tar"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2247
+#: /var/centauri/tools/centaurisoho:2298
 msgid "# step 2: clone to EFI bootable BTRFS disk"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2248
+#: /var/centauri/tools/centaurisoho:2299
 msgid "# step 3: install a base system"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2249
+#: /var/centauri/tools/centaurisoho:2300
 msgid "# ...     make this a client machine"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2250
+#: /var/centauri/tools/centaurisoho:2301
 msgid "# ...     make this an appliance"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2251
+#: /var/centauri/tools/centaurisoho:2302
 msgid "# ...     make this a server machine"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2262
+#: /var/centauri/tools/centaurisoho:2313
 msgid "# update configuration from 'setup.conf'"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2263
+#: /var/centauri/tools/centaurisoho:2314
 msgid "# update configuration from parameter file"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2265
+#: /var/centauri/tools/centaurisoho:2316
 msgid "# update configuration using a menu"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2266
+#: /var/centauri/tools/centaurisoho:2317
 msgid "# print some status information"
-msgstr ""
+msgstr "# ein paar Statusinformationen ausgeben"
 
-#: /var/centauri/tools/centaurisoho:2269
+#: /var/centauri/tools/centaurisoho:2320
 msgid "# install a file from repository"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2271
+#: /var/centauri/tools/centaurisoho:2322
 msgid "# expand a template to stdout or a file"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2275
+#: /var/centauri/tools/centaurisoho:2326
 msgid "# generate distributable tar file from workspace"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2276
+#: /var/centauri/tools/centaurisoho:2327
 msgid "# create workspace from distributable tar file"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2278
+#: /var/centauri/tools/centaurisoho:2329
 msgid "# restore file attributes (git clone) or save"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2279
+#: /var/centauri/tools/centaurisoho:2330
 msgid "# generate seed tar file from workspace"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2281
+#: /var/centauri/tools/centaurisoho:2332
 msgid "# unpack seed tar file in workspace"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2283
+#: /var/centauri/tools/centaurisoho:2334
 msgid "# run 'pack' and create 'centaurisoho-master' tar"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2285
+#: /var/centauri/tools/centaurisoho:2336
 msgid "# syncronize workspace with repository"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2289
+#: /var/centauri/tools/centaurisoho:2340
 msgid "••• other/helpers •••"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2291
+#: /var/centauri/tools/centaurisoho:2342
 msgid "# offline backup to create a disk tar"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2292
+#: /var/centauri/tools/centaurisoho:2343
 msgid "# documentation viewer"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2293
+#: /var/centauri/tools/centaurisoho:2344
 msgid "# run the 'installer' tool"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2295
+#: /var/centauri/tools/centaurisoho:2346
 msgid "# cat or copy a text from '@misc/messages' file"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2297
+#: /var/centauri/tools/centaurisoho:2348
 msgid "# change the hostname of a running system"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2299
+#: /var/centauri/tools/centaurisoho:2350
 msgid "# install an image tar to a block device"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2302
+#: /var/centauri/tools/centaurisoho:2353
 msgid "backup target: architecture"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2303
+#: /var/centauri/tools/centaurisoho:2354
 msgid "... [*] [**]   boot partition or mountpoint"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2304
+#: /var/centauri/tools/centaurisoho:2355
 msgid "...            current host name"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2305
+#: /var/centauri/tools/centaurisoho:2356
 msgid "... [*] [***]  root partition or mountpoint"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2306
+#: /var/centauri/tools/centaurisoho:2357
 msgid "use '+' to get partition label from host name"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2307
+#: /var/centauri/tools/centaurisoho:2358
 msgid "use '-' to skip"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2308
+#: /var/centauri/tools/centaurisoho:2359
 msgid "use '-' for '<host>_root' instead of '<host>_vol0'"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2310
+#: /var/centauri/tools/centaurisoho:2361
 msgid "message text: section tag inside []"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2311
+#: /var/centauri/tools/centaurisoho:2362
 msgid "...           line prefix like '# '"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2312
+#: /var/centauri/tools/centaurisoho:2363
 msgid "...           substitute for %1%"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2314
+#: /var/centauri/tools/centaurisoho:2365
 msgid "destination unless '-', overrides <path>"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2315
+#: /var/centauri/tools/centaurisoho:2366
 msgid "alternate for missing <path>, no error if '-'"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2316
+#: /var/centauri/tools/centaurisoho:2367
 msgid "a disk drive name like **sdb** or **mmcblk1**"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2317
+#: /var/centauri/tools/centaurisoho:2368
 msgid "file name or path"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2318
+#: /var/centauri/tools/centaurisoho:2369
 msgid "a chapter number or a word to search for"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2319
+#: /var/centauri/tools/centaurisoho:2370
 msgid "the name that is assigned to the clone"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2320
+#: /var/centauri/tools/centaurisoho:2371
 msgid "paramater file (default: $DAT_SOHO_PARAMS),"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2321
+#: /var/centauri/tools/centaurisoho:2372
 msgid "use '-' to disable configuration prompts"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2322
+#: /var/centauri/tools/centaurisoho:2373
 msgid "full path name, starts with '/'"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2323
+#: /var/centauri/tools/centaurisoho:2374
 msgid "alternate seed tar (gets linked to seed.tar)"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2324
+#: /var/centauri/tools/centaurisoho:2375
 msgid "master tar file (the distributable)"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2325
+#: /var/centauri/tools/centaurisoho:2376
 msgid "append suffix to file name (before extension)"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2326
+#: /var/centauri/tools/centaurisoho:2377
 msgid "swap partition size in <nnn>M or <nn>G notation"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2329
+#: /var/centauri/tools/centaurisoho:2380
 msgid "Setup"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2330
+#: /var/centauri/tools/centaurisoho:2381
 msgid "In step 1 you unpack a distributable tar and run the extracted 'setup':"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2335
+#: /var/centauri/tools/centaurisoho:2386
 msgid "This step installs centauri-bash-library and tools. You can continue"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2336
+#: /var/centauri/tools/centaurisoho:2387
 msgid "using 'setup' or you can now use the slightly friendlier '$CEN_NAME'."
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2339
+#: /var/centauri/tools/centaurisoho:2390
 msgid "Templates"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2340
+#: /var/centauri/tools/centaurisoho:2391
 msgid ""
 "The 'repository' and 'template' actions use '*.TEMPLATE' files to generate"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2341
+#: /var/centauri/tools/centaurisoho:2392
 msgid ""
 "configuration files. Template parameters are from 'setup.conf' (setup step"
 msgstr ""
 
-#: /var/centauri/tools/centaurisoho:2342
+#: /var/centauri/tools/centaurisoho:2393
 msgid "1 and 2) or later also from '$DAT_SOHO_NETCFG'."
 msgstr ""

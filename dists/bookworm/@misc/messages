@@ -184,6 +184,23 @@ to auto start at boot time. The following steps are recommended:
     3. Reboot your computer.
 
 # ------------------------------------------------------------------------------
+[fixboot]
+# ------------------------------------------------------------------------------
+
+A server must use either 'server' or 'apoint' as network configuration. The
+recommended network mode is 'static'. So change the kernel command line to
+contain either:
+
+        centauriswitch=static:server
+
+or, if you want to use your WIFI interface as an access point:
+
+        centauriswitch=static:apoint
+
+Then create or update the interface file '/etc/network/interfaces.server' and
+reboot.
+
+# ------------------------------------------------------------------------------
 [weewx]
 # ------------------------------------------------------------------------------
 

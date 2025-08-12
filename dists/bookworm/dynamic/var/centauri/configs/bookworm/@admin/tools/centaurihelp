@@ -745,7 +745,7 @@ definition_plain() {
 
     # format fill mode string
     local fwid="${CEN_COLS:-80}" ; ((fwid -= 11))
-    while txtfold -f ___format -m "$fwid" -s mesg -- fill ; do
+    while txtfold -f ___format -m "$fwid" -s mesg -i fill ; do
         formatter mesg                          # format right side
         ___print # pref lout mesg               # print line
     done
@@ -1905,12 +1905,12 @@ run_browse() {
             while : ; do
                 printf -v text "<b>%-90s" $"Multiple search results, please select one ..."
                 windialog -s item -- "${text// /\&nbsp;}" 1 "${mlis[@]}" || quit
-                embed -v 'centaurilauncher' --mode=0 'viewer' "$elem/$item"
+                embed -v centaurilauncher --mode=0 viewer "$elem/$item"
             done
         fi
     fi || :
     suffixpath -d -s item 'html' "$item"
-    embed -x -v 'centaurilauncher' --mode=2 'viewer' "$elem/index.html" "$elem/$item"
+    embed -x -v centaurilauncher --mode=2 viewer "$elem/index.html" "$elem/$item"
     quit
 }
 

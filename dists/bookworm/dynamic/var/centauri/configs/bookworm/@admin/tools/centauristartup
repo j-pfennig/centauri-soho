@@ -3,7 +3,7 @@
 CEN_LEGAL=$"Dr. Jürgen Pfennig (c) 2020-2025; BSD License"
 CEN_TITLE=$"Network mode and GUI selection menu"
 
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t - '0.24:5' 1 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t - '0.24:6' 1 || exit 2
 
 # global data
 
@@ -132,7 +132,7 @@ app_parse() {
     }
 
     local _fsrc="$CEN_ROOT/default/$CEN_NAME"
-    local _fper="$CEN_ROOT/persistent/$CEN_NAME"
+    local _fper="$CEN_PERSISTENT/$CEN_NAME"
 
     if [ -z "$CEN_OPT_FORCE" ] && [ "$_fper" -nt "$_fsrc" ] ; then
         trace -a -c 'applicance data' $"cache is up to date"
@@ -447,36 +447,45 @@ do_guikill() {
     timer -w 1
 }
 
-# using /etc/X11/xinit/xinit.rc to run a script/tool: <user>
+# using /etc/X11/xinit/xinit.rc to run a script/tool: <user>|-
 do_launcher() {
-    local indx user="$1" serv tcmd fdes
-    eval fdes=~$1 ; fdes+="/.$CEN_NAME"
+    local indx fdes
+    eval fdes=~$1 ; fdes+="/.$CEN_NAME"             # path of symlink/script
+
+    # delete symlink if arg is '-' or no command is configured
+    if [ "${1:--}" != '-' ] ; then
+        app_byname indx - "$1" || set -- -
+    fi
     if [ "${1:--}" = '-' ] ; then
         [ -h "$fdes" ] && remove -- "$fdes" ; return
     fi
 
-    app_byname indx - "$1" && tcmd="${DAT_APPL_COMMAND[indx]}"
+    # appliance command
+    local acmd topt
+    splitjoin -s acmd -d ' ' -- "${DAT_APPL_COMMAND[indx]}"
 
-    # For '<tool>' without args create a symlink, otherwise a wrapper
-    if  [ $# = 1 ] ; then
+    # For '<tool>' without args create a symlink
+    if  [ "${#acmd[@]}" = 1 -a "$acmd" != '-' ] ; then
         if [ -h "$fdes" -o ! -e "$fdes" ] ; then
-            sysfind -f -s tcmd -- "$tcmd"
-            symlink -n -- "$tcmd" "$fdes"
+            sysfind -f -s acmd -- "$acmd"
+            symlink -n -- "$acmd" "$fdes"
         else
             trace -a -c 'Launcher' $"No update:" "$fdes"
         fi
         return
     fi
 
+    # create wrapper script
     [ "$CEN_TOOLS/$CEN_NAME" -nt "$fdes" ] && topt='-t'
-    if [ "${tcmd:--}" = '-' ] ; then
-        set -- centaurilauncher --term viewer
+    if [ "$acmd" = '-' ] ; then
+        # use '- -' or '- <url>' as short-hand for qml viewer
+        set -- centaurilauncher --term viewer "${acmd[1]:--}"
     else
-        set -- $tcmd
+        set -- "${acmd[@]}"
     fi
     create $topt -b -h - -- "$fdes" 755 "$user:" <<!EOF
 export XDG_CURRENT_DESKTOP=xinit
-exec $@
+exec ${@@Q}
 !EOF
 }
 
@@ -756,8 +765,8 @@ run_wmctrl() {
 }
 
 # handle raspi dsi display rotation
-if [ -r '/var/centauri/persistent/xinit-rotate' ] ; then
-    source '/var/centauri/persistent/xinit-rotate'
+if [ -r '$CEN_PERSISTENT/xinit-rotate' ] ; then
+    source '$CEN_PERSISTENT/xinit-rotate'
     [ -n "\$ROTATE_ID" ] && xinput set-prop "\$ROTATE_ID" \
         'Coordinate Transformation Matrix' -1 0 1   0 -1 1  0 0 1
 fi
@@ -803,6 +812,7 @@ fi
             eval home=~$user
             [ -d "$home" ] || continue
             remove "$home/$DAT_LOGINLINK"
+            [ "${home::6}" = '/home/' ] && return   # don't delete real users
             confirm -n -f $"Remove home folder of user '%s'" "$user" || continue
             remove -d "$home"
         fi

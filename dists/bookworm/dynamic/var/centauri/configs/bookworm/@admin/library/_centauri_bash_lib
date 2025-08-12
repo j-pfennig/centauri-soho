@@ -46,10 +46,11 @@
 # Copyright Dr. J. Pfennig (c) 2007-2025
 # ------------------------------------------------------------------------------
 
-declare -g -A CEN_MODULES['_centauri_bash_lib']='1.52:5:1'
+declare -g -A CEN_MODULES['_centauri_bash_lib']='1.60:6:1'
 
 CEN_ACTARR=             # action argument array
 CEN_ACTION=             # action name, see invoke()
+CEN_APPCONF=            # file to be sourced, see CEN_FEATURE_O
 CEN_ARGOPT=             # option argument, see optarg() and main()
 CEN_ARGS=               # arguments used, see arguments() or options()
 CEN_AUTOIND=            # see _cen_message -a
@@ -57,7 +58,7 @@ CEN_CMDARGS=            # array of script arguments (options removed)
 CEN_CMDCURR=0           # index in CEN_CMDARGS[] for current action
 CEN_CMDINDX=0           # index in CEN_CMDARGS[] for remaining actions
 CEN_CMDOPTS=            # array of script options
-CEN_DEFAULTS=           # file to be sourced, see CEN_FEATURE_O
+CEN_DEFAULT=            # system wide defaults
 CEN_DISPLAY=            # empty, 'x11' or 'wayland'
 CEN_DEBUG=:             # call debug(), see _centauri_bash_dbg
 CEN_DONE=1              # 0:ignore error  1:quit on error  2:quit now
@@ -102,12 +103,16 @@ CEN_OPT_ZOMBIE=         # see --zombie
 # CEN_TOOLS=            # tools folder
 
 # other environment variables:
-# CEN_IS_DESKTOP=       # console flag, see context()
-# CEN_PACKAGE=          # packaged script flag
-# CEN_IS_SOURCED=       # app is sourced, do not run main/quit
-# CEN_NOBREAK=          # 0: no compactify, 1: no line break, 2: compactify
+# CEN_IS_DESKTOP        # console flag, see context()
+# CEN_PACKAGE           # packaged script flag
+# CEN_IS_SOURCED        # app is sourced, do not run main/quit
+# CEN_NOBREAK           # 0: no compactify, 1: no line break, 2: compactify
 
-# CEN_FEATURE_N=        # mini-bash-library, see option --mini
+# CEN_MONITOR_MASK      # enable monitoring
+# CEN_MONITOR_CALL      # callback into user code
+# CEN_MONITOR_FILE      # log file
+
+# CEN_FEATURE_N         # mini-bash-library, see option --mini
 
 declare -g -A CEN_COMMANDS  # dictionary used by sysfind
 
@@ -132,7 +137,11 @@ CEN_HOOK_OPTIONS='options'
 CEN_HOOK_GETLINE='_cen_getline'
 CEN_HOOK_MAIN=:
 CEN_HOOK_MESSAGE='_cen_message'
+CEN_HOOK_MONITOR=:
 CEN_HOOK_QUIT='_cen_quit'
+
+CEN_TRANSIENT="$CEN_ROOT/transient"     # temp folder (root write access only)
+CEN_PERSISTENT="$CEN_ROOT/persistent"   # cache folder (root write access only)
 
 # ------------------------------------------------------------------------------
 # initialize (TEXTDOMAIN must be set before bash is parsing the script)
@@ -191,10 +200,10 @@ fi
 # message - output a message
 # warning - output a warning message
 #
-# Call:     <msg_function> [<cls>] [-a|-i] [-l] [-r] [-m|-n] [--] <arg>...
-#           <msg_function> [<cls>] [-a|-i] [-l] [-r] [-m] -p [--] <fmt> <arg>...
-#           <msg_function> [<cls>] [-a|-i] [-l] [-r] -c    [--] <pre> <arg>...
-#           <msg_function> [<cls>] [-a|-i] [-l] [-r] -c -p [--] <pre> <fmt> <arg>...
+# Call:     <msg_function> [<cls>] [-a|-i] [-l] [-r] [-m|-n|y] [--] <arg>...
+#           <msg_function> [<cls>] [-a|-i] [-l] [-r] [-m|-y] -p [--] <fmt> <arg>...
+#           <msg_function> [<cls>] [-a|-i] [-l] [-r] -c    [-y] [--] <pre> <arg>...
+#           <msg_function> [<cls>] [-a|-i] [-l] [-r] -c -p [-y] [--] <pre> <fmt> <arg>...
 #
 #           <msg_function> := trace | message | warning | error | fatal
 #
@@ -204,10 +213,11 @@ fi
 #           -d  modules only, ignored here, see [[decorate()]] and [[_centauri_bash_win]]
 #           -i  indent (no program name)
 #           -l  be loud, overrides main's --quiet option
-#           -m  multiple lines, one <arg> per line (short for '-m -p "%s\n"')
-#           -n  print multiple lines (new-line or '\n' separated)
+#           -m  multiple lines, one <arg> per line (short for '-p "%s\n"')
+#           -n  recognize C-Style '\n' (but no other escapes)
 #           -p  use printf formatting (1st arg is format)
 #           -r  output real script name (see --embed)
+#           -y  compactify text to fit into a single tty output line
 #
 # Arguments:<cls>   internal use: -e|-f|-s|-t|-w. Do not use in own script code
 #           <fmt>   a printf format string
@@ -244,24 +254,27 @@ fi
 # from user script code. Also user scripts must not call _cen_message() directly.
 #
 #+Option -b only becomes fully functional when the console module is enabled. Otherwise
-# only the <offs> part of the argument is interpreted. See [[output()]] for more
-# information.
+# only line-break algorithms 0 and 1 are supported. See [[output()]] for more information.
 #
 #+Examples: Option -m (simple multiline output) writes one output line per argument.
-#       It does not interpret any C-style escape sequences (like '\n'):
+# It does not interpret any C-style escape sequences (like '\n'):
 #
 #.          console -m 1                        # init CEN_DECO_xxxx
 #.          message -m "Line #1" "Line #2" "${CEN_DECO_BOLD}Line #3${CEN_DECO_NORM}"
 #
-#+      With option -n (multiline output) the '\n' C-style escape is recognized (but
-# no other escapes). Any substring '°\n°' is handled as '\n'. These forms are equivalent:
+#+With option -n (multiline output) the '\n' C-style escape is recognized (but no
+# other escapes). Any substring '°\n°' is handled as '\n'. These forms are equivalent:
 #
 #.          message -n "Line #1" "\n" "Line #2"
 #.          message -n "Line #1" "\nLine #2"    # same as above
 #.          message -n "Line #1 \n Line #2"     # same as above
 #.          message -n "Line #1\nLine #2"       # same as above
 #
-#+      To output C-Style escape sequences (like 'echo -e') use the -p option:
+#+Folding of long lines is controlled by option -b:
+#
+#.          message -b :1 -- "$VERY_LONG_LINE"  # fold with trim, see output()
+#
+#+To output C-Style escape sequences (like 'echo -e') use the -p option:
 #
 #.          sesc='\033[1m%Bold%\033[0m'
 #.          message -p "${sesc//%/%%}"          # protect '%' chars!
@@ -330,8 +343,9 @@ error() {
       case "$1" in
       --)   shift ; break ;;
       -)    break ;;
-      -a|-i|-n|-m|-p|-r)
+      -a|-i|-n|-m|-p|-r|-y)
             _popt+=("$1") ;;
+      -b)   _popt+=("$1" "$2") ; shift ;;
       -c)   CEN_EXIT=0 ; [ "$CEN_DONE" = 2 ] && CEN_DONE=1 ; return 0 ;;
       -e)   ;;
       -f)   _fopt='fatal' ;;
@@ -550,6 +564,7 @@ _cen_exit() {
         read -n1 -p $"Press any key to continue..." 1>&2
         echo 1>&2
     fi
+    $CEN_HOOK_MONITOR exit "$CEN_EXIT"
     exit "${CEN_EXIT:-0}"
 }
 
@@ -619,26 +634,29 @@ _cen_abort() {
 # implementation of output functions (see also: _centauri_bash_con|_svc|_win)
 _cen_message() {
     local _scal _sfmt _smul _serr _sind _snam="${CEN_EMBED:-$CEN_NAME}:" _verb="$CEN_VERB" _stat=0
-    local _bopt _deco _norm _oesc
+    local _bofs _btrm _deco _norm _oesc _ocfy
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -a)   _sind="$CEN_AUTOIND" ;;
-      -b)   shift ; _bopt="${1%%,*}"
-            [ "$CEN_NOBREAK" = 1 ] && _bopt= ;;
+      -b)   shift ; [ "$CEN_NOBREAK" != 1 ] && {
+            _btrm="${1##*:}" ; [ "${_btrm:-:}" = "$1" ] && _btrm=0
+            _bofs="${1%%:*}" ; _bofs="${_bofs:-0}" ; } ;;
       -c)   _scal=1 ;;
-      -d)   shift ;; # ignored here
+      -d)   shift ;;                            # ignored here
       -e)   _verb=1 ; _stat="$CEN_EXIT" ; _deco="$CEN_DECO_EROR" ; _serr=$" ***ERROR***" ;;
       -f)   _verb=1 ; _stat="$CEN_EXIT" ; _deco="$CEN_DECO_EROR" ; _serr=$" ***FATAL ERROR***" ;;
+      -h)   [ "$CEN_VERB" -lt 2 ] && _sind="$CEN_AUTOIND" ;;
       -i)   _sind=1 ;;
       -l)   _verb=1 ;;
-      -m)   _smul=1 ; _sfmt=2 ;;
+      -m)   _sfmt=2 ;;
       -n)   _smul=1 ;;
       -p)   _sfmt=1 ;;
       -r)   [ -n "$CEN_EMBED" ] && _snam="$CEN_EMBED[$CEN_NAME]:" ;;
       -s)   _oesc='-en' ;;                      # used by _cen_con_prog
       -t)   _deco="$CEN_DECO_TRCE" ;;           # flag trace() call for hooks
       -w)   _deco="$CEN_DECO_WARN" ; _serr=$" ***WARNING***" ;;
+      -y)   _ocfy=1 ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done
@@ -650,43 +668,46 @@ _cen_message() {
 
     [ "$CEN_AUTOIND" = 2 ] && _sind=1 ; CEN_AUTOIND=1
     [ -n "$_sind" ] && _snam="${_snam//?/ }"    # no program name
-    if [ -n "$_scal" ] ; then                   # option '-c'
+    if [ -n "$_scal" ] ; then                   # option '-c', tabular
         _cen_shortfmt _scal - "$1" ; _serr+="$_scal" ; shift
         [ "$1" = '--' ] && shift                # backward compatibility
     fi
 
+    if [ -n "$_ocfy" ] ; then                   # option -y, compactify
+        [ -n "$_serr" ] && _ocfy="${_serr# } $*" || _ocfy="$*"
+        _cen_compactify _ocfy ; set -- "$_ocfy" ; _serr=
+    fi
+
     [ -n "$_deco" ] && _norm="$CEN_DECO_NORM"   # reset to normal mode
 
-    if [ -n "$_bopt" ] ; then                   # trivial line break
-        _sfmt="$_snam$_serr $*"
-        echo "$_deco${_sfmt::$COLUMNS}$_norm" ; _sfmt="${_sfmt:$COLUMNS}"
-        while [ -n "$_sfmt" ] ; do
-            printf -v _sfmt "${_snam//?/ }%${_bopt}s %s" '' "$_sfmt"
+    if [ "$_sfmt" = 1 ] ; then                  # -p formatting
+        printf -v _sfmt -- "$@"
+    elif [ "$_sfmt" = 2 ] ; then                # -m multiline
+        printf -v _sfmt '\a%s\n' "$@"
+    elif [ -n "$_btrm$_smul" ] ; then           # simple case, no -p or -m
+        _sfmt="$*" ; _sfmt="${_sfmt// \\n /$'\n'}" ; _sfmt="${_sfmt//\\n/$'\n'}"
+    else                                        # simplify C-style '\n'
+        _sfmt="$_snam$_serr $*"                 # can be all spaces, see progress
+        echo $_oesc "$_deco$_sfmt$_norm" 1>&2
+        return $_stat
+    fi
+                                                # split lines and loop...
+    local _sifs="${IFS:-$' \t\n'}" ; IFS=$'\n'
+    set -f ; set -- $_sfmt ; set +f ; IFS="$_sifs"
+    while [ "$#" != 0 ] ; do
+        _sfmt="$_snam$_serr ${1#$'\a'}" ; _snam="${_snam//?/ }" ; _serr= ; shift
+        if [ -n "$_btrm" ] ; then               # folding long lines ...
             echo "$_deco${_sfmt::$COLUMNS}$_norm" ; _sfmt="${_sfmt:$COLUMNS}"
-        done
-    elif [ -z "$_smul$_sfmt" ] ; then           # simple case, no -p or -m
-        echo $_oesc "$_deco$_snam$_serr" "$@""$_norm"
-    else                                        # build output string
-        if [ "$_sfmt" != 2 ] ; then
-            if [ -n "$_sfmt" ] ; then
-                if [ "$_sfmt" = 1 ] ; then
-                    _sfmt="$1" ; shift
-                else
-                    _sfmt='%s\n'
-                fi
-                printf -v _sfmt -- "$_sfmt" "$@"
-            else
-                _sfmt="$*" ; _sfmt="${_sfmt// \\n /$'\n'}" ; _sfmt="${_sfmt//\\n/$'\n'}"
-            fi
-                                                    # split lines and loop...
-            local _sifs="${IFS:-$' \t\n'}" ; IFS=$'\n'
-            set -f ; set -- $_sfmt ; set +f ; IFS="$_sifs"
+            while [ -n "$_sfmt" ] ; do
+                ((_btrm & 1)) && _sfmt="${_sfmt#"${_sfmt%%[![:space:]]*}"}"
+                [ -z "$_sfmt" ] && break
+                printf -v _sfmt "$_snam%${_bofs}s %s" '' "$_sfmt"
+                echo "$_deco${_sfmt::$COLUMNS}$_norm" ; _sfmt="${_sfmt:$COLUMNS}"
+            done
+        else
+            echo "$_deco$_sfmt$_norm"
         fi
-        while [ "$#" != 0 ] ; do
-            echo "$_deco$_snam$_serr" "$1$_norm"
-            shift ; _snam="${_snam//?/ }" ; _serr=
-        done
-    fi 1>&2
+    done 1>&2
     return $_stat                               # error/fatal return CEN_EXIT
 }
 
@@ -711,7 +732,7 @@ _cen_shortfmt() {
     if [ -z "${_temp//[[:ascii:]]/}" ] ; then
         printf -v "$1" "$CEN_SHORTFMT" "$_temp"         # is pure ascii
     else
-        _asci="${_temp//[[:alpha:]]/.}"   # this is unicode aware
+        _asci="${_temp//[[:alpha:]]/.}"                 # this is unicode aware
         printf -v _ugly "$CEN_SHORTFMT" "$_asci"        # get correct padding
         printf -v "$1" '%s' "${_ugly/$_asci/$_temp}"    # back to unicode
     fi
@@ -964,7 +985,8 @@ arguments() {
 #.          }
 # ------------------------------------------------------------------------------
 context() {
-    local _aerr _cons _hooc _hoov _hoof _mgui _root _sudo _text _trap _verb _wait='--wait --wait'
+    local _aerr _cons _hooc _hoov _hoof _mgui _root _sudo _text _trap _verb \
+          _wait='--wait --wait'
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -1060,7 +1082,7 @@ context() {
         # setup modules, create dummy functions
         case "$_mgui" in
         1)      embed -r -m '_centauri_bash_win' && windows -i 1 ;;
-        2)      embed -r -m '_centauri_bash_con' -i ; _cons=1 ;;
+        2)      embed -r -m '_centauri_bash_con' ; _cons=1 ;;
         esac
         CEN_OPT_GUI=0
         [ "$CEN_WINDOWS" = 1 ] && CEN_OPT_GUI=1
@@ -1200,7 +1222,7 @@ create() {
     [ -z "$_fout" ] && _fout="${1:--}"
     if [ "$_fout" = '-' ] ; then
         _fout='/dev/stdout' ; _ftru=
-        set -- "<stdout> ${1##*/}"                  # remove user/mode
+        set -- "<stdout> $1"                        # remove user/mode
     elif [ "${1::5}" = '/dev/' ] ; then
         set -- "$1" ; _ftru=                        # remove user/mode
     elif [ -z "$_fapp" -a -z "$_ftru" ] && [ -e "$_fout" ] ; then
@@ -1328,18 +1350,32 @@ dryrun() {
     return $_rsta
 }
 
+# get length in chars of a unicode string: <vnam> <text>
+_cen_stringlen() {
+    [ -n "${2//[[:ascii:]]/}" ] &&
+        set -- "$1" "${2//[[:alpha:]]/.}"       # this is unicode aware
+    printf -v "$1" '%s' "${#2}"                 # is pure ascii
+}
+
 # compactify a long string: <vnam> [<lmax>|-|+]  (see trimjoin)
 _cen_compactify() {
     [ "${CEN_NOBREAK:-2}" = 2 ] || return 0         # COLUMNS=0 or disabled
     local -n _vcmp="$1"
+    [ -z "$_vcmp" ] && return 0
+
+    local _leng _deco=$'\033'"\\[[0-9]m"
+    _vcmp="${_vcmp//$_deco/}" ; _vcmp="${_vcmp//[[:cntrl:]]/ }"
+    _vcmp="${_vcmp%"${_vcmp##*[![:space:]]}"}"
+    _cen_stringlen _leng "$_vcmp"
+
     if [ "${2:--}" = '-' ] ; then                   # use with indent
         local _cols="${COLUMNS:-100}" _snam="${CEN_EMBED:-$CEN_NAME}"
         [ -z "${_cols//[0-9]/}" ] || _cols=0
-        local _leng=$(("${#_vcmp}" + ${#_snam} + 2))
+        ((_leng += (${#_snam} + 2)))
     elif [ "${2:--}" = '+' ] ; then                 # use full line
-        local _cols="${COLUMNS:-100}" _leng="${#_vcmp}"
+        local _cols="${COLUMNS:-100}"
     else
-        local _cols="$2" _leng="${#_vcmp}"
+        local _cols="$2"
     fi
     [ "$_leng" -le $_cols ] && return
     local _lmax=$((_cols - 6))
@@ -1609,7 +1645,7 @@ filter() {
 #.          create -t -v "$data" -h - "$CEN_FOLDER"
 # ------------------------------------------------------------------------------
 folder() {
-    local _oftl='error -z' _ocwd=':' _ogen _onor _omak _oopt _tdir _tsuf _rdry _adir _vnam="CEN_FOLDER"
+    local _oftl='error -z' _ocwd=':' _ogen _onor _omak _oopt _tdir _tsuf _rdry _adir _vnam='CEN_FOLDER'
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -1619,13 +1655,11 @@ folder() {
                 corebin)    _tdir="${CEN_PATHS[1]}" ; shift ; continue ;;
                 etc)        _tdir="${CEN_PATHS[2]}" ; shift ; continue ;;
                 var)        _tdir="${CEN_PATHS[3]}" ; shift ; continue ;;
-            esac
-            _adir=("$CEN_ROOT/$1")
-            case "$1" in
-                default)    _tdir="${CEN_PATHS[6]}" ;;
-                persistent) _tdir="${CEN_PATHS[3]}/tmp" ;;
-                transient)  _tdir="${CEN_PATHS[4]}" ;;
-                *)          _tdir="$_adir"
+
+                default)    _adir="$CEN_DEFAULT"    ; _tdir="$CEN_DEFAULT" ;;
+                persistent) _adir="$CEN_PERSISTENT" ; _tdir="${CEN_PATHS[3]}/tmp" ;;
+                transient)  _adir="$CEN_TRANSIENT"  ; _tdir="${CEN_PATHS[4]}" ;;
+                *)          _adir="$CEN_ROOT/$1"    ;  _tdir="$_adir"
             esac
             # the final result is _tdir, _adir overrides _tdir
             [ "$_adir" -ef "$_tdir" ] && _adir=() || _adir+=("$_tdir") ;;
@@ -1717,7 +1751,7 @@ folder() {
 # Form (3) prints a '1st argument must be' error message and form (4) prints
 # 'Not yet implemented'. Form (5) trims any previous actions from CEN_CMDARGS.
 #
-# Options:  -a  report '1st argument must be:', see option -e
+# Options:  -a  report 'Argument must be:', see option -e
 #           -c  rerun script in a console if necessary, see [[context()]]
 #           -e  error message for action (like message -e -p ...)
 #           -i  report 'Not yet implemented', see option -e
@@ -1734,7 +1768,8 @@ folder() {
 #
 #           <anum>     argument number to be printed
 #           <frmt>     a printf format string (containing one or more "%s")
-#           <text>     error message text or arguments for printf)
+#                      or "-" to use "Invalid Argument: %s"
+#           <text>     error message text or arguments for printf
 #
 #+The function is usually called from [[actions()]] to dispatch action verbs.
 # The content of array CEN_ACTARR is passed to an action function. For a
@@ -1785,6 +1820,18 @@ folder() {
 #.          invoke - worker                 # current args, current CEN_ACTION
 #.          invoke happy worker             # current args, CEN_ACTION='happy'
 #.          invoke - worker - - same game   # sets CEN_ARCTARR, current CEN_ACTION
+#
+#           (4) report error while running an action
+#.          actionExample() {
+#.              while [ "${1::1}" = '-' ] ; do
+#.                 case "$1" in
+#.                 -)    break ;;
+#.                 col*) # ...              # error: Argument #2 must be: ...
+#.                       invoke -a 2 "red|green|blue"
+#.                 *)    invoke -e - "$1"   # error: Invalid argument: ...
+#.              }
+#.              # ...
+#.          }
 # ------------------------------------------------------------------------------
 invoke() {
     local _copt
@@ -1799,8 +1846,9 @@ invoke() {
             set x -e $"Argument%s must be: %s" "$_anum" "$@" ;;
       -e|-w)
             local _eflg _pmsg=$"Action '%s': "
-            [ "$1" = '-w' ] && _eflg='warning' || _eflg='error'
-            shift ; _pmsg+="$1" ; [ "${1/\%s/}" = "$1" ] && _pmsg+=' %s'; shift
+            [ "$1" = '-w' ] && _eflg='warning' || _eflg='error' ; shift
+            [ "${1:--}" = '-' ] && _pmsg+=$"Invalid argument"':' || _pmsg+="$1"
+            [ "${1/\%s/}" = "$1" ] && _pmsg+=' %s'; shift
             $_eflg -p "$_pmsg" "$CEN_ACTION" "$@" ; CEN_ARGS='X' ; return 0 ;;
       -i)   shift ; set x -e $"Not yet implemented""${1:+:}" "$@" ;;
 
@@ -1841,10 +1889,11 @@ invoke() {
 # ------------------------------------------------------------------------------
 # isfunction - check wether a bash function, builtin or command exists
 #
-# Call:     (1) isfunction [-a|-f|-e|-t|-w] [-y|-z] [-x] [--] <func>
-#           (2) isfunction [-a|-f|-e|-t|-w] [-y|-z] [-x] -c [--] <func> <arg>...
+# Call:     (1) isfunction [-a|-f|-e|-t|-w] [-y|-z] [-b|-x] [--] <func>
+#           (2) isfunction [-a|-f|-e|-t|-w] [-y|-z] [-b|-x] -c [--] <func> <arg>...
 #
 # Options:  -a  abort if function or executable is missing
+#           -b  treat builtin as function
 #           -c  finally call the function (not recommended for commands)
 #           -e  error if function, builtin or command is missing
 #           -f  fatal if function, builtin or command is missing
@@ -1854,16 +1903,18 @@ invoke() {
 #           -y  create a dummy function returning true (if missing)
 #           -z  create a dummy function returning false (if missing)
 #
-#.Examples: isfunction my_function          # check for function or builtin
+#.Examples: isfunction my_function          # check for function
+#.          isfunction -b my_function       # check for function or builtin
 #.          isfunction -y my_function       # create function if necessary
 #.          isfunction -c my_function       # call a function if it exists
 # ------------------------------------------------------------------------------
 isfunction() {
-    local _sta_=0 _dmy_ _exe_ _nam_ _run_ _msg_=':'
+    local _sta_=0 _bui_ _dmy_ _exe_ _nam_ _run_ _msg_=':'
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -a)   _msg_='_cen_abort' ;;
+      -b)   _bui_=1 ;;
       -c)   _run_=1 ;;
       -e)   _msg_='error -z' ;;
       -f)   _msg_='fatal' ;;
@@ -1881,8 +1932,12 @@ isfunction() {
         type -t -- "$_nam_" || _sta_=1
     elif [ "${_nam_/\//}" != "$_nam_" ] ; then      # function names have no /
        _sta_=1
-    else                                            # function only (drop PATH)
-        PATH=' ' type -t -- "$_nam_" || _sta_=1
+    elif PATH=' ' type -t -- "$_nam_" ; then        # function only (dummy PATH)
+        if [ -z "$_bui_" ] ; then                   # exclude builtin
+            PATH=' ' type -f -t -- "$_nam_" && _sta_=1
+        fi
+    else
+        _sta_=1
     fi >/dev/null
     if [ $_sta_ != 0 ] ; then                       # function not found...
         $_msg_ $"Undefined function:" "$_nam_"
@@ -1892,33 +1947,6 @@ isfunction() {
     [ -z "$_run_" ] && return 0
     $_nam_ "$@"                                     # call function or return
 }
-
-# ------------------------------------------------------------------------------
-# monitor
-#
-# Call:     monitor <tool>[:<scri>]
-#           monitor -e|-l [--] <arg>...
-#
-# Arguments:<tool>     xxx
-#           <scri>     xxx
-#
-#+Only the monitoring state of the current script and its future children can be
-# modified.
-#
-# Variables:CEN_MONITOR     global array, use the proxy to preset monitoring for
-#                           an installation
-#           _CEN_MONITOR    set to 'monitor' or ':' if monitoring is off
-#
-# Calls:    cen_monitor_enter   <what> <arg>...
-#           cen_monitor_leave   <what> <stat>
-#
-#           The cen_monitor_enter function return 0 to continue execution or 1
-#           to skip.
-#
-#           for item in "${CEN_MONITOR[@]}" ; do
-#               [ "${item%:*}" = "$CEN_NAME" ] && { monitor "$item" ; break ; }
-#           done
-# ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
 # optarg - command line option checker
@@ -2406,7 +2434,7 @@ sysfind() {
 #           path. and bash builtins (see option -b) are run as "builtin°<cmd>".
 #
 #+          Unless option -q is used, the execution takes place in a subshell
-#           via "$(<cmd> <args>)". The command output is captured (see -a and -s)
+#           via "$(<cmd>°<args>)". The command output is captured (see -a and -s)
 #           and on error pretty formatted messages can be printed (see -e and -p).
 #           Subshells can be avoided using [[sysrun()]].
 #
@@ -2440,6 +2468,10 @@ sysfind() {
 #,          - system -e -p  [-a|-s <var>] # capture stdout and stderr, error message
 #,          - system -e -p -z             # capture only stderr, error message
 #
+#+Dryrun:   Without option -r being set the command line option --dryrun will cause the
+#           command execution to be skipped. The return status will be 1 unless option
+#           **-g°0** is used.
+#
 #.Examples: system mycmd                            # no error/output handling
 #.          system -e -p -s rslt -- mycmd arg1      # formatted msg on error
 #.          system -q -a data -- mycmd arg1         # no error output
@@ -2469,7 +2501,7 @@ _cen_sudo() {
 system() {
     $CEN_NOTRACE set +x
     local _ferr _mind _nout _val_ _vset _vdel _xcmd _sudo _cpro _rdry _bflg _xflg _zflg _temp
-    local _good=0 _stat=0 _ecmd="$CEN_TRACE" _earg
+    local _good _stat=0 _ecmd="$CEN_TRACE" _earg
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -2532,7 +2564,7 @@ system() {
     [ -n "$_sudo" ] && _xcmd=("${_sudo[@]}" "${_xcmd[@]}")
     [ -n "$_xflg" ] && _xcmd=(exec "${_xcmd[@]}")
     if dryrun $_rdry -- "${_xcmd[@]}"; then
-        $CEN_NOTRACE set -x ; return 1
+        $CEN_NOTRACE set -x ; [ "$_good" = 0 ] ; return # return status
     fi
 
     if [ -n "$_vset" -o "$_nout" = 2 ] ; then
@@ -2562,7 +2594,7 @@ system() {
         "${_xcmd[@]}" || _stat=$?
     fi
 
-    if [ "$_stat" -le "$_good" ] ; then             # do not treat as error...
+    if [ "$_stat" -le "${_good:-0}" ] ; then        # do not treat as error...
         $CEN_NOTRACE set -x ; return $_stat
     fi
 
@@ -2573,7 +2605,9 @@ system() {
         else
             _temp="${_val_#$CEN_LIBRARY*$1: }"      # bash-builtin: strip <file>: <line>:
             [ "${_temp}" != "$_val_" ] && _val_="$1: $_temp"
-            $_ecmd -n -p -- $"Running '%s' failed (status %s)""\n%s" "$_earg" "$_stat" "$_val_"
+            $_ecmd -p -- $"Running '%s' failed (status %s)" "$_earg" "$_stat"
+            [ "$_ecmd" = "$CEN_TRACE" ] || _ecmd='message'
+            [ -n "$_val_" ] && $_ecmd -a -b :1 -- "$_val_"
         fi
     elif [ -n "$_ferr" ] ; then
         $_ecmd -p -- $"Running '%s' failed (status %s)" "$_earg" "$_stat"
@@ -2607,7 +2641,7 @@ _cen_source() {
       esac ; shift
     done
     if [ -r "$1" ] ; then
-        $CEN_TRACE2 -c -a 'sourcing file' "$1"
+        $CEN_TRACE2 -c -a $"sourcing file" "$1"
         local _qtrp="$CEN_QUIT_TRAP" ; CEN_QUIT_TRAP=0      # disable 'command not found'
         PATH='/no such folder' source "$@" ; _qsta=$?       # mitigate command execution
         CEN_QUIT_TRAP="$_qtrp"
@@ -2643,6 +2677,11 @@ _cen_source() {
 #       °   n    m      n ... m non-option arguments allowed
 #       °   ────────────────────────────────────────────────
 #
+#+Defaults: The variable CEN_APPCONF may contain the path of a file to be
+# sourced before command line processing. Library proxy option -o (which sets
+# CEN_FEATURE_O) does set CEN_APPCONF to "$CEN_ROOT/defaults/${CEN_NAME%.*}"
+# or to "$HOME/.config/${CEN_NAME%.*}" if the latter exists.
+#
 #+The function implements some default options, see [[Default Options]]. It also
 # registers a 'command_not_found_handle'; set CEN_QUIT_TRAP=0 to disable this.
 #
@@ -2661,7 +2700,7 @@ main() {
     isfunction -y 'options'                     # create dummy if needed
 
     # source the defaults file (override options and other stuff)
-    [ -n "$CEN_DEFAULTS" ] && _cen_source "$CEN_DEFAULTS"
+    [ -n "$CEN_APPCONF" ] && _cen_source "$CEN_APPCONF"
 
     # command line parsing (via CEN_HOOK_MAIN arguments can be overridden)
     local _cont=2 _isok _help _oinf
@@ -2805,7 +2844,7 @@ main() {
         CEN_STAGE='actions'
 
         # signal start of action processing (empty CEN_ACTION)
-        CEN_ACTION= ; [ "$CEN_DONE" -lt "$_cont" ] && $CEN_HOOK_ACTIONS "" "${CEN_CMDARGS[@]}"
+        CEN_ACTION= ; [ "$CEN_DONE" -lt "$_cont" ] && $CEN_HOOK_ACTIONS '' "${CEN_CMDARGS[@]}"
         local _curr _imax="${#CEN_CMDARGS[@]}"
         [ $_imax = 0 -a -z "$CEN_ACTION" ] &&
             error -r -p -z $"Don't know what to do, try '%q --help'" "$CEN_NAME"
@@ -2865,31 +2904,38 @@ fi
 if [ -z "${CEN_PATHS[5]}" ] ; then
     CEN_PATHS[5]="$CEN_PATHS/usr/lib" ; [ -d "${CEN_PATHS[5]}" ] || CEN_PATHS[5]="$CEN_PATHS/lib"
 fi
-if [ -z "${CEN_PATHS[6]}" ] ; then
-    CEN_PATHS[6]="$CEN_ROOT/default"
+
+if [ -z "$CEN_DEFAULT" ] ; then
+    CEN_DEFAULT="$CEN_ROOT/default"
     if [ -n "$CEN_PACKAGE" ] ; then
-        CEN_PATHS[6]="${CEN_PATHS[2]}/default"
-    elif [ "${CEN_PATHS[6]}" -ef "${CEN_PATHS[2]}/default" ] ; then
-        CEN_PATHS[6]="${CEN_PATHS[2]}/default"
-    elif [ ! -d "${CEN_PATHS[6]}" ] ; then
-        [ -h "${CEN_PATHS[6]}" ] && warning $"Invalid symlink:" "${CEN_PATHS[6]}"
-        CEN_PATHS[6]="${CEN_PATHS[2]}/default"
+        CEN_DEFAULT="${CEN_PATHS[2]}/default"
+    elif [ "$CEN_DEFAULT" -ef "${CEN_PATHS[2]}/default" ] ; then
+        CEN_DEFAULT="${CEN_PATHS[2]}/default"
+    elif [ ! -d "$CEN_DEFAULT" ] ; then
+        [ -h "$CEN_DEFAULT" ] && warning $"Invalid symlink:" "$CEN_DEFAULT"
+        CEN_DEFAULT="${CEN_PATHS[2]}/default"
     fi
 fi
+
+# CEN_PATHS[7] (output prefix) see 'syssetup -o <pref>
 
 # save stderr handle, check proxy, register error handlers, default options
 _cen_handle CEN_STDOUT CEN_STDERR ; eval exec "$CEN_STDOUT>&1" "$CEN_STDERR>&2"
 [ -z "$CEN_ROOT" -o -z "$CEN_LIBRARY" ] && fatal 'Environment not set (missing proxy?)'
+
 [ -n "$CEN_FEATURE_E" ] && context -e 3 || context -e 2
 
 # private or global defaults file
 if [ -n "$CEN_FEATURE_O" ] ; then
-    CEN_DEFAULTS="$HOME/.config/${CEN_NAME%.*}"
-    [ ! -e "$CEN_DEFAULTS" ] && CEN_DEFAULTS="${CEN_PATHS[6]}/${CEN_NAME%.*}"
+    CEN_APPCONF="$HOME/.config/${CEN_NAME%.*}"
+    [ ! -f "$CEN_APPCONF" ] && CEN_APPCONF="$CEN_DEFAULT/${CEN_NAME%.*}"
 fi
 
-# load modules
+# must initialize dynamic loading and monitoring early
 [ -n "$CEN_FEATURE_A" ] && embed -r -m '_centauri_bash_dyn' -f
+[ -n "$CEN_MONITOR_MASK" ] && embed -r -m '_centauri_bash_rep' -m
+
+# load modules
 [ -n "$CEN_FEATURE_W" ] && embed -r -m '_centauri_bash_web' -w
 for CEN_ACTION in "${!CEN_MODULES[@]}" ; do
     [ -z "${CEN_MODULES[$CEN_ACTION]}" ] && embed -m "$CEN_ACTION"

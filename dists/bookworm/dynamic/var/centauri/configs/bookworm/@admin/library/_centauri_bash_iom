@@ -57,7 +57,7 @@
 # Copyright Dr. J. Pfennig (c) 2019-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_iom']='0.06:4'
+CEN_MODULES['_centauri_bash_iom']='0.07:4'
 
 CEN_IOM_QUEUE=()        # see _cen_optarg_iom()
 
@@ -804,7 +804,7 @@ _cen_cache_chk() {
 #           -w  generate warning message  (from <reader> callback only)
 #
 # Arguments:<name>    name or path of the configuration file to be parsed
-#           <init>    callback to catch missing file
+#           <init>    callback to catch missing file, use "+" to ignore
 #           <reader>  data callback
 #           <sect>    section filter. Section is a line containing the name of
 #                     the section enclosed in [] braces. Example: **[hello]**.
@@ -956,11 +956,11 @@ configfile() {
     # check list of filters
     _cen_configfile_fltr() {
         [ "${#_sect[@]}" = 0 ] && return 1
-        _line="${_line%% *}"
-        [ "${_line//[[:alnum:]_-]/}" = '[]' ] || return 1
-        local _item _snam="${_line:1:-1}"
+        local _item="${_line%% *}"
+        [ "${_item//[[:alnum:]_-]/}" = '[]' ] || return 1
+        local _snam="${_item:1:-1}"
         for _item in "${_sect[@]}" ; do
-            [ "$_snam" = "$_item" -o "$_item" = "*" ] || continue
+            [ "$_snam" = "$_item" -o "$_item" = '*' ] || continue
             CEN_CONFIGFILE[3]="$_snam" ; _skip=
             [ -z "$_omul" ] ; return                        # return status
         done
@@ -1008,11 +1008,13 @@ configfile() {
 
     # callback <init>
     _cen_configfile_init() {
-        if [ -z "$_init" ] ; then
+        if [ "${_init:--}" = '-' ] ; then
             $_orep $"Configuration file not found:" "$_file"
             return 1
+        elif [ "$_init" = '+' ] ; then
+            return 0
         fi
-        isfunction -a -x -c $_init "$_file"     # call and return status
+        isfunction -a -x -c "$_init" "$_file"   # call and return status
     }
 
     # do we have a config name or file path?

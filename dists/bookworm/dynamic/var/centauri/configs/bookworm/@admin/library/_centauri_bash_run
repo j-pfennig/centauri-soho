@@ -20,10 +20,10 @@
 #,          CEN_SHORTPATH   default result variable of [[shortpath()]]
 #,          CEN_TERMINAL    default result variable of [[terminal()]]
 #
-# Copyright Dr. J. Pfennig (c) 2022-2024
+# Copyright Dr. J. Pfennig (c) 2022-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_run']='0.12:4'
+CEN_MODULES['_centauri_bash_run']='0.13:6'
 
 embed -c '_centauri_bash_iom'           # reference declaration
 
@@ -51,9 +51,9 @@ CEN_SHORTPATH_LIB=(
         "library:$CEN_LIBRARY:centauri-bash-lib library "$"files"
         "tools:$CEN_TOOLS:centauritools "$"applications"
         "locale:$CEN_ROOT/locale:centauritools/library "$"translations"
-        "default:${CEN_PATHS[6]}:centauritools/library "$"configuration files"
-        "persistent:$CEN_ROOT/persistent|${CEN_PATHS[4]}:centauritools "$"persistent cache"
-        "transient:$CEN_ROOT/transient|${CEN_PATHS[4]}:centauritools "$"volatile cache"
+        "default:$CEN_DEFAULT:centauritools/library "$"configuration files"
+        "persistent:$CEN_PERSISTENT|${CEN_PATHS[4]}:centauritools "$"persistent cache"
+        "transient:$CEN_TRANSIENT|${CEN_PATHS[4]}:centauritools "$"volatile cache"
         # cannot use single quote due to uglify limits. Using  unicode apostrophe
         "temporary:$XDG_RUNTIME_DIR|${CEN_PATHS[4]}|$TMPDIR:"$"the userʼs temporary folder"
         )
@@ -1312,6 +1312,9 @@ _cen_run_command() {
 # Read library configuration: (1) [-f|-q] -a|-l|-r <reader> <section>
 #                             (2) [-f|-q] -v <array> <section>
 #                             (3) -m [<info>] <line>        # error reporting
+#
+# Options:      -a|-l|-r|-v   passed to configfile()
+#
 # For sections launcher|terminal|shortpath the corresponding data in
 # CEN_RUN_LAUNCHER CEN_RUN_TERMINAL CEN_RUN_SHORTPATH is cached.
 # ------------------------------------------------------------------------------

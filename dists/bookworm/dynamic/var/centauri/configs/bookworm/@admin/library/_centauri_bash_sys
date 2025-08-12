@@ -8,9 +8,9 @@
 #
 # Variables:The module sets the following values at load time:
 #
-#,      CEN_SYS_STATE_DIR="$CEN_ROOT/persistent"    # non-volatile
-#,      CEN_SYS_CACHE_DIR="$CEN_ROOT/transient"     # volatile
-#,      CEN_SYS_STATE_FILE="$CEN_SYS_STATE_DIR/centaurisystem"
+#,      CEN_PERSISTENT="$CEN_ROOT/persistent"       # non-volatile
+#,      CEN_TRANSIENT="$CEN_ROOT/transient"         # volatile
+#,      CEN_SYS_STATE_FILE="$CEN_PERSISTENT/centaurisystem"
 #
 # Loading this module without -n option causes [[sysversion()]]
 # to be run.  This is used by **_centauri_bash_lib** to trigger a minimal
@@ -46,11 +46,9 @@
 # Copyright Dr. J. Pfennig (c) 2019-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_sys']='0.29:4'
+CEN_MODULES['_centauri_bash_sys']='0.32:6'
 
-CEN_SYS_STATE_DIR="$CEN_ROOT/persistent"    # non-volatile
-CEN_SYS_CACHE_DIR="$CEN_ROOT/transient"     # volatile
-CEN_SYS_STATE_FILE=                         # sysversion
+CEN_SYS_STATE_FILE=             # sysversion
 
 # ------------------------------------------------------------------------------
 # data in CEN_SYS_STATE_FILE
@@ -84,8 +82,9 @@ CEN_SYS_INCLUDE=()              # include list for link tools
 CEN_SYS_EXCLUDE=('centauri*_*' '*.*' '*~' '*[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*')
 CEN_SYS_OBSOLETE=()             # obsolete tool files, remove links
 CEN_SYS_SERVICE=()              # list of service tools to be installed/enabled
-CEN_PATH_REXP=()                # list of path replacements
 CEN_ROOTDEFS=()                 # see _cen_sys_rootdefs
+
+#CEN_PATH_REXP=()               # list of path replacements
 
 # ------------------------------------------------------------------------------
 # call function in _centauri_bash_ins: <func> <arg>...
@@ -139,7 +138,7 @@ _cen_sys_rootdefs() {
 #
 # Storage:  The root user only uses the shared cache:
 #
-#,          - CEN_SYS_STATE_FILE="$CEN_SYS_STATE_DIR/centaurisystem"
+#,          - CEN_SYS_STATE_FILE="$CEN_PERSISTENT/centaurisystem"
 #
 #+          All other users first try the shared cache and that their
 #           private cache (only the private cache can be updated).
@@ -165,17 +164,22 @@ _cen_sys_rootdefs() {
 sysversion() {
     $CEN_DEBUG -c -- "$*"
 
-    # get state file path: -r|-w
+    # get state file path and status, create private cache folder
+    #   -r  check if readable, return true if state file is current
+    #   -w  may create folder, return true if state file is current
     ___cen_sys_state() {
-        CEN_SYS_STATE_FILE="$CEN_SYS_STATE_DIR/centaurisystem"
-        if [ ! -r "$CEN_SYS_STATE_FILE" ] ; then
-            [ "$EUID" = 0 ] && return 1
-        elif [ "$CEN_SYS_STATE_FILE" -nt "$CEN_TOOLS/_centauri_bash_lib"  ] ; then
-            [ "$1" != '-w' ] && return 0
-            [ "$EUID" = 0 ] && return 1
+        CEN_SYS_STATE_FILE="$CEN_PERSISTENT/centaurisystem"
+        if [ "$CEN_SYS_STATE_FILE" -nt "$CEN_TOOLS/_centauri_bash_lib"  ] ; then
+            return 0
+        elif [ -r "$CEN_SYS_STATE_FILE" ] ; then    # readable but outdated
+            [ "$1" = '-r' ] && return 1
         fi
+        [ "$EUID" = 0 ] && return 1                 # root can create shared file
+
+        # non-root users must use a private state file
         local _usta="centauri-bash-lib_${CEN_MODULES['_centauri_bash_lib']%%:*}"
-        folder -g -r -s CEN_SYS_STATE_FILE -u 'cache' -- "$_usta/centaurisystem"
+        folder -m -r -s CEN_SYS_STATE_FILE -u 'cache' -- "$_usta" &&
+            CEN_SYS_STATE_FILE+="/centaurisystem"
         # return state
         [ "$CEN_SYS_STATE_FILE" -nt "$CEN_TOOLS/_centauri_bash_lib"  ]
     }
@@ -209,7 +213,7 @@ sysversion() {
 
     if [ -n "$_oarc" ] ; then
         _cen_ins_call archinfo $_otra CEN_SYS_CPU_ARCH CEN_SYS_PLATFORM ||
-            _oerr $"Unsuported architecture" "$CEN_SYS_CPU_ARCH"
+            _oerr $"Unsupported architecture" "$CEN_SYS_CPU_ARCH"
     fi
 
     # 1st step: try to read, prefer system file
@@ -262,7 +266,11 @@ sysversion() {
     if [ -n "$_flgk" ] ; then
         _cen_ins_call version -k
         if [ "$CEN_SYS_KDEVERS" = '-' ] ; then
-            $_oerr $"No KDE version found" ; [ -n "$_errk" ] && return 1
+            if [ -n "$_errk" ] ; then
+                $_oerr $"No KDE version found" ; return 1
+            else
+                $CEN_TRACE $"No KDE version found"
+            fi
         fi
     fi
     [ -n "$_otra" ] && _cen_ins_call version $_otra
@@ -272,9 +280,7 @@ sysversion() {
         [ -z "$_flgo$_flgk" ] && return 0           # nothing to do
     fi
 
-    $CEN_TRACE -a -c -p ' ' $"Update '%s'" "$CEN_SYS_STATE_FILE"
-    folder -m "${CEN_SYS_STATE_FILE%/*}" '775'
-    _cen_ins_call version -w                        # return state
+    _cen_ins_call version -w                        # write version return state
 }
 
 # ------------------------------------------------------------------------------
@@ -282,9 +288,11 @@ sysversion() {
 #
 # Call:     (1) syssetup [-i] [-r] [-s] [-p|-t|-u] [<rootdef>|-]
 #           (2) syssetup [-i] [-r] [-s] -n <orig> <dest>
+#           (3) syssetup -o <pref>
 #
 # Options:  -i  initialize         (sysinfo install)
 #           -n  copy library files (sysinfo refresh/setup)
+#           -o  override some paths
 #           -p  setup paths only   (bootstrap used for repository)
 #           -r  remove, uninstall  (sysinfo uninstall)
 #           -s  update services    (always needs root rights)
@@ -294,6 +302,7 @@ sysversion() {
 #
 # Arguments:<dest>      destination for refresh/setup
 #           <orig>      origin folder
+#           <pref>      prefix, see below
 #           <rootdef>   see below, overrides CEN_INSTALL
 #
 #+Rootdef:  A colon separated list of paths, that can be used to override
@@ -324,21 +333,54 @@ sysversion() {
 #
 #+          The syssetup function can be invoked from every **centauritool** via
 #           command line option --info. See [[sysinfo()]] for details.
+#
+#+Prefix:   Set a path prefix for CEN_DEFAULT, CEN_TRANSIENT and CEN_PERSISTENT
+#           depending on <pref>:
+#
+#,          ''      reset paths to CEN_INSTALL default, clear CEN_PATHS[7]
+#,          '.'     use $PWD
+#,          '/'     same as '', clear <pref>
+#,          '/*'    use this path (does not match '/')
+#,          '*'     reset paths to CEN_INSTALL default
+#
+#+          Variable CEN_PATHS[7] is set to <pref>, see module [[_cen_bash_net]].
+#           No other library module takes note of CEN_PATHS[7].
 # ------------------------------------------------------------------------------
 syssetup() {
     $CEN_DEBUG -c -- "$*"
-    local _stat=0 _warn  _remv _updt _usrv
+    local _stat=0 _warn _outp _remv _updt _usrv
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -[nptu])
             _updt="$1" ;;
       -i)   ;;
+      -o)   shift ; _outp="$1" ;;
       -r)   _remv='-r' ;;
       -s)   _usrv='-s' ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done
+
+    # set output prefix
+    if [ -n "$_outp" ] ; then
+        local _item _name _base="${CEN_INSTALL%%:*}"
+        case "$_outp" in
+        /)  _outp= ;;
+        /*) _base="$_outp" ;;
+        .)  _base="$PWD$_base"
+        esac
+        CEN_PATHS[7]="$_outp"
+        [ -d "$_base" ] || _cen_abort + "$_base"
+
+        for _item in 'transient' 'persistent' 'default' ; do
+            printf -v _name 'CEN_%s' "${_item^^}"
+            [ -n "$_outp" ] && folder -f -m -- "$_base/$_item" 775
+            printf -v "$_name" '%s' "$_base/$_item"
+            $CEN_TRACE2 -a -c "$_name" "$_base/$_item"
+        done
+        return 0
+    fi
 
     # initial install config is expected in CEN_ROOTDEFS
     _cen_sys_rootdefs "${2:-$1}" || return 1
@@ -348,7 +390,7 @@ syssetup() {
         [ "${2:--}" = '-' ] && fatal $"Missing argument:" '<dest>'
         folder -c -f -- "${1:-$CEN_ROOT}" ; shift
         _cen_ins_call files ; return                # return status
-    fi || :
+    fi
 
     # sysconfig, is called twice during setup as the config file may have changed
     if ! sysconfig ; then
@@ -503,7 +545,7 @@ sysinfo() {
 #           -s  check if systemd is to be used
 #           -u  update if necessary
 #
-#+Reads the **[library]** section of **${CEN_PATHS[6]}/centauri_bash_lib**
+#+Reads the **[library]** section of **$CEN_DEFAULT/centauri_bash_lib**
 # (for Debian this path is equal to **/etc/default/centauri_bash_lib**).
 # Configuration file data overrides the built-in default configuration.
 #
@@ -511,7 +553,7 @@ sysinfo() {
 # can be generated.
 #
 #+Bootstrap:Usually there should be no **$CEN_ROOT/centauri_bash_lib** file.
-# But is it exists, it will override **${CEN_PATHS[6]}/centauri_bash_lib**.
+# But is it exists, it will override **$CEN_DEFAULT/centauri_bash_lib**.
 # This might be useful for setup programs.
 # ------------------------------------------------------------------------------
 sysconfig() {
@@ -561,7 +603,7 @@ sysconfig() {
       -s)   _sopt=1 ;;
       -u)   [ "$CEN_LIBRARY/_centauri_bash_lib" -nt \
               "$CEN_LIBRARY/_centauri_bash_completion" ] || _copt=1
-            [ "${CEN_PATHS[6]}/centauri-bash-lib" -nt \
+            [ "$CEN_DEFAULT/centauri-bash-lib" -nt \
               "$CEN_TOOLS/_centauri_bash_lib" ] && _popt=1
             [ -d "$CEN_LIBRARY/systemd" ] || _sopt=1 ;;
       *)    _cen_abort - "$1"
@@ -574,7 +616,7 @@ sysconfig() {
     embed -m '_centauri_bash_run'                       # load modules ext/iom/run
     CEN_SYS_INCLUDE=() ; CEN_SYS_EXCLUDE=() ; CEN_SYS_OBSOLETE=()
     CEN_SYS_SERVICE=() ; CEN_PATH_REXP=()
-    _cen_run_config -p "${CEN_PATHS[6]}/centauri-bash-lib" \
+    _cen_run_config -p "$CEN_DEFAULT/centauri-bash-lib" \
                     -r ___cen_sys_read 'library' || _stat=$?
     shortpath -q || _stat=$?                            # init paths cache
 
@@ -604,14 +646,14 @@ sysconfig() {
 # The proxy does 'embed -m _centauri_bash_sys' if the caller is root and the
 # cache dir is missing to trigger a minimal setup ...
 if  [ "$EUID" = 0 ] ; then
-    if [ ! -d "$CEN_SYS_CACHE_DIR" ] ; then
+    if [ ! -d "$CEN_TRANSIENT" ] ; then
         # run a mimimal setup, but only if the library is installed as 'shared'
-        [ -d "$CEN_SYS_STATE_DIR" -o -h "$CEN_SYS_STATE_DIR" ] && syssetup -t
+        [ -d "$CEN_PERSISTENT" -o -h "$CEN_PERSISTENT" ] && syssetup -t
         # refresh caches (if any), may be after system updates
-        remove "$CEN_SYS_STATE_DIR/centaurisystem"
+        remove "$CEN_PERSISTENT/centaurisystem"
     fi
     # (re-)init global cache
-    [ "${CEN_PATHS[6]}/centauri-bash-lib" -nt "$CEN_SYS_STATE_DIR/centaurisystem" ] &&
+    [ "$CEN_DEFAULT/centauri-bash-lib" -nt "$CEN_PERSISTENT/centaurisystem" ] &&
         sysconfig                               # cache refresh
 fi
 sysversion -u                                   # get/update version info by default

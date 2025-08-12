@@ -330,8 +330,8 @@ actionInit() {
     local optk
     case "$1" in
     shu*|down)  optk='-k' ;;
-    "")         ;;
-    *)          invoke -e $"Invalid argument:" "$1"
+    '')         ;;
+    *)          invoke -e - "$1"
     esac
 
     execute -v || return

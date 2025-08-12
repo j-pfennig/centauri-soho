@@ -24,10 +24,10 @@
 #.          # grep an array to a file (via stdout redirection)
 #.          txtgrep -i data -s - -x "^([A-M]|[a-m])" > "$my_file"
 #
-# Copyright Dr. J. Pfennig (c) 2021-2024
+# Copyright Dr. J. Pfennig (c) 2021-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES["_centauri_bash_txt"]="0.10:4"
+CEN_MODULES["_centauri_bash_txt"]='0.10:5'
 
 CEN_TXT_SORT=                   # paths of tools
 CEN_TXT_UNIQ=
@@ -173,16 +173,16 @@ txtsort() {
     local -n _varr
     if [ -z "$_vinp" ] ; then               # sort call arguments
         _cen_sort_aarg=("$@")
-        _varr="_cen_sort_aarg" ; _vinp="_cen_sort_aarg"
+        _varr='_cen_sort_aarg' ; _vinp='_cen_sort_aarg'
     elif [ "$_vinp" = '-' ] ; then          # sort stdin
         IFS=$'\n' read -r -d '' -a _cen_sort_aarg || true
-        _varr="_cen_sort_aarg" ; _vinp="_cen_sort_aarg"
+        _varr='_cen_sort_aarg' ; _vinp='_cen_sort_aarg'
     else                                    # sort string/array
         _varr="$_vinp"
         if [ "${#_varr[@]}" = 1 ] ; then    # could be string
-            local -n _varr="_cen_sort_aarg"  # redefine (no unset needed)
+            local -n _varr='_cen_sort_aarg'  # redefine (no unset needed)
             splitjoin -s _cen_sort_aarg -n -i "$_vinp"
-            _vinp="_cen_sort_aarg"
+            _vinp='_cen_sort_aarg'
         fi
     fi
 
@@ -301,7 +301,7 @@ extsort() {
     local _sout _stat=0 _copr
 
     [ "$CEN_PIP_BUSY" = "$BASHPID" ] || _copr='-x'  # can use bash coproc
-    syspipe -r $_ferr $_copr -n -y  $_vinp $_vout -- "${_acmd[@]}" || _stat=$?
+    syspipe -r $_ferr $_copr -n -y $_vinp $_vout -- "${_acmd[@]}" || _stat=$?
     [ "$_stat" = 0 ] && return 0
 
     # additional error reporting
@@ -373,7 +373,7 @@ txtgrep() {
     if [ -z "$_vinp" ] ; then               # grep call arguments
         _cen_grep_aarg=("$@") ; _varr='_cen_grep_aarg'
     elif [ "$_vinp" = '-' ] ; then          # grep stdin
-        IFS=$'\n' read -r -d '' -a _cen_grep_aarg ; _varr="_cen_grep_aarg"
+        IFS=$'\n' read -r -d '' -a _cen_grep_aarg ; _varr='_cen_grep_aarg'
     else                                    # grep string/array
         _varr="$_vinp"
         if [ "${#_varr[@]}" = 1 ] ; then    # could be string
@@ -523,15 +523,18 @@ extgrep() {
 # ------------------------------------------------------------------------------
 # txtfold - folding of long text lines, fetch limited text size
 #
-# Call:     txtfold [-d <deli>] [-f <fixl>] -m <maxi> -s <vout> [--] <vinp>
+# Call:     (1) txtfold [-d <deli>] [-f <fixl>] -m <maxi> -s <vout> -i <vinp>
+#           (2) txtfold [-d <deli>] [-f <fixl>] -m <maxi> -s <vout> [--] <text>...
 #
 # Options:  -d  delimiter for joining multiple output lines
 #           -f  fixup function to increase <maxi> for markup sequences
+#           -i  get input from variable
 #           -m  maximum characters to fetch
 #           -s  save result into this variable
 #
 # Arguments:<maxi>  maximum number of characters to return
 #           <deli>  a delimiter string (use - for newline)
+#           <text>  any input text
 #           <vinp>  variable holding input
 #           <vout>  variable to receive the output
 #
@@ -547,8 +550,8 @@ extgrep() {
 #           correctly.
 #
 # Example:  (1) simple line folding into a buffer
-#.          local data="$*" text
-#.          txtfold -m 70 -d - -s text -- data
+#.          local text
+#.          txtfold -m 70 -d - -s text -i data
 #
 #           (2) fetch limited size and iterate over input
 #.          local data="$*" line
@@ -563,12 +566,13 @@ extgrep() {
 #  for modest sizes the time scales almost linear with the input size.
 # ------------------------------------------------------------------------------
 txtfold() {
-    local _deli _nmax _sout _frmt=:
+    local _deli _nmax _sout _frmt=: _vinp
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -d)   shift ; _deli="${1:--}" ;;
       -f)   shift ; _frmt="$1" ;;
+      -i)   shift ; _vinp="$1" ;;
       -m)   shift ; _nmax="$1" ;;
       -s)   shift ; _sout="$1" ;;
       *)    _cen_abort - "$1"
@@ -576,6 +580,13 @@ txtfold() {
     done
     [ -z "$_sout" -o "${_nmax:-0}" -lt 1 ] && _cen_abort -  # missing name or size
     [ "$_deli" = '-' ] && _deli=$'\n'
+
+    if [ -z "$_vinp" ] ; then
+        local _cen_fold_data="$*"
+        set -- '_cen_fold_data'
+    else
+        set -- "$_vinp"
+    fi
 
     _cen_txt_fold "$_nmax" "$1" "$_sout" || return 1    # overwrite output buffer
 

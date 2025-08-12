@@ -4,7 +4,7 @@ CEN_LEGAL="Dr. Jürgen Pfennig (c) 2021-2025; "$"BSD License"
 CEN_TITLE=$"Centauri initialization and launcher for appliances"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -t -v -y - '0.13:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -t -v -y - '0.14:6' || exit 2
 
 CEN_SVC_WANTED_BY='sysinit.target'
 
@@ -15,7 +15,7 @@ CEN_SVC_TYPE='once'
 CEN_SVC_NOROOT=1
 
 # folder for issue data
-DAT_ISSUE_DIR="$CEN_ROOT/persistent/issue.d"
+DAT_ISSUE_DIR="$CEN_PERSISTENT/issue.d"
 
 # invoke 'issue' action if called via .centauriautologin symlink (see centaurisession)
 DAT_AUTOLOGIN='.centauriautologin'
@@ -23,6 +23,8 @@ if [ "$CEN_NAME" = "$DAT_AUTOLOGIN" ] ; then
     CEN_NAME='centaurisysinit'
     set -- issue execute
 fi
+
+DAT_BOOT_YESN='-y'      # for confirm boot
 
 # ------------------------------------------------------------------------------
 # appliances configuration support
@@ -40,10 +42,10 @@ DAT_APPL_AUTO=          # centauriautologin account
 # homeassistant user
 DAT_APPL_HASS='homeassistant'
 
-# dummy functions to skip 'appliance' config lines
-appliance() { : ; }                 # TODO: legacy, remove
-apptimers() { : ; }
-appusers()  { : ; }
+## dummy functions to skip 'appliance' config lines
+#appliance() { : ; }                 # TODO: legacy, remove
+#apptimers() { : ; }
+#appusers()  { : ; }
 
 # get home folder: <name>
 get_home() {
@@ -74,7 +76,7 @@ get_appliances() {
     for entr in "${list[@]}" ; do
         splitjoin -s flds -i entr
         auto="${flds[1]}"
-        if ! get_home "$auto" ; then
+        if [ "$CEN_ACTION" = 'default' ] && ! get_home "$auto" ; then
             flds[3]= ; flds[4]= ; flds[5]= ; flds[6]=
         fi
         DAT_APPL_NAME+=("${flds[0]}") ; DAT_APPL_LABL+=("${flds[2]}")
@@ -118,7 +120,8 @@ cfg_appliances() {
     disable)    acmd='delete' ; frmt=$"Remove appliance '%s' from boot menu" ;;
     *)          acmd='default' ; frmt=$"Boot as appliance '%s'" ;;
     esac
-    confirm -a -y -f "$frmt" "$name" || return
+    confirm -a "$DAT_BOOT_YESN" -f "$frmt" "$name" || return
+    [ "$acmd" = 'default' ] && DAT_BOOT_YESN='-n'
 
     if [ "$acmd" != 'delete' ] ; then
         local opti="${DAT_APPL_CONF[indx]}"
@@ -128,24 +131,32 @@ cfg_appliances() {
         fi
     fi
 
-    name="${DAT_APPL_NAME[indx]}"
     if [ "$acmd" = 'create' ] ; then
-        remove -- "$CEN_ROOT/persistent/centauriswitch-override"
+        override -d 'centauriswitch*'
         [ -n "${DAT_APPL_MODE[indx]#-}" ] && swit="${DAT_APPL_MODE[indx]}"
         [ -n "${DAT_APPL_CONF[indx]#-}" ] && swit="${swit:-smart}:${DAT_APPL_CONF[indx]}"
         [ -n "$swit" ] && args+=("centauriswitch=$swit")
         [ -n "${DAT_APPL_ARGS[indx]#-}" ] && args+=("${DAT_APPL_ARGS[indx]}")
         [ -n "${DAT_APPL_LEVL[indx]}" ] && args+=("systemd.unit=runlevel${DAT_APPL_LEVL[indx]}.target")
         # must register to launch the menu ...
-        [ -n "${DAT_APPL_AUTO[indx]}" ] && embed -t -v centauristartup -q install "${DAT_APPL_AUTO[indx]}"
+        auto="${DAT_APPL_AUTO[indx]}"
+        if [ -n "$auto" ] ; then
+            args+=("centaurilogin=$auto")
+            embed -t -v centauristartup -q install "$auto"
+        fi
     fi
 
     if [ -d '/boot/efi' ] && findmount '/boot/efi' && [ -d '/boot/efi/loader' ] ; then
         acmd="$((indx + 41))"
         case "$CEN_ACTION" in
-            enable)      embed -v centauriefilinux -y menu --- "$acmd" create "$name" "${args[@]}" ;;
-            disable)     embed -v centauriefilinux -y menu --- "$acmd" delete ;;
-            *)           embed -v centauriefilinux -y menu --- "$acmd" default
+            enable)     case "${DAT_APPL_LEVL[indx]}" in
+                        2)  name=$"Display: ""$name" ;;
+                        3)  name=$"Network: ""$name" ;;
+                        *)  name=$"Linux:   ""$name"
+                        esac
+                        embed -v centauriefilinux -y menu --- "$acmd" create "$name" "${args[@]}" ;;
+            disable)    embed -v centauriefilinux -y menu --- "$acmd" delete ;;
+            *)          embed -v centauriefilinux -y menu --- "$acmd" default
         esac
     elif [ -d '/boot/firmware' ] && findmount '/boot/firmware' ; then
         [ "${DAT_APPL_LEVL[indx]}" = 3 ] && swit='nosplash' || swit='splash'
@@ -242,7 +253,7 @@ run_appliances() {
 # ------------------------------------------------------------------------------
 run_netconfig() {
     # get the following info: <host> <method> <ifnames> <iflist>
-    local imog ; readline -a imog -i "$CEN_ROOT/persistent/centaurinetgen"
+    local imog ; readline -a imog -i "$CEN_PERSISTENT/centaurinetgen"
 
     if [ "${imog[0]}" != "$HOSTNAME" ] ; then       # full setup ...
         message -c $"Network config" $"hostname changed"
@@ -251,7 +262,7 @@ run_netconfig() {
     fi
 
     # make sure to have cached network config
-    if [ "${CEN_PATHS[6]}/centaurinetcfg" -nt "$CEN_ROOT/persistent/centaurinetcfg" ] ; then
+    if [ "$CEN_DEFAULT/centaurinetcfg" -nt "$CEN_PERSISTENT/centaurinetcfg" ] ; then
         message -c $"Network config" $"configuration update"
         embed centaurinetcfg setup
         netconfig -r                    # re-read configuration
@@ -270,7 +281,8 @@ run_netconfig() {
     else
         return
     fi
-    embed -d -v centaurinetgen --keep interfaces
+
+    embed -v centaurinetgen --keep interfaces
 }
 
 # ------------------------------------------------------------------------------
@@ -285,7 +297,7 @@ run() {
     run_netconfig /sys/class/net/*
 
     # get script path and source it
-    local scrp="${CEN_PATHS[6]}/$CEN_NAME"
+    local scrp="$CEN_DEFAULT/$CEN_NAME"
     if [ -e "$scrp" ] ; then
         message -c $"Running script" "$scrp"
         source "$scrp"
@@ -299,9 +311,9 @@ run() {
 # action config: [<appl>]
 # ------------------------------------------------------------------------------
 actionConfig() {
-    local indx=0 icfg frst=1 wrds=$"quit" opti optu optw
+    local indx=0 icfg frst=1 wrds=$"quit" name opti optu optw
 
-    if [ "${CEN_PATHS[6]}/centaurinetcfg" -nt "$CEN_ROOT/persistent/centaurinetcfg" ] ; then
+    if [ "$CEN_DEFAULT/centaurinetcfg" -nt "$CEN_PERSISTENT/centaurinetcfg" ] ; then
         message $"Running full network setup"
         embed centaurinetcfg setup -
     fi
@@ -326,19 +338,20 @@ actionConfig() {
     fi
 
     while [ -n "${DAT_APPL_LABL[indx]}" ] ; do
-        opti="${DAT_APPL_CONF[indx]}"
-        [ -z "$opti" ] && opti="${DAT_APPL_MODE[indx]}"
-        if [ "$opti" = '-' ] ; then
+        name="${DAT_APPL_CONF[indx]}"
+        [ "${name:--}" = '-' ] && name="${DAT_APPL_MODE[indx]}"
+        if [ "$name" = '-' -o "${DAT_APPL_LEVL[indx]}" = 2 ] ; then
             opti=
         elif [ -z "${DAT_APPL_LEVL[indx]}" ] ; then
             opti=' [#]'
+            [ "$CEN_ACTION" = 'default' ] || wrds+=" $((indx + 1))"
             [ -n "$optu" ] && optu+='|'; optu+="${DAT_APPL_AUTO[indx]}"
-        elif netoption "$opti" "$HOSTNAME" ; then
+        elif netoption "$name" "$HOSTNAME" ; then
             opti=
         else
             opti=' [*]' ; optw=1 ; DAT_APPL_LEVL[indx]=
         fi
-        ((indx += 1)) ; wrds+=" $indx"
+        ((indx += 1)) ; [ -z "$opti" ] && wrds+=" $indx"
         message -i -p '%2s: %-30s %s' "$indx" "${DAT_APPL_LABL[indx-1]}" "$opti"
     done
     message -i ' '
@@ -348,14 +361,13 @@ actionConfig() {
     [ -n "$optw" ] &&
         message -i -m $"[*] This appliance is not enabled by network configuration. Please" \
                       $"    adjust the appropriate 'option <what> <host>...' statement in" \
-                      $"    file '/etc/default/centaurinetcfg' to enable it." ''
+                      $"    file ""'$CEN_DEFAULT/centaurinetcfg'"$" to enable it." ''
     [ "$CEN_ACTION" = 'list' ] && return
     while ! confirm -p - -s icfg -v "$wrds" \
-            $"Select an Appliance or hit <return> when finished"" [$frst..$indx]" ; do
+            $"Select an Appliance or hit <return> when finished"" [$frst..${wrds##* }]" ; do
         if [ "$CEN_ACTION" = 'default' ] ; then
             CEN_ACTION='enable'  ; cfg_appliances "$icfg"
-            CEN_ACTION='default' ; cfg_appliances "$icfg"
-            return
+            CEN_ACTION='default'
         fi
         cfg_appliances "$icfg"
     done
@@ -398,7 +410,7 @@ actionIssue() {
                 timer -w 1 ; ((arg0 -= 1))
             done ; return
             ;;
-    *)      invoke -e $"Invalid arguments:" "$*"
+    *)      invoke -e - "$*"
     esac
 
     # --- execute - do we have anything to display? ---
@@ -512,12 +524,12 @@ usage() {
         -t "related services at startup (e.g. runlevel > 3), an appliance starts at" \
         -t "runlevel=2 and handles further service starts via centauriswitch configs." \
         -t - \
-        -t "$CEN_NAME sources '${CEN_PATHS[6]}/$CEN_NAME' which can execute" \
+        -t "$CEN_NAME sources '$CEN_DEFAULT/$CEN_NAME' which can execute" \
         -t "additional startup code (like 'rc.local' once did). Optionally an array" \
         -t "named 'appliances' can be added to configure supported appliances." \
         -t - \
         -t "Appliances use <conf> from the 'centauriswitch=<mode>:<conf>' kernel boot cmd" \
-        -t "to start services and other things via '${CEN_PATHS[6]}/centauriswitch'." \
+        -t "to start services and other things via '$CEN_DEFAULT/centauriswitch'." \
         -t - \
         -l "issue" \
         -t "This mechanism can run programs or show messages on a console before any" \

@@ -4,7 +4,7 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2025; BSD License"
 CEN_TITLE="Opens a SSH connection to the given host"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f - '0.70:4' 1 || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -y - '0.71:4' 1 || exit 2
 
 # Data
 DAT_SERVER_GEN=                 # default host (generic server name)
@@ -36,11 +36,11 @@ do_ssh() {
     [ -n "$ox11"  ] && opts+=("$ox11")
     [ -n "$CEN_OPT_COMPRESS" ] && opts+=('-C')
     [ -n "$CEN_OPT_FORCE" ] && opts+=('-o' 'StrictHostKeyChecking no')
-    [ -n "$CEN_OPT_PORT" ] && opts+=("-p" "$CEN_OPT_PORT")
+    [ -n "$CEN_OPT_PORT" ] && opts+=('-p' "$CEN_OPT_PORT")
     [ "$CEN_OPT_TERM" = 0 ] && opts+=('-T')
     [ "$CEN_OPT_TERM" = 1 ] && opts+=('-t')
-    [ -n "$XDG_CURRENT_DESKTOP" ] && opts+=("-o" "SendEnv=XDG_CURRENT_DESKTOP")
-    [ -n "$GDK_DPI_SCALE" -a "$ox11" != '-x' ] && opts+=("-o" "SendEnv=GDK_DPI_SCALE")
+    [ -n "$XDG_CURRENT_DESKTOP" ] && opts+=('-o' 'SendEnv=XDG_CURRENT_DESKTOP')
+    [ -n "$GDK_DPI_SCALE" -a "$ox11" != '-x' ] && opts+=('-o' 'SendEnv=GDK_DPI_SCALE')
 
     local dest="$CEN_OPT_HOST"
     [ -n "$CEN_OPT_USER" ] && dest="$CEN_OPT_USER@$CEN_OPT_HOST"
@@ -50,19 +50,19 @@ do_ssh() {
             trace "Pulseaudio sound via local network"
         else
             export PULSE_SERVER=localhost
-            opts+=("-R" "4713:localhost:4713")
+            opts+=('-R' '4713:localhost:4713')
             trace "Tunneling pulseaudio sound (port=4713)"
         fi
-        opts+=("-o" "SendEnv=PULSE_SERVER")
+        opts+=('-o' 'SendEnv=PULSE_SERVER')
     fi
     system -x ssh "${opts[@]}" "$dest" "$@"
 }
 
 # check for sound forwarding
 do_sound() {
-    [ "$CEN_OPT_SOUND" = "0" ] && return 1
-    [ "$CEN_OPT_SOUND" = "1" ] && return 0
-    [ "$CEN_ACTION" = "batch" ] && return 1
+    [ "$CEN_OPT_SOUND" = 0 ] && return 1
+    [ "$CEN_OPT_SOUND" = 1 ] && return 0
+    [ "$CEN_ACTION" = 'batch' ] && return 1
 
     # pulse audio running?
     [ -d "/tmp/pulse-$USER" ] && return 0
@@ -76,7 +76,7 @@ do_local_ip() {
 
     local rslt
     system -a rslt -d ' \t\n' -q -- getent ahostsv4 "$CEN_OPT_HOST"
-    if [ "${rslt//[0-9]/}" != "..." ] ; then
+    if [ "${rslt//[0-9]/}" != '...' ] ; then
         trace -a -p "Got no IP for: $CEN_OPT_HOST" ; return 1
     fi
 
@@ -288,10 +288,31 @@ actionCopy() {
 }
 
 # ------------------------------------------------------------------------------
-# List authorized keys: -no args-
+# List authorized keys: [<key>|<file> [<name>]]
 # ------------------------------------------------------------------------------
 actionAuth() {
-    embed -v centaurikeys user "$HOME"
+    if [ -z "$1" ] ; then
+        embed -v centaurikeys user "$HOME"
+        return
+    fi
+    local skey="$1" name="${2:--}" flds data
+    case "$skey" in
+    ./*|/*)     readline -e -s skey -i "$skey" || return ;;
+    esac
+    splitjoin -d ' ' -s flds -- "$skey"
+    if [ "${#flds[@]}" != 3 ] ; then
+        invoke -e $"Expected 3 key data fields: <kind> <key> <name>" ; return
+    fi
+    [ "$name" = '-' ] || flds[2]="$name"
+
+    create "$HOME/.ssh/authorized_keys" 600
+    inpdata -r -a data -- "$HOME/.ssh/authorized_keys" || return
+    if listsearch -i data -g -- "* ${flds[1]} *" ; then
+        message -a -p $"Key '%s' already authorized" "${flds[2]}"
+    elif confirm -f $"Add key '%s' to authorized keys" "${flds[2]}" ; then
+        echo "${flds[*]}" >> ~/.ssh/authorized_keys
+        message -a $"Authorized key:" "${flds[2]}"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -367,10 +388,18 @@ actionFiles() {
 # List import: [<clas>]
 # ------------------------------------------------------------------------------
 actionImport() {
+    [ -h ~/.ssh -a ! -e ~/.ssh/id_rsa ] && embed -r centauriencfs -q mount -
+    local clas="$1" serv="$CEN_OPT_HOST"
+    if [ "${clas::3}" = 'hos' ] ; then
+        local temp data
+        tmpfile -s temp 'pub'
+        system -e scp -p "@$serv:.ssh/id_rsa.pub" "$temp" || return
+        readline -e -i "$temp" || return
+        actionAuth "$temp" ; return
+    fi
     if netquery server ; then
         invoke -w "You are on a server, nothing to import" ; return
     fi
-    local clas="$1" serv="$CEN_OPT_HOST"
     [ -z "$clas" ] && netquery -s clas class
 
     folder -m -f -- "$HOME/.ssh" 700
@@ -447,7 +476,7 @@ actions() {
         invoke 'login'  -           0 1 ;;
 
     aut*)
-        invoke 'auth'   -           0   ;;
+        invoke 'auth'   -           0 2 ;;
     imp*)
         invoke 'import' -           0 1 ;;
 
@@ -492,7 +521,8 @@ actions:
        login   [<user>@][<host>]  # remote login via proxy user "remote"
 
        import  [<clas>]           # import keys from server
-       authkeys                   # list authorized keys
+       import  hostkey            # import host key from server
+       authkeys [<key>]           # list authorized keys or add a key
 
 action-short-hands:
        [<user>]@[<host>]    same as open       (overrides --user or --host)

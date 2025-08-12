@@ -9,6 +9,7 @@ Wants=centauriissue.service
 
 [Service]
 Type=oneshot
+ExecStartPre=/usr/bin/truncate --no-create --size=0 /var/centauri/persistent/centauri-monitor
 ExecStart=/var/centauri/tools/centaurisysinit --daemon=0 start
 RemainAfterExit=yes
 

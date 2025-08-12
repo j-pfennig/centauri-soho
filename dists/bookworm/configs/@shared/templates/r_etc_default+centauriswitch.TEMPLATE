@@ -1,0 +1,393 @@
+# config for centauriswitch [client]
+
+# ==========================================================================
+# default section - must be 1st section in file
+# ==========================================================================
+# The configuration parameters and their defaults (see *** marker) are shared
+# between sections if the documentation is in this section.  Interface mode
+# "router" and "switch" can have different defaults, see in these sections.
+#
+# Order of processing: [] [<config>] [<mode>]
+# --------------------------------------------------------------------------
+[]
+    # centauriswitch symlinks some config files to mode dependent suffixes
+    # and starts or restarts services depending on mode changes (see the
+    # 'restart' statement)
+
+        # ---------------------------------------------------------
+        # Network modes and file file-switching suffix search order
+        # ---------------------------------------------------------
+        # MASTER    <svr>   master         client  local
+        # SLAVE     <svr>   slave  master  client  local
+        # CLIENT    <svr>                  client  local
+        # GUEST     <svr>                  guest   local
+        # UNKNOWN                          local   client
+
+    # directories with switched config files
+
+        dirs=/etc/cups /etc/samba /etc/security
+
+    # single config files/folders that are to be switched
+
+        files=/etc/apt/apt.conf /etc/dnsmasq.d /etc/tinyproxy/tinyproxy.conf
+
+    # we cannot declare extra services as defaults!
+    
+        # This statement allows services to be started by 'centauriroute open'
+
+        # services=   # not to be used in this section
+
+    # in systemd mode targets and services are started depending on network mode
+
+        # ----------------------------------------------------------------------
+        #                       MASTER    SLAVE     CLIENT    GUEST     UNKNOWN
+        # ----------------------------------------------------------------------
+        # centauri-master       yes
+        # centauri-slave                  yes
+        # centauri-member                           yes
+        # centauri-trusted                                    yes
+        # centauri-public                                                yes
+        # ----------------------------------------------------------------------
+        # dnsmasq               yes
+        # centauri-network                          yes       yes        yes
+        # <nfs-server>          yes
+        # <nfs-client>                    yes       yes
+        # <samba-server>                  yes       yes       yes
+        # ----------------------------------------------------------------------
+
+        # The centauri-xxxx target are mutually exclusive and start or stop some
+        # depending services including centauri-network, dnsmasq, nfs and samba.
+
+        # The centauri-network service is used to start (but not to stop) the
+        # following services:
+        #
+        #   Wants=networking.service inetd.service
+        #   Wants=gmediarender.service minidlna.service 
+
+    # attaching targets/services to network modes ...
+
+        # Some services depend on others started before, use - for a 5s delay
+
+        # Service names can have a prefix
+        # @ restart running service (don't start) 
+        # + only start, don't stop
+        # - only stop, don't start
+
+        # if 'guest' is not configured, 'guest' and 'local' are the same.
+
+        # in this configuration we let systemd handle everything via targets...
+
+            master      +centauri-master    radvd +weewx
+            slave       +centauri-slave  
+            guest       +centauri-trusted
+            client      +centauri-member
+            local       +centauri-public 
+
+            # restart after config switch
+            restart     smbd      /etc/samba
+            restart     cups      /etc/cups
+            restart     tinyproxy /
+
+        # in sysV mode we may need to restart services after configuration switching  
+
+            # master= ...
+            # slave=  ...
+            # guest=  ...
+            # client= ...
+            # local=  ...
+
+            # restart services after config switching. Multiple service restart statements
+            # can be given and each service name is followed by one ore more triggers ...
+
+            # only restart smbd on servers ...
+            ##restart=smbd    /etc/samba /etc/default/samba
+
+            #restart=winbind /etc/samba /etc/default/samba
+            #restart=smbd    /etc/samba /etc/default/samba
+            #restart=nmbd    /etc/samba /etc/default/samba
+            #restart=inetd   /etc/inetd.conf
+
+    # interfaces to be watched ordered by descending preference
+
+        interface=eth+ wlan+ usb+ tun+ wireless+ cable+
+
+        # to enable wvdial add ppp+ ...
+        #interface=eth+ wlan+ usb+ ppp+ tun+ wireless+ cable+
+
+    # configure bridge interface for switch/route
+
+        # *** add all ifs to 'br0': bridge=
+        #     add all ifs to ...  : bridge=br3
+        #     list ifs to use     : bridge=br0 wlan1 eth0 eth2
+        #     add no ifs to bridge: bridge=br0 none
+        #     no bridge at all    : bridge=none
+
+        # no wildcards, use same order as in centaurinetcfg ...
+        # bridge=br0 eth0 eth1 wlan0
+        
+            # raspberry: internal wlan cannot be added to brigde.
+            #            To allow VPN to work we need a bridge
+            # bridge=lo eth0
+            #            Without VPN no brigde is required
+            bridge=none
+            #            See also apoint configuration
+
+    # Home (dns) server to be used
+
+        # *** stand alone         : home=local
+        #     configured server   : home=
+        #     custom server       : home=myserver
+        #home=
+
+    # modem/wlan/lte/android dialup configurations (see vwdial, wpa-supplicant)
+
+        # *** disable dialing       : dialup=none       
+        #     modem [centauriroute] : dialup=modem       
+        #     modem [wvdial_other]  : dialup=modem  wvdial_other
+        #     wlan dialup           : dialup=wlan   wlan0 my-wpa-config
+        #     lterouter dialup      : dialup=router eth2 192.168.8.1
+        #     tethering dialup      : dialup=tether usb0 192.168.42.129 192.168.42.100 1400
+        #dialup=
+     
+    # The wlan interface for hostapd
+
+        # *** AP on 1st wlan iface: wlan=
+        #     AP on specific iface: wlan=wlan3
+        #     alternate config    : wlan=wlan0 myconfig
+        #     disable AP creation : wlan=none
+        #wlan=
+
+    # The point-to-point-protocol device (see wvdial)
+
+        #ppp=ppp0
+
+    # A space separated list of services to start
+
+        # *** no extra services   : services=
+
+    # Override files - use to pass parameters to services
+
+        # do not delete: override=<name>        # in defaults [] only
+        # delete file  : override=<name> -      # makes no sense in []
+        # create file  : override=<name> <arg>...
+
+        # by default on service start all override files are deleted. But
+        # we must not delete centauriswitch as it used by centaurisoho...
+        override=centauriswitch 
+
+# ==========================================================================
+# Run homeassistant. Kernel parameter: centauriswitch:simple:hass runlevel=2
+# ==========================================================================
+[hass]
+
+    # This config should be used with runlevel=2 ...
+
+        override=centaurisecrets    local
+        override=centaurifilter     home
+
+        # start inetd (see runlevel2) and centaurihass
+        always=inetd centaurihass 
+
+# --------------------------------------------------------------------------
+# The interface mode (Kernel argument) can specify an <configname> that can
+# be used for fine tuning. Example: centauriswitch=router:phone
+# For this example the defaults for [router] would apply, abd the overrides
+# are taken from [phone]
+# --------------------------------------------------------------------------
+
+# ==========================================================================
+# Just start inetd. Kernel parameter: centauriswitch=simple
+# ==========================================================================
+[simple]
+    # No extra services to be started
+        services=
+    
+    # services depending on network location
+        guest=+inetd +lightdm-xdmcp
+        client=+inetd +lightdm-xdmcp
+        local=+inetd
+
+# ==========================================================================
+# Switch for ethernet/wlan. Kernel parameter: centauriswitch=switch
+# ==========================================================================
+[switch]
+    # No extra services to be started
+        services=
+
+    # No network location dependent services except inetd
+        guest=+inetd
+        client=+inetd
+        local=
+
+    # Switch may dialup to a wlan (use dialup=none to disable)
+        dialup=none
+        #dialup=wlan wlan0 %W%
+
+    # Switch is stand alone, local DNS
+        home=local
+
+    # The wlan interface for hostapd (use wlan=none to disable)
+        wlan=none
+        #wlan=wlan1 %A%
+
+# --------------------------------------------------------------------------
+# Arp proxy connecting ethernet to wlan. Kernel parameter: switch:extender
+# --------------------------------------------------------------------------
+[extender]
+    # No extra services to be started
+        services=
+
+    # use computer's generic address at wlan0 
+        home=local@wlan0
+
+    # we do not run hostapd
+        wlan=none
+
+    # bridge interfaces
+
+        # without proxy=... the default bridge config is used
+        
+    # proxy interfaces (inits to bridge=none): <trunc> <extension>
+        
+        proxy=wlan0 eth0
+
+    # start remote access and some timers (not default in runlvel 2)
+        always=inetd anacron.timer logrotate.timer
+
+# --------------------------------------------------------------------------
+# Server without bridge. Kernel parameter: centauriswitch=static:server 
+# --------------------------------------------------------------------------
+[server]
+    # nothing special
+
+# --------------------------------------------------------------------------
+# Server with bridge. Kernel parameter: centauriswitch=static:apoint
+# --------------------------------------------------------------------------
+[apoint]
+    # services to be started
+        services=
+
+    # The wlan interface for hostapd
+        wlan=wlan0 %A%
+
+# ==========================================================================
+# Router with dialup. Kernel parameter: centauriswitch=router 
+# ==========================================================================
+#
+#   ext. net => <dialup> [dhclient] -> nat -> bridge [dnsmasq] => inner net
+#
+# The router mode implies nat beween a dialup device and a bridge that
+# connects devices servicing the inner network. dnsmasq is started on the
+# inner net.
+# --------------------------------------------------------------------------
+[router]
+    # services to be started unconditionally
+        #service=networking nmbd smbd lighttpd squid
+        services=nmbd smbd lighttpd squid
+
+    # services to be started unconditionally
+        always=centaurimounter
+
+    # Home (dns) server to be used
+
+        # *** stand alone         : home=local
+        #     configured server   : home=
+        #     custom server       : home=myserver
+        home=local
+
+    # force firewall to 'home' mode
+        override=centaurifilter     home
+
+    # modem/wlan/lte/android dialup configurations (see vwdial, wpa-supplicant)
+
+        # *** disable dialing       : dialup=none       
+        #     modem [centauriroute] : dialup=modem       
+        #     modem [wvdial_other]  : dialup=modem  wvdial_other
+        #     wlan dialup           : dialup=wlan   wlan0 my-wpa-config
+        #     lterouter dialup      : dialup=router eth2 192.168.8.1
+        #     tethering dialup      : dialup=tether usb0 192.168.42.129 192.168.42.100 1400
+
+        # is there a real modem (default: gsmmodem), try this...
+        dialup=modem  aldi-talk
+        # do we have a router stick (default: lterouter), then try...
+        dialup=router 
+        # can we use android tethering (default usbrouter), ...
+        dialup=tether  
+
+    # The wlan interface and config name for a hostapd access point
+
+        # *** AP on 1st wlan iface: wlan=
+        #     AP on specific iface: wlan=wlan3
+        #     alternate config    : wlan=wlan0 myconfig
+        #     disable AP creation : wlan=none
+        wlan=wlan0 Worms-AP
+
+# --------------------------------------------------------------------------
+# Router for GSM-USB stick. Kernel parameter: centauriswitch=router:umts 
+# --------------------------------------------------------------------------
+[umts]
+    # services to be started
+
+        services=nmbd smbd apache2 squid3
+
+    # Home (dns) server to be used
+
+        # *** stand alone         : home=local
+        #     configured server   : home=
+        #     custom server       : home=myserver
+        home=local
+
+    # (GSM) dialup configuration (see /etc/wvdial.conf)
+
+        # *** gsm [centauriroute] : dialup=
+        #     use [my_example]    : dialup=gsmmodem my-example
+        #     wlan dialup         : dialup=wlan0 my-wpa-config
+        #     disable dialing     : dialup=none
+        #dialup=gsmmodem aldi-talk
+        dialup=gsmmodem telekom
+ 
+    # The wlan interface for hostapd
+
+        # *** AP on 1st wlan iface: wlan=
+        #     AP on specific iface: wlan=wlan3
+        #     alternate config    : wlan=wlan0 myconfig
+        #     disable AP creation : wlan=none
+        wlan=wlan0 %A%
+
+# --------------------------------------------------------------------------
+# Nat from wlan to ethernet. Kernel parameter: router:repeater
+# --------------------------------------------------------------------------
+#
+#   ext. net => wlan0 [dhclient] -> nat -> bridge [dnsmasq] => inner net
+#
+# Here 'wlan0' is configured via /etc/network/interfaces using dhcp-client
+# and wpa-supplicant. On the inner net dnsmasq gets started. As being a
+# sub-config of 'router' the nat rules are automatically applied.
+# --------------------------------------------------------------------------
+[repeater]
+    # bridging: no wildcards, use same order as in centaurinetcfg ...
+        bridge=br0 eth0 eth1 wlan1
+
+    # do not start any services in runlevel 4 or 5
+        services=
+
+    # no location dependent services to be started
+        guest=
+        client=
+        local=
+
+    # use the computer's generic address at wlan0 
+        home=local@wlan0
+
+    # do 'ifup wlan0' at open, which will use dhclient to configure the interface.
+        # Don't start wpa-supplicant! Use configuration = '-', to just run ifup.
+        # The dialup interface must not be part of the bridge!
+        dialup=wlan wlan0 -
+
+    # The wlan interface and config for hostapd
+        wlan=none
+
+    # provide remote access (not started by default in runlevel 2)
+        always=inetd
+
+# end

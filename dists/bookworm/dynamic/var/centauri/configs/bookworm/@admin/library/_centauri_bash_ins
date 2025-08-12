@@ -33,7 +33,7 @@
 # ------------------------------------------------------------------------------
 
 # do not demand an api-version, we get loaded by centauriconfig
-CEN_MODULES['_centauri_bash_ins']='0.18:4'
+CEN_MODULES['_centauri_bash_ins']='0.20:4'
 
 embed -c '_centauri_bash_ext'               # dependency
 embed -c '_centauri_bash_cfm'               # ... confirm()
@@ -836,7 +836,7 @@ _cen_ins_systemd() {
             forg="$farg" ; farg="$1/${farg##*/}" ; fena=
 
             # create preset folder/file
-            if [ "${farg##*.}" = "preset" ] ; then
+            if [ "${farg##*.}" = 'preset' ] ; then
                 fdir="$1-preset"
                 if [ -n "$_remove" ] ; then
                     rpre="$dest/$fdir"              # flag folder removal
@@ -846,7 +846,7 @@ _cen_ins_systemd() {
                 farg="$fdir/${farg##*/}"
 
             # create override folder/file
-            elif [ "${farg##*.}" = "override" ] ; then
+            elif [ "${farg##*.}" = 'override' ] ; then
                 fdir="${farg%.*}.d"
                 farg="$fdir/override.conf"
 
@@ -857,7 +857,7 @@ _cen_ins_systemd() {
                 create -d -- "$dest/$fdir" 755 || continue
 
             # unit file
-            elif [ "${farg##*.}" != "target" ] ; then
+            elif [ "${farg##*.}" != 'target' ] ; then
                 fena=1
             fi
 
@@ -1161,6 +1161,7 @@ _cen_ins_paths() {
     elif [ -d "$CEN_ROOT/default" ] ; then
         $CEN_TRACE2 -a -c " keep" -- "$CEN_ROOT/default"
     elif [ "$EUID" = 0 -a -e "$CEN_INS_ETCPATH/default" ] ; then
+        # /var/centauri/default  ->  /etc/default  == ../../etc/default
         symlink -l -- "$CEN_INS_ETCPATH/default" "$CEN_ROOT/default"
     else
         create -d -- "$CEN_ROOT/default" 775 "$_sgrp"
@@ -1170,22 +1171,22 @@ _cen_ins_paths() {
 
     if [ -n "$_frem" ] ; then
         [ "$_repo" = '-' ] &&
-            remove -q -d -- "$CEN_ROOT/locale" "$CEN_ROOT/library"
+            remove -q -d -- "$CEN_ROOT/locale" "$CEN_LIBRARY"
         remove -q -- "$CEN_ROOT/html/CACHEDIR.TAG"
         remove -q -- "$CEN_ROOT/html"               # rm empty folder
         remove -q -- "$CEN_ROOT/systemd"            # rm empty folder or link
-        remove -q -- "$CEN_ROOT/tools/templates/"*centauri* \
-                     "$CEN_ROOT/tools/templates/_custom_module_usr" \
-                     "$CEN_ROOT/tools/templates/README" \
-                     "$CEN_ROOT/tools/templates/setup"
-        remove -q -- "$CEN_ROOT/tools/templates"    # rm empty folder
-        remove -q -- "$CEN_ROOT/tools/"*centauri* "$CEN_ROOT/tools/"*README*
-        remove -q -- "$CEN_ROOT/tools"              # rm empty folder
+        remove -q -- "$CEN_TOOLS/templates/"*centauri* \
+                     "$CEN_TOOLS/templates/_custom_module_usr" \
+                     "$CEN_TOOLS/templates/README" \
+                     "$CEN_TOOLS/templates/setup"
+        remove -q -- "$CEN_TOOLS/templates"         # rm empty folder
+        remove -q -- "$CEN_TOOLS/"*centauri* "$CEN_ROOT/tools/"*README*
+        remove -q -- "$CEN_TOOLS"                   # rm empty folder
         remove -q -- "$CEN_ROOT/"*README* "$CEN_ROOT/LICENSE" "$CEN_ROOT/setup"
-        remove -q  -- "$CEN_ROOT"                   # rm empty folder
+        remove -q -- "$CEN_ROOT"                    # rm empty folder
         return 0
     fi
-    [ -d "$CEN_ROOT" ]                          # return status
+    [ -d "$CEN_ROOT" ]                              # return status
 }
 
 # ------------------------------------------------------------------------------
@@ -1194,8 +1195,8 @@ _cen_ins_paths() {
 _cen_ins_proxy() {
     $CEN_TRACE -a -c " proxy" -- "$CEN_ROOT"
     local _repo _rexp _prox="$1"
-    _rexp="${CEN_PATH_REXP[*]@A}" ; _rexp="${_rexp#declare -* }"
 
+   _rexp="CEN_PATH_REXP=(${CEN_PATH_REXP[*]@Q})"
     [ -n "$_rexp" ] && _rexp=$'\n'"# path replacements from [library] section"$'\n'"$_rexp"
     [ -n "$_prox" ] && _prox=$'\n'$'\n'"# things from [proxy] section"$'\n'"$_prox"
     create -c -t -w "$CEN_TOOLS/_centauri_bash_lib" 775 <<!EOF || return 1
@@ -1206,7 +1207,7 @@ CEN_INSTALL='${CEN_INSTALL:-$CEN_ROOT}'
 
 # find the library root folder - use readlink if CEN_ROOT is not valid
 if [ "\${CEN_ROOT:-.}" = '.' ] ; then
-    export CEN_ROOT="$CEN_ROOT"
+    export CEN_ROOT="\${CEN_INSTALL%%:*}"
     export CEN_TOOLS="\$CEN_ROOT/tools"
     if [ ! "\$CEN_TOOLS/_centauri_bash_lib" -ef "\$BASH_SOURCE" ] ; then
         CEN_TOOLS=\$(readlink -f "\$(type -p _centauri_bash_lib)")
@@ -1493,6 +1494,9 @@ _cen_ins_version() {
     }
 
     ___cen_vers_wrt() {
+        $CEN_TRACE -a -c -p ' ' $"Update '%s'" "$CEN_SYS_STATE_FILE"
+        [ -d "$CEN_SYS_STATE_DIR" ] || _cen_ins_call paths  # CEN_SYS_CACHE_DIR setup
+
         create -h 'centauritools' -t -s -w "$CEN_SYS_STATE_FILE" 664 <<!EOF
 ${CEN_SYS_CONFIG@A}
 ${CEN_SYS_DISTRO@A}

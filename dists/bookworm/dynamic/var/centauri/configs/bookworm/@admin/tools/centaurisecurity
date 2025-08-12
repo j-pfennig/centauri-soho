@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2023; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2025; BSD License"
 CEN_TITLE="Apply file-system security settings"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d - "0.44:2" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d - '0.45:6' || exit 2
 
 # data
 CEN_DONE=0                  # imply --zombie
@@ -41,9 +41,6 @@ setRights() {
 
 # check if folder is local: <fldr>
 isLocal() {
-
-#stat --file-system --format=%T /data/alpha/shared
-#df --output=source  -l   /data/alpha/shared/GeoData_Maps/ && echo ok
     system -r -q -- df --output=source --local "$1"
 }
 
@@ -238,8 +235,8 @@ actionSystem() {
 
     # level 0 - default (no repository)
     attributes -o root:wheel -m 775 "$CEN_ROOT" "$CEN_TOOLS" "$CEN_LIBRARY" \
+                                    "$CEN_DEFAULT" "$CEN_PERSISTENT" "$CEN_TRANSIENT" \
                                     "$CEN_ROOT/default" "$CEN_ROOT/html" "$CEN_ROOT/locale" \
-                                    "$CEN_ROOT/persistent" "$CEN_ROOT/transient"
 
     # misc
     setRights 770 vbox:vboxusers "$APP_USER_VBOX"

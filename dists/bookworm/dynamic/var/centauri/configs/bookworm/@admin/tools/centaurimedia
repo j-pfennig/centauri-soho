@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Dr. J. Pfennig (c) 2020-2024; "$"BSD License"
+CEN_LEGAL="Dr. J. Pfennig (c) 2020-2025; "$"BSD License"
 CEN_TITLE=$"Tool to wipe, partition, format and label storage media"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t -y - '0.40:3' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -t -y - '0.41:3' || exit 2
 
 # Data
 CEN_OPT_BASE='/tmp'     # see --base
@@ -122,7 +122,7 @@ ask_if_ok() {
             "$DAT_PARTITION" || quit -a -u
         return
     fi
-    confirm -f -n -y "%s will delete all data of '%s'. Continue" \
+    confirm -f -n -y $"%s will delete all data of '%s'. Continue" \
         "$CEN_ACTION" "$DAT_PARTITION" || quit -a -u
     DAT_ISOK=1
 }
@@ -307,17 +307,17 @@ actionFormat() {
                     [ -n "$CEN_OPT_SIZE" ] && args+=('-s' "$CEN_OPT_SIZE")
                     [ -n "$labl" ] && args+=('-L' "$labl") ;;
 
-        f2fs)       ftyp="f2fs" ; args=("-f")
-                    [ -n "$labl" ] && args+=("-l" "$labl") ;;
+        f2fs)       ftyp='f2fs' ; args=('-f')
+                    [ -n "$labl" ] && args+=('-l' "$labl") ;;
 
-        exfat)      ftyp="exfat"
+        exfat)      ftyp='exfat'
                     [ -n "$labl" ] && args=('-n' "$labl") ;;
 
-        ext4)       ftyp="ext4" ; args=("-E" "nodiscard" "-m" 0)
+        ext4)       ftyp='ext4' ; args=('-E' 'nodiscard' '-m' 0)
                     [ -n "$labl" ] && args+=('-L' "$labl")
-                    post=("tune2fs" "-c" 0 "$DAT_PARTITION") ;;
+                    post=('tune2fs' '-c' 0 "$DAT_PARTITION") ;;
 
-        ntfs*)      ftyp="ntfs" ; args=("-f")
+        ntfs*)      ftyp='ntfs' ; args=('-f')
                     [ -n "$labl" ] && args+=('-L' "$labl") ;;
 
         fat*|vfat)  ftyp='vfat'
@@ -530,7 +530,7 @@ actionShell() {
     fi
     folder -c -f -- "$mpnt"
     system -r -- bash -i
-    [ -n "$moun" ] && confirm -y -f "Unmount '%s'" "$mpnt" && actionUmount
+    [ -n "$moun" ] && confirm -y -f $"Unmount folder '%s'" "$mpnt" && actionUmount
 }
 
 # ------------------------------------------------------------------------------
@@ -640,7 +640,7 @@ actionSystem() {
         leg*)   nump=2 ; parg='set 1 lba on' ; bios= ; ptyp='msdos' ; bfat='lfat' ;;
         ras*)   nump=2 ; parg='set 1 lba on' ; bios= ; ptyp='msdos' ; bfat='rfat' ;;
         [0-9]*) size="$1" ;;
-        *)      invoke -e $"Invalid argument:" "$1"
+        *)      invoke -e - "$1"
         esac ; shift
     done
     vfat_name vfat "$name"
@@ -672,7 +672,7 @@ actionUmount() {
         local name="${CEN_OPT_LABEL%_*}" list
         local mpnt="$CEN_OPT_BASE/$name"
         if [ ! -d "$mpnt" ] ; then
-            invoke -e "Mountpoint '%s' not found" "$mpnt" ; return
+            invoke -e $"Mountpoint '%s' not found" "$mpnt" ; return
         fi
         if [ "$name" = "$CEN_OPT_LABEL" ] ; then
             list=("${name}_boot" "${name}_root" "${name}_vol0")

@@ -6,10 +6,10 @@
 #
 # Options:  -none-
 #
-# Copyright Dr. J. Pfennig (c) 2023-2024
+# Copyright Dr. J. Pfennig (c) 2023-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_atr']='0.10:2'
+CEN_MODULES['_centauri_bash_atr']='0.11:4'
 
 embed -c '_centauri_bash_ext'               # dependency
 
@@ -56,7 +56,7 @@ CEN_ATR_HAVE_STAT=              # 1 := stat builtin loaded, 0 := not available
 # '<user>**:**' (no group but trailing colon) the user's primary group is used.
 # ------------------------------------------------------------------------------
 attributes() {
-    local _excl=() _erun _kind _ownr=':' _mode _mdef='664' _args=() _item _srec _ferr='-e'
+     local _excl=() _erun _keep _kind _ownr=':' _mode _mdef='664' _args=() _item _srec _ferr='-e'
     while [ "${1::1}" = '-' ] ; do
         case "$1" in
         --)   shift ; break ;;

@@ -2,6 +2,62 @@
 # ------------------------------------------------------------------------------
 # Tool to manage seed and distributable tars
 # ------------------------------------------------------------------------------
+# This is the low level (bootstrap) installer to extract a workspace from a dis-
+# tributable tar and to use a seed tar to install files into the host OS. When
+# running stand-alone is uses an embedded instance of mini-bash-lib.
+#
+# Except for some bootstap commands (install, minimal, prepare, remove) this
+# tool should be run using the 'centaurisoho' command.
+#
+# workspace                             # base folder, hic leones sunt
+#   distribution                        # debian distribution bookworm, trixie, ...
+#       configuration                   # configuration name
+#           seed tar                    # config seed with dynamic/static only
+#   seed tar                            # distro seed with config/dynamic/static
+# distributable tar                     # a workspace suitable for installation
+#
+# .                                     # workspace root folder
+# ├── dists                             # distributions
+# │   ├── bookworm
+# │   │   ├── @misc
+# │   │   ├── @seed                     # config seeds or distro seed
+# │   │   ├── configs                   # configurations of a distribution
+# │   │   │   ├── @shared               # shared between configurations
+# │   │   │   │   ├── packages
+# │   │   │   │   └── templates
+# │   │   │   ├── centauri              # a configuration
+# │   │   │   │   ├── private           # certificate store, ssh key store
+# │   │   │   │   └── templates
+# │   │   │   └── worms                 # another configuration
+# │   │   │       ├── private
+# │   │   │       └── templates
+# │   │   ├── dynamic                   # seed data updated from repository
+# │   │   │   ├── etc
+# │   │   │   ├── usr
+# │   │   │   │   └── local
+# │   │   │   │       └── bin
+# │   │   │   └── var
+# │   │   │       ├── centauri
+# │   │   │       │   └── configs
+# │   │   │       └── www
+# │   │   └── static                    # static file system data
+# │   │       ├── boot
+# │   │       ├── etc
+# │   │       ├── export
+# │   │       ├── root
+# │   │       ├── shared
+# │   │       ├── usr
+# │   │       └── var
+# │   │           ├── backups           # TODO used by debian
+# │   │           ├── centauri          # CEN_ROOT folder
+# │   │           ├── lib               # TODO
+# │   │           └── www
+# │   ├── trixie
+# │   │   ├── configs
+# │   │   └── ...
+# │   └── @tools
+# └
+# ------------------------------------------------------------------------------
 
 : ${DAT_SELF:=${0##*/}}             # the name of this script
 : ${DAT_SEED:='seed.tgz'}           # seed tar default
@@ -9,8 +65,7 @@
 [ "${CEN_ROOT:-.}" = '.' ] && CEN_ROOT='/var/centauri'
 CEN_VERB=1
 
-INSTALLER_MARKER=                   # flag for centaurisoho installation
-INSTALLER_STATUS=0
+INSTALLER_BASHLIB=                  # 0:=use mini-bash-lib 1:=use _centauri_bash_lib
 
 INSTALLER_DISTRO=                   # see installer_config()
 INSTALLER_CONFIG=                   # ...
@@ -35,7 +90,7 @@ installer_allow() {
     [ -e "$CEN_ROOT" ] || return
     [ -e "$INSTALLER_PERCONF" ] && return
     message    "I am not daring to" "$1" "on this system. To allow"
-    message -i "an installation run:" "touch $INSTALLER_PERCONF"
+    message -i "this command run:" "touch $INSTALLER_PERCONF"
     quit
 }
 
@@ -47,7 +102,7 @@ installer_allow() {
 # using 'centaurisoho workspace ...' and cannot be used as a distributable tar.
 # ------------------------------------------------------------------------------
 installer_archive() {
-    installer_chkroot
+    installer_chkroot -m                            # can use mini-bash-lib
     local name='centaurisoho-master'
     local orig="${PWD%/*}/$name"
     local file="$name.tgz" ; [ "${1:--}" = '-' ] || file="$name-$1.tgz"
@@ -66,10 +121,19 @@ installer_archive() {
 }
 
 # ------------------------------------------------------------------------------
-# check root permission, create persistent folder
+# check root permission, create persistent folder: [-m]
 # ------------------------------------------------------------------------------
 installer_chkroot() {
+    [ -n "$INSTALLER_BASHLIB" ] && return
+    if [ "$1" = '-m' ] ; then                       # allow mini-bash-lib
+        INSTALLER_BASHLIB=0
+    else
+        INSTALLER_BASHLIB=1
+        [ -n "$CEN_MINI_VERSION" ] &&
+            quit -e "centaurisoho must be installed to invoke this action"
+    fi
     [ "$EUID" = 0 ] || quit -e "You must be root to run this program"
+    folder -f -m -- "$INSTALLER_PERSIST"
 }
 
 # ------------------------------------------------------------------------------
@@ -145,34 +209,35 @@ installer_country() {
 }
 
 # ------------------------------------------------------------------------------
-# pack the distribution tar: [<dist> <conf>]
+# pack the distribution tar: <dist> [<conf>]
 # ------------------------------------------------------------------------------
 installer_dist() {
-    installer_chkroot
+    installer_chkroot -m                            # can use mini-bash-lib
     local star dist orig="${PWD##*/}"
     installer_config -w "$@"
 
     dist="${PWD%/*}/centaurisoho-${INSTALLER_SEED#*-}"
     local star="dists/$INSTALLER_DISTRO/@seed/$INSTALLER_SEED"
-    trace -a -c -- 'dist tar' "$dist"
-    trace -a -c -- 'seed tar' "$star"
+    trace -a -c 'dist tar' -- "$dist"
+    trace -a -c 'seed tar' -- "$star"
 
-    cd .. || quit -e "Command 'cd ..' failed"
+    folder -c -f ..
     if [ -e "$dist" ] ; then
         confirm -y -a "Replace existing distributable tar" || quit -s 2
-        system mv -f "$dist" "$dist.old" || quit
+        system -f -p -- mv -f "$dist" "$dist.old"
     fi
 
     [ -n "$star" ] && symlink -n -- "$star" "$orig/$DAT_SEED"
 
     local xfrm="centaurisoho-${INSTALLER_SEED#*-}" ; xfrm="s|^$orig/|${xfrm%.*}/|"
-    local ddir="$orig/dists/$INSTALLER_DISTRO"
+    local ddir="$orig/dists/$INSTALLER_DISTRO" acfg=()
+    [ -n "$INSTALLER_CONFIG" ] &&
+        acfg=("$ddir/configs/@shared" "$ddir/configs/$INSTALLER_CONFIG")
     system tar -caf "$dist" --transform "$xfrm" "$orig/$DAT_SEED" "$orig/$star" \
         "$orig/installer" "$orig/docviewer" \
         "$orig/README-first" "$orig/README"/[0-9]* "$orig/README"/docviewer.* \
-        "$orig/dists/@tools" "$ddir/@misc" \
-        "$ddir/configs/@shared" "$ddir/configs/$INSTALLER_CONFIG" || quit
-
+        "$orig/dists/@tools" "$ddir/@misc" "${acfg[@]}" || quit
+    [ -n "$SUDO_USER" ] && system -e -p -- chown "$SUDO_USER:" "$dist"
     message -i "Created distributable:" "$dist"
 }
 
@@ -200,10 +265,6 @@ installer_initial() {
         system mv -f '/etc/network/interfaces.installer' '/etc/network/interfaces'
 
     local fini
-#    if [ ! -e '/etc/systemd/network/99-default.link' ] ; then
-#        message -i "Disable systemd interface naming (rebuilding initrd)"
-#        symlink -n '/dev/null' '/etc/systemd/network/99-default.link'
-#        fini=1
     if [ '.timestamp' -nt "/boot/initrd.img-$(uname -r)" ] ; then
         [ "$1" = '-n' ] || fini=1
     fi
@@ -247,7 +308,7 @@ This is a minimal unmodified Debian ${INSTALLER_DISTRO^} system (last update: $(
 # install the seed tar: [<dist> <conf>]
 # ------------------------------------------------------------------------------
 installer_install() {
-    installer_chkroot
+    installer_chkroot -m                            # can use mini-bash-lib
     installer_config -r "$@"
     trace -a -c 'install' "$INSTALLER_SEED"
 
@@ -270,9 +331,6 @@ installer_install() {
     fi
 
     if confirm -y -i "$mesg" ; then
-        # to protect the development system ...
-        [ -e '/admin/utilities' ] &&
-            quit -e "Cannot install 'centaurisoho' on this system:" '/admin/utilities'
         if [ "$ddir" = '/' ] ; then
             system tar --directory=/ --strip-components=1 -xaf "$DAT_SEED" || quit -s 2
             installer_initial -n
@@ -280,7 +338,7 @@ installer_install() {
             folder -m "$ddir" || quit -s 2
             # unfortunately --exclude=static cannot be used with --strip-components
             system tar --directory="$ddir" --exclude='static' -xaf "$DAT_SEED" || quit -s 2
-            system cp -a "$ddir/dynamic"/* /
+            copy -a "$ddir/dynamic"/* /
         fi
         system touch '.timestamp' || quit -s 2
     else
@@ -293,16 +351,17 @@ installer_install() {
     # create persistent data folder
     if [ ! -d "${INSTALLER_PERCONF%/*}" ] ; then
         folder -m "$INSTALLER_PERSIST" || quit -s 2
-        symlink -n "$INSTALLER_PERSIST" "${INSTALLER_PERCONF%/*}" || quit -s 2
+        symlink -n -l "$INSTALLER_PERSIST" "${INSTALLER_PERCONF%/*}" || quit -s 2
+        symlink -n -l '/etc/default' "${INSTALLER_PERBASE%/*}" || quit -s 2
     fi
-    system echo "$conf" >"$INSTALLER_PERCONF" || quit -s 2
+    create -t -v conf -- "$INSTALLER_PERCONF" || quit -s 2
 
     # save information for centaurisoho (full install only)
     if [ "$ddir" = '/' ] ; then
-        conf="SOHO_WORKSPACE=${PWD@Q}\n"
-        conf+="SOHO_DISTRO=${INSTALLER_DISTRO@Q}\n"
-        conf+="SOHO_CONFIG=${INSTALLER_CONFIG@Q}"
-        system echo -e "$conf" >"$INSTALLER_PERBASE" || quit -s 2
+        conf=("SOHO_WORKSPACE=${PWD@Q}"
+              "SOHO_DISTRO=${INSTALLER_DISTRO@Q}"
+              "SOHO_CONFIG=${INSTALLER_CONFIG@Q}")
+        create -t -v conf -- "$INSTALLER_PERBASE" || quit -s 2
         message -i "centauri-tools installation succeeded"
     else
         remove -d "$ddir"
@@ -350,7 +409,7 @@ installer_keyboard() {
 # udate symlinks in workspace
 # ------------------------------------------------------------------------------
 installer_links() {
-    installer_chkroot
+    installer_chkroot -m                            # can use mini-bash-lib
     installer_config -i "$@"
 }
 
@@ -373,25 +432,29 @@ installer_login() {
 # reduce dist usage
 # ------------------------------------------------------------------------------
 installer_minimal() {
+    installer_chkroot -m                            # can use mini-bash-lib
     [ -e '.timestamp' ] && quit -e "Cannot run 'minimal' after 'install'"
     installer_initial
-    confirm -y "Minimize disk usage and zero-fill" || return
 
-    local item curr="$PWD"
-    if folder -c /var/log ; then
-        system -q systemctl stop systemd-journald
-        remove -d installer journal/* apt/*
-        remove -- *.gz */*.gz *.[0-9] */*.[0-9]
-        for item in *.log ; do                  # zero-size log files
-            [ -s "$item" ] || continue
-            > "$item"
-        done
+    if confirm -y "Remove cache data, shrink log files" ; then
+        local item curr="$PWD"
+        if folder -c /var/log ; then
+            system -q systemctl stop systemd-journald
+            remove -d installer journal/* apt/*
+            remove -- *.gz */*.gz *.[0-9] */*.[0-9]
+            for item in *.log ; do                  # zero-size log files
+                [ -s "$item" ] || continue
+                > "$item"
+            done
+        fi
+        folder -c "$curr"
     fi
-    folder -c "$curr"
 
-    message -i "Zerofill file system ..."
-    system -q -- dd if=/dev/zero of=zero.tmp bs=1M
-    system sync ; remove zero.tmp
+    if confirm -i -n "Zerofill file system  (can be slow)" ; then
+        system -q -- dd if=/dev/zero of=/var/tmp/zero.tmp bs=1M
+        system sync
+    fi
+    remove /var/tmp/zero.tmp
 
     message -i "Clean swap space ..."
     system swapoff -a
@@ -439,6 +502,7 @@ installer_mklinks() {
 # pack the seed tar: [<dist> <conf>]
 # ------------------------------------------------------------------------------
 installer_pack() {
+    installer_chkroot -m                            # can use mini-bash-lib
     installer_config -w "$@"
     local file stat dyna conf
     stat="dists/$INSTALLER_DISTRO/static/var/centauri/configs/$INSTALLER_DISTRO"
@@ -473,6 +537,7 @@ installer_pack() {
     fi
 
     system tar -caf "$file" --dir dists/$INSTALLER_DISTRO "${excl[@]}" "${incl[@]}" || quit
+    [ -n "$SUDO_USER" ] && system -e -p -- chown "$SUDO_USER:" "$file"
     message -a "Created seed tar:" "$file"
     [ -n "$INSTALLER_CONFIG" ] && installer_mklinks
 }
@@ -505,7 +570,7 @@ $1:$rpwd
 # This code works on a 'best effort' base and does limited error checking only!
 # ------------------------------------------------------------------------------
 installer_prepare() {
-    installer_chkroot
+    installer_chkroot -m
 
     # we need centauri-bash-lib ...
     if [ -n "$CEN_OPT_FORCE" ] ; then           # see 'exec ... -f ...' below
@@ -516,7 +581,7 @@ installer_prepare() {
         exec "./$CEN_NAME" -f prepare           # re-run to load centauri-bash-lib
     fi
 
-    installer_allow "run  action 'prepare'"
+    installer_allow "run action 'prepare'"
     if [ -z "$CEN_OPT_FORCE" ] ; then
         confirm -n "BEWARE: run 'prepare' only if you really know want you are doing" ||
             quit "Terminated"
@@ -530,9 +595,15 @@ installer_prepare() {
     else
         quit "Missing 'setup.conf'"
     fi
-    local name="${SOHO_SONAME}8"
+
+    # try to get root partion name
+    local name labr='/dev/disk/by-label/rootfs'
+    [ -b "$labr" ] || labr="/dev/disk/by-label/${HOSTNAME}_root"
+
+    # set new name
     case "${1:--}" in
-    -)  name="${SOHO_SONAME}8" ;;
+    -)  name="${SOHO_SONAME}"
+        [ -b "$labr" ] && name+='9' || name+='8' ;;
     ?)  name="${SOHO_SONAME}$1" ;;
     *)  name="$1"
     esac
@@ -541,7 +612,7 @@ installer_prepare() {
 
     message "Updating installed packages..."
     embed centauripackage -U2 -G -s || return
-    embed centauripackage -T -I -s -y isc-dhcp-client dosfstools || return
+    embed centauripackage -T -I -s -y isc-dhcp-client dosfstools parted || return
     system -q apt-mark manual wpasupplicant iw libdaemon0
     embed centaurisoho message step0 '/etc/motd' '' $(date --iso-8601) || return
     message -i
@@ -575,19 +646,26 @@ installer_prepare() {
 
     # --- renaming and fstab ---
 
-    local vnam ddev
-    if [ -b '/dev/disk/by-label/rootfs' ] && confirm -n "Rename system as '$name'" ; then
+    local vnam ddev par3
+    if [ "$name" = "$HOSTNAME" ] ; then
+        :
+    elif [ -f '/boot/firmware/cmdline.txt' ] && confirm -n "Rename system as '$name'" ; then
         message -i "Rename RaspberryPi disk partions..."
         vfatname vnam "$name"                       # random prefix for long name
-        resolve -c -s ddev '/dev/disk/by-label/rootfs'
+        resolve -c -s ddev "$labr"
         case "$ddev" in
-        /dev/sd*)       ddev="${ddev%[0-9]}" ;;
-        /dev/*p[0-9])   ddev="${ddev%p[0-9]}" ;;
+        /dev/sd*)       ddev="${ddev%[0-9]}"  ; par3="${ddev}3" ;;
+        /dev/*p[0-9])   ddev="${ddev%p[0-9]}" ; par3="${ddev}p3" ;;
         *)              error "Unknown boot device type, cannot rename:" "$ddev" ; ddev=
         esac
         if [ -n "$ddev" ] ; then
             embed -i centaurimedia --yes --device="$ddev" label 1 "${vnam}_boot" || return
-            embed -i centaurimedia --yes --device="$ddev" label 2 "${name}_root" || return
+            if [ -b "$par3" ] ; then
+                embed -i centaurimedia --yes --device="$ddev" label 2 "${name}_swap" || return
+                embed -i centaurimedia --yes --device="$ddev" label 3 "${name}_root" || return
+            else
+                embed -i centaurimedia --yes --device="$ddev" label 2 "${name}_root" || return
+            fi
             create -t -c '/etc/fstab' <<!EOF
 LABEL=${vnam}_boot  /boot/firmware  auto  rw,defaults,noatime 0 0
 LABEL=${name}_root  /               auto  rw,defaults,noatime 0 0
@@ -604,7 +682,8 @@ LABEL=${name}_root    /       auto  rw,defaults,noatime 0 0
 LABEL=${name}_swap    none    swap
 !EOF
         else
-            embed -i centaurimedia --yes --device='/dev/sda' label 1 "${name}_boot" || return
+            vfatname vnam "$name"                   # random prefix for long name
+            embed -i centaurimedia --yes --device='/dev/sda' label 1 "${vnam}_boot" || return
             embed -i centaurimedia --yes --device='/dev/sda' label 2 "${name}_root" || return
             embed -i centaurimedia --yes --device='/dev/sda' label 3 "${name}_swap" || return
             create -t -c '/etc/fstab' <<!EOF
@@ -613,7 +692,12 @@ LABEL=${name}_boot  /boot/efi   vfat  rw,defaults,noatime 0 0
 LABEL=${name}_swap  none        swap
 !EOF
         fi
+    else
+        name="$HOSTNAME"
     fi
+
+    # reread partion table and make sure that all fstab entries are still mounted
+    system -w -p -- partprobe ; system -e -p -- mount -a
 
     # --- set root/local passwords ---
 
@@ -684,6 +768,8 @@ network={
             message "Add password to '/etc/wpa_supplicant/wpa_supplicant.conf' manually"
     fi
 
+    remove '/etc/sysctl.d/host+domain.conf'         # remove host/domain override
+
     if [ -e '/etc/systemd/network/99-default.link' ] ; then
         if [ "$ieth" != 'eth0' ] ; then
             remove '/etc/systemd/network/99-default.link'
@@ -713,23 +799,24 @@ network={
 
     if confirm -y "Clean-up disk space" ; then
         system systemctl --quiet stop systemd-journald
-        system centauricleanup -y -A
+        embed centauricleanup -y -A
     fi
-    message -i
 
     message -i
-    message "System prepare succeeded"
+    error -t && mesg="System prepare succeeded" || mesg="System prepare failed"
+    message "$mesg"
 }
 
 # ------------------------------------------------------------------------------
 # try to remove centauri things: -no args-
 # ------------------------------------------------------------------------------
 installer_remove() {
-    installer_chkroot
-    confirm -y "Remove centauritools/library and configuration" || quit -s 2
+    installer_chkroot -m                            # can use mini-bash-lib
 
-    # to protect the development system ...
-    [ -e '/admin/utilities' ] && quit -e "Cannot remove 'centaurisoho' from this system"
+    # protect a system that is not installed via centaurisoho
+    installer_allow "remove 'centaurisoho'"
+
+    confirm -y "Remove centauritools/library and configuration" || quit -s 2
 
     local item subi subd base="$PWD" ; cd ..
     remove    /usr/local/bin/centauri* /usr/local/bin/_centauri_bash_lib
@@ -757,18 +844,18 @@ installer_remove() {
 # unpack the seed tar: [<dist> <conf>]
 # ------------------------------------------------------------------------------
 installer_unpack() {
-    installer_chkroot
+    installer_chkroot -m                            # can use mini-bash-lib
     installer_config -n "$@"
     confirm -y -i "Unpack '$INSTALLER_SEED' into workspace now" || quit -s 2
     local dist="$PWD/dists/$INSTALLER_DISTRO"
     local file="$dist/@seed/$INSTALLER_SEED"
-    [ -d "$dist/dynamic" ] && rename "$dist/dynamic" "$dist/dynamic.old" || quit
-    [ -d "$dist/static" ] && rename "$dist/static" "$dist/static.old" || quit
+    [ -d "$dist/dynamic" ] && move -f "$dist/dynamic" "$dist/dynamic.old"
+    [ -d "$dist/static"  ] && move -f "$dist/static"  "$dist/static.old"
 
     system tar --directory="$dist" -xaf "$file" || quit
     if [ -d "$dist/dynamic" -a "$dist/static" ] ; then
         message "Seed tar unpack succeeded"
-        remove -d "$dist/dynamic.old" "$dist/static.old"|| quit
+        remove -d "$dist/dynamic.old" "$dist/static.old"
     else
         fatal "Invalid tar, missing 'dynamic' or 'static' folder"
     fi
@@ -783,7 +870,7 @@ installer_usage() {
     if [ "$1" != '-h' ] ; then
         usagecat <<!EOF
 $CEN_NAME: This tool is a helper for 'centaurisoho'. Except for installing the
-           '$DAT_SEED' file it usally is not used from command line. See:
+           '$DAT_SEED' file it usally is not run from command line. See:
 
            °   Installing and setup:     centaurisoho --help
            °   Details about this tool:  $CEN_NAME --help
@@ -795,16 +882,19 @@ $CEN_NAME: This tool is a helper for 'centaurisoho'. Except for installing the
     else
         usagecat <<!EOF
 
-Usage: $CEN_NAME install [<dist> <conf>]   # install '$DAT_SEED' to system
-       $CEN_NAME keyboard [<host>]         # keyboard dialog at raspi/grub boot
+Usage: $CEN_NAME                           # on 1st call: start installation
+       $CEN_NAME minimal                   # minimize disk usage
        $CEN_NAME prepare [<name>]          # pre-configure for centauri-soho
        $CEN_NAME remove                    # try to remove centauri things
 
+       These actions are usually invoked from 'centaurisoho' ...
+
        $CEN_NAME archive [<suff>]          # create archive tar from workspace
        $CEN_NAME dist    [<dist> [<conf>]] # create distributable from workspace
+       $CEN_NAME install [<dist> <conf>]   # install '$DAT_SEED' to system
+       $CEN_NAME keyboard [<host>]         # keyboard dialog at raspi/grub boot
        $CEN_NAME links   [<dist> <conf>]   # create symlinks to workspace only
        $CEN_NAME login                     # 1st grub.cfg boot: keyboard config
-       $CEN_NAME minimal                   # minimize disk usage
        $CEN_NAME pack    [<dist> [<conf>]] # pack workspace to '$DAT_SEED'
        $CEN_NAME unpack  [<dist> [<conf>]] # unpack '$DAT_SEED' to workspace
 
@@ -1310,4 +1400,3 @@ else
 main "$@";quit
 fi
 ### mini-bash-lib end ###
-

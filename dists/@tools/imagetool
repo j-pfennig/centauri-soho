@@ -171,7 +171,7 @@ usage() {
 
     usageset \
         -e "# extract '$CEN_NAME' from an image tar" \
-        -e "tar -xaf centaurisoho-*.tar imagetool" \
+        -e "tar -xaf centaurisoho-*.tar $CEN_NAME" \
         -e '' \
         -e "# interactive install of 'centaurisoho-*.tgz' to '/dev/sdb" \
         -e "./$CEN_NAME /dev/sdb +" \

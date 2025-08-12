@@ -4,7 +4,7 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2005-2025; BSD License"
 CEN_TITLE="Tool to handle S.M.A.R.T disk check actions"
 
 # Import the bash library, set name and version
-PATH+="${0%/*}" . _centauri_bash_lib -a -d -o -s - '0.21:1' || exit 2
+PATH+="${0%/*}" . _centauri_bash_lib -a -d -o -s - '0.22:6' || exit 2
 
 CEN_OPT_EXTRA=()            # extra parameters for smartctl
 
@@ -173,7 +173,7 @@ actionLong() {
 actionTest() {
     checkSmart || return
 
-    local next file="$CEN_ROOT/persistent/$CEN_NAME.long"
+    local next file="$CEN_PERSISTENT/$CEN_NAME.long"
     local curr fflg ; [ -e "$file" ] && fflg=1
     case "${1:-info}" in
     sho*)   next='short'
@@ -186,7 +186,7 @@ actionTest() {
     run)    [ -n "$fflg" ] && curr='long' || curr='short'
             selfTest "$curr" ; next='short'
             ;;
-    *)      invoke -e "Invalid argument:" "$1" ; return
+    *)      invoke -e - "$1" ; return
     esac
 
     if [ "$next" = 'short' ] ; then

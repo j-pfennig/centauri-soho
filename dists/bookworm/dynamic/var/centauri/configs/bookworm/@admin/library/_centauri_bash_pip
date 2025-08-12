@@ -302,11 +302,11 @@ syspager() {
 # syspipe - run a command in background using coproc or a pipe
 #
 # Call:     (1) syspipe -b <producer> -d <consumer>
-#                       [-c <error>|-|+] [-f] [-g] [-r] [-t] [-y] [--] <arg>...
+#                       [-c <error>|-|+] [-f|-q] [-g] [-r] [-t] [-y] [--] <arg>...
 #           (2) syspipe -o <producer> -b <consumer>
-#                       [-c <error>|-|+] [-f] [-g] [-r] [-t] [-y] [--] <arg>...
+#                       [-c <error>|-|+] [-f|-q] [-g] [-r] [-t] [-y] [--] <arg>...
 #
-#           (3) syspipe ORIGIN [DESTINATION] [-c <error>|-|+] [-e|-f]
+#           (3) syspipe ORIGIN [DESTINATION] [-c <error>|-|+] [-e|-f|-q]
 #                       [-g] [-n] [-r] [-t] [-v] [-x] [-y] [--] <cmd> <arg>...
 #
 #               ORIGIN      := -o <producer> | -i <var> | -i -
@@ -322,6 +322,7 @@ syspager() {
 #           -i  [*] get input data from array or string (overrides -p)
 #           -n  do not check <producer>, <provider> or <cmd>
 #           -o  [*] origin script function (<producer> => stdout)
+#           -q  no error message if consumer fails
 #           -r  ignore --dryrun option
 #           -s  [*] put output into a string variable (overrides -c)
 #           -t  use 'context -t +' to catch keyboard interrupts

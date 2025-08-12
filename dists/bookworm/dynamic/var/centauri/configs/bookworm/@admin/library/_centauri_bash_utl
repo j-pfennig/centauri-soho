@@ -7,7 +7,7 @@
 # Copyright Dr. J. Pfennig (c) 2022-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_utl']='0.12:5'
+CEN_MODULES['_centauri_bash_utl']='0.13:5'
 
 embed -c '_centauri_bash_ext'               # dependency
 
@@ -51,7 +51,7 @@ _cen_optarg_utl() {
 # Arguments:<name>  text to be checked
 #           <evar>  name of a variable
 #
-# Checks:   -       must not be empty
+# Checks:   -       must not be empty and must not be '-'
 #           -       printable+nonspace chars only
 #           - (-h)  only [a-z0-9_-] are allowed
 #           - (-v)  only [a-zA-Z0-9_-] are allowed, 1st char [!0-9-]
@@ -78,7 +78,7 @@ isname() {
     done
     _oerr+=("$1")
 
-    [ -z "$1" ] && { "${_oerr[@]}" $"%s missing" "$_omeg" ; return 1 ; }
+    [ "${1:--}" = '-' ] && { "${_oerr[@]}" $"%s missing" "$_omeg" ; return 1 ; }
     [ "$1" != "${1/[[:cntrl:][:space:]]/}" ] &&
                    { "${_oerr[@]}" $"%s contains space characters" "$_omeg" ; return 2 ; }
     [ -z "$_ovar" ] && return 0

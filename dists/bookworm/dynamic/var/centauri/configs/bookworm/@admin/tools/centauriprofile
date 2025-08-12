@@ -513,8 +513,8 @@ actionInit() {
     esac
     [ -d "$dest" ] && return
     folder -c -m "$dest" || return
-    [ -s "$CEN_ROOT/tools/Desktop/$1-config.tgz" ] || return
-    system -e -p tar -xaf "$CEN_ROOT/tools/Desktop/$1-config.tgz" --directory="$HOME"
+    [ -s "$CEN_TOOLS/Desktop/$1-config.tgz" ] || return
+    system -e -p tar -xaf "$CEN_TOOLS/Desktop/$1-config.tgz" --directory="$HOME"
     dest=/tmp/xxx
     [ -e "$dest/.generalized_profile" ] || return
     specialize

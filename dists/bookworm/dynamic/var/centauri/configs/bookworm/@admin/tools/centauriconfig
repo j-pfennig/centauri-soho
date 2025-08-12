@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2018-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2018-2025; BSD License"
 CEN_TITLE="Repository Management and Synchronisation Tool"
 
 # ATTENTION: PATH is set non-standard to allow action 'setup' as described in help
-PATH="${0%/*}:$PATH" . _centauri_bash_lib -a -d -f -m sys -y - '0.35:4' || exit 2
+PATH="${0%/*}:$PATH" . _centauri_bash_lib -a -d -f -m sys -y - '0.37:6' || exit 2
 
 CEN_OPT_ALL=                    # see --all
 CEN_OPT_CONFIG=                 # see --config
@@ -185,7 +185,7 @@ do_setup() {
     joinpath -s DAT_SHARED  -- "$DAT_ROOT" "${CEN_OPT_SHARED:-shared}"
 
     # get configuration (/etc/default/...)
-    joinpath -s DAT_CONFIG -- "${CEN_PATHS[6]}" "${CEN_OPT_CONFIG:-$CEN_NAME}"
+    joinpath -s DAT_CONFIG -- "$CEN_DEFAULT" "${CEN_OPT_CONFIG:-$CEN_NAME}"
 
     if [ -n "$CEN_OPT_DOMAIN" ] ; then
         DAT_NET_DOMAIN="$CEN_OPT_DOMAIN" ; DAT_OVERRIDE=1
@@ -656,8 +656,8 @@ actionAutorun() {
     [ -n "$DAT_INSTALL" ] && warning -a "autorun: install not implemented"
 
     # base folder of timestamp files must exist
-    if [ ! -d "$CEN_ROOT/persistent" ] ; then
-        invoke -e "missing folder: %s" "$CEN_ROOT/persistent"
+    if [ ! -d "$CEN_PERSISTENT" ] ; then
+        invoke -e "missing folder: %s" "$CEN_PERSISTENT"
         return
     fi
 
@@ -673,7 +673,7 @@ actionAutorun() {
     done
 
     line="# autorun completed ($CEN_ACTION)"
-    create -t -h - -v line "$CEN_ROOT/persistent/$CEN_NAME"
+    create -t -h - -v line "$CEN_PERSISTENT/$CEN_NAME"
 }
 
 # ------------------------------------------------------------------------------
@@ -906,11 +906,21 @@ actionServer() {
     #   rnam := remote server
     #   rmod := repository module (domain)
     ___run_rsync() {
+        local mesg psrv pnam="${rnam%%.*}" opts=(--silent)
+
+        # cannot use localhost
+        if [ "$DAT_NET_MODE" = 'MASTER' ] ; then
+            [ "$pnam" = "$HOSTNAME" -o "$pnam" = "$DAT_NET_NICK" ] && mesg='trace'
+        elif [ "$pnam" = "$HOSTNAME" ] ; then
+            mesg='message'
+        fi
+        if [ -n "$mesg" ] ; then
+            $mesg -a -p "Repository is local, '%s' ignored" "$1" ; return
+        fi
 
         folder -m "$DAT_ROOT/$bdir/$rcfg"
         error -t || return
 
-        local psrv pnam="${rnam%%.*}" opts=(--silent)
         opts+=( --exclude "/$bdir/***" --all --exclude '.*' --exclude '*~' --exclude '*.pyc'
                 --exclude '__pycache__/***' --exclude 'README.html' --exclude 'library/*.?' )
 
@@ -995,14 +1005,12 @@ actionServer() {
             dryrun "create package list:" "$dest" ||
                 system -e -p -z -- dpkg --get-selections > "$dest"
         fi
-        [ "$DAT_NET_MODE" = 'SLAVE' -o "$DAT_NET_ROLE" = 'WORKSTATION' ] && ___run_rsync rput
+        ___run_rsync 'rput'
     else
-        [ "$DAT_NET_MODE" = 'SLAVE' -o "$DAT_NET_ROLE" = 'WORKSTATION' ] && ___run_rsync rget
+        ___run_rsync 'rget'
         local dadm="$DAT_ROOT/$cdir/$rdis/@admin"
         [ -d "$dadm" ] && symlink -m -l "$dadm" "$DAT_ROOT/admin"
     fi
-
-    ### TODO message for no action, -R secondary
 }
 
 # ------------------------------------------------------------------------------

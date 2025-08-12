@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2013-2025; BSD License"
 CEN_TITLE="Tool to copy folders recursively using rsync"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -i -m bat -m con -s -y - '0.56:3' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -i -m bat -m con -s -y - '0.56:6' || exit 2
 
 # Data
 DAT_PASSWORD="$CEN_ROOT/secrets/rsync_trusted"
@@ -56,7 +56,7 @@ do_folder() {
 do_exclude() {
     # hard coded defaults for missing config file
     ___defaults() {
-        [ -z "$CEN_OPT_ALL" ] && DAT_EXCLUDE=("--exclude" ".Trash[0-9]*" "--exclude" "/lost+found")
+        [ -z "$CEN_OPT_ALL" ] && DAT_EXCLUDE=('--exclude' '.Trash[0-9]*' '--exclude' '/lost+found')
         return 1
     }
 
@@ -64,7 +64,7 @@ do_exclude() {
     ___reader() {
         case "$1" in
             exc*)   ;;
-            noc*)   [ "$CEN_OPT_NOCOPY" = "1" ] || return 0 ;;
+            noc*)   [ "$CEN_OPT_NOCOPY" = 1 ] || return 0 ;;
             *)      configfile -w - "Invalid statement:" "$*" ; return 0
         esac
         configfile -e - 2 2 $# || return 0
@@ -76,17 +76,17 @@ do_exclude() {
     local item args=()
 
     if [ -n "$CEN_OPT_VOLUME" ] ; then
-        [ -z "$CEN_OPT_ALL" ] && args+=("")     # read default section
+        [ -z "$CEN_OPT_ALL" ] && args+=('')     # read default section
         args+=("${CEN_OPT_VOLUME^}")            # read this section
         configfile -a ___reader -n centauricopy "${args[@]}" || return 1
     else
         [ -n "$CEN_OPT_ALL" ] && return 0       # no excludes at all
         # missing config is ok, hard coded default
-        configfile -a ___reader -i ___defaults -n centauricopy "" || return 0
+        configfile -a ___reader -i ___defaults -n centauricopy '' || return 0
     fi
 
     for item in "${!mxcl[@]}" ; do
-        DAT_EXCLUDE+=("--exclude" "$item")
+        DAT_EXCLUDE+=('--exclude' "$item")
     done
     return 0
 }
@@ -201,8 +201,8 @@ actionSync() {
     local odel='--delete'
     [ -z "$CEN_OPT_FORCE"  ] && opts+=('--force')
 
-    if [ "$CEN_ACTION" = "mirror" -a "$CEN_OPT_NOCOPY" != "1" ] ; then
-        CEN_OPT_NOCOPY=0 ; opts+=("--delete-excluded")
+    if [ "$CEN_ACTION" = 'mirror' -a "$CEN_OPT_NOCOPY" != 1 ] ; then
+        CEN_OPT_NOCOPY=0 ; opts+=('--delete-excluded')
     fi
     [ -z "$CEN_OPT_NOCOPY" ] && CEN_OPT_NOCOPY=1
 
@@ -465,7 +465,7 @@ actions() {
 # print usage info
 # ------------------------------------------------------------------------------
 usage() {
-    prettypath -c "$CEN_ROOT/default/$CEN_NAME"
+    prettypath -c "$CEN_DEFAULT/$CEN_NAME"
     usagecat << !EOF
 $CEN_USE_HEADER
 

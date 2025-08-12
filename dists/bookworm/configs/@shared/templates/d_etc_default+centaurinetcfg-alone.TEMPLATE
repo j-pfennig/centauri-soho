@@ -1,6 +1,6 @@
-# Config for centaurinetcfg, jpf@centauri 2025-06-06
+# Config for centaurinetcfg, jpf@centauri 2025-06-03
 
-config %O%
+config -                                # config not managed, no config name
 
 # -----------------------------------------------------------------------------
 # network (used to configure ethernet interfaces), dhcp, bad host
@@ -12,12 +12,7 @@ config %O%
 # free for any user-defined purpose. Mapping sub-net names to indexes is
 # handled by library function 'netindex':  
 
-network %D%  %B%    # <0> domain and base address
-
-# The network name 'external' can be used to override <other> with a different
-# value without error message. 'external' defaults to 'option other *' ...
-
-network external      %E%     # optional external subnet override
+network -  10.10.0.0/21                 # <0> domain and base address
 
 network iot           <domain>1.0/24    # <1> router, home-equipment
 network trusted       <domain>2.0/24    # <2> trusted
@@ -25,17 +20,7 @@ network guest         <domain>3.0/24    # <3> guest static
 network dynamic       <domain>4.0/24    # <4> guest dhcp
 network repeater      <domain>5.0/24    # <5> repeater sub net
 network vpn           <domain>6.0/24    # <6> openvpn
-
-# The <other> subnet is optional and can be used to integerate another domain
-# network. By default <other> is trusted, see 'filter trusted <other>' ...
-
 network other         <domain>7.0/24    # <7> user defined (sub-)network
-
-# When <other> is not a sub-net of <domain> or if 'network external' is set,
-# then 'option other *' if implied unless another 'option other ...' setting 
-# is present ...
-
-# option    other     *                 # usually set automatically
 
 # centaurisoho fully supports IPv6 but builds on a non-routable local IPv4 net.
 # So the local net always has to be behind a NAT router. It is out of question
@@ -74,15 +59,11 @@ reject  bad-host      10.255.255.1                  # invalid host, reject route
 wireless %W% %A%
 
 # Out DNS name in the public internet
-public  %I%
+#public  %I%
 
 # -----------------------------------------------------------------------------
 # Firewall configuration
 # -----------------------------------------------------------------------------
-
-# enable port 53 mapping with dnsmasq for samba4
-
-option  addc        %P% %S%
 
 # disable firewall or select connection-tracking/simple mode
 
@@ -93,26 +74,16 @@ option  addc        %P% %S%
     # <host> can be * to select a default
 
 option  tracking      *
-option  simple        raspi[23] %G%[973]
 
     # disable mac checking (this configuration template cannot use max
     # addresses, so it's turned on). It is recommended to add mac addresses
     # to your custom network configuration and to turn this option off ... 
 
-option  nomac         *
+#option  nomac         *
 
-# trusted host (allowed to bypass the firewall)
+# trusted host (allowed to bypass the firewall, see 'option nomac')
 
-option  trusted       %G%?
-
-# hosts that can use smb and dlna
-
-#option player         xxx
-
-#option alien          xxx
-
-#option mobile         %G%[5-9]
-#option phone          phone?
+option  trusted       *
 
 # ------------------------------------------------------------------------------
 # location awareness:
@@ -161,7 +132,6 @@ option  trusted       %G%?
 
 filter  deny        eth[2-9] ppp+       # modems
 filter  bypass      tun+                # VPN traffic
-filter  accept      %G%[1-4]            # bypass firewall
 
 # sub-network/host base permissions for 'home' location
 
@@ -171,15 +141,15 @@ filter  accept      %G%[1-4]            # bypass firewall
 
     # <ip>  can be followed by a bit-count to specify a range
 
-filter  trusted     <trusted>           # trusted address range
-filter  trusted     <vpn>               # OpenVPN  traffic
-filter  trusted     <other>             # trusted address range
+#filter  trusted     <trusted>           # trusted address range
+#filter  trusted     <vpn>               # OpenVPN  traffic
+#filter  trusted     <other>             # trusted address range
 
-filter  friend      <guest>             # untrusted address range (static)
-filter  friend      <dynamic>           # untrusted address range (dhcp)
-filter  friend      <repeater>          # Repeater traffic
+#filter  friend      <guest>             # untrusted address range (static)
+#filter  friend      <dynamic>           # untrusted address range (dhcp)
+#filter  friend      <repeater>          # Repeater traffic
 
-filter  trash       <iot>               # untrusted home-equipment: log and drop
+#filter  trash       <iot>               # untrusted home-equipment: log and drop
 
 # firewall permissions for 'home' zone
 
@@ -219,37 +189,7 @@ filter  udp trusted 5353                # AVAHI
 filter  tcp trusted 1194                # openvpn
 filter  udp trusted 1194                # openvpn
 
-# === router chain ===
-
-filter  tcp router  8200
-
-filter  udp router  137:138 |137:138    # samba netbios
-filter  udp router  1900 |1900          # UPNP (also source)
-filter  udp router  5353                # AVAHI
-filter  udp router  8200
-
-filter  tcp router  1194                # openvpn
-filter  udp router  1194                # openvpn
-
-# should be router
-filter  tcp friend  509
-filter  udp friend  509
-filter  tcp router  509
-filter  udp router  509
-
 # remotessh, remoteimap and remotesmtp are added automatically
-
-# === player chain ===
-
-filter  tcp player  138 445             # samba
-filter  tcp player  8081                # weewx interceptor
-filter  tcp player  8200                # TRIVNET (used by TV)
-
-filter  udp player  137:138 |137:138    # samba netbios
-filter  udp player  1900 |1900          # UPNP (also source)
-filter  udp player  5353                # AVAHI
-
-filter  tcp player  1883                # MQTT
 
 # examples ...
 #filter lit alien    -p udp --dport 3333 -j ACCEPT
@@ -282,6 +222,7 @@ filter  udp trash   +:++ |+:++          # ephemeral ports
 
 allow   *             *                             # everything for local
                                                     #    and "filter rules/accept"
+allow   *             10.0.0.0/8
 allow   *             192.168.0.0/16                # everything for private net
 allow   *             172.16.0.0/20                 # ...
 allow   *             [fc00::]/15                   # ip6v ULA
@@ -303,28 +244,25 @@ allow   remotesmtp    ALL                           # remotsmtp for everyone
         # send 'fc01::' as prefix and to advertise dns. See 'option radv' below.
         # The 'fc01::' prefix can be changed with a 'prefix' configuration line.
 
-# example (1) enable ipv6 for all hosts
 option ipv6          *
-# example (2) enable for all but %G%2 and %G%3
-#option ipv6          %G%[!23]
 
 # options (2) services:
 
         # hosts that provide dhcp
-option  dhcp          %P% %S% %G%[56]
+#option  dhcp          %P% %S% %G%[56]
         # hosts that provide dns
-option  dns           %P% %S% %G%[56]
+#option  dns           %P% %S% %G%[56]
         # hosts that provide ntp
-option  ntp           %P% %S%
+#option  ntp           %P% %S%
         # hosts that provide ldap
-option  ldap          %P% %S%
+#option  ldap          %P% %S%
         # hosts that can be used as WEB proxy server
-option  proxy         %P% %S% %G%[56]
+#option  proxy         %P% %S% %G%[56]
         # hosts that can be used as mail server
-option  smtp          %P%
-option  pop3          %P%
+#option  smtp          %P%
+#option  pop3          %P%
         # hosts that register via mdns/netbios
-option  mdns          windows* 
+#option  mdns          windows* 
 
 # options (3) create /etc/network/interfaces
 
@@ -339,24 +277,24 @@ option  auto          *
         # do not generate an interface file at all
 #option  manual        raspi3
         # hosts that use NetworkManager (fallback to auto)
-option  nm            %G%[2-3]
+#option  nm            %G%[2-3]
         # hosts with static IP address, not using NetworkManager/DHCP
-option  static        %G%[01]
+#option  static        %G%[01]
 
 # options (4) extra network modes
 
-option  apoint        dummy1                    # static:server  -> static:apoint
-option  switch        dummy[3-9]
-option  router        dummy[3-9] raspi* %G%[2-5]
-option  extender      dummy[3-9] raspi* %G%[23]
-option  repeater      dummy[3-9] raspi* %G%[23]
+#option  apoint        dummy1                    # static:server  -> static:apoint
+#option  switch        dummy[3-9]
+#option  router        dummy[3-9] raspi* %G%[2-5]
+#option  extender      dummy[3-9] raspi* %G%[23]
+#option  repeater      dummy[3-9] raspi* %G%[23]
 
 # options (5) interface flags
 
         # Hosts with mulitiple ethernet interfaces (like servers) go here ...
 
-option  ether       %P%-1 %S%-1
-option  wlan        %P%-2 %S%-2
+#option  ether       %P%-1 %S%-1
+#option  wlan        %P%-2 %S%-2
         
         # The 'other' option is used to make the <other> sub-net an external
         # network. This prevents the firewall from implicitly allowing dhcp
@@ -374,14 +312,14 @@ option  wlan        %P%-2 %S%-2
         # Interfaces without mac are considered as hotplug
 
         # override ethernet/wlan default
-option  ether         ether-* 
-option  wlan          wlan-* 
+#option  ether         ether-* 
+#option  wlan          wlan-* 
 
         # override hotplug feature
-option  hotplug       ether-* wlan-*
+#option  hotplug       ether-* wlan-*
 
         # enbable wol on eth0 (ethertools required)
-option  wol           dummy[23]
+#option  wol           dummy[23]
 
         # override metric (default priority: eth0 eth1 wlan0 wlan1)
         #          <host>-0     eth0     metric0
@@ -390,70 +328,28 @@ option  wol           dummy[23]
         #          <host>-3     wlan1    metric3
 
         # ethernet interfaces
-option  metric0     dummy2-1
-option  metric1     *
+#option  metric0     dummy2-1
+#option  metric1     *
 
         # wlan interfaces
-option  metric2     dummy2-0
-option  metric3     *
+#option  metric2     dummy2-0
+#option  metric3     *
 
         # enable systemd interface naming
 option  sysdnames   *
 
         # set the wlan regulatory domain from timezone country table (this is
         # implemented via ifup callback to 'centauriswitch up wl* ...')
-option country raspi* %G%[13579]
+option country      *
 
 # ------------------------------------------------------------------------------
 # systemd interface name mapping (see option 'sysdnames')
 # ------------------------------------------------------------------------------
 
-#iface   eth1    example8  11:11:11:11:11:11
-#iface   eth1    example9  enxxx
-#iface   eth0    example8  enp4s0
-#iface   wlan0   example8  wlp5s0
-
-# ------------------------------------------------------------------------------
-# Routers, servers and homedns
-# ------------------------------------------------------------------------------
-
-# default router and hosts that are routers (1st is default)
-
-router  %R%        %R%0 %R%1 %R%2
-
-# server nick name and hosts that are servers (1st is default).
-
-server  %G%        %P% %S% 
-
-# For network location awareness we need a trust relation. This is called the
-# homedns because it depends on the DNS server and uses /etc/resolv.conf data.
-# If we get no known DNS server the centaurifilter firewall will enter 'wild'
-# mode. Any homedns will cause centaurisecrets to check (a) the configured server
-# (when homedns = server nick name) or (b) the host providing the DNS (otherwise).
-# Case (a) results in 'client' state and (b) in 'guest' state on success. For both
-# the centaurifilter firewall enters 'home' mode.
-
-# Due to is dhcp relation, homedns is based on IPv4 addresses only.
-
-# Homedns trusts in evaluation order (1st match stops evaluation). The arguments
-# are: <domain> <host> <homedns>. If <domain> and <host> match an entry from
-# /etc/resolv.conf the <homedns> key is used as trust. A minus sign for <domain>
-# or <host> disabled this check (be carefull). The configured servers are added
-# automatically at the top of the list:
-   
-    # names should not be qualified here (duplicated host names are not
-    # allowed anyhow). Qualifiers are added automatically as needed.
-#homedns centauri.home raspi4         raspi4
-
-    # We are at home if we found our router (without domain). This should happen
-    # only if the servers cannot be reached.
-homedns -             router0        %G%
-
-    # If we want to trust a server in a different domain we can disable checking
-    # the domain and add the servers explicitly. The 'host' entries must use the
-    # Ipv4:
-homedns -             example1       %G%
-homedns -             dummy2         %G%
+#iface   eth1    alpha8  11:11:11:11:11:11
+#iface   eth1    alpha9  enxxx
+#iface   eth0    alpha8  enp4s0
+#iface   wlan0   alpha8  wlp5s0
 
 # ------------------------------------------------------------------------------
 # Host naming rules
@@ -486,58 +382,18 @@ homedns -             dummy2         %G%
 #   ee:00:0a:10:02:0b       #                  10.16.2.11 <host>-1
 
 # ------------------------------------------------------------------------------
-# Subnet <other> - auxiliary network for testing
+# generic hosts 0 ... 9 
 # ------------------------------------------------------------------------------
 
-host    -                   <other>30     test0
-host    -                   +             test1
-host    -                   +             test2
-host    -                   +             test3
-host    -                   +             test4
- 
-# ------------------------------------------------------------------------------
-# Subnet <domain>1.xxx - Routers and Home Equipment
-# ------------------------------------------------------------------------------
+# Make host trusted: replace 1st '+' with MAC of the '...-0' or '...-1' interface
 
-# Routers are defined via 'router <host>...' and must have 'host' statements.
-# They should have known mac addresses or the firewall configuration must use:
-# 'option nomac'. Don't forget to disable router DNS if using a centauri-soho
-# server. To make IPv6 work the router muse advertise the router prefix but
-# MUST NOT advertise a DNS server. The centauri-soho server runs its own radv
-# daemon the advertise DNS and a local router prefix ...
+host    +                   <trusted>5    %M%0     #           generic
+host    ee:00:0a:10:02:0a   +             %M%0-0   # ..        LAN
+host    ee:00:0a:10:02:0b   +             %M%0-1   # ....      WLAN
 
-host    -                   %R4%       %R%0
-host    -                   +          %R%1
-host    -                   +          %R%2
-
-# ------------------------------------------------------------------------------
-# Subnet <trusted>xxx - Trusted computers 
-# ------------------------------------------------------------------------------
-
-# servers (configured with 2 ethernet interfaces)
-
-host    -                   <trusted>10   %G%        # generic, no hosts entry
-
-host    +                   <trusted>11   %P%       # primary server
-host    +                   <trusted>13   %P%-0     # ... LAN   #1
-host    +                   <trusted>15   %P%-1     # ... LAN   #2 see 'option ether'
-host    +                   <trusted>17   %P%-2     # ... WLAN     see 'option wlan'
-
-host    +                   <trusted>12   %S%       # secondary server
-host    +                   <trusted>14   %S%-0     # ... LAN   #1
-host    +                   <trusted>16   %S%-1     # ... LAN   #2 see 'option ether'
-host    +                   <trusted>18   %S%-2     # ... WLAN     see 'option wlan'
-
-# some well known hosts
-
-host    +                   <trusted>195  dummy1
-host    +                   +             dummy2
-host    +                   +             dummy3
-host    +                   +             dummy4
-
-# ------------------------------------------------------------------------------
-# generic hosts 2 ... 9 (0 and 1 should be servers)
-# ------------------------------------------------------------------------------
+host    +                   <trusted>15   %M%1     #           generic
+host    +                   +             %M%1-0   # ..        LAN
+host    +                   +             %M%1-1   # ....      WLAN
 
 host    +                   <trusted>25   %M%2     #           generic
 host    +                   +             %M%2-0   # ..        LAN
@@ -572,55 +428,13 @@ host    +                   +             %M%9-0   # ..        LAN
 host    +                   +             %M%9-1   # ....      WLAN
 
 # ------------------------------------------------------------------------------
-# Raspberry
-# ------------------------------------------------------------------------------
-
-host    -                   <trusted>130  raspi1            # Raspi    generic
-host    -                   +             raspi1-0          # ..       LAN
-host    -                   +             raspi1-1          # ..       WLAN
-
-host    -                   <trusted>135  raspi2            # Raspi    generic
-host    -                   +             raspi2-0          # ...      WLAN
-host    -                   +             raspi2-1          # ...      alu case
-
-host    -                   <trusted>140  raspi3            # Raspi    generic
-host    -                   +             raspi3-0          # ...      WLAN
-host    -                   +             raspi3-1          # ...      alu case
-
-host    -                   <trusted>145  raspi4            # Raspi   generic
-host    -                   +             raspi4-0          # ..      LAN
-host    -                   +             raspi4-1          # ..      WLAN
-
-host    -                   <trusted>150  raspi5            # Raspi   generic
-host    -                   +             raspi5-0          # ..      LAN
-host    -                   +             raspi5-1          # ..      WLAN
-
-host    -                   <trusted>155  raspi6            #
-host    -                   +             raspi6-0          # ..      LAN
-host    -                   +             raspi6-1          # ..      WLAN
-
-host    -                   <trusted>160  raspi7            # 
-host    -                   +             raspi7-0          # ..      LAN
-host    -                   +             raspi7-1          # ..      WLAN
-
-host    -                   <trusted>165  raspi8            #
-host    -                   +             raspi8-0          # ..      LAN
-host    -                   +             raspi8-1          # ..      WLAN
-
-host    -                   <trusted>170  raspi9            # 
-host    -                   +             raspi9-0          # ..      LAN
-host    -                   +             raspi9-1          # ..      WLAN
-
-# ------------------------------------------------------------------------------
 # attachable interfaces
 # ------------------------------------------------------------------------------
 
 # See 'option ether' and 'option wlan' settings
  
-#host    11:11:11:11:11:11   <domain>1.80    ether-0
-#host    11:11:11:11:11:12   <domain>1.81    ether-1
-#host    11:11:11:11:11:13   <domain>1.82    ether-2
-#host    11:11:11:11:11:14   <domain>1.83    ether-3
+#host    11:11:11:11:11:13   <domain>1.80    ether-0
+#host    11:11:11:11:11:14   <domain>1.81    ether-1
 
 #host    11:11:11:11:11:15   <domain>1.85    wlan-0
 #host    11:11:11:11:11:16   <domain>1.86    wlan-1

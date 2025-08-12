@@ -30,7 +30,7 @@ CEN_OPT_PLYMOUTH=           # see --plymouth
 
 # data
 DAT_MYNAME="$CEN_NAME"
-DAT_CONFIG="/etc/default/$CEN_NAME"
+DAT_CONFIG="$CEN_ROOT/default/$CEN_NAME"
 DAT_HAVE_CONFIG=
 DAT_MESSAGE='trace'
 
@@ -363,7 +363,7 @@ action=$ehan $3
         if [ "$1" = '-r' ] ; then
             remove "/lib/systemd/system-sleep/$CEN_NAME"
         else
-            symlink "$CEN_ROOT/tools/$CEN_NAME" "/lib/systemd/system-sleep/centauri-sleep"
+            symlink "$CEN_TOOLS/$CEN_NAME" "/lib/systemd/system-sleep/centauri-sleep"
         fi
         remove "/lib/systemd/system-sleep/centauri"
     }
@@ -441,7 +441,7 @@ actionBrightness() {
         fi
         bcur=$((bmax * $1 / 100)) ; [ "$bcur" -gt "$bmax" ] && bcur="$bmax"
     else
-        invoke -e "Invalid argument: %s" "$1" ; return 1
+        invoke -e - "$1" ; return 1
     fi
     drymsg "$bcur > $bdev/brightness" && return
     echo "$bcur" > "$bdev/brightness"

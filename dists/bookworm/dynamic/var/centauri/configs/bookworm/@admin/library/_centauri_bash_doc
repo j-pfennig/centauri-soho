@@ -1352,10 +1352,10 @@ _cen_doc_citem() {
 #         CEN_PATHS[3]       system var folder    (usually **/var**)
 #         CEN_PATHS[4]       system temporary     (usually **/tmp**)
 #         CEN_PATHS[5]       system library       (usually **/usr/lib**)
-#         CEN_PATHS[6]       default configs      (usually **/etc/default**)
 #
 #         CEN_ACTARR         action argument array
 #         CEN_ACTION         current action, see [[actions()]]
+#         CEN_APPCONF        file to be sourced after option parsing
 #         CEN_ARGOPT         option argument, see optarg() and main()
 #         CEN_ARGS           arguments used, see arguments() or options()
 #         CEN_AUTOIND        auto-indent flag, see _cen_message() -a
@@ -1363,17 +1363,19 @@ _cen_doc_citem() {
 #         CEN_CMDINDX        index in CEN_CMDARGS[]
 #         CEN_CMDOPTS        array of script options
 #         CEN_DECO_xxxx      ANSI escape sequences, see [[console]]
-#         CEN_DEFAULTS       file to be sourced after option parsing
+#         CEN_DEFAULT        system config, usually "$CEN_ROOT/default"
 #         CEN_EMBED          see --embed option
 #         CEN_EXIT           error status, see [[error()]]
 #         CEN_HISTORY        use history/readline in [[confirm()]]
 #         CEN_NAME           script name, see [[_centauri_bash_lib]]
 #         CEN_NOBREAK        set for initial COLUMNS=0, shortens trace output lines
 #         CEN_PACKAGE        non-zero for packaged script, see [[uglify]] tool
+#         CEN_PERSISTENT     persistent storage, usually "$CEN_ROOT/persistent"
 #         CEN_QUIT_SANE      run "stty sane" in quit if non-zero
 #         CEN_QUIT_TRAP      default signal to enter "quit -s 4"
 #         CEN_QUIT_WAIT      wait after quit
 #         CEN_QUIT_WSUB      quit must wait for sub-shells to terminate
+#         CEN_TRANSIENT      volatile cache, usually "$CEN_ROOT/transient"
 #         CEN_VERB           --verbose|--quiet level, **0**:quiet  **1**:normal  **2**:verbose
 #         CEN_VERSION        script version, see [[versioning]] and [[_centauri_bash_lib]]
 #         CEN_YESNO          see --yes and --no options

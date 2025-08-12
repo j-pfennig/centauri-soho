@@ -1,10 +1,10 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2005-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2005-2025; BSD License"
 CEN_TITLE="High level tool to manage backups and network mount points"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m bat -s -y - "0.51:2" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -f -m bat -s -y - "0.52:6" || exit 2
 
 # Data
 
@@ -17,7 +17,7 @@ DAT_DATE_GLOB="%Y[-_]%m[-_]%d"          # glob for ISO like date
 
 DAT_ARCH_DIR="$CEN_ROOT/archived"       # for list action
 
-DAT_TIMESTAMP="$CEN_ROOT/persistent/$CEN_NAME"
+DAT_TIMESTAMP="$CEN_PERSISTENT/$CEN_NAME"
 
 # ------------------------------------------------------------------------------
 # action backup - forward to centauribackup: <target>...

@@ -1,11 +1,11 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2015-2024; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2015-2025; BSD License"
 CEN_TITLE="Manage ssh keys using a key store"
 # ------------------------------------------------------------------------------
 
 # Import the bash library, set name and version
-PATH="$PATH:.:${0%/*}" . _centauri_bash_lib -a -d -y - '0.17:2' || exit 2
+PATH="$PATH:.:${0%/*}" . _centauri_bash_lib -a -d -y - '0.18:4' || exit 2
 
 # data for options
 CEN_OPT_CREATE=         # see --create
@@ -370,7 +370,7 @@ worker_create() {
 
     error -t || return
 
-    if system -f -p ssh-keygen -q -N "" -C "${path##*/}" -f "$temp" ; then
+    if system -f -p ssh-keygen -q -N '' -C "${path##*/}" -f "$temp" ; then
         copy -- "$temp"     "$path.rsa"
         copy -- "$temp.pub" "$path.pub"
     fi
@@ -555,8 +555,8 @@ actionHostkeys() {
                 copy -a -- "$ssho/$file" "$ssho/$file.pub" .
             else
                 remove "$file" "$file.pub"
-                system -e -p $optz -- ssh-keygen -q -f "$file" -N '' -t "$kind"
-                system -e -p $optz -- ssh-keygen -l -f "$file.pub"
+                system -e -p $optz -- ssh-keygen -q -f "$file" -N '' -t "$kind" || continue
+                system -e -p $optz -- ssh-keygen -l -f "$file.pub"  # visualize key
             fi
         done
     fi
@@ -568,6 +568,26 @@ actionHostkeys() {
         confirm -n "Copy machine-id and keytab : $PWD" &&
             copy -a "$orig/etc/machine-id" "$orig/etc/krb5.keytab" .
     fi
+}
+
+# ------------------------------------------------------------------------------
+# create/copy id key: <host>
+# ------------------------------------------------------------------------------
+actionIdkey() {
+    if [ -h ~/.ssh ] ; then
+        [ -e ~/.ssh/id_rsa -o -e ~/.ssh/ssh_config ] || embed -r centauriencfs -q mount -
+    fi
+    folder -f -c ~/.ssh
+    local type='ed25519' fold='id_rsa' file='id_ed25519'
+     [ -e "$fold" ] && file="$fold"
+    if [ -e "$file" ] ; then
+        trace -a -c "Existing id file" "$file"
+    else
+        system -e ssh-keygen -q -N '' -t 'ed25519' -f "$file" || return
+        message -a "Created id file" "$file"
+    fi
+    [ $# = 0 ] && return
+    system -e ssh-copy-id "$1"
 }
 
 # ------------------------------------------------------------------------------
@@ -633,16 +653,23 @@ actionImport() {
     # scp into tmp folder to avoid multiple password prompts
     folder -m -s tdir -t '_import' 700
     while : ; do
-        local file copy lraw lcpy=()
+        local file copy lraw spub lcpy=()
+        #system -e -p -- scp -p "$addr/$name*" "$addr/id_*.pub" \
+        #                       "$addr/authorized_keys" "$tdir" || break
         system -e -p -- scp -p "$addr/*[._]*" "$tdir" || break
         backup_ssh "$user" "$dssh" || break
-        matchpath -f -a lraw -- "$tdir"/*.pub "$tdir"/*.rsa "$tdir/authorized_keys"
+        matchpath -f -a lraw -- "$tdir"/*.* "$tdir/authorized_keys"
         for file in "${lraw[@]}" ; do
             copy="${file##*/}"
             case "$copy" in
-                $name.pub)          ;;
-                $name.rsa)          ;;
-                id_rsa|id_rsa.pub)  continue ;;
+                *.old|*.bak|*~)     continue ;;
+                *_*_$user.*)          ;;
+              #  $name.rsa)          ;;
+                id_*.pub)           if [ "$EUID" = 0 ] ; then
+                                        trace -a -c "Server public" "$copy"
+                                        spub="$file" ; continue
+                                    fi
+                                    file= ;;
                 authorized_keys)    ;;
                 *)                  file=
             esac
@@ -653,15 +680,18 @@ actionImport() {
                 trace -a -c "File to skip" "$copy"
             fi
         done
-    if [ -z "$lcpy" ] ; then
-        invoke -e "Got no key(s) from server" ; return
-    fi
-        copy -q -- "${lcpy[@]}" "$dssh" || break
-        [ -e "$dssh/$name.rsa" -a -e "$dssh/$name.pub" ] || break
-        rename "$dssh/$name.rsa" "$dssh/id_rsa"
-        rename "$dssh/$name.pub" "$dssh/id_rsa.pub"
-        symlink -n "id_rsa" "$dssh/$name.rsa"
-        symlink -n "id_rsa.pub" "$dssh/$name.pub"
+        if [ -z "$lcpy$spub" ] ; then
+            invoke -e "Got no key(s) from server" ; break
+        elif [ -n "$lcpy" ] ; then
+            copy -q -- "${lcpy[@]}" "$dssh" || break
+            [ -e "$dssh/$name.rsa" -a -e "$dssh/$name.pub" ] || break
+            rename "$dssh/$name.rsa" "$dssh/id_rsa"
+            rename "$dssh/$name.pub" "$dssh/id_rsa.pub"
+            symlink -n 'id_rsa' "$dssh/$name.rsa"
+            symlink -n 'id_rsa.pub' "$dssh/$name.pub"
+        fi
+        [ -n "$spub" ] && embed -v centaurissh auth "$spub" 'ssh_server_key'
+        system -e -p -- chmod 600 "$dssh"/*[_.]*
         break
     done
     remove -d -- "$tdir"
@@ -787,7 +817,7 @@ actionUser() {
 
     local shdr skey stxt soff
     while read shdr skey stxt ; do
-        [ "$shdr" = "ssh-rsa" ] || continue
+        [ "${shdr::4}" = 'ssh-' ] || continue
         soff=$((${#skey} - slen))
         [ $soff -gt 0 ] && skey="...${skey:$soff}"
         if [ -e "$path/$stxt.rsa" ] ; then
@@ -830,8 +860,11 @@ options() {
 actions() {
     case "$CEN_ACTION" in
 
+
     hos*)
         invoke -r 'hostkeys' -            0 2 ;;
+    id|idk*)
+        invoke    'idkey'    -            0 1 ;;
     kno*)
         invoke -r 'known'    -            1 + ;;
     cre*)
@@ -878,19 +911,18 @@ usage() {
         -o "-B --base   <fldr>   "$"ssh-key tree base folder" \
         -o "-D --domain <dnam>   "$"override domain name" \
         -o "-H --host   <what>   "$"override host name" \
-        -o "-W --whom   <iden>   "$"identiry of key that gets (un-)authorized"
+        -o "-W --whom   <iden>   "$"identity of key that gets (un-)authorized"
 
     usageset \
-        -l $"arguments" \
-        -t "<file>               "$"a file path" \
-        -t "<fldr>               "$"a folder path" \
-        -t "<dnam>               "$"domain name (1st part only, no dots)" \
-        -t "<host>               "$"computer name or mapping class" \
-        -t "<iden>               "$"user at class or host: <user>@<what>" \
-        -t "<orig> <dest>        "$"orign and destination root-fs folders" \
-        -t "<key>                "$"path of a public key file" \
-        -t "<mape>               "$"mapping entry: <class> <glob>..." \
-        -t "<what>               "$"a host or a class name" \
+        -p "<file>               "$"a file path" \
+        -p "<fldr>               "$"a folder path" \
+        -p "<dnam>               "$"domain name (1st part only, no dots)" \
+        -p "<host>               "$"computer name or mapping class" \
+        -p "<iden>               "$"user at class or host: <user>@<what>" \
+        -p "<orig> <dest>        "$"orign and destination root-fs folders" \
+        -p "<key>                "$"path of a public key file" \
+        -p "<mape>               "$"mapping entry: <class> <glob>..." \
+        -p "<what>               "$"a host or a class name" \
 
     usagecat << !EOF
 $CEN_USE_HEADER
@@ -904,6 +936,7 @@ actions:
        hostkey [<dest>]     generate new host keys   (default: /etc/ssh)
        hostkey <orig> <dest>
                             copy host keys, machine-id and keytab
+       idkey   [<host>]     create client id and optionally copy
        known   <file>|-|+ <key>...
                             create known hosts list from public keys
 
@@ -921,11 +954,11 @@ actions:
        list    <user>...    list ids/keys for users       (in key store)
        user    [<user>]     list users or keys in <user> .ssh folder
 
-       All actions except 'import' need root permissions and should not be
-       run on client machines. See also "centaurissh import" which calls
+       All actions except 'import' and 'idkey' need root permissions and should
+       not be run on client machines. See also "centaurissh import" which calls
        $CEN_NAME, and "centaurissh auth" which displays authorized ids.
 
-$CEN_USE_OTHER
+$CEN_USE_PARAMS
 
 **Keys are stored in a tree hierarchy:** <domain>/<class|host>/<keyfile>
 

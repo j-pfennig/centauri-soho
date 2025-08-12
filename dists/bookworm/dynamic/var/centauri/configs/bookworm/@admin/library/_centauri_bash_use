@@ -22,10 +22,10 @@
 # to the documentation format of [[_centauri_bash_doc]] in order to pretty-print
 # the help text.
 #
-# Copyright Dr. J. Pfennig (c) 2016-2023
+# Copyright Dr. J. Pfennig (c) 2016-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES["_centauri_bash_use"]="0.24:2"
+CEN_MODULES["_centauri_bash_use"]="0.25:4"
 
 CEN_USE_USAGE=          # flag that _cen_usage was called
 
@@ -484,7 +484,11 @@ _cen_usage() {
         usage ; usageset -x
     }
 
-    if [ "${CEN_OPT_PAGER:--}" = '-' -o "$CEN_OPT_PAGER" = 'yes' ] &&
+    if [ "${CEN_OPT_PAGER:--}" = '-' ] ; then
+        # default to pager if output is to tty
+        [ -t 1 ] && CEN_OPT_PAGER='yes'
+    fi
+    if [ "$CEN_OPT_PAGER" = 'yes' ] &&
        [ -e "$CEN_LIBRARY/_centauri_bash_dyn" ] ; then
         # when no pager is set use centaurihelp for formatting. centaurihelp itself
         # will run less as pager: usage -> centaurihelp -> less
@@ -535,16 +539,15 @@ usagecat() {
     done
 
     [ -z "$CEN_USE_USAGE" ] && _cen_usage 1             # implicit initialization
-    [ "$_pger" = "centaurihelp" ] && _flit=1            # generate for centaurihelp
-    [ "$_pger" = "usage" ] && _flit=1
-    [ "$_pger" = "true" ] && _flit=1                    # for debug
+    [ "$_pger" = 'centaurihelp' ] && _flit=1            # generate for centaurihelp
+    [ "$_pger" = 'usage' ] && _flit=1
+    [ "$_pger" = 'true' ] && _flit=1                    # for debug
     CEN_USE_OWNFLG=                                     # reset usageset() state
 
     if [ -n "$_verb" ] ; then
         if [ "$CEN_USE_USAGE" -gt 1 ] ; then
             _verb=2
         else
-            [ -z "$_flit" ] && _verb="${_verb//[°§]/ }"
             _verb="${_verb/--/\"$CEN_NAME --help --verbose\"}"
             if [ "$_verb" != '-' ] ; then
                 _cen_use_writeln "$_verb"
@@ -556,8 +559,6 @@ usagecat() {
 
     local _text _last
     while IFS= read -r _text ; do
-        # replace [°§] space aliases unless output is for centaurihelp
-        [ -z "$_flit" ] && _text="${_text//[°§]/ }"
         _cen_use_writeln "$_text"
         _last="$_text"
     done
@@ -565,10 +566,13 @@ usagecat() {
     return 0
 }
 
+# line output (using $_flit): <arg>...
 _cen_use_writeln() {
-   local _text="$*"
+    local _text="$*"
+    # replace [°§] space aliases unless output is for centaurihelp
+    [ -z "$_flit" ] && _text="${_text//[°§]/ }"
     [ -z "$CEN_USE_UTF8" ] && _text="${_text//•/\~}"
-   printf '%s\n' "$_text"
+    printf '%s\n' "$_text"
 }
 
 # ------------------------------------------------------------------------------

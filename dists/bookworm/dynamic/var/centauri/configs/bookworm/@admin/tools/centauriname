@@ -1,9 +1,11 @@
 #!/usr/bin/bash
 #-------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2022; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2025; BSD License"
 CEN_TITLE="Tool to retrieve Network Names"
 
-[ "${CEN_ROOT:-.}" = "." ] && CEN_ROOT="/var/centauri"    # installation folder
+# This is a stand-alone tool that uses centaurnetcfg but no other centauri components!
+
+[ "${CEN_ROOT:-.}" = '.' ] && CEN_ROOT='/var/centauri'    # installation folder
 DAT_VAR_LIB="$CEN_ROOT/persistent"
 DAT_VAR_RUN="$CEN_ROOT/transient"
 

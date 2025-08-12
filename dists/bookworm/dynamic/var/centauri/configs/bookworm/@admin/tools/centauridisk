@@ -18,7 +18,7 @@ CEN_OPT_USAGE=                  # see --usage
 CEN_OPT_VOLUME=                 # see --volume
 
 DAT_SYS_NAME=                   # system name from restore files
-DAT_NO_BOOT=
+DAT_NO_BOOT=                    # no efi boot, 1:=data volume  2:=raspberry pi
 DAT_ARCH_BOOT=
 DAT_PREFIX=                     # see do_prefix
 DAT_PREFIX_DISK=
@@ -148,10 +148,11 @@ do_partition() {
 # Boot partion: <boot> <root>
 # ------------------------------------------------------------------------------
 do_boot() {
+    local dboo="$1" drfs="$2"
     if [ "${DAT_ARCH_BOOT:--}" != '-' ] ; then
         message -a "Restoring boot data ..."
         local opts=()
-        optmake -a opts -n 'boot' -v "$1"
+        optmake -a opts -n 'boot' -v "$dboo"
         if [ "$CEN_OPT_NAME" != "$DAT_SYS_NAME" ] ; then
             optmake -a opts -n 'clone' -v "$CEN_OPT_NAME"
         fi
@@ -161,16 +162,17 @@ do_boot() {
 
     # install bios grub only if we have no EFI folder
     if [ -z "$CEN_OPT_BIOS" ] ; then
-        if [ -d "$gdes/EFI" ] || [ -d "$gdes/efi" ]  ; then
+        if [ -d "$dboo/EFI" ] || [ -d "$dboo/efi" ]  ; then
             message "EFI boot, not installing BIOS grub"
-            DAT_NO_BOOT=1
+        else
+            CEN_OPT_BIOS=1
         fi
     fi
-    if [ -z "$DAT_NO_BOOT" ] ; then
+    if [ -n "$CEN_OPT_BIOS" ] ; then
         message -a "Installing BIOS grub ..."
-        local item targ snam gdes="$1" pref
+        local item targ snam gdes="$dboo" pref
         [ "$CEN_OPT_FSOPT" = 'btrfs' ] && pref='/Volumes/Root'
-        [ "$mode" = 'BIOS' ] && gdes="$1$pref/boot"
+        [ "$mode" = 'BIOS' ] && gdes="$dboo$pref/boot"
         folder -r -m "$gdes"
 
         if [ -n "$CEN_OPT_BIOS" ] ; then
@@ -189,22 +191,23 @@ do_boot() {
     if [ -n "$CEN_OPT_FILE" ] ; then
         if [ "$DAT_NO_BOOT" = 1 ] ; then
             warning -a "Will not create swapfile on data volume, use --partition"
-        elif [ "$1/Volumes/Root" = "$2" ] ; then
+        elif [ "$dboo/Volumes/Root" = "$drfs" ] ; then
             warning -a "Cannot create swapfile on BTRFS volume"
         else
             trace -a "Creating swap file..."
-            snam='swapfile' ; [ "$1" = "$2" ] && snam='.swapfile'
+            snam='swapfile' ; [ "$dboo" = "$drfs" ] && snam='.swapfile'
             targ="/mnt/boot/$snam"
-            embed -y centauriswap --base="$2" --target="$targ" \
-                               legacy "$1/$snam" "$CEN_OPT_FILE"
+            embed -y centauriswap --base="$drfs" --target="$targ" \
+                               legacy "$dboo/$snam" "$CEN_OPT_FILE"
         fi
     elif [ -n "$CEN_OPT_PART" ] ; then
+        # systemd finds and activates swap partitions
         message -a "Creating swap partition..."
         if [ "$DAT_NO_BOOT" != 1 ] ; then
             system -e -p mkswap -L "${CEN_OPT_NAME}_swap" "$DAT_PART_SWAP"
         else
             targ="/dev/disk/by-label/${CEN_OPT_NAME}_swap"
-            embed -y centauriswap --base="$2" --target="$targ" \
+            embed -y centauriswap --base="$drfs" --target="$targ" \
                                     swap "$DAT_PART_SWAP" "${CEN_OPT_NAME}_swap"
         fi
     fi
@@ -214,7 +217,7 @@ do_boot() {
 # Installer: <mode> <arch> ...
 # ------------------------------------------------------------------------------
 do_install() {
-    local lopt="-l" fvol fboo mode="$1" ; shift
+    local lopt='-l' fvol fboo mode="$1" ; shift
     local labl="${DAT_PREFIX_DISK:-$CEN_OPT_NAME}_vol0"
     folder -r -f -m -s fboo -t "${CEN_NAME}_$$_boot"
     folder -r -f -m -s fvol -t "${CEN_NAME}_$$_vol0"
@@ -226,21 +229,21 @@ do_install() {
         if [ "$CEN_OPT_FSOPT" = 'btrfs' ] ; then
             message -a "Initializing BTRFS partition..."
             [ "$DAT_NO_BOOT" = 1 ] && labl="${labl/_vol0/_vol1}"
-            local sopt=("-xVBox" "-xBackup" "-xArchive" "-xSnapshots")
-            [ "$DAT_NO_BOOT" = 1 ] && sopt=("-iBackup" "-iArchive" "-xRoot" "-xHome" "-xSnapshots")
+            local sopt=('-xVBox' '-xBackup' '-xArchive' '-xSnapshots')
+            [ "$DAT_NO_BOOT" = 1 ] && sopt=('-iBackup' '-iArchive' '-xRoot' '-xHome' '-xSnapshots')
             embed -z -y centaurisnapshot prep "${sopt[@]}" "$fvol" "$DAT_PART_VOL0" "$labl" "$CEN_OPT_VOLUME"
-            froo+="/Volumes/Root"
+            froo+='/Volumes/Root'
         else
             message -a "Initializing ${CEN_OPT_FSOPT^^} partition..."
-            [ "$CEN_OPT_FSOPT" = "vfat" ] && lopt="-n"
-            [ "$CEN_OPT_FSOPT" = "ext4" ] && lopt="-L"
+            [ "$CEN_OPT_FSOPT" = 'vfat' ] && lopt='-n'
+            [ "$CEN_OPT_FSOPT" = 'ext4' ] && lopt='-L'
             [ "$DAT_NO_BOOT" = 1 ] && labl="${labl%_*}_vol1" || labl="${labl%_*}_root"
             system -e -p -t -- mkfs -t "${CEN_OPT_FSOPT:-ext4}" $lopt "$labl" "$DAT_PART_VOL0"
             system -e -p -t -- mount "$DAT_PART_VOL0" "$fvol"
         fi
     fi
 
-    if error -t && [ "${1:--}${2:--}${3:--}" != "---" ] ; then
+    if error -t && [ "${1:--}${2:--}${3:--}" != '---' ] ; then
         message -a "Restoring system data ..."
         local opts=()
         optmake -a opts -n 'mount' -v "$fvol" ; optmake -a opts -n 'unmount' -f 1

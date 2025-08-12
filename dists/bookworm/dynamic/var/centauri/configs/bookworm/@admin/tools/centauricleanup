@@ -4,7 +4,7 @@ CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2016-2024; "$"BSD License"
 CEN_TITLE=$"Cleanup caches and logfiles"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -t -y - '0.15:4' || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -r -t -y - '0.16:4' || exit 2
 
 # Data
 CEN_OPT_ALL=                    # see --all
@@ -29,7 +29,7 @@ do_delete() {
     ___check() {
         [ -h "$1" ] && return 1
         [ -n "$CEN_OPT_DRYRUN" ] && trace -a $"Removing files/folders:" "$*"
-        [ "$1" -ef "/" ] && fatal $"Refusing to delete the root folder"
+        [ "$1" -ef '/' ] && fatal $"Refusing to delete the root folder"
         return 0
     }
 
@@ -247,7 +247,7 @@ run() {
 
     [ -z "$CEN_OPT_USER" -a -z "$CEN_OPT_ROOT" -a -z "$CEN_OPT_LOGS" -a -z "$CEN_OPT_SNAP" ] && usage
 
-    if ! [ "$CEN_OPT_USER" = "-" -o "$CEN_OPT_USER" = "$LOGNAME" ] ; then
+    if ! [ "$CEN_OPT_USER" = '-' -o "$CEN_OPT_USER" = "$LOGNAME" ] ; then
         context -r
     elif [ -n "$CEN_OPT_LOGS" -o -n "$CEN_OPT_HOME" -o -n "$CEN_OPT_ROOT" ] ; then
         fatal $"Option --user conflicts with --all|--root|--home|--log"
@@ -338,7 +338,7 @@ $CEN_USE_HEADER
 $CEN_USE_OPTIONS
 
        -A --all             cleanup everthing, short for: -U+ -R -Z
-       -B --base  <dir>     use <dir> as path prefix    (default: /)
+       -B --base  <dir>     use argument as path prefix (default: /)
        -S --snapshot        given folder is a snapshot  (auto --home)
 
        -H --home            given folder is a home volume

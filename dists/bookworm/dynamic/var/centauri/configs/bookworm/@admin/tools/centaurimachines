@@ -79,8 +79,8 @@ $empt
 
     # per machine template
 
-    create -c -t -- "$1" <<!EOF
-# File '$DAT_BASE/repository.template' is the template for per-machine rsyncd.conf fragments
+    create -c -t -- "$2" <<!EOF
+# File '$2' is the template for per-machine rsyncd.conf fragments
 #
 # Substitions:  \$M  distribution
 #               \$H  machine name
@@ -209,9 +209,12 @@ root:$pasw
         $DAT_MESSAGE "Keeping kerberos state"
     else
         # create AD/DC machine account, save keytab in repo, add IP addr to AC/DC dns
-        local skey="$CEN_ROOT/machines/$DAT_DIST/$hnam/krb5.keytab"
+        local skey="$CEN_ROOT/machines/$DAT_DIST/$host/krb5.keytab"
+        #   centaurisecrets register
+        #   ->  centaurimachines --add ...
+        #       ->  centaurikerberos machine create -- keytab
         embed -t -v -y centaurikerberos -O "$skey" -s -y \
-            machine add "$host" -- keytab "$host" -- host add "$host"
+            machine create "$host" -- keytab "$host" -- host add "$host"
     fi
 }
 
@@ -469,10 +472,32 @@ run_update() {
 # ------------------------------------------------------------------------------
 # The one and only action
 # ------------------------------------------------------------------------------
+#           /var/centauri/machines                  DAT_ROOT
+#           ├── rsync.conf
+#           ├── repository.template
+#           ├── bookworm                            DAT_BASE
+#           │   ├── @other
+#           │   │   └── ...
+#           │   ├── alpha4
+#           │   │   ├── krb5.keytab
+#           │   │   ├── machine-id
+#           │   │   ├── repository.conf
+#           │   │   ├── repository.rsyncd
+#           │   │   ├── repository.secret
+#           │   │   └── repository
+#           │   │       └── ...
+#           │   └── ...
+#           ├── trixie
+#           │   ├── @other
+#           │   │   └── ...
+#           │   ├── trixN
+#           │   │   └── ...
+#           │   └── ...
+#           └── ...
+# ------------------------------------------------------------------------------
 run() {
     context -r || return
     system -c -- rsync cp rm
-    folder -c -f ${CEN_OPT_SETUP:+-m} "$DAT_BASE"
 
     # get domain os version
 
@@ -488,10 +513,11 @@ run() {
         sysversion -f
         DAT_DIST="$CEN_SYS_NICKNAME"
     fi
-    if [ -d "$DAT_DIST" ] ; then
-        DAT_BASE+="/$DAT_DIST"
-        folder -c -f ${CEN_OPT_SETUP:+-m} "$DAT_BASE"
-    fi
+
+    # create/set base folder
+
+    folder -c -f ${CEN_OPT_SETUP:+-m} "$DAT_ROOT"
+    DAT_BASE+="/$DAT_DIST"
 
     DAT_MAND="${DAT_MAND%%.*}"
     temp="$CEN_ROOT/configs/$DAT_DIST/${DAT_MAND:--}"
@@ -501,14 +527,13 @@ run() {
     # setup staging folder
 
     if [ -n "$CEN_OPT_SETUP" ] ; then
+        folder -f -m "$DAT_BASE/@other"
         do_config 'rsyncd.conf' 'repository.template'
     fi
 
     # get list of machines
 
     if [ -n "$CEN_OPT_LIST" ] ; then
-       # [ -z "$CEN_OPT_NICK" ]
-       folder -f -c -- "$DAT_ROOT"
         DAT_NICK=
         if [ -z "$CEN_OPT_NICK" ] ; then
             matchpath -d -c run_list -- */*
@@ -518,6 +543,7 @@ run() {
         return
     fi
 
+    folder -f -c "$DAT_BASE"
     local fall mach marg mlis=()
     if [ $# = 0 ] ; then
         matchpath -f -a mlis -- */machine-id
@@ -526,6 +552,7 @@ run() {
     else
         DAT_SINGLE_MACHINE=1
     fi
+
     for marg in "$@" ; do
         mach="${marg%%/*}"                      # strip machine-id
         if [ -n "${mach//[-_a-z0-9]/}" ] ; then
@@ -569,6 +596,7 @@ run() {
 
     [ -n "$CEN_OPT_EDIT$CEN_OPT_EXEC$CEN_OPT_PATH" ] && return
 
+    folder -f -c "$DAT_ROOT"
     [ -e 'rsyncd.conf' ] || quit -e "Missing static config file:" 'rsyncd.conf'
     if ! dryrun "Create /etc/rsyncd.conf" ; then
         local lsyn

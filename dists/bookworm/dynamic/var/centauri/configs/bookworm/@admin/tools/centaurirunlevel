@@ -1,14 +1,14 @@
 #!/usr/bin/bash
 # ------------------------------------------------------------------------------
-CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2023; BSD License"
+CEN_LEGAL="Copyright Dr. J. Pfennig (c) 2007-2025; BSD License"
 CEN_TITLE=$"Tool to enable/disable Sys-V and systemd system services"
 
 # Import the bash library, set name and version
-PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -t -y "$0" "0.12:2" || exit 2
+PATH+=":${0%/*}" . _centauri_bash_lib -a -d -i -t -y - '0.14:6' || exit 2
 
 # Data
 DAT_CONTEXT='any'
-DAT_SCRIPT="/etc/default/$CEN_NAME"
+DAT_SCRIPT="$CEN_DEFAULT/$CEN_NAME"
 DAT_SAVING=
 DAT_USE_SYSTEMD=
 DAT_HEADER=             # array, see makeHeader
@@ -604,34 +604,34 @@ options() {
 # ------------------------------------------------------------------------------
 actions() {
     case "$CEN_ACTION" in
-    "") [ "$CEN_OPT_SAVE" = "-" ] && CEN_OPT_SAVE="$DAT_SCRIPT"
+    "") [ "$CEN_OPT_SAVE" = '-' ] && CEN_OPT_SAVE="$DAT_SCRIPT"
         ;;
     start|stop|wan*)
         invoke    -         actionList   0   ;;
 
     dis*)
-        invoke -r "disable" actionWork   2 + ;;
+        invoke -r 'disable' actionWork   2 + ;;
     ena*)
-        invoke -r "enable"  actionWork   2 + ;;
+        invoke -r 'enable'  actionWork   2 + ;;
     ine*)
-        invoke -r "inetd"   actionWork   1 + ;;
+        invoke -r 'inetd'   actionWork   1 + ;;
     mas|mask)
-        invoke -r "mask"    actionWork   1 + ;;
+        invoke -r 'mask'    actionWork   1 + ;;
     ord*)
-        invoke -r "order"   -            2 + ;;
+        invoke -r 'order'   -            2 + ;;
     rem*)
-        invoke -r "remove"  actionWork   1 + ;;
+        invoke -r 'remove'  actionWork   1 + ;;
     res*)
-        invoke -r "restore" actionWork   1 + ;;
+        invoke -r 'restore' actionWork   1 + ;;
 
     cat*)
-        invoke    "cat"     actionScript 0 1 ;;
+        invoke    'cat'     actionScript 0 1 ;;
     ins*)
-        invoke -r "install" actionScript 0 1 ;;
+        invoke -r 'install' actionScript 0 1 ;;
     scr*)
-        invoke -r "script"  -            0 1 ;;
+        invoke -r 'script'  -            0 1 ;;
     ins*|uni*)
-        invoke -r "uninst"  actionScript 0 1 ;;
+        invoke -r 'uninst'  actionScript 0 1 ;;
     esac
 }
 
@@ -687,7 +687,7 @@ arguments:
        <file>               a file path (default: $DAT_SCRIPT)
 
 A change script can use section tags for conditional exexution of commands
-depending on the configuration in '/etc/default/centaurinetcfg':
+depending on the configuration in <file>:
 
        [any]              unconditionally execute
        [server]           host must be configured as a server

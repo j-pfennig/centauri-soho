@@ -62,7 +62,7 @@ do_compare() {
         temp=
     else
         [ -z "$CEN_OPT_SILENT" ] && $mesg $"Same timestamp" "$CEN_DECO_ULIN${fsrc#$PWD/}$CEN_DECO_NORM"
-        return 1
+        return 0
     fi
 
     if system -r -q -- cmp --quiet "$fsrc" "$fdes" ; then

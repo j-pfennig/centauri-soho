@@ -14,13 +14,14 @@
 #           see [[netfile()]], [[netlink()]] and [[nettemp()]]. These functions also
 #           handle the settings of CEN_NET_OUTPUT for output redirection.
 #
-# Storage:  CEN_NET_DIR_LIB="$CEN_ROOT/persistent"      # for cached things
-#           CEN_NET_FILE_CONF="$CEN_NET_DIR_LIB/centaurinetcfg"
-#           CEN_NET_FILE_FILT="$CEN_NET_DIR_LIB/centaurifilter"
+# Storage:  # for cached things
+#           CEN_NET_FILE_CONF="$CEN_PERSISTENT/centaurinetcfg"
+#           CEN_NET_FILE_FILT="$CEN_PERSISTENT/centaurifilter"
+#           CEN_NET_FILE_FILT="$CEN_PERSISTENT/centauriswitch"
 #
-#           CEN_NET_DIR_RUN="$CEN_ROOT/transient"       # for temporary things
-#           CEN_NET_FILE_STAT="$CEN_NET_DIR_RUN/network_status"
-#           CEN_NET_FILE_PROX="$CEN_NET_DIR_RUN/network_proxy"
+#           # for temporary things
+#           CEN_NET_FILE_STAT="$CEN_TRANSIENT/network_status"
+#           CEN_NET_FILE_PROX="$CEN_TRANSIENT/network_proxy"
 #
 #+Variables: Many functions in this module return results in static variables.
 #           These variable names start with prefix '**_net**'. This differs from
@@ -28,20 +29,35 @@
 #           Do not expect result variables to stay valid after the next call of
 #           a function in this module.
 #
-# Copyright Dr. J. Pfennig (c) 2013-2024
+#+          The setting of CEN_NET_OUTPUT affects some functions that read/write
+#           files. If CEN_NET_OUTPUT is empty, it is set to CEN_PATHS[7], see
+#           [[setsetup()]]. For more details see [[netpath()]].
+#
+# Copyright Dr. J. Pfennig (c) 2013-2025
 # ------------------------------------------------------------------------------
 
-CEN_MODULES['_centauri_bash_net']='0.41:4'
+CEN_MODULES['_centauri_bash_net']='0.46:6'
 
-# IMPORTED: CEN_NET_OUTPUT                              # see netfile()
+# IMPORTED: CEN_NET_OUTPUT                          # see netfile()
 
-CEN_NET_DIR_LIB="$CEN_ROOT/persistent"                  # for cached things
-CEN_NET_FILE_CONF="$CEN_NET_DIR_LIB/centaurinetcfg"
-CEN_NET_FILE_FILT="$CEN_NET_DIR_LIB/centaurifilter"     # used as prefix
-
-CEN_NET_DIR_RUN="$CEN_ROOT/transient"                   # for temporary things
-CEN_NET_FILE_STAT="$CEN_NET_DIR_RUN/network_status"
-CEN_NET_FILE_PROX="$CEN_NET_DIR_RUN/network_proxy"
+# called by module load and netconfig()
+_cen_net_files() {
+    [ "$1" = ':' -a -n "${CEN_PATHS[7]}" ] && set -- "${CEN_PATHS[7]}"
+    if [ "$1" = ':' ] ; then
+        [ -z "$CEN_NET_FILE_CONF" ] &&
+            $CEN_TRACE2 -a -c 'CEN_NET_OUTPUT' -- "${CEN_NET_OUTPUT:-<none>}"
+    elif [ "$CEN_NET_OUTPUT" != "$1" ] ; then
+        CEN_NET_OUTPUT="$1"
+        $CEN_TRACE2 -a -c 'CEN_NET_OUTPUT' -- "${1:-<none>}"
+    fi
+    netpath -p                                   # get CEN_PERSISTENT
+    CEN_NET_FILE_CONF="$_netpath/centaurinetcfg"
+    CEN_NET_FILE_FILT="$_netpath/centaurifilter"    # used as prefix
+    CEN_NET_FILE_SWIT="$_netpath/centauriswitch"
+    netpath -t                                   # get CEN_TRANSIENT
+    CEN_NET_FILE_STAT="$_netpath/network_status"
+    CEN_NET_FILE_PROX="$_netpath/network_proxy"
+}
 
 CEN_NET_PREFIX_IP6_DFLT='fc01::/96'
 
@@ -53,6 +69,7 @@ CEN_NET_IFKCMD=                 # flag for net.ifnames
 CEN_NET_IFIEN=0                 # ethernet index
 CEN_NET_IFIWL=0                 # wlan ...
 CEN_NET_IFIUS=0                 # usb ...
+CEN_NET_IFMAIN='br0 eth0 wlan0' # used for generic host address
 
 # ------------------------------------------------------------------------------
 # Interface Naming + About BIOS, systemd and internal interface names
@@ -91,32 +108,44 @@ CEN_NET_IFIUS=0                 # usb ...
 # ------------------------------------------------------------------------------
 # netconfig - Load network configuration from status file
 #
-# Call:     netconfig [-e|-f] [-r|-u] [<file>]
+# Call:     netconfig [-e|-f] [-r|-u] [-o <outp>] [<file>]
 #
 # Options:  -e  error if config file not found
 #           -f  fatal error if config file not found
+#           -o  output override, see [[netpath()]]
 #           -r  re-read even if CEN_NET_HOSTS is set
 #           -u  unset configuration variables
 #
+# Arguments:<file>  serialized configuration, see [[centaurinetcfg]]
+#           <outp>  output path
+#
 # Return:   **false** if configuration cannot be read
 #
-# Storage:  CEN_NET_FILE_CONF="$CEN_NET_DIR_LIB/centaurinetcfg"
+#+Storage:  A number of CEN_NET_FILE_xxxx variables get initialized (or
+#           re-initialized when -o or -r or used), see module documentation
+#           overview.
 #
 #+By default the function does nothing if CEN_NET_DOMAIN is set, e.g. the
 # configuration is only read once.
+#
+#+Without option -o the function checks the setting made via [[syssetup()]] and
+# adjusts CEN_OPT_OUTPUT accordingly. Use "-o ''" to disable this behaviour.
 # ------------------------------------------------------------------------------
 netconfig() {
-    local _frea _oerr=:
+    local _frea _oerr=: _oout=':'
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -e)   _oerr=error ;;
       -f)   _oerr=fatal ;;
+      -o)   shift ; _oout="$1" ;;
       -r)   _frea=1 ;;
       -u)   _frea=0 ;;
       *)    _cen_abort - "$1"
       esac ; shift
     done
+
+    [ -n "$_oout" -o -n "$_frea" ] && _cen_net_files "$_oout"
     [ -n "$CEN_NET_HOSTS" -a -z "$_frea" ] && return 0
     local _file="${1:-$CEN_NET_FILE_CONF}"
 
@@ -159,12 +188,7 @@ netconfig() {
     CEN_NET_PORT_HTTPS=         # port for https proxy
 
     [ "$_frea" = 0 ] && return 0
-
-    if [ "$CEN_NET_OUTPUT" = '.' ] && _cen_source ".$CEN_NET_FILE_CONF" ] ; then
-        return 0
-    elif _cen_source "$_file" ; then
-        return 0
-    fi
+    _cen_source "$_file" && return 0
     $_oerr $"No network config:" "$_file" ; return 1
 }
 
@@ -336,45 +360,50 @@ netgetip() {
 # ------------------------------------------------------------------------------
 # nethost - Search a host entry in network host configuration table
 #
-# Call:    nethost [-e|-f] [-c|-n|-s] [--] <host>|<addr>|<mac>|-
+# Call:    nethost [-e|-f] [-a] [-c|-n|-s] [--] <host>|<addr>|<mac>|-
 #
-# Options:  -c  do not match a configured server
+# Options:  -a  allow any domain name (default: allow only configured domain)
+#           -c  do not match a configured server
 #           -e  report errors
 #           -f  make errors fatal
-#           -n  check for name syntax only
+#           -n  check for name syntax only, do not search host table
 #           -s  only match a configured server
 #
 # Arguments:<host>  a host name (optionally fully qualified)
 #           <addr>  an IPv4 address like **10.21.2.11**
 #           <mac>   a mac address
 #
-#           All input must be in lowercase
-#
 # Variables:**_nethost_name**   array of host names/aliases
-#           **_nethost_dom**    domain name stripped from <host> argument
+#           **_nethost_domain** domain name from <host> argument or default
 #           **_nethost_mac**    the mac address    (or '-' if unknown)
 #           **_nethost_ip**     the IPv4 address   (or '-' if unknown)
 #
 # Return:  **true** if <host> was found or **false** on failure
 #
-#+         This routine can either check for a valid name syntax (-n option)
-#          or search the CEN_NET_HOSTS configuration table.
+#+This routine can either check for a valid name syntax (-n option) or search the
+# CEN_NET_HOSTS configuration table.
 #
-#+         The **_nethost_mac**, **_nethost_ip**, **_nethost_dom** and **_nethost_name**
-#          variables are set on success or cleared on failure. Any domain name
-#          is removed from **_nethost_name[0]** and saved in **_nethost_dom**.
+#+If <host> contains no domain name **_nethost_domain** is set to the configured
+# domain. Unless option -a is used the provided domain name must be equal to the
+# configured domain.
 #
+#+All input must be in lowercase. A '- 127.1.1 localhost' entry is implicitly
+# appended to the search list.
+#
+#+The **_nethost_mac**, **_nethost_ip**, **_nethost_domain** and **_nethost_name**
+# variables are set on success or cleared on failure.
 # ------------------------------------------------------------------------------
 _nethost_mac=
 _nethost_ip=
 _nethost_name=()
 _nethost_domain=
 nethost() {
-    local _only _oerr _onam
+    local _oany _only _oerr _onam
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       -)     break ;;
       --)    shift ; break ;;
+      -a)    _oany=1 ;;
       -c)    _only='c' ;;
       -e|-f) _oerr="$1" ;;
       -n)    _onam=1 ;;
@@ -386,56 +415,53 @@ nethost() {
     _nethost_mac= ; _nethost_ip= ; _nethost_name=() ; _nethost_domain=
     netconfig $_oerr || return 1
 
-    local host snam sdom name="${1:--}"
+    local _host snam sdom _name="${1:--}"
 
-    if [ "${name//[0-9]/}" = '...' ] ; then             # is an IPv4 address...
-        _nethost_ip="$name"
-    elif [ "${name//[0-9a-f]/}" = ':::::' ] ; then      # is a mac address...
-        _nethost_mac="$name"
+    if [ "${_name//[0-9]/}" = '...' ] ; then            # is an IPv4 address...
+        _nethost_ip="$_name"
+    elif [ "${_name//[0-9a-f]/}" = ':::::' ] ; then     # is a mac address...
+        _nethost_mac="$_name"
     else
-        snam="${name%%.*}" ; sdom="${name#*.}"
-        if [ "${name:--}" = '-' ] ; then
+        if [ "${_name:--}" = '-' ] ; then
             [ -n "$_oerr" ] && error $_oerr $"Missing hostname" ; return 1
-        elif [ -n "${name//[a-z0-9_-]/}" ] ; then
-            [ -n "$_oerr" ] && error $_oerr $"Invalid hostname:" "$name" ; return 1
+        elif [ -n "${_name//[a-z0-9_.-]/}" ] ; then
+            [ -n "$_oerr" ] && error $_oerr $"Invalid hostname:" "$_name" ; return 1
         fi
-        _net_host_name="$name"
-        if [ "$name" = "$sdom" ] ; then                 # no domain specified
-            sdom=
-        elif [ "$sdom" = "$CEN_NET_DOMAIN" ] ; then
-            sdom= ; name="$snam"                        # no local dom in hosts
-        else
-            if [ -n "$_onam" ] ; then                   # name check only
-                _nethost_domain="$sdom" ; return 0
-            fi
-            [ -n "$_oerr" ] && error $_oerr $"Domain mismatch:" "$name" ; return 1
+        snam="${_name%%.*}" ; sdom="${_name#*.}"
+        [ "$_name" = "$sdom" ] && sdom="$CEN_NET_DOMAIN"
+        _name="$snam"
+        if [ -z "$_oany" ] && [ "$sdom" != "$CEN_NET_DOMAIN" ] ; then
+            [ -n "$_oerr" ] && error $_oerr $"Domain mismatch:" "$_name" ; return 1
         fi
+        _nethost_name="$_name" ; _nethost_domain="$sdom"
     fi
     [ -n "$_onam" ] && return 0                         # name check only
 
     # loop over host table
 
-    for host in "${CEN_NET_HOSTS[@]}" '-' ; do
-        if [ "$host" = '-' ] ; then                     # nothing found
-            [ -n "$_oerr" ] && error $_oerr $"Host not found:" "$name"
+    local _sset="$SHELLOPTS" ; set -f
+    for _host in "${CEN_NET_HOSTS[@]}" '- 127.0.0.1 localhost' '-' ; do
+        if [ "$_host" = '-' ] ; then                    # nothing found
+            [ -n "$_oerr" ] && error $_oerr $"Host not found:" "$_name"
             _nethost_mac= ; _nethost_ip= ; _nethost_name=() ; return 1
         fi
-        [ "${host/$name/}" = "$host" ] && continue      # quick pre-check
-        set -- $host
-        _nethost_mac="$1" ; shift
-        _nethost_ip="$1"  ; shift
-        if [ "$name" = "$_nethost_ip" -o \
-             "$name" = "$_nethost_mac" ] ; then         # match by ip/mac address
+        [ "${_host/$_name/}" = "$_host" ] && continue   # quick pre-check
+        set -- $_host
+        _nethost_mac="$1"; _nethost_ip="$2" ; shift 2
+        if [ "$_name" = "$_nethost_ip" -o \
+             "$_name" = "$_nethost_mac" ] ; then        # match by ip/mac address
             _nethost_name=("$@") ; break
         fi
         [ -z "$snam" ] && continue                      # no name to search
-        host=" $* "
-        [ "${host/ $name /}" = "$host" ] && continue    # check if name in list
+        _host=" $* "
+        [ "${_host/ $_name /}" = "$_host" ] && continue # check if name in list
         _nethost_name=("$@") ; break
     done
+    [ "$_sset" != "$SHELLOPTS" ] && set +f
 
     # handle options -c/-s
 
+    _nethost_domain="$CEN_NET_DOMAIN"
     [ -z "$_only" ] && return 0
     if [ "${CEN_NET_SERVERS[0]}" = "$_nethost_name" ] ||
        [ "${CEN_NET_SERVERS[1]}" = "$_nethost_name" ] ; then
@@ -443,7 +469,7 @@ nethost() {
     else
         [ "$_only" = 'c' ] && return 0                  # is a client
     fi
-    _nethost_name=() ; _nethost_mac= ; _nethost_ip= ; return 1
+    _nethost_name=() ; _nethost_domain= ; _nethost_mac= ; _nethost_ip= ; return 1
 }
 
 # ------------------------------------------------------------------------------
@@ -452,21 +478,24 @@ nethost() {
 # Call:    (1) netiface [-s <vnam>] [-c|-d|-i|-k] [-e|-w] [-x] <name>|-
 #          (2) netiface -p          # persist mappings
 #          (3) netiface [-k]        # initialize, set CEN_NET_IFNAMES
-#          (4) netiface -n          # no init, get kernel 'net.ifnames'
+#          (4) netiface -m <list>   # set CEN_NET_IFMAIN
+#          (5) netiface -n          # no init, get kernel 'net.ifnames'
 #
 # Options:  -c  return a class path (like "/sys/class/net/eth0")
 #           -d  return a device path (like "/dev/eth0")
 #           -e  generate error messages
 #           -i  return an internal device name (like "wlan0" or "eth0")
 #           -k  return a systemd/kernel device name or check/init mode
-#           -n  get kernel 'net.ifnames', no init
+#           -m  set CEN_NET_IFMAIN, can be combined with all other options
+#           -n  get kernel command line setting from "net.ifnames", no init
 #           -p  persist current mappings in a temporary file
 #           -s  save to variable (default is _netiface)
 #           -w  generate warnings
 #           -x  return **false** if interface does not exist
 #
 # Arguments:<name>  interface name or path (path gets stripped). Use '-' to
-#                   check "br0" first and then for "eth0"
+#                   check interfaces in CEN_NET_IFMAIN, 1st hit wins. Default
+#                   settings are: "br0 eth0 wlan0". Name "none" gets ignored
 #           <vnam>  name of a variable to receive the result
 #
 # Variable: CEN_NET_IFNAMES     0:=kernel uses BIOS naming  1:=systemd naming
@@ -545,6 +574,7 @@ netiface() {
       -e)   _oerr='error' ;;
       -i)   _mapm='i' ;;
       -k)   _mapm='k' ;;
+      -m)   shift ; CEN_NET_IFMAIN="$1" ;;
       -n)   _ncmd=1 ;;
       -p)   _pers=1 ;;
       -s)   shift ; _vnam="$1" ;;
@@ -571,12 +601,22 @@ netiface() {
     _cen_netiface_name="${1##*/}"
     case "$_cen_netiface_name" in
     '')         [ "$CEN_NET_IFNAMES" = 1 ] && return 0
-                [ "$_mapm" != 'k' ] ; return ;;
-    -)          if [ -e '/sys/class/net/br0' ] ; then
-                    _cen_netiface_name='br0'
-                else
-                    _cen_netiface_name='eth0' ; _bios=1
-                fi ;;
+                [ "$_mapm" != 'k' ] ; return
+                ;;
+    -)          for _cen_netiface_name in $CEN_NET_IFMAIN - ; do
+                    if [ "$_cen_netiface_name" = '-' ] ; then
+                        $_oerr $"No such interface:" "${_rslt:1}"
+                        return 1
+                    elif [ "$_cen_netiface_name" = 'none' ] ; then
+                        continue
+                    elif [ -e "/sys/class/net/$_cen_netiface_name" ] ; then
+                        break
+                    fi
+                    _cen_net_mapping -s ; _rslt+="|$_cen_netiface_name"
+                    [ -c "/sys/class/net/$_cen_netiface_kern" ] || continue
+                    _bios=1 ; break
+                done
+                ;;
     eth[0-9])   _bios=1 ;;
     en*)        _bios=0 ;;
     usb[0-9])   _bios=1 ;;
@@ -693,7 +733,7 @@ ${CEN_NET_IFIWL@A}
 ${CEN_NET_IFIUS@A}
 !EOF
     else
-        _cen_source "$CEN_NET_DIR_RUN/network_ifnames" ; return
+        nettemp -s 'network_ifnames' ; return
     fi
 }
 
@@ -708,14 +748,14 @@ _cen_net_mapping() {
 
     # kernel uses bios names, do nothing
     if [ "$CEN_NET_IFNAMES" = 0 ] ; then
-        printf -v "$_vnam" '%s' "$_mapn" ; return 0
+        printf -v "$_vnam" '%s' "$_mapn" ; return
     fi
 
     # check if mapping is cached
     for _item in "${CEN_NET_IFMAP[@]}" ; do
         [ "${_item%=*}" = "$_mapn" ] || continue
         $CEN_TRACE -a -c "mapping cached" -- "$_item"
-        printf -v "$_vnam" '%s' "${_item#*=}" ; return 0
+        printf -v "$_vnam" '%s' "${_item#*=}" ; return
     done
 
     _netiface_mapname=
@@ -735,7 +775,7 @@ _cen_net_mapping() {
         esac
         _cen_net_mapsysd "$_mapn"
     fi
-    printf -v "$_vnam" '%s' "$_netiface_mapname" ; return 0
+    printf -v "$_vnam" '%s' "$_netiface_mapname" ; return
 }
 
 # parse CEN_NET_IFACES for mapping rules
@@ -942,7 +982,7 @@ netmask() {
         _netmask_mask="$((-1 << (32 - _netparse_bits)))"
         netconv -b "$_netparse_addr" || return 1
         _netmask_addr="$_netconv"
-        $CEN_TRACE2 -a -c -p " cache" "%-14s -> %x %x" "$1" "$_netmask_addr" "$_netmask_mask"
+        #$CEN_TRACE2 -a -c -p " cache" "%-14s -> %x %x" "$1" "$_netmask_addr" "$_netmask_mask"
     elif [ -z "$_netmask_addr" ] ; then
         return 1                                # not a valid address
     fi
@@ -956,7 +996,7 @@ netmask() {
 
     netparse -a $_oerr -n "$2" || return 1
     netconv -b "$_netparse_addr" || return 1
-    $CEN_TRACE2 -a -c -p " check" "%-14s -> %x" "$2" "$_netconv"
+    #$CEN_TRACE2 -a -c -p " check" "%-14s -> %x" "$2" "$_netconv"
     [ $((_netconv & _netmask_mask)) = "$_netmask_addr" ]
     return                                       # return status
 }
@@ -996,8 +1036,10 @@ netmask() {
 #.         message "Option '$nmod' applies for '$HOSTNAME'"
 # ------------------------------------------------------------------------------
 _netoption=()
+_netoption_last=
 netoption() {
-    local _dflt _glob='[\*\?\]]'                    # trigger for globbing
+    [ -z "$CEN_NET_HOSTS" ] && { netconfig || return 1 ; }
+    local _opts _dflt _glob='[\*\?\]]'                    # trigger for globbing
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
@@ -1006,21 +1048,26 @@ netoption() {
       *)    _cen_abort - "$1"
       esac ; shift
     done
-    netconfig || return 1
+    [ -z "$1" ] && return 1
 
-    local _opts _name="${2:--}"
-    for _opts in "${CEN_NET_OPTIONS[@]}" ; do       # loop over options
-        [ "${_opts%% *}" = "$1" ] || continue
-        set -f ; set -- $_opts ; set +f ; shift     # set list of hosts
-        _netoption=("$@") ; [ "$_name" = '-' ] && return 0
-        for _opts in "$@" ; do                      # loop over hosts list
-            [ "$_opts" = "$_dflt" ] && continue
-            [ "$_opts" = "$_name" ] && return 0     # literal match
-            [ "${_opts/$_glob/}" = "$_opts" ] && continue
-            [[ "$_name" == $_opts ]] && return 0    # glob match
-        done ; break
+    local _name="${2:--}"
+    if [ "$_netoption_last" != "$1" ] ; then
+        _netoption_last= ; _netoption=()
+        for _opts in "${CEN_NET_OPTIONS[@]}" ; do   # loop over options
+            [ "${_opts%% *}" = "$1" ] || continue
+            _netoption_last="$1"
+            set -f ; set -- ${_opts#* } ; set +f    # set list of hosts
+            _netoption=("$@") ; break
+        done
+        [ "$_name" = '-' ] && return 0
+    fi
+    for _opts in "${_netoption[@]}" ; do            # loop over hosts list
+        [ "$_opts" = "$_dflt" ] && continue
+        [ "$_opts" = "$_name" ] && return 0         # literal match
+        [ "${_opts/$_glob/}" = "$_opts" ] && continue
+        [[ "$_name" == $_opts ]] && return 0        # glob match
     done
-    _netoption=() ;  return 1
+    return 1
 }
 
 # ------------------------------------------------------------------------------
@@ -1192,9 +1239,9 @@ _cen_net_addrget() {
 # ------------------------------------------------------------------------------
 # nettemp - Temporary file operations in transient data folder
 #
-# Call:     nettemp [-r|-s|-w]  [<file>|-]
-#           nettemp [-c|--]     [<file>|-]
-#           nettemp -l <target> [<file>|-]
+# Call:     nettemp [-r|-s|-w] [--] [<file>|-]
+#           nettemp [-c] [--]       [<file>|-]
+#           nettemp -l [--] <target> [<file>|-]
 #
 # Options:  -c  create a file (default name is $CEN_NAME)
 #           -l  create and link a temp file to <target>
@@ -1210,45 +1257,38 @@ _cen_net_addrget() {
 #
 #           The **_nettemp** variable is set on success or cleared on failure.
 #
-# Storage:  CEN_NET_DIR_RUN contains the base path for all operations.
+# Storage:  CEN_TRANSIENT contains the base path for all operations.
 #
 # The function tries to create a missing transient data folder.
 # ------------------------------------------------------------------------------
 _nettemp=
 nettemp() {
-    # create/check temp dir
-    _nettemp="$CEN_NET_DIR_RUN"
-    if [ ! -d "$_nettemp" ] ; then
-        [ -h "$_nettemp" ] && system -f -p -b -s _nettemp realpath "$_nettemp"
-        folder -m -f "$_nettemp"
-    fi
+    # get/check temp dir
+    local _lopt _base ; _nettemp=
+    netpath -t -s _base
 
     # option and arguments
-    local _lopt
-    if [ "${1::1}" = '-' -a "$1" != '-' ] ; then
-        _lopt=$1 ; shift
-    fi
-    local _arg1="${1:--}" _arg2="${2:--}" _argp="$_nettemp"
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -?)   _lopt="$1"
+      esac ; shift
+    done
+    local _arg1="${1:--}" _arg2="${2:--}" _argp="$_base"
     [ "$_arg1" = '-' ] && _arg1="${CEN_NAME:-$0}"
     [ "$_arg1" != '.' ] && _argp+="/$_arg1"
+    _nettemp="$_argp"
 
     case "$_lopt" in
-    ''|--)                                      # make name, return status
-                _nettemp="$_argp" ; [ -e "$_argp" ] ;;
-    -c)                                         # create file, warn on failure
-                _nettemp="$_argp" ; create -w "$_argp" 664 ;;
-    -l)                                         # create link
-                [ "$_arg2" = '-' ] && _arg2="${CEN_NAME:-$0}"
-                _cen_net_symlink "$_arg1" "$_nettemp/$_arg2"
-                ;;
-    -r)                                         # remove file
-                _cen_net_remove "$_argp" ;;
-    -s)                                         # source file
-                _nettemp="$_argp" ; _cen_source "$_argp" ;;
-    -w)                                         # write file
-                _nettemp="$_argp" ; netfile -h "$_argp" ;;
-    *)                                          # error
-                _cen_abort - "$_lopt" ;;
+    '') [ -e "$_argp" ] ;;                          # make name, return status
+    -c) create -w "$_argp" 664 ;;                   # create file, warn on failure
+    -l) [ "$_arg2" = '-' ] && _arg2="$_base/${CEN_NAME:-$0}" || _arg2="$_base/$_arg2"
+        netpath -r -s _nettemp -- "$_arg2"
+        _cen_net_symlink "$_arg1" "$_netpath" ;;    # create link
+    -r) _cen_net_remove "$_argp" ;;                 # remove file
+    -s) _cen_source "$_argp" ;;                     # source file
+    -w) create -t -h - "$_argp" ;;                  # write file
+    *)  _cen_abort - "$_lopt"                       # error
     esac
 }
 
@@ -1260,7 +1300,7 @@ _cen_net_symlink() {
 }
 
 _cen_net_remove() {
-    if [ $# -gt 1 ] || [ -e "$1" ] ; then
+    if [ $# -gt 1 ] || [ -e "$1" ] || [ -h "$1" ] ; then
         system -e -p -b -- rm -f -- "$@"
     fi
 }
@@ -1268,9 +1308,10 @@ _cen_net_remove() {
 # ------------------------------------------------------------------------------
 # netlink - Make a symlink to a config file or folder
 #
-# Call:     netlink [-k|-m|-n|-s]... <link> <sepa> <suff>...
+# Call:     netlink [-a] [-k|-m|-n|-s]... <link> <sepa> <suff>...
 #
-# Options:  -k  keep current link if no destination found
+# Options:  -a  absolute path, do not use CEN_OPT_OUTPUT
+#           -k  keep current link if no destination found
 #           -m  if link is a file move it to <link>.$CEN_NAME
 #           -n  no operation, just get matching suffix
 #           -s  do not generate messages
@@ -1290,10 +1331,11 @@ _cen_net_remove() {
 _netlink=                       # set only if link is updated
 _netlink_suff=                  # set if suffix was found
 netlink() {
-    local keep move noop slnt
+    local keep move noop slnt _outp="$CEN_NET_OUTPUT"
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
+      -a)   _outp= ;;
       -k)   keep=1 ;;
       -m)   move=1 ;;
       -n)   noop=1 ;;
@@ -1301,58 +1343,63 @@ netlink() {
       *)    _cen_abort - "$1"
       esac ; shift
     done
-    [ -n "$CEN_NET_OUTPUT" ] && fatal $"Alternate output not supported:" 'netlink'
 
-    local suff dest link="$1" sepa="${2:-.}"
+    local suff dest _link sepa="${2:-.}"
+    case "$_outp" in
+    '') _link="$1" ;;
+    .)  [ "${1::2}" = './' ] &&  _link="$1" || _link="./${1#/}" ;;
+    *)  $CEN_TRACE -c ' ' $"Alternate output not supported:" "$*" ; return 1 ;;
+    esac
     shift ; shift
     _netlink= ; _netlink_suff=
 
-    # <link> exists and is not a link
-    if [ -e "$link" -a ! -h "$link" -a -z "$noop" ] ; then
+    # <link> exists and is not a symlink
+    if [ -e "$_link" -a ! -h "$_link" -a -z "$noop" ] ; then
         if [ -z "$move" ] ; then
-            [ -z "$slnt" ] && error $"Not a symlink:" "$link"
+            [ -z "$slnt" ] && error $"Not a symlink:" "$_link"
             return 2
         fi
-        dest="$link$sepa$CEN_NAME"
-        system -e -p -- mv -f "$link" "$dest"
-        [ -n "$keep" ] && _cen_net_symlink "$dest" "$link"
-        [ -z "$slnt" ] && warning -a $"Renamed file:" "$link => $dest"
+        dest="$_link$sepa$CEN_NAME"
+        system -e -p -- mv -f "$_link" "$dest"
+        [ -n "$keep" ] && _cen_net_symlink "$dest" "$_link"
+        [ -z "$slnt" ] && warning -a $"Renamed file:" "$_link => $dest"
     fi
-    [ $# = 0 ] && return 0              # moveaway or check only
+    [ $# = 0 ] && return 0                          # move away or check only
 
     # search suffix and link
     for suff in "$@" ; do
         [ -n "$suff" ] || continue
-        _netlink_suff="$suff" ; dest="$link$sepa$suff"
+        _netlink_suff="$suff" ; dest="$_link$sepa$suff"
         [ -e "$dest" ] || continue
         [ -n "$noop" ] && return 0
-        if [ "$link" -ef "$dest" ] ; then
-            [ -z "$slnt" ] && $CEN_TRACE -a -c $"Link current" "$link => $dest"
+        if [ "$_link" -ef "$dest" ] ; then
+            [ -z "$slnt" ] && $CEN_TRACE -a -c $"Link current" "$_link => $dest"
             return 0
         fi
-        [ -z "$slnt" ] && $CEN_TRACE -a -c $"Link updated" "$link => $dest"
+        [ -z "$slnt" ] && $CEN_TRACE -a -c $"Link updated" "$_link => $dest"
         _netlink="$dest"
-        if [ -d "$dest" ] && [ -h "$link" ] ; then      # linking a folder
-            _cen_net_remove "$link"                     # ... no symlink!
+        if [ -d "$dest" ] && [ -h "$_link" ] ; then # linking a folder
+            _cen_net_remove "$_link"                # ... no sym_link!
         fi
-        _cen_net_symlink "${dest##*/}" "$link" ; return 0
+        _cen_net_symlink "${dest##*/}" "$_link" ; return 0
     done
 
     [ -n "$noop" ] && return 1
-    [ -z "$slnt" ] && $CEN_TRACE -a -c $"Found no target" "$link"
-    [ -n "$keep" ] || _cen_net_remove "$link"
+    [ -z "$slnt" ] && $CEN_TRACE -a -c $"Found no target" "$_link"
+    [ -n "$keep" ] || _cen_net_remove "$_link"
     return 1
 }
 
 # ------------------------------------------------------------------------------
 # netfile - Write a config file (respecting CEN_NET_OUTPUT rules)
 #
-# Call:     netfile [-h] [-v <vari>] [--] <path> [<mode>]
+# Call:     netfile [-a] [-h] [-v <vari>] [--] <path> [<mode>]
 #
 #           The function uses [[netpath()]] internally, see CEN_NET_OUTPUT.
 #
-# Options:  -h       write a header
-#           -v       input from variable (or array) instead of stdin
+# Options:  -a       absolute <path>, do not use CEN_OPT_OUTPUT
+#           -h       write a header
+#           -v       data from variable (or array) instead of stdin
 #
 # Arguments:<path>   § (relative) file path, see below
 #           <mode>   § file mode, default is 664
@@ -1370,42 +1417,53 @@ netlink() {
 #           CEN_NET_OUTPUT=<folder>   # (debug) create files in <folder>
 # ------------------------------------------------------------------------------
 netfile() {
-    local _opts= _cflg=' -c'
+    local _opts= _cflg=' -c' _outp="$CEN_NET_OUTPUT"
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
-      --)    shift ; break ;;
-      -h)    _opts+=' -h -' ; _cflg= ;;
-      -v)    shift ; _opts+=" -v $1" ; _cflg= ;;
-      *)     _cen_abort - "$1"
+      --)   shift ; break ;;
+      -a)   _outp= ;;
+      -h)   _opts+=' -h -' ; _cflg= ;;
+      -v)   shift ; _opts+=" -v $1" ; _cflg= ;;
+      *)    _cen_abort - "$1"
       esac ; shift
     done
     _opts+="$_cflg"
 
-    if ! netpath "$1" ; then                    # write to /dev/stdout
-        create $_opts -o -w -- "$1" ; return
-    fi
+    local _hout _hmod="${2:-664}"
+    case "$_outp" in
+    '') _hout="$1" ;;
+    -)  create $_opts -o -w -- "$1" ; return ;; # write to /dev/stdout
+    .)  [ "${1::2}" = './' ] &&  _hout="$1" || _hout="./${1#/}" ;;
+    *)  _hout="${1#/}"                          # mangle path
+        _hout="$CEN_NET_OUTPUT/${_hout//\//.}" ;;
+    esac
 
     # we must have a valid base folder to create a file
-    local _hout="$_netpath" _hmod="${2:-664}"
     if [ "${_hout/\//}" != "$_hout" ] && [ ! -d "${_hout%/*}" ] ; then
         $CEN_TRACE -c $"No base folder" -- "$_hout"
+        _cen_abort - "$CEN_NET_OUTPUT"
         return 1
     fi
-
     create $_opts -t -w -- "$_hout" "$_hmod"    # create, warning on failure
 }
 
 # ------------------------------------------------------------------------------
-# netpath - Get a path (respecting CEN_NET_OUTPUT rules)
+# netpath - Get a folder path (respecting CEN_NET_OUTPUT rules)
 #
-# Call:     (1) netpath [--] <path>                 # get file path
-#           (2) netpath -d [--] <base> [<suffix>]   # get folder path
+# Call:     (1) netpath [-s <vnam>>] -r [--] <path>              # get input folder path
+#           (2) netpath [-s <vnam>>] [-d] [--] <base> [<suffix>] # get folder path
+#           (3) netpath [-s <vnam>>] -p|-t [--] [<path>]         # get persistent/transient
 #
-# Options:  -d       check if <base> exists
+# Options:  -d       check if <base> is a folder
+#           -p       get path in/of CEN_PERSISTENT, see below
+#           -r       read only, only interpret CEN_NET_OUTPUT='.'
+#           -s       save result to <vnam> (default is '_netpath')
+#           -t       get path in/of CEN_TRANSIENT, see below
 #
 # Arguments:<path>   (relative) file path, see below
 #           <base>   (relative) folder path, see below
 #           <suffix> optional folder suffix (only used if folder exists)
+#           <vnam>   variable name
 #
 # Return:   **true** for file output or **false** for output to /dev/stdout
 #
@@ -1416,32 +1474,48 @@ netfile() {
 #           CEN_NET_OUTPUT='-'        # write to stdout
 #           CEN_NET_OUTPUT="."        # use ./<path>
 #           CEN_NET_OUTPUT=<folder>   # (debug) create files in <folder>
+#
+# The CEN_PERSISTENT and CEN_TRANSIENT variables may already be overridden
+# be syssetup(). Use option -p resp. -t to get correct paths.
 # ------------------------------------------------------------------------------
 _netpath=
 netpath() {
-    local _optd
-    if [ "$1" = '-d' ] ; then
-        _optd=1 ; shift
+    local _optd _optr _outp="$CEN_NET_OUTPUT" _opts='_netpath' _optt _stat _path
+    while [ "${1::1}" = '-' ] ; do
+      case "$1" in
+      --)   shift ; break ;;
+      -d)   _optd=1 ;;
+      -p)   _optt="$CEN_PERSISTENT" ;;
+      -r)   _optr=1 ;;
+      -s)   shift ; _opts="$1" ;;
+      -t)   _optt="$CEN_TRANSIENT" ;;
+      *)    _cen_abort - "$1"
+      esac ; shift
+    done
+    if [ -n "$_optt" ] ; then
+      [ -n "${CEN_PATHS[7]}" ] && _outp=        # see syssetup -o
+      set -- "$_optt${1:+/}$1" ; _optr=1
     fi
-    [ "$1" = '--' ] && shift
+    [ -n "$_optr" -a "$_outp" != '.' ] && _outp=
 
-    if [ -z "$CEN_NET_OUTPUT" ] ; then
-        _netpath="$1"
-    elif [ "$CEN_NET_OUTPUT" = '-' ] ; then
-        _netpath=
-        [ -n "$_optd" ] && return 0 ; return 1
-    elif [ "$CEN_NET_OUTPUT" = '.' ] ; then
-        _netpath="./${1#/}" ; _netpath="${_netpath//\/.\//\/}"  # /./ => /
+    case "$_outp" in
+    '') _path="$1" ;;
+    -)  _path= ; _optd=1 ;;
+    .)  _path="./${1#/}"
+        _path="${_path//\/.\//\/}" ;;           # prettify /./ => /
+    *)  _path="${CEN_NET_OUTPUT%/}/${1##*/}"
+    esac
+
+    if [ -z "$2" ] && [ -z "$_optd" ] ; then    # no folder check
+        _stat=0
+    elif [ -n "$_optd" ] && [ ! -d "$_path" ] ; then
+        _stat=1                                 # no base folder
+    elif [ -z "$2" ] || [ ! -d "$_path$2" ] ; then
+        _stat=0                                 # no suffixed folder
     else
-        _netpath="${CEN_NET_OUTPUT%/}/${1##*/}"
-        [ -n "$_optd" ] && return 0
+        _path+="$2" ; _stat=0                   # got a valid suffix
     fi
-    [ -z "$_optd" ] && return 0                 # no folder check
-
-    [ -d "$_netpath" ] || return 1              # folder not found
-    [ -z "$2" ] && return 0                     # no suffix
-    [ -d "$_netpath$2" ] || return 0            # no suffixed folder
-    _netpath+="$2" ; return 0
+    printf -v "$_opts" '%s' "$_path" ; return "$_stat"
 }
 
 # ------------------------------------------------------------------------------
@@ -1449,15 +1523,22 @@ netpath() {
 #
 # Call:     (1) netproxy                        # load proxy config
 #           (2) netproxy -t                     # test proxy connection
-#           (3) netproxy [-w <server> [-p <http>[:<https>]] ] [-s <wpad>]
+#           (3) netproxy [-r] [-s <wpad>]       # sync <wpad> from network_proxy
+#           (4) netproxy [-a] [-r] [-w <upstrm> [-p <http>[:<https>]] [-s <wpad>]
+#
+#           Form (4) write tinyproxy.conf (see tinyproxy.conf.template)
+#           °        let tinyproxy reload its configuration
+#           °        write network_proxy (script fragment for /etc/bash.centauri)
+#           °        optional: make /var/www/html/wpad.dat follow network_proxy
 #
 # Options:  -a  always assume that "option proxy" is set in centaurinetcfg
 #           -p  ports to use (overrides defaults)
-#           -s  create "wpad.dat" PAC script
+#           -r  reload tinyproxy by sending SIGUSR1
+#           -s  synchronize a PAC script from network_proxy
 #           -t  test if upstream proxy can be reached
-#           -w  save proxy file (default is to load)
+#           -w  update proxy data (default is to load)
 #
-# Arguments:<server> hostname of server, "-" for none, "+" for auto-detect
+# Arguments:<upstrm> upstream proxy, "-" for none, "+" for auto-detect
 #           <http>   port for http proxy  (default: $CEN_NET_PORT_HTTP)
 #           <https>  port for https proxy (not used internally)
 #           <wpad>   script path, "-" for "/var/www/html/wpad.dat"
@@ -1466,9 +1547,9 @@ netpath() {
 #
 #+Tinyproxy:From an existing "/etc/tinyproxy/tinyproxy.conf.template" file a
 #           configuration for tinyproxy will be generated. This includes the
-#           current 'upstream' definitions for the active server.
+#           current 'upstream' definitions for the active MASTER server.
 #
-# Storage:  CEN_NET_FILE_PROX="$CEN_NET_DIR_RUN/network_proxy"
+# Storage:  CEN_NET_FILE_PROX="$CEN_TRANSIENT/network_proxy"
 #
 #+          This file contains variables describing the current proxy and should
 #           be sourced by login-shells:
@@ -1476,8 +1557,8 @@ netpath() {
 #,          - **http_proxy**        upstream proxy or local tinyproxy
 #,          - **https_proxy**       ... for https
 #,          - **no_proxy**          patterns for proxy bypass
-#,          - **http_upstream**     upstream proxy (if any)
-#,          - **https_upstream**    ... for https
+#,          - **http_upstream**     [not yet implemented] upstream proxy (if any)
+#,          - **https_upstream**    [not yet implemented] ... for https
 #
 #+This function is called by [[netserver()]] when the actual server is set or
 # changed. This will update the "network_proxy" file and the "tinyproxy" config.
@@ -1494,14 +1575,16 @@ netpath() {
 #
 #+The "tinyproxy.conf.template" file is a standard configuration where a line
 # containing just the word "@UPSTREAM" gets replaced with upstream proxy info.
+# Also the work "@PORT" gets replaced with the actiual values.
 # ------------------------------------------------------------------------------
 netproxy() {
-    local _oall _owrt _opad _oprt _otes
+    local _oall _owrt _opad _oprt _orel _otes _serv
     while [ "${1::1}" = '-' ] ; do
       case "$1" in
       --)   shift ; break ;;
       -a)   _oall=1 ;;
       -p)   shift ; _oprt="$1" ;;
+      -r)   _orel=1 ;;
       -s)   shift ; _opad="$1" ;;
       -t)   _otes=1 ;;
       -w)   shift ; _owrt="$1" ;;
@@ -1510,20 +1593,16 @@ netproxy() {
     done
 
     # read the file
-    if [ -z "$_owrt$_otes" ] ; then
-        _cen_source "$CEN_NET_FILE_PROX" || return 1
-        [ -z "$_opad" ] && return
+    if [ -z "$_owrt$_otes$_opad" ] ; then
+        _cen_source "$CEN_NET_FILE_PROX" && return      # return status
     fi
-
-### TODO http_upstream
 
     # test if proxy can be reached
     if [ -n "$_otes" ] ; then
-        #if echo 2>/dev/null >"/dev/tcp/$qual/$port" ; then
         if [ -z "$http_proxy" ] ; then
             _cen_source "$CEN_NET_FILE_PROX" || return 1
         fi
-         [ -z "$http_proxy" ] && return 1
+        [ -z "$http_proxy" ] && return 1
         _otes="${http_proxy#http:/}" ; _otes="${_otes//:/\/}"
         echo 2>/dev/null >"/dev/tcp$_otes" ; return     # return status
     fi
@@ -1533,90 +1612,102 @@ netproxy() {
     [ -n "$_oprt" ] && splitkeyval "$_oprt" CEN_NET_PORT_HTTP CEN_NET_PORT_HTTPS ':'
     : ${CEN_NET_PORT_HTTPS:=$CEN_NET_PORT_HTTP}
 
-    # get 'option proxy' of '$serv'
-    _cen_net_proxy() {
-        local nsrv
-        for nsrv in "${CEN_NET_OPTIONS[@]}" ; do
-            [ "${nsrv%% *}" = 'proxy' ] || continue
-            for nsrv in ${nsrv#* } ; do
-                [[ "$serv" == $nsrv ]] || continue
-                _oall=1 ; return
-            done
-            return
-        done
-    }
+    local _netoption _netoption_last                # shadow netoption state
 
-    if [ "$_owrt" = '+' ] ; then                        # auto config
-        _owrt="$HOSTNAME.$CEN_NET_DOMAIN" ; _oall=1
-        if ! echo 2>/dev/null >"/dev/tcp/$_owrt/$CEN_NET_PORT_HTTPS" ; then
-            _owrt="$CEN_NET_SERVER_GEN.$CEN_NET_DOMAIN"
-            if ! echo 2>/dev/null >"/dev/tcp/$_owrt/$CEN_NET_PORT_HTTPS" ; then
-                _oall= ; _owrt=
-            fi
-        fi
-    elif [ "$_owrt" = '-' ] ; then                      # disable upstream proxy
-        _owrt=
-    fi
-    local serv="${_owrt%%.*}" nprx
-
-    # does master name match an "option proxy ..." argument?
-    [ -n "$serv" -a -z "$_oall" ] && _cen_net_proxy
-    if [ -z "$_oall" ] ; then
-        netfile -h <<!EOF "$CEN_NET_FILE_PROX"
-# no proxy server
-!EOF
+    # detect upstream proxy on localhost or master
+    if [ "$_owrt" = '+' ] ; then                    # auto config
+        _owrt="$CEN_NET_SERVER_GEN.$CEN_NET_DOMAIN"
+        echo 2>/dev/null >"/dev/tcp/$_owrt/$CEN_NET_PORT_HTTPS" || _owrt='-'
+        _serv='localhost'
+        echo 2>/dev/null >"/dev/tcp/$_serv/$CEN_NET_PORT_HTTPS" || _serv=
+    elif [ "${_owrt:--}" = '-' ] ; then             # disable upstream proxy
+        :
     else
-        # generate proxy variables
-        nprx="$CEN_NET_DOMAIN,*.$CEN_NET_DOMAIN,.$CEN_NET_DOMAIN"
-        for nnam in "${CEN_NET_SERVERS[@]}" ; do
-            nprx+=",$nnam"
-        done
+        [ "${_owrt%.*}" = "$_owrt" ] && _owrt+=".$CEN_NET_DOMAIN"
+    fi
+    if [ -z "$_oall" -a -n "$_owrt" ] ; then
+        netoption 'proxy' "${_owrt%.$CEN_NET_DOMAIN}" || _owrt='-'
+    fi
 
-        # write a new proxy file
-        netfile -h <<!EOF "$CEN_NET_FILE_PROX"
-http_proxy="http://$serv.${CEN_NET_DOMAIN}:$CEN_NET_PORT_HTTP"
-https_proxy="http://$serv.${CEN_NET_DOMAIN}:$CEN_NET_PORT_HTTPS"
-no_proxy="$nprx"
-export http_proxy
-export https_proxy
-export no_proxy
-!EOF
+    if [ -z "$_owrt" ] ; then
+        :
+    else
+        if [ -n "$_oall" ] ; then                   # forced proxy ...
+            _serv='localhost'
+        elif netoption 'proxy' "$HOSTNAME" ; then   # proxy option ...
+            _serv='localhost'
+        elif [ "$_owrt" != '-' ] ; then             # use upstream ...
+            _serv="$_owrt"
+        fi
+    fi
+
+    # write network_proxy file
+    if [ -n "$_owrt" ] ; then
+        if [ "$_owrt" = '-' -a -z "$_serv" ] ; then
+            local _lpro=( '# no proxy server' )
+        else
+            # set proxy variables
+            local _nnam _nprx="$CEN_NET_DOMAIN,*.$CEN_NET_DOMAIN,.$CEN_NET_DOMAIN"
+            for _nnam in "${CEN_NET_SERVERS[@]}" ; do
+                _nprx+=",$_nnam"
+            done
+            local _lpro=(
+                "http_proxy='http://${_serv:-$_owrt}:$CEN_NET_PORT_HTTP'"
+                "https_proxy='http://${_serv:-$_owrt}:$CEN_NET_PORT_HTTPS'"
+                "no_proxy='$_nprx'"
+                'export http_proxy'
+                'export https_proxy'
+                'export no_proxy' )
+        fi
+        netfile -h -v _lpro "$CEN_NET_FILE_PROX"
     fi
 
     # configure tinyproxy
-    local tiny='/etc/tinyproxy/tinyproxy.conf'
-    local tdef="$tiny.template"
-    if [ -d "${tiny%/*}" ] && [ -f "$tdef" ] ; then
-        local tcfg tgen=()
-        if mapfile -t tcfg 2>/dev/null <"$tdef" ; then
-            for line in "${tcfg[@]}" ; do
-                case "$line" in
+    local _tiny='/etc/tinyproxy/tinyproxy.conf'
+    local _tdef="$_tiny.template"
+    if [ -n "$_owrt" ] && [ -d "${_tiny%/*}" ] && [ -f "$_tdef" ] ; then
+        local _line _tcfg _tgen=()
+        if mapfile -t _tcfg 2>/dev/null <"$_tdef" ; then
+            for _line in "${_tcfg[@]}" ; do
+                case "$_line" in
                 '')     ;;
                 \#*)    ;;
-                @PORT)  tgen+=("Port $CEN_NET_PORT_HTTP")
+                @PORT)  _tgen+=("Port $CEN_NET_PORT_HTTP")
                         ;;
                 @UPSTREAM)
-                        [ -n "$nprx" ] && tgen+=(
-                            "Upstream http $serv.$CEN_NET_DOMAIN:$CEN_NET_PORT_HTTP"
+                        [ "$_owrt" != '-' -a \
+                          "$_owrt" != "$HOSTNAME.$CEN_NET_DOMAIN" ] && _tgen+=(
+                            "Upstream http $_owrt:$CEN_NET_PORT_HTTP"
                             "Upstream none \".$CEN_NET_DOMAIN\""
                             "Upstream none \"$CEN_NET_NETWORKS\""
                             "Upstream none \"$CEN_NET_PREFIX_IP6\""
                             "Upstream none \".\""
                         )
                         ;;
-                *)      tgen+=("$line")
+                *)      _tgen+=("$_line")
                 esac
             done
-            netfile -h -v tgen "$tiny"
+            netfile -h -v _tgen "$_tiny"
         fi
     fi
 
     # write PAC script
     [ "$_opad" = '-' ] && _opad='/var/www/html/wpad.dat'
     if [ -n "$_opad" ] && [ -d "${_opad%/*}" ] ; then
-        [ -z "$serv" ] && serv="$HOSTNAME"
-        $CEN_TRACE -c "PAC Script" "$_opad" "$serv"
-        local _wpad=(
+        if [ -z "$_owrt" ] ; then
+            http_proxy= ; https_proxy=
+            _cen_source "$CEN_NET_FILE_PROX" || return 1
+            _serv="${http_proxy%:*}" ; _serv="${_serv#*//}"
+        fi
+        $CEN_TRACE -c "PAC Script" "$_opad"
+        if [ -z "$_serv" ] ; then
+            local _wpad=(
+            'function FindProxyForURL(url, host) {'
+            '    return "DIRECT";'
+            '}'
+            )
+        else
+            local _wpad=(
             'function FindProxyForURL(url, host) {'
             '    if ( url.substring(0, 5) != "http:" )'
             '        return "DIRECT";'
@@ -1626,11 +1717,20 @@ export no_proxy
             '           return "DIRECT";'
             '    }'
             '    else {'
-            "        return \"PROXY $serv.$CEN_NET_DOMAIN:$CEN_NET_PORT_HTTP; DIRECT\";"
+            "        return \"PROXY $_serv:$CEN_NET_PORT_HTTP; DIRECT\";"
             '    }'
             '}'
         )
+        fi
         netfile -v _wpad "$_opad"
+    fi
+    $CEN_TRACE -a -c -p ' ' $"Local proxy: %s   upstream: %s" "${_serv:--}" "$_owrt"
+
+    if [ -n "$_orel" ] ; then
+        if readline -s _orel -i '/var/run/tinyproxy/tinyproxy.pid' && [ -n "$_orel" ] ; then
+            $CEN_TRACE -a -p -c 'tinyproxy' $"Configuration reload, PID=%s" "$_orel"
+            sysrun -q kill -SIGUSR1 "$_orel"
+        fi
     fi
     return 0
 }
@@ -1710,6 +1810,10 @@ _cen_net_homedns() {
 # the loaded information, [[netserver()]] must be called explicitly. It always
 # calls [[netconfig()]]. So after a call to [[netquery()]] all CEN_NET_XXX state
 # and configuration variables are set.
+#
+#+trust:    the network trust level can be 'public', 'private' or 'managed'
+#
+#           trust         return the network trust level
 #
 #+connect:  depending on centaurinetcfg option settings one of the following is returned:
 #
@@ -1796,19 +1900,26 @@ netquery() {
                       "$CEN_NET_MODE" = 'CLIENT' ] && _stat=0
                     ;;
     router)         _valu="$CEN_NET_ROUTER_DEF" ; [ -n "$_valu" ] && _stat=0 ;;
-    server)         _valu="$CEN_NET_SERVER_GEN"
-                    [ "${2:-$HOSTNAME}" = "${CEN_NET_SERVERS[0]}" -o \
-                      "${2:-$HOSTNAME}" = "${CEN_NET_SERVERS[1]}" ] && _stat=0
+    server)         if [ -z "$2" ] ; then
+                        _valu="$HOSTNAME"
+                    elif nethost -e -n "$2" ; then
+                        _valu="$_nethost_name"
+                    fi
+                    [ "$_valu" = "${CEN_NET_SERVERS[0]}" -o \
+                      "$_valu" = "${CEN_NET_SERVERS[1]}" ] && _stat=0
+                    _valu="$CEN_NET_SERVER_GEN"
                     ;;
-
     primary)        _valu="${CEN_NET_SERVERS[0]}" ; [ -n "$_valu" ] && _stat=0 ;;
     second*)        _valu="${CEN_NET_SERVERS[1]}" ; [ -n "$_valu" ] && _stat=0 ;;
-    current)        if [ '/etc/hosts' -ef '/etc/hosts_local' ] ; then
+    current)        _valu='/etc/hosts' ; [ "$CEN_NET_OUTPUT" = '.' ] && _valu=".$_valu"
+                    if [ "$_valu" -ef "${_valu}_local" ] ; then
                         _valu="${CEN_NET_SERVERS[0]}"
-                    elif [ '/etc/hosts' -ef "/etc/hosts_${CEN_NET_SERVERS[0]}" ] ; then
+                    elif [ "$_valu" -ef "${_valu}_${CEN_NET_SERVERS[0]}" ] ; then
                         _valu="${CEN_NET_SERVERS[0]}" ; _stat=0
-                    elif [ '/etc/hosts' -ef "/etc/hosts_${CEN_NET_SERVERS[1]}" ] ; then
+                    elif [ "$_valu" -ef "${_valu}_${CEN_NET_SERVERS[1]}" ] ; then
                         _valu="${CEN_NET_SERVERS[1]}" ; _stat=0
+                    else
+                        _valu=
                     fi ;;
 
     homedns)        if _cen_net_homedns _valu ; then
@@ -1827,6 +1938,9 @@ netquery() {
                             _stat=0
                         fi
                     fi ; _qual= ;;
+
+    trust*)         readline -s _valu -i "$CEN_NET_FILE_SWIT" && _stat=0
+                    [ -z "$_valu" ] && _valu='managed' ; _qual= ;;
 
     connect)        # explicit host given, ignore '*'
                     [ "${2:--}" = '-' ] && set -- "$1" "$HOSTNAME"
@@ -1878,19 +1992,30 @@ netquery() {
 #
 # Call:     (1) netresolv -r [<what>]
 #           (2) netresolv [-d <host>] [<domain>|- [<server>|-...]]
+#           (3) netresolv [-d <host>]
+#
+#+          Form (1) reads resolv.conf, form (2) and (3) write it. Form (3) uses
+#           the configured domain and servers. Only form (1) returns data as an
+#           array in **_netresolv**, other forms leave **_netresolv** unmodified.
+#
+#+          The list of servers inf form (2) is checked agains "option dns" to
+#           exclude machines without DNS. This check gets disabled after a "-"
+#           argument. Form (3) uses (<server>... **-** <router>...), so routers
+#           are not checked against "option dns".
 #
 # Options:  -d  specify the 1st nameserver
-#           -r  read into _netresolv array (<domain>, <dns>...)
+#           -r  read into _netresolv array (<domain>|-, <dns>...)
 #
-# Arguments:<host>     a fully qualified host name
-#           <domain>   the DNS domain name
-#           <server>   a fully qualified DNS server name
+# Arguments:<host>     select default,  fully qualified host name
+#           <domain>   fully qualified DNS domain name, use '-' for configured
+#           <server>   fully qualified DNS server name
 #           <what>     read filter: search|domain|nameserver
 #
-#.Examples: netresolv              # write configured defaults to resolv.conf
-#.          netresolv -d alpha     # put alpha at 1st place
-#.          netresolv - -          # empty resolv.conf
-#.          netresolv - srv - rtr  # no "dns" option check after -
+#.Examples: netresolv <domain>|- -      # write configured defaults to resolv.conf
+#.          netresolv -d alpha -        # put alpha at 1st place
+#.          netresolv -d beta <domain>  # use beta as only nameserver
+#.          netresolv                   #    empty resolv.conf
+#.          netresolv - srv - rtr       # no "option dns" check after -
 # ------------------------------------------------------------------------------
 _netresolv=
 netresolv() {
@@ -1902,54 +2027,61 @@ netresolv() {
         if [ ! -r "$conf" ] ; then
             error $"Cannot read file:" "$conf" ; return 1
         fi
-        local keyw valu xxxx
-        while read -r keyw valu xxxx ; do
-            [ -n "$2" ] && [ "$keyw" != "$2" ] && continue
-            case "$keyw" in
+        local _keyw _valu _xxxx
+        while read -r _keyw _valu _xxxx ; do
+            [ -n "$2" ] && [ "$_keyw" != "$2" ] && continue
+            case "$_keyw" in
             domain)                             # must preceed nameserver
-                _netresolv=("${valu:--}") ;;
+                _netresolv=("${_valu:--}") ;;
             search)                             # fallback only ...
-                [ -z "$_netresolv" ] && _netresolv+=("${valu:--}") ;;
+                [ -z "$_netresolv" ] && _netresolv+=("${_valu:--}") ;;
             nameserver)
-                _netresolv+=("${valu:--}")
+                [ -z "$_netresolv" ] && _netresolv+=('-')
+                _netresolv+=("${_valu:--}")
             esac
         done < "$conf"
         [ -n "$_netresolv" ] && return 0 ; return 1 # failure if no data
     fi
 
-    # default host
-    local ssvr dflt
+    # default host and arguments
+    local nl=$'\n' serv copt='dns' maxs=3 ssvr dflt addr
     if [ "$1" = '-d' ] ; then
         shift ; dflt="$1" ; shift
     fi
-
     netconfig || return 1
-    local nl=$'\n' serv copt="dns" maxs=3
 
     # handle the domain
-    local sdom rdom="${1:-$CEN_NET_DOMAIN}" ; shift
-    [ "${rdom:--}" = '-' ] || sdom="domain $rdom${nl}search $rdom"
-
-    # loop over arguments -or- servers/routers
-    [ -z "$1" ] && set -- ${CEN_NET_SERVERS[@]} - ${CEN_NET_ROUTERS[@]}
-    if [ "$*" = '-' ] ; then
-        ssvr="# no known nameserver" ; sdom=
-    else
-        for serv in "$dflt" "$@" ; do
-            [ $maxs -gt 0 ] || break
-            if [ "${serv:--}" = '-' ] ; then            # no check for routers
-                copt= ; continue
-            fi
-            if [ -n "$copt" ] ; then
-                netoption "$copt" "$serv" || continue   # check for dns
-            fi
-            [ "$serv" = "$dflt" -a -n "$ssvr" ] && continue
-            nethost "$serv" && serv="$_nethost_ip"
-            ssvr+="${nl}nameserver $serv" ; maxs=$((maxs - 1))
-        done
+    local sdom rdom="$1" ; shift
+    [ "$rdom" = '-' ] && rdom="$CEN_NET_DOMAIN"
+    if [ -n "$rdom" ] ; then
+        sdom="domain $rdom${nl}search $rdom"
+        [ "$*" = '-' ] && set -- - ${CEN_NET_SERVERS[@]} - ${CEN_NET_ROUTERS[@]}
     fi
 
+    # loop over arguments -or- servers/routers
+    for serv in "$dflt" "$@" ; do
+        [ -z "$serv" ] && continue                  # dflt is empty?
+        [ $maxs -gt 0 ] || break
+        if [ "${serv:--}" = '-' ] ; then            # no check for routers
+            copt= ; continue
+        fi
+        if [ "$serv" = "$dflt" ] ; then
+            [ -n "$ssvr" ] && continue
+        elif [ -n "$copt" ] ; then
+            netoption "$copt" "$serv" || continue   # check for dns
+        fi
+        nethost "$serv" && serv="$_nethost_ip"
+        for addr in "${CEN_NET_ADDR_IPLIST[@]}" '-' ; do
+            [ "$addr" = "$serv" ] && break
+        done
+        [ "$addr" = '-' ] || continue               # exclude own address
+        ssvr+="${nl}nameserver $serv" ; ((maxs -= 1))
+    done
+
     # write the file
+    if [ -z "$ssvr" ] ; then
+        ssvr="# no known nameserver" ; sdom=
+    fi
     netfile -h <<!EOF "$conf"
 $sdom$ssvr
 !EOF
@@ -1968,7 +2100,7 @@ $sdom$ssvr
 #
 # Return:   **true** if an entry was found or **false** on failure
 #
-# Storage:  CEN_NET_FILE_STAT="$CEN_NET_DIR_RUN/network_status"
+# Storage:  CEN_NET_FILE_STAT="$CEN_TRANSIENT/network_status"
 #
 # Variables:The functions reads or stores the current values:
 #
@@ -1980,15 +2112,14 @@ $sdom$ssvr
 netserver() {
     # read the file
     if [ "$1" != '-w' ] ; then
-        _cen_source "$CEN_NET_FILE_STAT"
-        return                      # return status
+        _cen_source "$CEN_NET_FILE_STAT" ; return   # return status
     fi
 
     # remove the status files
     shift
     if [ "$1" = '-' -a "$#" = 1 ] ; then
         _cen_net_remove "$CEN_NET_FILE_STAT" "$CEN_NET_FILE_PROX"
-        return
+        return                                      # return status
     fi
 
     # role (imply WORKSTATION for CLIENT)
@@ -2214,7 +2345,11 @@ nettool() {
 # Startup - read config unless '-n' is used: [-n]
 # ------------------------------------------------------------------------------
 
-[ "$1" = '-n' -o "$1" = '-A' ] || netconfig
+if [ "$1" = '-n' -o "$1" = '-A' ] ; then
+    _cen_net_files ':'
+else
+    netconfig
+fi
 :
 
 # end
