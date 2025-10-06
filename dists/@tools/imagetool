@@ -118,7 +118,7 @@ actionArchive() {
         invoke -e "File list not found:" "$list" ; return
     fi
     system -e -p tar -caf "$dest" -C "$real" --files-from="$list" &&
-        message -a -c "Created archive:" "$dest"
+        message -a -c "Created archive" "$dest"
 }
 
 # ------------------------------------------------------------------------------

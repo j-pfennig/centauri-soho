@@ -234,7 +234,7 @@ installer_dist() {
     [ -n "$INSTALLER_CONFIG" ] &&
         acfg=("$ddir/configs/@shared" "$ddir/configs/$INSTALLER_CONFIG")
     system tar -caf "$dist" --transform "$xfrm" "$orig/$DAT_SEED" "$orig/$star" \
-        "$orig/installer" "$orig/docviewer" \
+        "$orig/setup.conf" "$orig/installer" "$orig/docviewer" \
         "$orig/README-first" "$orig/README"/[0-9]* "$orig/README"/docviewer.* \
         "$orig/dists/@tools" "$ddir/@misc" "${acfg[@]}" || quit
     [ -n "$SUDO_USER" ] && system -e -p -- chown "$SUDO_USER:" "$dist"
@@ -596,6 +596,9 @@ installer_prepare() {
         quit "Missing 'setup.conf'"
     fi
 
+    # file for 'centauriinfo monitor'
+    create -t "$INSTALLER_PERSIST/centauri-monitor"
+
     # try to get root partion name
     local name labr='/dev/disk/by-label/rootfs'
     [ -b "$labr" ] || labr="/dev/disk/by-label/${HOSTNAME}_root"
@@ -803,8 +806,8 @@ network={
     fi
 
     message -i
-    error -t && mesg="System prepare succeeded" || mesg="System prepare failed"
-    message "$mesg"
+    error -t && mesg="succeeded" || mesg="failed"
+    message -p "System prepare %s - network is off-line" "$mesg"
 }
 
 # ------------------------------------------------------------------------------
@@ -864,6 +867,45 @@ installer_unpack() {
 }
 
 # ------------------------------------------------------------------------------
+# update the installer: [<path>]
+# ------------------------------------------------------------------------------
+installer_update() {
+    installer_chkroot -m                            # can use mini-bash-lib
+    if [ "${1:--}" = '-' ] ; then
+        [ -s 'setup.conf' ] && source 'setup.conf'
+        [ -z "$SOHO_UPDATE" ] && quit -e "Got no update path from 'setup.conf'"
+        set -- "$SOHO_UPDATE"
+    fi
+
+    local load inst remo dest="$PWD.new" back="$PWD.old" curr="$PWD"
+    case "$1" in
+    *@*:*.*)    inst="/tmp/$CEN_NAME-$$.${1##*.}"
+                load=('scp' '-p' "$1" "$inst")
+                remo="$inst" ;;
+    /*|./*)     [ -s "$1" ] || quit -e "Not a valid path:" "$1"
+                inst="$1" ;;
+    *)  quit -e "Argument must be '/<path>' './<path>' or '<user>@<host>:<path>'"
+    esac
+    while : ; do
+        remove -d -- "$dest"
+        folder -f -m -- "$dest"
+        [ -n "$load" ] && system -e "${load[@]}"
+        system -t -e -- tar -C "$dest" --strip-components=1 -xaf "$inst"
+        [ -n "$remo" ] && remove -- "$remo"
+        error -t || break
+        for inst in .timestamp .state dists/*/configs/*/setup.conf ; do
+            [ -e "$inst" ] && copy -a -- "$inst" "$dest/$inst"
+        done
+        remove -d -- "$back" || break
+        folder -f -c /
+        rename -- "$curr" "$back" || break
+        rename -- "$dest" "$curr" || break
+        quit "Done"
+    done
+    quit -e "Update failed:" "$1"
+}
+
+# ------------------------------------------------------------------------------
 # output help info
 # ------------------------------------------------------------------------------
 installer_usage() {
@@ -886,6 +928,7 @@ Usage: $CEN_NAME                           # on 1st call: start installation
        $CEN_NAME minimal                   # minimize disk usage
        $CEN_NAME prepare [<name>]          # pre-configure for centauri-soho
        $CEN_NAME remove                    # try to remove centauri things
+       $CEN_NAME update  [<path>]          # update installer from file or ssh
 
        These actions are usually invoked from 'centaurisoho' ...
 
@@ -981,8 +1024,9 @@ run() {
     pac[13])    installer_pack     "${2:--}" "${3:--}" ;;
     pre[12])    installer_prepare  "${2:--}" ;;
     rem1)       installer_remove   ;;
-    unp[2])     installer_unpack   "${2:--}" ;;
+    unp2)       installer_unpack   "${2:--}" ;;
     unp[13])    installer_unpack   "${2:--}" "${3:--}" ;;
+    upd[12])    installer_update   "${2:--}" ;;
     *)          installer_usage -h
     esac 1>&2
 }

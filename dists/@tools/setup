@@ -73,6 +73,7 @@ SOHO_NET_APNT=                      # wlan ssid for host access point
 SOHO_NET_EXTERN=                    # external base address/mask
 
 SOHO_HASS=                          # override homeassistant version
+SOHO_WEEWX=                         # ... weewx version
 SOHO_REPO_OPTS=                     # for centauriconfig OPTIONS file
 
     # derived from setup.conf but not part of it
@@ -284,8 +285,6 @@ cloneName() {
 
 # set by workDispatch
 declare -g DAT_SEED DAT_DISK DAT_WHAT DAT_DESK  # the 1st invocation argument
-                                                # override network mode in step 3
-declare -g DAT_MODE_OVERRIDE="$DAT_PERSIST/centauriswitch-override"
 declare -g DAT_PASSWD                           # set by passwordFromFile
 declare -g DAT_PASSLST                          # internal to passwordFromFile
 
@@ -306,7 +305,6 @@ configureApt() {
         prox="# Acquire::http::Proxy \"http://$SOHO_SERVER.$SOHO_DOMAIN:3128\";"
         dflt='-y'
     fi
-   # [ "$hasp" = "$prox" ] && return 0           # proxy setting is current
 
     [ "$SOHO_PLATFORM" = 'r32' ] && arch='APT::Architecture "armhf";'
 
@@ -383,13 +381,66 @@ configureCertificates() {
     system -e -p -- update-ca-certificates
 }
 
+# configure firmware packages to be installed
+configureFirmware() {
+    local item mesg fall list=() data=()
+
+    ___packages_reader() {
+        local line="${1%%\#*}"
+        [ -z "$line" ] && return 1
+        trace -i "... $line"
+        [ "${line##* }" = 'install' ] && data+=("${line%% *}")
+        return 1
+    }
+
+    item='packages/firmware'
+    [ -n "$DAT_RASPI" ] && [ -e "$item-raspi" ] && item+='-raspi'
+    trace -a -c "firmware packages" -- "$item"
+    inpdata -c ___packages_reader -- "$item"
+
+    if [ "$CEN_YESNO" = 'y' ] ; then
+        fall=1
+    else
+        list=("Install some firmware packages (mostly for WIFI). Answer"
+              "'all' for most, 'yes' to prompt or 'no' for nothing")
+        confirm -d 'a' -m -p " [A/y/n]? " -v "all yes no" "${list[@]}"
+        case $? in
+        0)  fall=1 ;;
+        2)  return
+        esac
+    fi
+    list=()
+    for item in "${data[@]}" ; do
+        if [ "$fall" = 1 ] ; then
+            list+=("$item") ; continue
+        elif [[ "$item" == *microcode* ]] ; then
+            list+=("$item") ; continue
+        elif [[ "$item" == *-linux-* ]] ; then
+            list+=("$item") ; continue
+        elif [[ "$item" == *-misc-* ]] ; then
+            list+=("$item") ; continue
+        elif [ -n "$fall" ] ; then
+            continue
+        fi
+        printf -v mesg '... %-28s' "$item"
+        confirm -a -d "y" -p " [a/Y/n/q]? " -v "all yes no quit" "$mesg"
+        case $? in
+            0)  list+=("$item") ; fall=1 ;;
+            1)  list+=("$item") ;;
+            3)  fall=0
+        esac
+    done
+    # cannot use --nosync here (eatmydata not yet installed)
+    embed -t -v centauripackage --install --silent --tool --yes -- "${list[@]}"
+}
+
 # setup Home Assistant
 configureHass() {
     printHeader "Install Home Assistant Core"
 
     packagesInstall hass
     local vers ; [ -n "$SOHO_HASS" ] && vers="--version='$SOHO_HASS'"
-    embed -t -v -y centaurihass $vers install
+    embed -t -v -y centaurihass $vers install -- auto on
     quitOnError
     outputMessage 'hass'
 }
@@ -535,13 +586,11 @@ PS1="$CEN_NAME \w$ "
     system -r -e -g 136 -- bash --rcfile "$CEN_TMPFILE"
 }
 
-# setup WeeWx
+# setup the WeeWx server-side software
 configureWeewx() {
-    printHeader "Install WeeWx Daemon"
-
-  #  packagesInstall hass
+    printHeader "Install WeeWX Daemon"
     local vers ; [ -n "$SOHO_WEEWX" ] && vers="--version='$SOHO_WEEWX'"
-    embed -t -v -y centauriweewx $vers install
+    embed -t -v -y centauriweewx $vers install -- auto on
     quitOnError
     outputMessage 'weewx'
 }
@@ -744,21 +793,17 @@ removeSetupFiles() {
     [ -e "$DAT_SEED" ] || quit -e "Found no '$DAT_SEED', nothing to remove"
 
     # we temporarily disabled NM, now reenable if configured in centaurinetcfg ...
-    local item
-    if [ "$CEN_NET_ADDR_METHOD" = 'nm' ] ; then
-        item=1
-    elif [ "$CEN_NET_ADDR_METHOD" = 'auto' ] ; then
-        [ "${#CEN_NET_ADDR_IPLIST[@]}" -gt 1 ] && item=1
-    fi
-    if [ -n "$item" ] ; then
-        message "Enabling 'NetworkManager' service"
-        for item in 'NetworkManager' 'NetworkManager-wait-online' 'ModemManager' 'wpa_supplicant' ; do
-            item="/etc/systemd/system/$item.service"
-            [ "$item" -ef '/dev/null' ] && remove "$item"
-        done
-        system -e -p -- systemctl enable NetworkManager
-    fi
-    remove -- "$DAT_MODE_OVERRIDE"*             # no longer override centauiswitch=xxx
+    #local item
+    #if [ "$CEN_NET_ADDR_METHOD" = 'nm' ] ; then
+    #    item=1
+    #elif [ "$CEN_NET_ADDR_METHOD" = 'auto' ] ; then
+    #    [ "${#CEN_NET_ADDR_IPLIST[@]}" -gt 1 ] && item=1
+    #fi
+    #if [ -n "$item" ] ; then
+    #    message "Enabling 'NetworkManager' service"
+        embed -t -v centaurinetgen network auto
+    #fi
+    override -d '*'                                 # no longer override anything
 
     # for a server we set --global via OPTIONS file to keep all machine private folders
     folder -f -m "$DAT_REPOSITORY/$SOHO_HOST"
@@ -856,8 +901,7 @@ setupStep1() {
     checkInstalled 'aptconf' || configureApt        # also set proxy
     packagesInstall -u 'step1'                      # do apt update and install
 
-    confirm -y "Add some firmware (mostly for WIFI)" &&
-        packagesInstall -u 'firmware'
+    configureFirmware
 
     # At this point avahi-autoipd should have been removed, we don't need it
     remove -d -- '/var/lib/avahi-autoipd'           # left-over, unwanted
@@ -925,8 +969,9 @@ setupStep1() {
         sysfind -q 'eatmydata' && opts+=' --nosync'
         embed -t -v centauripackage --update=1 --upgrade $opts
     else
-        system -e -p apt update
+        system -e apt update
     fi
+    system -e -t apt --yes autopurge
     quitOnError
 
     system -e -z -- systemctl daemon-reload
@@ -1183,13 +1228,15 @@ setupStep2() {
 
     # create mode override file to switch to 'simple' interface mode after
     # boot. Other modes may depend on software that is not yet installed.
-    folder -m -f "$MNT_ROOT$DAT_PERSIST"            # create "persistent"
+    local MNT_PERSIST="$MNT_ROOT$DAT_PERSIST"
+    folder -m -f "$MNT_PERSIST"                     # create "persistent"
 
-    if [ -e "$DAT_STATE_PATH-step3-done" ] ; then
-        remove "$MNT_ROOT$DAT_MODE_OVERRIDE"*
+    if checkInstalled 'step3' ; then
+        override -b "$MNT_PERSIST" -d '*'           # assure to have no overrides
     else
-        writeline -e -t -o "$MNT_ROOT$DAT_MODE_OVERRIDE" 'simple'
-        writeline -e -t -o "$MNT_ROOT$DAT_MODE_OVERRIDE-setup" 'flag to keep override file'
+        override -b "$MNT_PERSIST" -c 'centaurisecrets' 'local'
+        override -b "$MNT_PERSIST" -c 'centauriswitch' 'simple'
+        override -b "$MNT_PERSIST" -c 'centauriswitch-setup'
     fi
 
     if [ -n "$DAT_CLONE_SVR" ] || cloneName ; then
@@ -1218,8 +1265,8 @@ kernel.hostname=$SOHO_HOST
     # ********************************* x86 ************************************
     # **************************************************************************
     if [ -z "$DAT_RASPI" ] ; then
-        embed -t -v centaurirestore --restore="$MNT_ROOT" --yes \
-                    --clone="$SOHO_HOST" --clone=- --clone=- --clone="$MNT_BOOT/grub"
+        embed -t -v centaurirestore --yes  \
+                    --clone="$SOHO_HOST" --boot=- --restore="$MNT_ROOT"
         quitOnError                                 # quit after error
 
         if cloneName ; then
@@ -1234,8 +1281,8 @@ kernel.hostname=$SOHO_HOST
     # **************************************************************************
     else
         outputMessage 'stepN' '/etc/motd' '' "step 2 (boot disk)"
-        embed -t -v centaurirestore --restore="$MNT_ROOT" --yes \
-                            --clone="$SOHO_HOST" --clone=- --clone=- --clone=-
+        embed -t -v centaurirestore --yes  \
+                    --clone="$SOHO_HOST" --boot=- --restore="$MNT_ROOT"
         quitOnError                                 # quit after error
         outputMessage 'raspi' "$MNT_ROOT/etc/motd"
     fi
@@ -1257,7 +1304,6 @@ kernel.hostname=$SOHO_HOST
 # Step2 repo - copy ssh things
 # ------------------------------------------------------------------------------
 setupStep2Repo() {
-#   copyFromRepo /etc/init.d/ssh                    "$1/"
     copyFromRepo /etc/ssh/ssh_host_ecdsa_key        "$1/"
     copyFromRepo /etc/ssh/ssh_host_ed25519_key      "$1/"
     copyFromRepo /etc/ssh/ssh_host_rsa_key          "$1/"
@@ -1465,7 +1511,8 @@ setupStep3Client() {
     copyFromRepo /etc/tinyproxy/tinyproxy.conf.template
     configureMounter                                # modify fstab, restart
     quitOnError
-    remove -- "$DAT_MODE_OVERRIDE"*                 # no longer override anything
+    override -d '*'                                 # no longer override anything
+    checkInstalled 'step3' true
 
     if confirm -y "Register with server" ; then
         symlink -n -m 'smb.conf.client' '/etc/samba/smb.conf'
@@ -1494,7 +1541,8 @@ setupStep3Appli() {
     copyFromRepo /etc/services                      # we really depend on this
 
     configureCertificates -c
-    remove -- "$DAT_MODE_OVERRIDE"*                 # no longer override anything
+    override -d '*'                                 # no longer override anything
+    checkInstalled 'step3' true
 
     if [ -d '/var/log/journal' ] &&
        confirm -y "Keep system log in memory ('/run/log/...')" ; then
@@ -1663,7 +1711,7 @@ setupStep3Server() {
         move -q /etc/krb5.conf /etc/krb5.conf.samba # save samba generated config
         embed -t -v centaurikerberos setup krb5     # get our own config again
 
-        remove -- "$DAT_MODE_OVERRIDE"*             # no longer override centauiswitch=xxx
+        override -d '*'                             # no longer override anything
         checkInstalled 'addc' true
 
         # now we restart the network via centauriroute which handles the static
@@ -1706,7 +1754,7 @@ setupStep3Server() {
         symlink -m -n 'smb.conf.master' '/etc/samba/smb.conf'
         netserver -w PRIMARY MASTER "$SOHO_HOST"    # fake MASTER role
 
-        # it takes a moment for ifup to process callbacks to centauiswitch that do
+        # it takes a moment for ifup to process callbacks to centauriswitch that do
         # add ipv6 addresses to the bridge. The samba-ad-dc service waits 5 seconds
         # and checks for DNS before starting the samba deamon ...
         system -e -t systemctl start centauri-master.target
@@ -1843,7 +1891,7 @@ setupStep3Server() {
         quitOnError
 
         checkInstalled 'secondary' true
-        remove -- "$DAT_MODE_OVERRIDE"*         # no longer override centauiswitch=xxx
+        override -d '*'                                 # no longer override anything
         embed -t -v centauriswitch local -- auto
     fi
 
@@ -1921,20 +1969,21 @@ setupStep4() {
         copyFromRepo /etc/default/centaurirunlevel  # skipped earlier steps?
         embed -t -v centaurirunlevel script
         quitOnError                                 # quit after error
-        if [ "$DAT_DESK" = 'hass' ] ; then
-            configureHass
-        else
-            packagesGUI "$DAT_DESK"
-            outputMessage 'stepN' '/etc/motd' '' "step 4 ($DAT_DESK)"
-        fi
+        case "$DAT_DESK" in
+        hass)   configureHass ;;
+        weewx)  configureWeewx ;;
+        *)      packagesGUI "$DAT_DESK"
+                outputMessage 'stepN' '/etc/motd' '' "step 4 ($DAT_DESK)"
+        esac
         checkInstalled "$DAT_DESK" true
     fi
 
-    if [ "$DAT_DESK" = 'hass' ] ; then
-        printHeader "$DAT_DESK is installed, use 'centauihass' for its management"
-    else
+    case "$DAT_DESK" in
+    hass|weewx)
+        printHeader "$DAT_DESK is installed, use 'centauri$DAT_DESK' for its management" ;;
+    *)
         printHeader "$DAT_DESK is installed, select a '$DAT_DESK' session at graphical login"
-    fi
+    esac
 }
 
 # ------------------------------------------------------------------------------
@@ -2000,10 +2049,12 @@ workDispatch() {
         1kde)    DAT_DESK='kde'    ;;               # step 4
         1lxq?)   DAT_DESK='lxqt'   ;;               # ...
         1has?)   DAT_DESK='hass'   ;;
+        1wee?)   DAT_DESK='weewx'  ;;
         1commands)                                  # make them known...
                 echo 'kde|step 4: install a KDE desktop'
                 echo 'lxqt|...     install a LXQt desktop'
                 echo 'hass|...     install Home Assistant'
+                echo 'weewx|...     install WeeWx Weatherstation'
                 return ;;
 
         # catch-all error handler
@@ -2017,7 +2068,7 @@ workDispatch() {
         setupStep1
     else
                                                     # explicit check to ignore --force
-        if [ -e "$DAT_STATE_PATH-step1-done" ] ; then
+        if checkInstalled 'step1' ; then
             configureLocales                        # should really be configured
         else
             setupStep1
@@ -2027,7 +2078,7 @@ workDispatch() {
         if [ -n "$DAT_DISK" ] ; then
             setupStep2
                                                     # explicit check to ignore --force
-        elif [ -e "$DAT_STATE_PATH-step2-done" ] ; then
+        elif checkInstalled 'step2' ; then
             issueKeyboard                           # may need keyboard configuration
         else
             confirm -n "Make sure that step 2 (boot disk) succeeded. Continue" || quit -a -u
@@ -2045,8 +2096,8 @@ workDispatch() {
         [ -n "$DAT_WHAT" ] && setupStep3
         [ -n "$DAT_DESK" ] && setupStep4
 
-        [ -e "$DAT_STATE_PATH-client-done" ] && removeSetupFiles -c
-        [ -e "$DAT_STATE_PATH-server-done" ] && removeSetupFiles -s
+        checkInstalled 'client' && removeSetupFiles -c
+        checkInstalled 'server' && removeSetupFiles -s
 
         [ -n "$DAT_WHAT$DAT_DESK" ] && embed -v centauridivert update
     fi
